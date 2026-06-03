@@ -1,6 +1,8 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
 import { getDatabase, ref, set, get, child, query, orderByChild, limitToLast, onValue } 
 from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } 
+from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyC1NZy2ZzNLutYAiE_QjPZGH5CymvGCnDs",
@@ -14,6 +16,7 @@ const firebaseConfig = {
 };
 
 // Global state variables
+let uId = "";
 let playerName = "";
 let playerScore = 0;
 let activeGame = "";
@@ -21,18 +24,20 @@ let gameInterval;
 let gameTime = 0;
 let liveScore = 0;
 let db = null;
+let auth = null;
+let isDodgeRunning = false; 
+let currentReactionTimeout = null;
 
 // Safe Firebase Initialization
 try {
     const app = initializeApp(firebaseConfig);
     db = getDatabase(app, "https://neal-with-roblox-default-rtdb.asia-southeast1.firebasedatabase.app");
-    console.log("Firebase successfully connected.");
+    auth = getAuth(app);
 } catch (initError) {
     console.error("Firebase failed to initialize:", initError);
-    alert("Firebase Initialization Error: " + initError.message);
 }
 
-// Dom Elements
+// DOM Elements
 const loginScreen = document.getElementById('login-screen');
 const hubScreen = document.getElementById('hub-screen');
 const gameScreen = document.getElementById('game-screen');
@@ -41,49 +46,96 @@ const gameTitle = document.getElementById('game-title');
 const gameTimer = document.getElementById('game-timer');
 const gameScoreCounter = document.getElementById('game-score-counter');
 const backToHubBtn = document.getElementById('back-to-hub');
+const resetGameBtn = document.getElementById('reset-game-btn');
 
-// ---- Hub Setup & Core Engine ----
-document.getElementById('join-btn').addEventListener('click', async () => {
-    console.log("Join button clicked!"); // Confirms button is active
-    
-    const name = document.getElementById('username-input').value.trim();
-    if (name.length < 3) return alert("Choose a name with at least 3 letters!");
-    playerName = name;
+// ---- Authentication Flow Logic ----
 
-    if (!db) {
-        return alert("Database is not connected. Check your internet or browser extensions!");
+// SIGN UP
+document.getElementById('signup-btn').addEventListener('click', async () => {
+    const email = document.getElementById('email-input').value.trim();
+    const password = document.getElementById('password-input').value;
+    const username = document.getElementById('username-input').value.trim();
+
+    if (!email || !password || username.length < 3) {
+        return alert("Please fill out Email, Password, and a Username (min 3 chars) to register!");
     }
 
     try {
-        const snapshot = await get(child(ref(db), `players/${playerName}`));
-        playerScore = snapshot.exists() ? snapshot.val().score : 0;
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
         
-        if (!snapshot.exists()) {
-            await set(ref(db, `players/${playerName}`), { name: playerName, score: 0 });
-        }
+        await set(ref(db, `players/${user.uid}`), {
+            name: username,
+            score: 0
+        });
 
-        document.getElementById('display-name').innerText = playerName;
-        document.getElementById('display-score').innerText = playerScore;
-        loginScreen.classList.add('hidden');
-        hubScreen.classList.remove('hidden');
-    } catch(dbError) { 
-        console.error("Database read/write failed:", dbError);
-        alert(`Database Error: ${dbError.message}\n\nMake sure your Realtime Database 'Rules' are set to true!`); 
+        alert("Account created successfully! Welcome to the hub.");
+    } catch(err) {
+        alert("Registration failed: " + err.message);
     }
 });
 
+// LOG IN
+document.getElementById('login-btn').addEventListener('click', async () => {
+    const email = document.getElementById('email-input').value.trim();
+    const password = document.getElementById('password-input').value;
+
+    if (!email || !password) return alert("Enter both Email and Password to log in!");
+
+    try {
+        await signInWithEmailAndPassword(auth, email, password);
+    } catch(err) {
+        alert("Login failed: " + err.message);
+    }
+});
+
+// LOG OUT
+document.getElementById('logout-btn').addEventListener('click', () => {
+    signOut(auth).then(() => {
+        hubScreen.classList.add('hidden');
+        loginScreen.classList.remove('hidden');
+    });
+});
+
+// AUTH OBSERVATION WATCHER
+onAuthStateChanged(auth, async (user) => {
+    if (user) {
+        uId = user.uid;
+        try {
+            const snapshot = await get(child(ref(db), `players/${uId}`));
+            if (snapshot.exists()) {
+                playerName = snapshot.val().name;
+                playerScore = snapshot.val().score;
+            } else {
+                playerName = "Anonymous User";
+                playerScore = 0;
+            }
+
+            document.getElementById('display-name').innerText = playerName;
+            document.getElementById('display-score').innerText = playerScore;
+            loginScreen.classList.add('hidden');
+            hubScreen.classList.remove('hidden');
+        } catch(e) {
+            console.error("Profile retrieval error:", e);
+        }
+    } else {
+        uId = ""; playerName = ""; playerScore = 0;
+    }
+});
+
+// ---- Points Processing Engine ----
 async function addPoints(points) {
-    if (!db) return;
+    if (!uId || !db) return;
     playerScore += points;
     document.getElementById('display-score').innerText = playerScore;
     try {
-        await set(ref(db, `players/${playerName}`), { name: playerName, score: playerScore });
+        await set(ref(db, `players/${uId}`), { name: playerName, score: playerScore });
     } catch (e) {
-        console.error("Failed to save score:", e);
+        console.error("Failed to sync score structure:", e);
     }
 }
 
-// Added explicit error callback here to prevent script freezing if rules deny access
+// Live Global Leaderboard Pipeline
 if (db) {
     const leaderboardQuery = query(ref(db, 'players'), orderByChild('score'), limitToLast(10));
     onValue(leaderboardQuery, (snap) => {
@@ -94,8 +146,7 @@ if (db) {
             leaderboardList.innerHTML += `<li><span>#${idx+1} ${p.name}</span><span>${p.score} pts</span></li>`;
         });
     }, (error) => {
-        console.error("Leaderboard sync failed:", error);
-        leaderboardList.innerHTML = `<li>Error loading scores: ${error.message}</li>`;
+        console.error("Leaderboard system error:", error);
     });
 }
 
@@ -110,14 +161,26 @@ document.querySelectorAll('.game-card').forEach(card => {
 });
 
 backToHubBtn.addEventListener('click', () => {
+    cleanupTimersAndLoops();
     gameScreen.classList.add('hidden');
     hubScreen.classList.remove('hidden');
 });
 
+// Reset Button Interface Listener
+resetGameBtn.addEventListener('click', () => {
+    initGame();
+});
+
+function cleanupTimersAndLoops() {
+    clearInterval(gameInterval);
+    clearTimeout(currentReactionTimeout);
+    isDodgeRunning = false; 
+}
+
 function initGame() {
+    cleanupTimersAndLoops();
     document.querySelectorAll('.sub-arena').forEach(el => el.classList.add('hidden'));
     gameScoreCounter.classList.add('hidden');
-    clearInterval(gameInterval);
 
     if (activeGame === "click-frenzy") startClickFrenzy();
     else if (activeGame === "memory-match") startMemoryMatch();
@@ -127,9 +190,9 @@ function initGame() {
 }
 
 function finishGame(pointsEarned) {
-    clearInterval(gameInterval);
+    cleanupTimersAndLoops();
     backToHubBtn.classList.remove('hidden');
-    alert(`Game complete! Stitched together +${pointsEarned} points.`);
+    alert(`Game complete! You earned +${pointsEarned} points.`);
     addPoints(pointsEarned);
 }
 
@@ -139,8 +202,7 @@ function startClickFrenzy() {
     gameTitle.innerText = "Click Frenzy";
     document.getElementById('arena-click-frenzy').classList.remove('hidden');
     gameScoreCounter.classList.remove('hidden');
-    liveScore = 0;
-    gameTime = 10;
+    liveScore = 0; gameTime = 10;
     gameTimer.innerText = `Time: ${gameTime}s`;
     gameScoreCounter.innerText = `Clicks: ${liveScore}`;
 
@@ -175,7 +237,6 @@ function startMemoryMatch() {
     symbols.forEach((sym, i) => {
         const card = document.createElement('div');
         card.classList.add('memory-card');
-        card.dataset.index = i;
         card.innerText = sym;
         memGrid.appendChild(card);
 
@@ -204,7 +265,6 @@ function startMemoryMatch() {
         gameTime--;
         gameTimer.innerText = `Time: ${gameTime}s`;
         if (gameTime <= 0) {
-            document.querySelectorAll('.memory-card').forEach(c => c.onclick = null);
             finishGame(matchesFound * 5);
         }
     }, 1000);
@@ -219,22 +279,21 @@ function startReactionTime() {
     reactBox.className = "reaction-wait";
     reactBox.innerText = "Click to Start";
 
-    let state = "idle"; 
-    let startTime, timeoutId;
+    let state = "idle"; let startTime;
 
     reactBox.onclick = () => {
         if (state === "idle") {
             reactBox.className = "reaction-hold";
             reactBox.innerText = "Wait for GREEN...";
             state = "waiting";
-            timeoutId = setTimeout(() => {
+            currentReactionTimeout = setTimeout(() => {
                 reactBox.className = "reaction-go";
                 reactBox.innerText = "CLICK NOW!";
                 state = "go";
                 startTime = performance.now();
             }, 2000 + Math.random() * 3000);
         } else if (state === "waiting") {
-            clearTimeout(timeoutId);
+            clearTimeout(currentReactionTimeout);
             reactBox.className = "reaction-wait";
             reactBox.innerText = "Too early! Click to retry.";
             state = "idle";
@@ -259,9 +318,7 @@ function startMathBlitz() {
     liveScore = 0; gameTime = 15;
     gameTimer.innerText = `Time: ${gameTime}s`;
     gameScoreCounter.innerText = `Score: ${liveScore}`;
-    mathAns.value = "";
-    mathAns.disabled = false;
-    mathAns.focus();
+    mathAns.value = ""; mathAns.disabled = false; mathAns.focus();
 
     let curA, curB, curAns;
     function nextQuestion() {
@@ -287,7 +344,6 @@ function startMathBlitz() {
         gameTimer.innerText = `Time: ${gameTime}s`;
         if (gameTime <= 0) {
             mathAns.disabled = true;
-            mathAns.oninput = null;
             finishGame(liveScore);
         }
     }, 1000);
@@ -304,7 +360,7 @@ function startDodge() {
 
     let playerX = canvas.width / 2;
     let obstacles = [];
-    let isRunning = true;
+    isDodgeRunning = true;
     let spawnTimer = 0;
 
     canvas.onmousemove = (e) => {
@@ -316,13 +372,13 @@ function startDodge() {
         gameTime--;
         gameTimer.innerText = `Survive: ${gameTime}s`;
         if (gameTime <= 0) {
-            isRunning = false;
+            isDodgeRunning = false;
             finishGame(40);
         }
     }, 1000);
 
     function loop() {
-        if (!isRunning) return;
+        if (!isDodgeRunning) return;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         ctx.fillStyle = "#4f46e5";
@@ -345,7 +401,7 @@ function startDodge() {
 
             let dist = Math.hypot(o.x - playerX, o.y - (canvas.height - 30));
             if (dist < o.r + 15) {
-                isRunning = false;
+                isDodgeRunning = false;
                 finishGame(5); 
                 return;
             }
