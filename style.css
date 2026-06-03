@@ -33,7 +33,6 @@ body {
     box-shadow: 0 8px 24px rgba(149, 157, 165, 0.1);
 }
 
-/* Auth View */
 #login-screen .card {
     max-width: 450px;
     margin: auto;
@@ -43,7 +42,48 @@ body {
 #login-screen h1 { font-size: 2.8rem; color: #4f46e5; margin-bottom: 8px; }
 #login-screen p { color: #718096; margin-bottom: 24px; }
 
-/* Global Styling elements */
+.auth-inputs {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.auth-buttons {
+    display: flex;
+    gap: 12px;
+}
+
+.secondary-btn {
+    background-color: #10b981 !important;
+}
+.secondary-btn:hover {
+    background-color: #059669 !important;
+}
+
+.toggle-text {
+    font-size: 0.9rem;
+    margin-top: 15px;
+    color: #a0aec0;
+}
+
+.user-info {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.logout-btn {
+    width: auto !important;
+    padding: 8px 16px !important;
+    font-size: 0.9rem !important;
+    background-color: #e2e8f0 !important;
+    color: #4a5568 !important;
+    border-radius: 10px !important;
+}
+.logout-btn:hover { background-color: #cbd5e1 !important; }
+
 input {
     width: 100%;
     padding: 16px;
@@ -71,7 +111,6 @@ button {
 button:hover { background-color: #4338ca; transform: translateY(-2px); }
 button:active { transform: translateY(1px); }
 
-/* Dashboard Hub Design */
 header {
     display: flex;
     justify-content: space-between;
@@ -123,7 +162,6 @@ header {
 .game-card h4 { font-size: 1.3rem; margin-bottom: 6px; }
 .game-card p { font-size: 0.9rem; color: #718096; line-height: 1.4; }
 
-/* Realtime Leaderboards UI */
 .leaderboard-container h3 { margin-bottom: 16px; }
 ul { list-style: none; }
 li {
@@ -139,7 +177,6 @@ li:nth-child(1) { background: #fef3c7; color: #b45309; }
 li:nth-child(2) { background: #f1f5f9; color: #475569; }
 li:nth-child(3) { background: #ffedd5; color: #c2410c; }
 
-/* Universal Arena Controls */
 #arena {
     background: #f8fafc;
     min-height: 420px;
@@ -152,12 +189,31 @@ li:nth-child(3) { background: #ffedd5; color: #c2410c; }
     overflow: hidden;
     border: 3px dashed #e2e8f0;
 }
-.game-header { display: flex; justify-content: space-between; align-items: center; }
+.game-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+}
+.game-controls {
+    display: flex;
+    gap: 10px;
+}
 .game-stats { display: flex; gap: 20px; font-size: 1.3rem; font-weight: 600; }
 .hidden-btn { background: #edf2f7; color: #4a5568; margin-top: 10px; }
 .hidden-btn:hover { background: #e2e8f0; }
 
-/* 1. Click Frenzy Design */
+.reset-btn {
+    width: auto !important;
+    background-color: #f59e0b !important;
+    padding: 8px 16px !important;
+    font-size: 0.9rem !important;
+    border-radius: 10px !important;
+}
+.reset-btn:hover {
+    background-color: #d97706 !important;
+}
+
 #frenzy-btn {
     width: 180px;
     height: 180px;
@@ -171,7 +227,6 @@ li:nth-child(3) { background: #ffedd5; color: #c2410c; }
     box-shadow: 0 2px 0 #b91c1c, 0 5px 10px rgba(239, 68, 68, 0.4);
 }
 
-/* 2. Memory Match Grid Layout */
 #memory-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -194,7 +249,6 @@ li:nth-child(3) { background: #ffedd5; color: #c2410c; }
 .memory-card.flipped { background: white; color: initial; border: 3px solid #4f46e5; }
 .memory-card.matched { background: #10b981; color: white; border: none; cursor: default; }
 
-/* 3. Reaction Color System */
 #reaction-box {
     width: 100%;
     height: 420px;
@@ -210,12 +264,10 @@ li:nth-child(3) { background: #ffedd5; color: #c2410c; }
 .reaction-hold { background: #ef4444; }
 .reaction-go { background: #10b981; }
 
-/* 4. Math Arena Presentation */
 #arena-math-blitz { text-align: center; width: 100%; max-width: 300px; }
 #math-question { font-size: 3rem; font-weight: 600; margin-bottom: 20px; }
 #math-answer { font-size: 2rem; padding: 10px; }
 
-/* 5. Canvas Design Rules */
 #dodge-canvas {
     background: #1e293b;
     display: block;
