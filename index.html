@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MiniGame Hub</title>
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div id="login-screen" class="screen">
+        <div class="card">
+            <h1>Welcome to the Hub! 🎮</h1>
+            <p>Enter your player name to start collecting points.</p>
+            <input type="text" id="username-input" placeholder="Player Name" maxlength="15">
+            <button id="join-btn">Join the Fun</button>
+        </div>
+    </div>
+
+    <div id="hub-screen" class="screen hidden">
+        <header>
+            <h2>Hey, <span id="display-name">Player</span>!</h2>
+            <div class="score-badge">Points: <span id="display-score">0</span></div>
+        </header>
+
+        <div class="content-split">
+            <div class="games-container card">
+                <h3>Select a Mini-Game</h3>
+                <div class="game-card">
+                    <h4>🔴 Speed Catcher</h4>
+                    <p>Click the red dot as fast as you can before it disappears!</p>
+                    <button id="play-speed-catcher">Play Now</button>
+                </div>
+                </div>
+
+            <div class="leaderboard-container card">
+                <h3>🏆 Global Leaderboard</h3>
+                <ul id="leaderboard-list">
+                    <li>Loading scores...</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <div id="game-screen" class="screen hidden">
+        <div class="game-header">
+            <h2>Speed Catcher</h2>
+            <p>Time remaining: <span id="time-left">10</span>s</p>
+        </div>
+        <div id="game-area">
+            <div id="target" class="hidden"></div>
+        </div>
+        <button id="back-to-hub" class="hidden">Back to Hub</button>
+    </div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>
