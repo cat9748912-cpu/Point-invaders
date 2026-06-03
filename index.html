@@ -3,39 +3,66 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MiniGame Hub</title>
+    <title>Arcade Hub 🎮</title>
     <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
     <div id="login-screen" class="screen">
-        <div class="card">
-            <h1>Welcome to the Hub! 🎮</h1>
-            <p>Enter your player name to start collecting points.</p>
-            <input type="text" id="username-input" placeholder="Player Name" maxlength="15">
+        <div class="card interactive-card">
+            <h1>Arcade Hub 🎮</h1>
+            <p>Pick a name to start stacking points on the live leaderboards!</p>
+            <input type="text" id="username-input" placeholder="Enter username..." maxlength="12">
             <button id="join-btn">Join the Fun</button>
         </div>
     </div>
 
     <div id="hub-screen" class="screen hidden">
         <header>
-            <h2>Hey, <span id="display-name">Player</span>!</h2>
-            <div class="score-badge">Points: <span id="display-score">0</span></div>
+            <h2>Hey, <span id="display-name">Player</span>! 👋</h2>
+            <div class="score-badge">Total Points: <span id="display-score">0</span></div>
         </header>
 
         <div class="content-split">
-            <div class="games-container card">
+            <div class="games-container">
                 <h3>Select a Mini-Game</h3>
-                <div class="game-card">
-                    <h4>🔴 Speed Catcher</h4>
-                    <p>Click the red dot as fast as you can before it disappears!</p>
-                    <button id="play-speed-catcher">Play Now</button>
+                
+                <div class="games-grid">
+                    <div class="game-card" data-game="click-frenzy">
+                        <div class="game-icon">⚡</div>
+                        <h4>Click Frenzy</h4>
+                        <p>Mash your mouse button as fast as you can in 10 seconds!</p>
+                    </div>
+
+                    <div class="game-card" data-game="memory-match">
+                        <div class="game-icon">🧠</div>
+                        <h4>Memory Match</h4>
+                        <p>Test your brain! Flip and pair up matching cards against the clock.</p>
+                    </div>
+
+                    <div class="game-card" data-game="reaction-time">
+                        <div class="game-icon">⏱️</div>
+                        <h4>Reaction Time</h4>
+                        <p>Wait for the screen to flash green. Click instantly to score big!</p>
+                    </div>
+
+                    <div class="game-card" data-game="math-blitz">
+                        <div class="game-icon">🔢</div>
+                        <h4>Math Blitz</h4>
+                        <p>Solve rapid-fire math equations before your time runs out.</p>
+                    </div>
+
+                    <div class="game-card" data-game="dodge">
+                        <div class="game-icon">🚀</div>
+                        <h4>Dodge</h4>
+                        <p>Move your mouse cursor to dodge waves of falling obstacles!</p>
+                    </div>
                 </div>
-                </div>
+            </div>
 
             <div class="leaderboard-container card">
-                <h3>🏆 Global Leaderboard</h3>
+                <h3>🏆 Live Leaderboard</h3>
                 <ul id="leaderboard-list">
                     <li>Loading scores...</li>
                 </ul>
@@ -44,14 +71,40 @@
     </div>
 
     <div id="game-screen" class="screen hidden">
-        <div class="game-header">
-            <h2>Speed Catcher</h2>
-            <p>Time remaining: <span id="time-left">10</span>s</p>
+        <div class="game-wrapper card">
+            <div class="game-header">
+                <h2 id="game-title">Game Title</h2>
+                <div class="game-stats">
+                    <span id="game-timer">Time: 0s</span>
+                    <span id="game-score-counter" class="hidden">Score: 0</span>
+                </div>
+            </div>
+
+            <div id="arena">
+                <div id="arena-click-frenzy" class="sub-arena hidden">
+                    <button id="frenzy-btn">TAP!</button>
+                </div>
+
+                <div id="arena-memory-match" class="sub-arena hidden">
+                    <div id="memory-grid"></div>
+                </div>
+
+                <div id="arena-reaction-time" class="sub-arena hidden">
+                    <div id="reaction-box" class="reaction-wait">Click to Start</div>
+                </div>
+
+                <div id="arena-math-blitz" class="sub-arena hidden">
+                    <div id="math-question">2 + 2 = ?</div>
+                    <input type="number" id="math-answer" placeholder="Type answer...">
+                </div>
+
+                <div id="arena-dodge" class="sub-arena hidden">
+                    <canvas id="dodge-canvas" width="500" height="400"></canvas>
+                </div>
+            </div>
+
+            <button id="back-to-hub" class="hidden-btn">Leave Game</button>
         </div>
-        <div id="game-area">
-            <div id="target" class="hidden"></div>
-        </div>
-        <button id="back-to-hub" class="hidden">Back to Hub</button>
     </div>
 
     <script type="module" src="app.js"></script>
