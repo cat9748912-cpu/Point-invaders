@@ -12,15 +12,29 @@
     <div id="login-screen" class="screen">
         <div class="card interactive-card">
             <h1>Arcade Hub 🎮</h1>
-            <p>Pick a name to start stacking points on the live leaderboards!</p>
-            <input type="text" id="username-input" placeholder="Enter username..." maxlength="12">
-            <button id="join-btn">Join the Fun</button>
+            <p id="auth-message">Create an account to track your global score!</p>
+            
+            <div class="auth-inputs">
+                <input type="email" id="email-input" placeholder="Enter email...">
+                <input type="password" id="password-input" placeholder="Enter password...">
+                <input type="text" id="username-input" placeholder="Pick a username (Sign Up only)..." maxlength="12">
+            </div>
+
+            <div class="auth-buttons">
+                <button id="login-btn">Log In</button>
+                <button id="signup-btn" class="secondary-btn">Sign Up</button>
+            </div>
+            
+            <p class="toggle-text" id="auth-toggle">Need an account? Fill in all fields and click Sign Up!</p>
         </div>
     </div>
 
     <div id="hub-screen" class="screen hidden">
         <header>
-            <h2>Hey, <span id="display-name">Player</span>! 👋</h2>
+            <div class="user-info">
+                <h2>Hey, <span id="display-name">Player</span>! 👋</h2>
+                <button id="logout-btn" class="logout-btn">Log Out</button>
+            </div>
             <div class="score-badge">Total Points: <span id="display-score">0</span></div>
         </header>
 
@@ -74,6 +88,9 @@
         <div class="game-wrapper card">
             <div class="game-header">
                 <h2 id="game-title">Game Title</h2>
+                <div class="game-controls">
+                    <button id="reset-game-btn" class="reset-btn">🔄 Restart</button>
+                </div>
                 <div class="game-stats">
                     <span id="game-timer">Time: 0s</span>
                     <span id="game-score-counter" class="hidden">Score: 0</span>
@@ -107,6 +124,6 @@
         </div>
     </div>
 
-    <script type="module" src="app.js"></script>
+    <script type="module" src="script.js"></script>
 </body>
 </html>
