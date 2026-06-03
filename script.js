@@ -15,8 +15,7 @@ const firebaseConfig = {
   measurementId: "G-0CXYDZYRS4"
 };
 
-// Initialize Firebase and Realtime Database
-const app = initializeApp(firebaseConfig);
+const db = getDatabase(app, "https://neal-with-roblox-default-rtdb.asia-southeast1.firebasedatabase.app");
 const db = getDatabase(app);
 
 // Global Variables
