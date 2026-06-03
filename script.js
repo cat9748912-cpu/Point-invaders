@@ -13,17 +13,26 @@ const firebaseConfig = {
   measurementId: "G-0CXYDZYRS4"
 };
 
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app, "https://neal-with-roblox-default-rtdb.asia-southeast1.firebasedatabase.app");
-
+// Global state variables
 let playerName = "";
 let playerScore = 0;
 let activeGame = "";
 let gameInterval;
 let gameTime = 0;
 let liveScore = 0;
+let db = null;
 
-// Shared Elements
+// Safe Firebase Initialization
+try {
+    const app = initializeApp(firebaseConfig);
+    db = getDatabase(app, "https://neal-with-roblox-default-rtdb.asia-southeast1.firebasedatabase.app");
+    console.log("Firebase successfully connected.");
+} catch (initError) {
+    console.error("Firebase failed to initialize:", initError);
+    alert("Firebase Initialization Error: " + initError.message);
+}
+
+// Dom Elements
 const loginScreen = document.getElementById('login-screen');
 const hubScreen = document.getElementById('hub-screen');
 const gameScreen = document.getElementById('game-screen');
@@ -35,36 +44,60 @@ const backToHubBtn = document.getElementById('back-to-hub');
 
 // ---- Hub Setup & Core Engine ----
 document.getElementById('join-btn').addEventListener('click', async () => {
+    console.log("Join button clicked!"); // Confirms button is active
+    
     const name = document.getElementById('username-input').value.trim();
     if (name.length < 3) return alert("Choose a name with at least 3 letters!");
     playerName = name;
 
+    if (!db) {
+        return alert("Database is not connected. Check your internet or browser extensions!");
+    }
+
     try {
         const snapshot = await get(child(ref(db), `players/${playerName}`));
         playerScore = snapshot.exists() ? snapshot.val().score : 0;
-        if (!snapshot.exists()) await set(ref(db, `players/${playerName}`), { name: playerName, score: 0 });
+        
+        if (!snapshot.exists()) {
+            await set(ref(db, `players/${playerName}`), { name: playerName, score: 0 });
+        }
 
         document.getElementById('display-name').innerText = playerName;
         document.getElementById('display-score').innerText = playerScore;
         loginScreen.classList.add('hidden');
         hubScreen.classList.remove('hidden');
-    } catch(e) { alert("Check your database config rules permissions."); }
+    } catch(dbError) { 
+        console.error("Database read/write failed:", dbError);
+        alert(`Database Error: ${dbError.message}\n\nMake sure your Realtime Database 'Rules' are set to true!`); 
+    }
 });
 
 async function addPoints(points) {
+    if (!db) return;
     playerScore += points;
     document.getElementById('display-score').innerText = playerScore;
-    await set(ref(db, `players/${playerName}`), { name: playerName, score: playerScore });
+    try {
+        await set(ref(db, `players/${playerName}`), { name: playerName, score: playerScore });
+    } catch (e) {
+        console.error("Failed to save score:", e);
+    }
 }
 
-onValue(query(ref(db, 'players'), orderByChild('score'), limitToLast(10)), (snap) => {
-    leaderboardList.innerHTML = "";
-    let list = [];
-    snap.forEach(c => { list.push(c.val()); });
-    list.reverse().forEach((p, idx) => {
-        leaderboardList.innerHTML += `<li><span>#${idx+1} ${p.name}</span><span>${p.score} pts</span></li>`;
+// Added explicit error callback here to prevent script freezing if rules deny access
+if (db) {
+    const leaderboardQuery = query(ref(db, 'players'), orderByChild('score'), limitToLast(10));
+    onValue(leaderboardQuery, (snap) => {
+        leaderboardList.innerHTML = "";
+        let list = [];
+        snap.forEach(c => { list.push(c.val()); });
+        list.reverse().forEach((p, idx) => {
+            leaderboardList.innerHTML += `<li><span>#${idx+1} ${p.name}</span><span>${p.score} pts</span></li>`;
+        });
+    }, (error) => {
+        console.error("Leaderboard sync failed:", error);
+        leaderboardList.innerHTML = `<li>Error loading scores: ${error.message}</li>`;
     });
-});
+}
 
 document.querySelectorAll('.game-card').forEach(card => {
     card.addEventListener('click', () => {
@@ -292,19 +325,16 @@ function startDodge() {
         if (!isRunning) return;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        // Render player
         ctx.fillStyle = "#4f46e5";
         ctx.beginPath();
         ctx.arc(playerX, canvas.height - 30, 15, 0, Math.PI * 2);
         ctx.fill();
 
-        // Spawn framework
         spawnTimer++;
         if (spawnTimer % 8 === 0) {
             obstacles.push({ x: Math.random() * canvas.width, y: 0, speed: 4 + Math.random() * 4, r: 8 });
         }
 
-        // Render obstacles
         ctx.fillStyle = "#ef4444";
         for (let i = obstacles.length - 1; i >= 0; i--) {
             let o = obstacles[i];
@@ -313,7 +343,6 @@ function startDodge() {
             ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
             ctx.fill();
 
-            // Distances checked for collision math
             let dist = Math.hypot(o.x - playerX, o.y - (canvas.height - 30));
             if (dist < o.r + 15) {
                 isRunning = false;
