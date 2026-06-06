@@ -104,7 +104,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .prog-fill{height:100%;border-radius:3px;transition:width .2s ease-out;background:linear-gradient(90deg,var(--cyan),var(--purple))}
 .g-area{width:100%;max-width:700px;display:flex;flex-direction:column;align-items:center}
 
-#arcade-canvas{background:#020208;border:2px solid var(--border);border-radius:8px;display:block}
+#arcade-canvas{background:#0d0d11;border:2px solid var(--border);border-radius:8px;display:block}
 #arcade-controls{display:flex;width:100%;max-width:400px;gap:10px;margin-top:14px}
 .ctrl-btn{flex:1;background:var(--s2);border:1px solid var(--border);color:#fff;padding:14px;font-family:var(--fd);border-radius:8px;cursor:pointer}
 
