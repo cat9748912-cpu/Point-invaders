@@ -34,10 +34,21 @@ try {
 })();
 
 // ════════════════════════════════════════════
-//  📦 GLOBAL STATE
+//  📦 GLOBAL STATE & CONFIG
 // ════════════════════════════════════════════
-let user=null, curGame=null, gTimer=null;
-const META = { click: { name: 'CLICK FRENZY', emoji: '🖱️', maxPts: 500 } };
+let user=null, curGame=null, gTimer=null, gameLoopId=null;
+const META = { 
+  click: { name: 'CLICK FRENZY', emoji: '🖱️', maxPts: 500 },
+  nebula: { name: 'NEON NEBULA', emoji: '🚀', maxPts: 1000 },
+  tetris: { name: 'CYBERPUNK TETRIS', emoji: '🧱', maxPts: 1200 },
+  dodge: { name: 'DODGE CORES', emoji: '💥', maxPts: 800 },
+  memory: { name: 'MEMORY MATCH', emoji: '🧠', maxPts: 600 },
+  math: { name: 'MATH BLITZ', emoji: '🔢', maxPts: 750 },
+  reaction: { name: 'REACTION TIME', emoji: '⚡', maxPts: 400 }
+};
+
+const aCanvas = document.getElementById('arcade-canvas');
+const aCtx = aCanvas?.getContext('2d');
 
 const showScreen=id=>{
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
@@ -92,11 +103,7 @@ document.getElementById('btn-signup').onclick=async()=>{
   if(!/^[a-zA-Z0-9_-]{2,20}$/.test(name)){setErr('Username: 2-20 chars, letters/numbers/_-');return}
   try{
     const c=await auth.createUserWithEmailAndPassword(email,pass);
-    await db.ref('players/' + c.user.uid).set({
-      username: name,
-      totalPoints: 0,
-      gamesPlayed: 0
-    });
+    await db.ref('players/' + c.user.uid).set({ username: name, totalPoints: 0, gamesPlayed: 0 });
     await loadUser(c.user.uid);
   }catch(e){setErr(fErr(e.code))}
 };
@@ -120,7 +127,7 @@ document.getElementById('btn-logout').onclick=()=>{
 };
 
 // ════════════════════════════════════════════
-//  🏠 HUB
+//  🏠 HUB SYSTEM
 // ════════════════════════════════════════════
 function enterHub(){
   document.getElementById('h-uname').textContent=user.username;
@@ -139,24 +146,40 @@ document.querySelectorAll('.game-card').forEach(card=>{
   });
 });
 
-document.getElementById('btn-quit').onclick=()=>{clearInterval(gTimer);enterHub()};
+document.getElementById('btn-quit').onclick=()=>{
+  clearInterval(gTimer);
+  cancelAnimationFrame(gameLoopId);
+  enterHub();
+};
 
 // ════════════════════════════════════════════
-//  🎮 GAME ENGINE
+//  🎮 CORE INITIALIZATION SWITCH
 // ════════════════════════════════════════════
 function prepGame(gid){
-  document.querySelectorAll('.g-area>div').forEach(d=>d.style.display='none');
+  document.getElementById('g-click').style.display='none';
+  document.getElementById('g-canvas-holder').style.display='none';
+  document.getElementById('g-memory').style.display='none';
+  document.getElementById('g-math').style.display='none';
+  document.getElementById('g-reaction').style.display='none';
   document.getElementById('g-pts').textContent='0';
   document.getElementById('g-time').textContent='—';
   document.getElementById('prog-fill').style.width='100%';
   document.getElementById('prog-fill').style.background='var(--cyan)';
-  countdown(()=>startClick());
+  
+  if(gid==='click') countdown(()=>startClick());
+  else if(gid==='nebula') countdown(()=>startNebula());
+  else if(gid==='tetris') countdown(()=>startTetris());
+  else if(gid==='dodge') countdown(()=>startDodge());
+  else if(gid==='memory') countdown(()=>startMemory());
+  else if(gid==='math') countdown(()=>startMath());
+  else if(gid==='reaction') countdown(()=>startReaction());
 }
 
 const setLive=n=>document.getElementById('g-pts').textContent=n;
 
 function showResults(gid,pts,bd){
   clearInterval(gTimer);
+  cancelAnimationFrame(gameLoopId);
   const m=META[gid],pct=pts/m.maxPts;
   document.getElementById('res-emoji').textContent=pct>.75?'🎉':'💪';
   document.getElementById('res-gname').textContent=m.name;
@@ -175,29 +198,17 @@ async function saveScore(gid,pts){
     playerRef.once('value', (snapshot) => {
       const d = snapshot.val() || { totalPoints: 0, gamesPlayed: 0, highScores: {} };
       const hs = d.highScores || {};
-      
       const newPoints = (d.totalPoints || 0) + pts;
-      const newGamesPlayed = (d.gamesPlayed || 0) + 1;
       const newHighScores = { ...hs, [gid]: Math.max(hs[gid] || 0, pts) };
-      
-      playerRef.update({
-        username: user.username,
-        totalPoints: newPoints,
-        gamesPlayed: newGamesPlayed,
-        highScores: newHighScores
-      });
-      
+      playerRef.update({ username: user.username, totalPoints: newPoints, gamesPlayed: (d.gamesPlayed || 0) + 1, highScores: newHighScores });
       if (user) user.totalPoints = newPoints;
     });
     toast(`✅ +${pts} pts saved!`);
-  } catch (e) {
-    toast('⚠️ Score not saved');
-    console.error(e);
-  }
+  } catch (e) { console.error(e) }
 }
 
 // ════════════════════════════════════════════
-//  🖱️ GAME: CLICK FRENZY
+//  🖱️ GAME 1: CLICK FRENZY
 // ════════════════════════════════════════════
 function startClick(){
   document.getElementById('g-click').style.display='flex';
@@ -208,54 +219,261 @@ function startClick(){
   btn.disabled=false;
   btn.onclick=()=>{clicks++;document.getElementById('click-count').textContent=clicks;setLive(Math.min(500,clicks*8))};
   gTimer=setInterval(()=>{
-    t--;
-    document.getElementById('g-time').textContent=t;
+    t--;document.getElementById('g-time').textContent=t;
     document.getElementById('prog-fill').style.width=`${t/10*100}%`;
     if(t<=0){
       clearInterval(gTimer);btn.disabled=true;btn.onclick=null;
       const pts=Math.min(500,clicks*8);
-      setTimeout(()=>showResults('click',pts,{'🖱️ Total Clicks':clicks,'⚡ Pts/click':8,'🏆 Final Score':`${pts} pts`}),400);
+      setTimeout(()=>showResults('click',pts,{'🖱️ Total Clicks':clicks,'🏆 Final Score':`${pts} pts`}),400);
     }
   },1000);
+}
+
+// ════════════════════════════════════════════
+//  🚀 GAME 2: NEON NEBULA
+// ════════════════════════════════════════════
+function startNebula(){
+  document.getElementById('g-canvas-holder').style.display='block';
+  let score=0, time=30, shipX=180, bullets=[], enemies=[], enemyTimer=0;
+  document.getElementById('g-time').textContent=time;
+  
+  let moveLeft=false, moveRight=false;
+  window.onkeydown=e=>{if(e.code==='ArrowLeft')moveLeft=true;if(e.code==='ArrowRight')moveRight=true;if(e.code==='Space'||e.code==='ArrowUp')bullets.push({x:shipX+17,y:460})};
+  window.onkeyup=e=>{if(e.code==='ArrowLeft')moveLeft=false;if(e.code==='ArrowRight')moveRight=false};
+  
+  document.getElementById('ctrl-left').onmousedown=()=>moveLeft=true;document.getElementById('ctrl-left').onmouseup=()=>moveLeft=false;
+  document.getElementById('ctrl-right').onmousedown=()=>moveRight=true;document.getElementById('ctrl-right').onmouseup=()=>moveRight=false;
+  document.getElementById('ctrl-action').onclick=()=>bullets.push({x:shipX+17,y:460});
+
+  gTimer=setInterval(()=>{
+    time--;document.getElementById('g-time').textContent=time;
+    document.getElementById('prog-fill').style.width=`${time/30*100}%`;
+    if(time<=0) end();
+  },1000);
+
+  function loop(){
+    aCtx.clearRect(0,0,400,500);
+    if(moveLeft) shipX=Math.max(0, shipX-5);
+    if(moveRight) shipX=Math.min(360, shipX+5);
+    aCtx.fillStyle='#00f5ff';aCtx.fillRect(shipX,470,40,15);aCtx.fillRect(shipX+15,460,10,10);
+    
+    bullets.forEach((b,bi)=>{b.y-=7;aCtx.fillStyle='#ff0090';aCtx.fillRect(b.x,b.y,5,10);if(b.y<0)bullets.splice(bi,1)});
+    enemyTimer++;if(enemyTimer%35===0){enemies.push({x:Math.random()*360,y:-20,w:30,h:20})}
+    enemies.forEach((e,ei)=>{
+      e.y+=2;aCtx.fillStyle='#39ff14';aCtx.fillRect(e.x,e.y,e.w,e.h);
+      bullets.forEach((b,bi)=>{
+        if(b.x>e.x&&b.x<e.x+e.w&&b.y>e.y&&b.y<e.y+e.h){score+=25;setLive(score);enemies.splice(ei,1);bullets.splice(bi,1)}
+      });
+    });
+    gameLoopId=requestAnimationFrame(loop);
+  }
+  function end(){
+    clearInterval(gTimer);cancelAnimationFrame(gameLoopId);window.onkeydown=window.onkeyup=null;
+    const finalPts=Math.min(1000, score);
+    showResults('nebula', finalPts, {'👾 Alien Cores Destroyed':score/25, '🏆 Final Score':`${finalPts} pts`});
+  }
+  loop();
+}
+
+// ════════════════════════════════════════════
+//  🧱 GAME 3: CYBERPUNK TETRIS
+// ════════════════════════════════════════════
+function startTetris(){
+  document.getElementById('g-canvas-holder').style.display='block';
+  let score=0, time=45, grid=Array.from({length:20},()=>Array(10).fill(0)), currentPiece=null, currentX=3, currentY=0, dropTimer=0;
+  document.getElementById('g-time').textContent=time;
+  
+  const PIECES=[[[1,1,1,1]],[[1,1,1],[0,1,0]],[[1,1],[1,1]],[[1,1,0],[0,1,1]]];
+  const COLORS=['#a855f7','#ff6600','#00f5ff','#39ff14'];let pIdx=0;
+
+  function spawn(){pIdx=Math.floor(Math.random()*PIECES.length);currentPiece=PIECES[pIdx];currentX=3;currentY=0}
+  spawn();
+
+  window.onkeydown=e=>{
+    if(e.code==='ArrowLeft') move(-1);if(e.code==='ArrowRight') move(1);
+    if(e.code==='ArrowDown') drop();if(e.code==='Space'||e.code==='ArrowUp') rotate();
+  };
+  document.getElementById('ctrl-left').onclick=()=>move(-1);
+  document.getElementById('ctrl-right').onclick=()=>move(1);
+  document.getElementById('ctrl-action').onclick=()=>rotate();
+
+  gTimer=setInterval(()=>{
+    time--;document.getElementById('g-time').textContent=time;
+    document.getElementById('prog-fill').style.width=`${time/45*100}%`;
+    if(time<=0) end();
+  },1000);
+
+  function checkCol(px,py,p){
+    for(let r=0;r<p.length;r++)for(let c=0;c<p[r].length;c++)if(p[r][c]){
+      let nx=px+c, ny=py+r;if(nx<0||nx>=10||ny>=20||(ny>=0&&grid[ny][nx]))return true;
+    } return false;
+  }
+  function merge(){currentPiece.forEach((r,ri)=>{r.forEach((v,ci)=>{if(v&&currentY+ri>=0)grid[currentY+ri][currentX+ci]=COLORS[pIdx]})})}
+  function clearLines(){let c=0;grid.forEach((r,ri)=>{if(r.every(v=>v!==0)){grid.splice(ri,1);grid.unshift(Array(10).fill(0));c++}});if(c>0){score+=c*150;setLive(score)}}
+  function move(dir){currentX+=dir;if(checkCol(currentX,currentY,currentPiece))currentX-=dir}
+  function drop(){currentY++;if(checkCol(currentX,currentY,currentPiece)){currentY--;merge();clearLines();spawn();if(checkCol(currentX,currentY,currentPiece))end()}}
+  function rotate(){let r=currentPiece[0].map((_,i)=>currentPiece.map(row=>row[i]).reverse());if(!checkCol(currentX,currentY,r))currentPiece=r}
+
+  function loop(){
+    aCtx.clearRect(0,0,400,500);dropTimer++;if(dropTimer%25===0)drop();
+    grid.forEach((r,ri)=>{r.forEach((v,ci)=>{if(v){aCtx.fillStyle=v;aCtx.fillRect(ci*40,ri*25,38,23)}})});
+    if(currentPiece){aCtx.fillStyle=COLORS[pIdx];currentPiece.forEach((r,ri)=>{r.forEach((v,ci)=>{if(v){aCtx.fillRect((currentX+ci)*40,(currentY+ri)*25,38,23)}})})}
+    gameLoopId=requestAnimationFrame(loop);
+  }
+  function end(){clearInterval(gTimer);cancelAnimationFrame(gameLoopId);window.onkeydown=null;showResults('tetris',Math.min(1200,score),{'🧱 Lines Cleared':score/150,'🏆 Final Score':`${score} pts`})}
+  loop();
+}
+
+// ════════════════════════════════════════════
+//  💥 GAME 4: DODGE CORES
+// ════════════════════════════════════════════
+function startDodge(){
+  document.getElementById('g-canvas-holder').style.display='block';
+  let score=0, time=30, player={x:190,y:400,w:20,h:20}, obstacles=[];
+  document.getElementById('g-time').textContent=time;
+
+  let moveLeft=false, moveRight=false;
+  window.onkeydown=e=>{if(e.code==='ArrowLeft')moveLeft=true;if(e.code==='ArrowRight')moveRight=true};
+  window.onkeyup=e=>{if(e.code==='ArrowLeft')moveLeft=false;if(e.code==='ArrowRight')moveRight=false};
+  document.getElementById('ctrl-left').onmousedown=()=>moveLeft=true;document.getElementById('ctrl-left').onmouseup=()=>moveLeft=false;
+  document.getElementById('ctrl-right').onmousedown=()=>moveRight=true;document.getElementById('ctrl-right').onmouseup=()=>moveRight=false;
+
+  gTimer=setInterval(()=>{
+    time--;document.getElementById('g-time').textContent=time;
+    document.getElementById('prog-fill').style.width=`${time/30*100}%`;
+    score+=25;setLive(score);
+    if(time<=0) end();
+  },1000);
+
+  function loop(){
+    aCtx.clearRect(0,0,400,500);
+    if(moveLeft) player.x=Math.max(0, player.x-6);
+    if(moveRight) player.x=Math.min(380, player.x+6);
+    
+    aCtx.fillStyle='var(--cyan)';aCtx.fillRect(player.x,player.y,player.w,player.h);
+
+    if(Math.random()<.06) obstacles.push({x:Math.random()*380,y:0,w:15,h:15,s:Math.random()*3+3});
+    obstacles.forEach((o,oi)=>{
+      o.y+=o.s;aCtx.fillStyle='var(--orange)';aCtx.fillRect(o.x,o.y,o.w,o.h);
+      if(o.x<player.x+player.w&&o.x+o.w>player.x&&o.y<player.y+player.h&&o.y+o.h>player.y){end()}
+      if(o.y>500) obstacles.splice(oi,1);
+    });
+    gameLoopId=requestAnimationFrame(loop);
+  }
+  function end(){clearInterval(gTimer);cancelAnimationFrame(gameLoopId);window.onkeydown=window.onkeyup=null;showResults('dodge',Math.min(800,score),{'⏱️ Seconds Survived':score/25,'🏆 Score':`${score} pts`})}
+  loop();
+}
+
+// ════════════════════════════════════════════
+//  🧠 GAME 5: MEMORY MATCH
+// ════════════════════════════════════════════
+function startMemory(){
+  const wrap = document.getElementById('g-memory');wrap.style.display='grid';wrap.innerHTML='';
+  let icons=['🚀','🚀','🧱','🧱','🖱️','🖱️','💥','💥','🧠','🧠','🔢','🔢','⚡','⚡','🏆','🏆'], flipped=[], matched=0, score=0, time=25;
+  document.getElementById('g-time').textContent=time;
+  icons.sort(()=>Math.random()-.5);
+
+  gTimer=setInterval(()=>{
+    time--;document.getElementById('g-time').textContent=time;
+    document.getElementById('prog-fill').style.width=`${time/25*100}%`;
+    if(time<=0) end();
+  },1000);
+
+  icons.forEach((icon,idx)=>{
+    const card=document.createElement('div');card.className='mem-card';card.dataset.val=icon;card.textContent='?';
+    card.onclick=()=>{
+      if(flipped.length<2&&!card.classList.contains('flipped')){
+        card.classList.add('flipped');card.textContent=icon;flipped.push(card);
+        if(flipped.length===2){
+          if(flipped[0].dataset.val===flipped[1].dataset.val){score+=75;setLive(score);matched++;flipped=[];if(matched===8)end()}
+          else{setTimeout(()=>{flipped[0].classList.remove('flipped');flipped[0].textContent='?';flipped[1].classList.remove('flipped');flipped[1].textContent='?';flipped=[]},700)}
+        }
+      }
+    };
+    wrap.appendChild(card);
+  });
+  function end(){clearInterval(gTimer);showResults('memory',Math.min(600,score),{'🧩 Node Pairs Matched':matched,'🏆 Score':`${score} pts`})}
+}
+
+// ════════════════════════════════════════════
+//  🔢 GAME 6: MATH BLITZ
+// ════════════════════════════════════════════
+function startMath(){
+  document.getElementById('g-math').style.display='block';
+  let score=0, time=20, curAns=0;
+  document.getElementById('g-time').textContent=time;
+
+  function gen(){
+    let a=Math.floor(Math.random()*12)+2, b=Math.floor(Math.random()*12)+2, ops=['+','-','*'], op=ops[Math.floor(Math.random()*3)];
+    document.getElementById('math-question').textContent=`${a} ${op} ${b}`;
+    curAns=op==='+'?a+b:op==='-'?a-b:a*b;
+    document.getElementById('math-answer').value='';document.getElementById('math-answer').focus();
+  }
+  gen();
+
+  const check=()=>{
+    let input=parseInt(document.getElementById('math-answer').value);
+    if(input===curAns){score+=50;setLive(score)}gen();
+  };
+  document.getElementById('math-submit').onclick=check;
+  document.getElementById('math-answer').onkeydown=e=>{if(e.code==='Enter')check()};
+
+  gTimer=setInterval(()=>{
+    time--;document.getElementById('g-time').textContent=time;
+    document.getElementById('prog-fill').style.width=`${time/20*100}%`;
+    if(time<=0){document.getElementById('math-answer').onkeydown=null;showResults('math',Math.min(750,score),{'🔢 Solutions Found':score/50,'🏆 Score':`${score} pts`})}
+  },1000);
+}
+
+// ════════════════════════════════════════════
+//  ⚡ GAME 7: REACTION TIME
+// ════════════════════════════════════════════
+function startReaction(){
+  const box=document.getElementById('g-reaction');box.style.display='flex';box.style.background='var(--red)';
+  const txt=document.getElementById('reaction-text');txt.textContent='WAIT FOR GREEN...';
+  let state='wait', startT=0, time=15, score=0;
+  document.getElementById('g-time').textContent=time;
+
+  gTimer=setInterval(()=>{
+    time--;document.getElementById('g-time').textContent=time;
+    document.getElementById('prog-fill').style.width=`${time/15*100}%`;
+    if(time<=0) end();
+  },1000);
+
+  let trigger=setTimeout(()=>{if(state==='wait'){state='go';box.style.background='var(--lime)';txt.textContent='CLICK NOW!';startT=performance.now()}},Math.random()*2500+1500);
+
+  box.onclick=()=>{
+    if(state==='wait'){clearTimeout(trigger);txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--orange)';state='hold';setTimeout(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=setTimeout(()=>{state='go';box.style.background='var(--lime)';txt.textContent='CLICK NOW!';startT=performance.now()},Math.random()*2000+1000)}},1200)}
+    else if(state==='go'){
+      let diff=Math.round(performance.now()-startT);
+      let earned=Math.max(10,400-diff);score+=earned;setLive(score);
+      txt.textContent=`${diff}ms! REBOOTING...`;box.style.background='var(--cyan)';state='hold';
+      setTimeout(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=setTimeout(()=>{state='go';box.style.background='var(--lime)';txt.textContent='CLICK NOW!';startT=performance.now()},Math.random()*2000+1000)}},1500);
+    }
+  };
+  function end(){clearTimeout(trigger);box.onclick=null;showResults('reaction',Math.min(400,score),{'🏆 Final Points Accumulated':score})}
 }
 
 // ════════════════════════════════════════════
 //  🏆 LEADERBOARD LOAD
 // ════════════════════════════════════════════
 async function loadLeaderboard(){
-  const panel=document.getElementById('lb-panel');
-  if(!db){panel.innerHTML='<div class="lb-empty">⚠️ Database connecting...</div>';return}
+  const panel=document.getElementById('lb-panel');if(!db){panel.innerHTML='<div class="lb-empty">⚠️ Connecting Database...</div>';return}
   panel.innerHTML='<div class="lb-empty">Loading...</div>';
   try{
     db.ref('players').orderByChild('totalPoints').limitToLast(20).once('value', (snapshot) => {
-      if (!snapshot.exists()) {
-        panel.innerHTML = '<div class="lb-empty">No players yet — be first!</div>';
-        return;
-      }
-      
-      const players = [];
-      snapshot.forEach((child) => {
-        players.push({ uid: child.key, ...child.val() });
-      });
-      
-      players.reverse();
-      
-      const medals = ['🥇', '🥈', '🥉'];
-      panel.innerHTML = '<div class="lb-title">🏆 TOP PLAYERS</div>';
-      
-      players.forEach((d, i) => {
-        const isMe = user && d.uid === user.uid;
-        const cls = isMe ? 'me' : i === 0 ? 'r1' : i === 1 ? 'r2' : i === 2 ? 'r3' : '';
-        const row = document.createElement('div'); 
-        row.className = `lb-row ${cls}`;
-        row.innerHTML = `<div class="lb-rank">${medals[i] || '#' + (i + 1)}</div><div class="lb-name">${esc(d.username)}${isMe ? ' ← You' : ''}</div><div class="lb-score">${(d.totalPoints || 0).toLocaleString()} PTS</div>`;
+      if(!snapshot.exists()){panel.innerHTML='<div class="lb-empty">No scores yet — be first!</div>';return}
+      const players=[];snapshot.forEach(c=>{players.push({uid:c.key,...c.val()})});players.reverse();
+      const medals=['🥇','🥈','🥉'];panel.innerHTML='<div class="lb-title">🏆 TOP PLAYERS</div>';
+      players.forEach((d,i)=>{
+        const isMe=user&&d.uid===user.uid;const cls=isMe?'me':i===0?'r1':'';
+        const row=document.createElement('div');row.className=`lb-row ${cls}`;
+        row.innerHTML=`<div class="lb-rank">${medals[i]||'#'+(i+1)}</div><div class="lb-name">${esc(d.username)}${isMe?' ← You':''}</div><div class="lb-score">${(d.totalPoints||0).toLocaleString()} PTS</div>`;
         panel.appendChild(row);
       });
     });
-  }catch(e){panel.innerHTML='<div class="lb-empty">⚠️ Error loading scores</div>';console.error(e)}
+  }catch(e){console.error(e)}
 }
-
 const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-// ── BOOT ──
 showScreen('auth-screen');
