@@ -1,5 +1,5 @@
 // ══════════════════════════════════════════════════════════════════════
-//  🔥 FIREBASE SETUP — REALTIME DATABASE SYNCED
+//  🔥 FIREBASE ENGINE SETUP — REALTIME PROTOCOLS (SAFE CONFIG)
 // ══════════════════════════════════════════════════════════════════════
 const FB = {
   apiKey:            "AIzaSyC1NZy2ZzNLutYAiE_QjPZGH5CymvGCnDs",
@@ -11,17 +11,20 @@ const FB = {
   appId:             "1:984878364213:web:fb1147a1a5ff0b02d2a37c"
 };
 
-let auth = null, db = null;
+// Explicit global initialization variables to eliminate Console ReferenceErrors
+var auth = null;
+var db = null;
+
 try { 
   firebase.initializeApp(FB); 
   auth = firebase.auth(); 
   db = firebase.database(); 
 } catch(e) { 
-  console.warn('Firebase initialization error:', e.message); 
+  console.warn('Firebase connection context offline:', e.message); 
 }
 
 // ════════════════════════════════════════════
-//  🌌 PARTICLE BACKGROUND
+//  🌌 ARCADE HUB HUB AMBIENT BACKGROUND
 // ════════════════════════════════════════════
 (function(){
   const c = document.getElementById('bg-canvas');
@@ -34,7 +37,7 @@ try {
 })();
 
 // ════════════════════════════════════════════
-//  📦 GLOBAL STATE & CONFIG
+//  📦 ENGINE GLOBAL COMPLIANCE ENVIRONMENT
 // ════════════════════════════════════════════
 let user=null, curGame=null, gTimer=null, gameLoopId=null;
 const META = { 
@@ -66,7 +69,7 @@ const countdown=cb=>{
 };
 
 // ════════════════════════════════════════════
-//  🔐 AUTHENTICATION HANDLERS
+//  🔐 GATEWAY VALIDATION INTERFACE KEYS
 // ════════════════════════════════════════════
 const setErr=msg=>document.getElementById('auth-err').textContent=msg;
 
@@ -86,21 +89,21 @@ document.getElementById('tab-signup').onclick=()=>{
 };
 
 document.getElementById('btn-login').onclick=async()=>{
-  if(!auth){toast('⚠️ Firebase not configured');return}
+  if(!auth){toast('⚠️ Connection state unconfigured');return}
   const email=document.getElementById('l-email').value.trim();
   const pass=document.getElementById('l-pass').value;
-  if(!email||!pass){setErr('Please fill in all fields.');return}
+  if(!email||!pass){setErr('Fields cannot remain unassigned.');return}
   try{const c=await auth.signInWithEmailAndPassword(email,pass);await loadUser(c.user.uid)}
   catch(e){setErr(fErr(e.code))}
 };
 
 document.getElementById('btn-signup').onclick=async()=>{
-  if(!auth||!db){toast('⚠️ Firebase not configured');return}
+  if(!auth||!db){toast('⚠️ Connection state unconfigured');return}
   const name=document.getElementById('s-name').value.trim();
   const email=document.getElementById('s-email').value.trim();
   const pass=document.getElementById('s-pass').value;
-  if(!name||!email||!pass){setErr('Please fill in all fields.');return}
-  if(!/^[a-zA-Z0-9_-]{2,20}$/.test(name)){setErr('Username: 2-20 chars, letters/numbers/_-');return}
+  if(!name||!email||!pass){setErr('Fields cannot remain unassigned.');return}
+  if(!/^[a-zA-Z0-9_-]{2,20}$/.test(name)){setErr('Format error inside username syntax.');return}
   try{
     const c=await auth.createUserWithEmailAndPassword(email,pass);
     await db.ref('players/' + c.user.uid).set({ username: name, totalPoints: 0, gamesPlayed: 0 });
@@ -108,7 +111,7 @@ document.getElementById('btn-signup').onclick=async()=>{
   }catch(e){setErr(fErr(e.code))}
 };
 
-const fErr=c=>({'auth/email-already-in-use':'Email already in use.','auth/wrong-password':'Incorrect password.','auth/user-not-found':'No account found.','auth/weak-password':'Password must be 6+ characters.','auth/invalid-email':'Invalid email.','auth/invalid-credential':'Email or password is incorrect.'}[c]||'Something went wrong. Try again.');
+const fErr=c=>({'auth/email-already-in-use':'Target email node already claimed.','auth/wrong-password':'Input encryption key mismatch.','auth/user-not-found':'Identity node missing.','auth/weak-password':'Minimum signature length unfulfilled.','auth/invalid-email':'Malformed structural routing email.'}[c]||'Matrix validation anomaly.');
 
 async function loadUser(uid){
   if(!db)return;
@@ -123,11 +126,11 @@ if(auth)auth.onAuthStateChanged(async u=>{if(u&&!user)await loadUser(u.uid)});
 
 document.getElementById('btn-logout').onclick=()=>{
   if(auth)auth.signOut();
-  user=null;showScreen('auth-screen');toast('👋 See you next time!');
+  user=null;showScreen('auth-screen');toast('👋 Terminal connection closed.');
 };
 
 // ════════════════════════════════════════════
-//  🏠 HUB SYSTEM
+//  🏠 CENTRAL HUB CONTROLLER
 // ════════════════════════════════════════════
 function enterHub(){
   document.getElementById('h-uname').textContent=user.username;
@@ -149,12 +152,13 @@ document.querySelectorAll('.game-card').forEach(card=>{
 document.getElementById('btn-quit').onclick=()=>{
   clearInterval(gTimer);
   cancelAnimationFrame(gameLoopId);
+  window.onkeydown = window.onkeyup = null;
   if(aCanvas) { aCanvas.onmousemove = null; }
   enterHub();
 };
 
 // ════════════════════════════════════════════
-//  🎮 CORE INITIALIZATION SWITCH
+//  🎮 ROUTING & SCHEDULING INTERFACE
 // ════════════════════════════════════════════
 function prepGame(gid){
   document.getElementById('g-click').style.display='none';
@@ -166,6 +170,7 @@ function prepGame(gid){
   document.getElementById('g-time').textContent='—';
   document.getElementById('prog-fill').style.width='100%';
   document.getElementById('prog-fill').style.background='var(--cyan)';
+  window.onkeydown = window.onkeyup = null;
   if(aCanvas) { aCanvas.onmousemove = null; }
   
   if(gid==='click') countdown(()=>startClick());
@@ -182,6 +187,7 @@ const setLive=n=>document.getElementById('g-pts').textContent=n;
 function showResults(gid,pts,bd){
   clearInterval(gTimer);
   cancelAnimationFrame(gameLoopId);
+  window.onkeydown = window.onkeyup = null;
   if(aCanvas) { aCanvas.onmousemove = null; }
   const m=META[gid],pct=pts/m.maxPts;
   document.getElementById('res-emoji').textContent=pct>.75?'🎉':'💪';
@@ -217,8 +223,8 @@ async function saveScore(gid,pts){
         loadLeaderboard();
       });
     });
-    toast(`✅ +${pts} pts synced!`);
-  } catch (e) { console.error("Database Save failure:", e) }
+    toast(`✅ Matrix Sync: +${pts} PTS`);
+  } catch (e) { console.error("Score pipeline error:", e) }
 }
 
 // ════════════════════════════════════════════
@@ -238,56 +244,205 @@ function startClick(){
     if(t<=0){
       clearInterval(gTimer);btn.disabled=true;btn.onclick=null;
       const pts=Math.min(500,clicks*8);
-      setTimeout(()=>showResults('click',pts,{'🖱️ Total Clicks':clicks,'🏆 Final Score':`${pts} pts`}),400);
+      setTimeout(()=>showResults('click',pts,{'🖱️ Structural Actions':clicks,'🏆 Final Score':`${pts} PTS`}),400);
     }
   },1000);
 }
 
-// ════════════════════════════════════════════
-//  🚀 GAME 2: NEON NEBULA (OVERDRIVE ENGINE)
-// ════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+//  🚀 GAME 2: HIGH QUALITY NEON NEBULA (PRO VECTOR ENGINE INTEGRATED)
+// ══════════════════════════════════════════════════════════════════════
 function startNebula(){
   document.getElementById('g-canvas-holder').style.display='block';
-  let score=0, time=30, shipX=180, bullets=[], enemies=[], enemyTimer=0;
-  document.getElementById('g-time').textContent=time;
   
-  let moveLeft=false, moveRight=false;
-  window.onkeydown=e=>{if(e.code==='ArrowLeft')moveLeft=true;if(e.code==='ArrowRight')moveRight=true;if(e.code==='Space'||e.code==='ArrowUp')bullets.push({x:shipX+17,y:460})};
-  window.onkeyup=e=>{if(e.code==='ArrowLeft')moveLeft=false;if(e.code==='ArrowRight')moveRight=false};
+  // Game Setup & Scoped Variables adapted perfectly for the 400x500 viewport
+  let score = 0, gameTime = 30, shield = 100, screenShake = 0;
+  let projectiles = [], enemies = [], powerups = [], particles = [], floatingTexts = [], backgroundStars = [];
+  let enemySpawnTimer = 0, enemySpawnInterval = 1000, lastTime = performance.now();
   
-  document.getElementById('ctrl-left').onmousedown=()=>moveLeft=true;document.getElementById('ctrl-left').onmouseup=()=>moveLeft=false;
-  document.getElementById('ctrl-right').onmousedown=()=>moveRight=true;document.getElementById('ctrl-right').onmouseup=()=>moveRight=false;
-  document.getElementById('ctrl-action').onclick=()=>bullets.push({x:shipX+17,y:460});
+  document.getElementById('g-time').textContent = gameTime;
+  document.getElementById('prog-fill').style.width = '100%';
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg, #ff0844, #ff4e50)';
 
-  gTimer=setInterval(()=>{
-    time--;document.getElementById('g-time').textContent=time;
-    document.getElementById('prog-fill').style.width=`${time/30*100}%`;
-    if(time<=0) end();
-  },1000);
+  // Build Parallax Starfield Matrix
+  for (let i = 0; i < 30; i++) backgroundStars.push({ x: Math.random() * 400, y: Math.random() * 500, size: 1, speed: 0.5, alpha: 0.4 });
+  for (let i = 0; i < 15; i++) backgroundStars.push({ x: Math.random() * 400, y: Math.random() * 500, size: 1.6, speed: 1.4, alpha: 0.8 });
 
-  function loop(){
-    aCtx.clearRect(0,0,400,500);
-    if(moveLeft) shipX=Math.max(0, shipX-6);
-    if(moveRight) shipX=Math.min(360, shipX+6);
-    aCtx.fillStyle='#00f5ff';aCtx.fillRect(shipX,470,40,15);aCtx.fillRect(shipX+15,460,10,10);
-    
-    bullets.forEach((b,bi)=>{b.y-=8;aCtx.fillStyle='#ff0090';aCtx.fillRect(b.x,b.y,5,10);if(b.y<0)bullets.splice(bi,1)});
-    enemyTimer++;if(enemyTimer%25===0){enemies.push({x:Math.random()*360,y:-20,w:30,h:20,s:Math.random()*1.5+2})}
-    enemies.forEach((e,ei)=>{
-      e.y+=e.s;aCtx.fillStyle='#39ff14';aCtx.fillRect(e.x,e.y,e.w,e.h);
-      bullets.forEach((b,bi)=>{
-        if(b.x>e.x&&b.x<e.x+e.w&&b.y>e.y&&b.y<e.y+e.h){score+=25;setLive(score);enemies.splice(ei,1);bullets.splice(bi,1)}
-      });
-      if(e.y>500) enemies.splice(ei,1);
+  // Input Mapping Systems
+  let keys = {}, moveLeft = false, moveRight = false;
+  window.onkeydown = e => { if(['Space','ArrowLeft','ArrowRight','KeyA','KeyD'].includes(e.code)) e.preventDefault(); keys[e.code] = true; };
+  window.onkeyup = e => { if(['Space','ArrowLeft','ArrowRight','KeyA','KeyD'].includes(e.code)) e.preventDefault(); keys[e.code] = false; };
+
+  document.getElementById('ctrl-left').onmousedown = () => moveLeft = true; document.getElementById('ctrl-left').onmouseup = () => moveLeft = false;
+  document.getElementById('ctrl-right').onmousedown = () => moveRight = true; document.getElementById('ctrl-right').onmouseup = () => moveRight = false;
+  document.getElementById('ctrl-action').onclick = () => player.shoot();
+
+  // Engine Objects & Geometry Synthesizers
+  const player = {
+    x: 183, y: 430, w: 34, h: 26, vx: 0, friction: 0.85, accel: 1.2, cooldown: 0, angle: 0, weaponLevel: 1,
+    update(dt) {
+      if (keys['ArrowLeft'] || keys['KeyA'] || moveLeft) this.vx -= this.accel;
+      if (keys['ArrowRight'] || keys['KeyD'] || moveRight) this.vx += this.accel;
+      this.vx *= this.friction; this.x += this.vx;
+      this.angle = this.vx * 0.05; // Banking physics lean factor
+      if (this.x < 5) { this.x = 5; this.vx = 0; }
+      if (this.x > 400 - this.w - 5) { this.x = 400 - this.w - 5; this.vx = 0; }
+      if (this.cooldown > 0) this.cooldown -= dt;
+      if (keys['Space'] && this.cooldown <= 0) { this.shoot(); this.cooldown = 150; }
+    },
+    shoot() {
+      if (this.weaponLevel === 1) {
+        projectiles.push({ x: this.x + this.w / 2, y: this.y, vx: 0, vy: -10 });
+      } else if (this.weaponLevel === 2) {
+        projectiles.push({ x: this.x + 6, y: this.y + 5, vx: -1.5, vy: -10 });
+        projectiles.push({ x: this.x + this.w - 6, y: this.y + 5, vx: 1.5, vy: -10 });
+      } else {
+        projectiles.push({ x: this.x + 5, y: this.y + 5, vx: -2, vy: -10 });
+        projectiles.push({ x: this.x + this.w / 2, y: this.y, vx: 0, vy: -12 });
+        projectiles.push({ x: this.x + this.w - 5, y: this.y + 5, vx: 2, vy: -10 });
+      }
+    },
+    draw() {
+      aCtx.save(); aCtx.translate(this.x + this.w / 2, this.y + this.h / 2); aCtx.rotate(this.angle);
+      aCtx.shadowBlur = 15; aCtx.shadowColor = '#00f5ff'; aCtx.fillStyle = '#00f5ff';
+      aCtx.beginPath(); aCtx.moveTo(0, -this.h / 2); aCtx.lineTo(-this.w / 2, this.h / 2); aCtx.lineTo(-this.w / 4, this.h / 4);
+      aCtx.lineTo(this.w / 4, this.h / 4); aCtx.lineTo(this.w / 2, this.h / 2); aCtx.closePath(); aCtx.fill();
+      aCtx.shadowBlur = 5; aCtx.shadowColor = '#fff'; aCtx.fillStyle = '#fff';
+      aCtx.beginPath(); aCtx.moveTo(0, -this.h / 3); aCtx.lineTo(-3, 3); aCtx.lineTo(3, 3); aCtx.closePath(); aCtx.fill();
+      aCtx.fillStyle = Math.random() > 0.5 ? '#ff0844' : '#ff6600'; aCtx.fillRect(-3, this.h / 2 - 2, 6, Math.random() * 6 + 3);
+      aCtx.restore();
+    }
+  };
+
+  class Enemy {
+    constructor(type) {
+      this.type = type; this.x = Math.random() * 350 + 10; this.y = -30; this.offset = Math.random() * 100;
+      if (type === 'SCOUT') { this.w = 20; this.h = 20; this.speed = 3.5; this.hp = 1; this.color = '#ff0090'; this.pts = 15; }
+      else if (type === 'BOMBER') { this.w = 36; this.h = 28; this.speed = 1.2; this.hp = 3; this.color = '#ff6600'; this.pts = 40; }
+      else { this.w = 26; this.h = 22; this.speed = 2.2; this.hp = 2; this.color = '#a855f7'; this.pts = 25; }
+    }
+    update() {
+      this.y += this.speed;
+      if (this.type === 'FIGHTER') this.x += Math.sin(this.y * 0.03 + this.offset) * 1.5;
+    }
+    draw() {
+      aCtx.save(); aCtx.shadowBlur = 12; aCtx.shadowColor = this.color; aCtx.fillStyle = this.color;
+      aCtx.beginPath();
+      if (this.type === 'BOMBER') {
+        aCtx.moveTo(this.x + this.w / 2, this.y + this.h); aCtx.lineTo(this.x, this.y + this.h * 0.4);
+        aCtx.lineTo(this.x + this.w * 0.2, this.y); aCtx.lineTo(this.x + this.w * 0.8, this.y); aCtx.lineTo(this.x + this.w, this.y + this.h * 0.4);
+      } else {
+        aCtx.moveTo(this.x + this.w / 2, this.y + this.h); aCtx.lineTo(this.x, this.y); aCtx.lineTo(this.x + this.w, this.y);
+      }
+      aCtx.closePath(); aCtx.fill(); aCtx.restore();
+    }
+  }
+
+  function explode(x, y, color, qty = 10) {
+    for (let i = 0; i < qty; i++) {
+      let ang = Math.random() * Math.PI * 2, v = Math.random() * 4 + 1;
+      particles.push({ x, y, vx: Math.cos(ang) * v, vy: Math.sin(ang) * v, alpha: 1, decay: Math.random() * 0.03 + 0.02, color });
+    }
+  }
+  function popText(x, y, txt, color) { floatingTexts.push({ x, y, txt, color, alpha: 1 }); }
+  const collide = (r1, r2) => r1.x < r2.x + r2.w && r1.x + r1.w > r2.x && r1.y < r2.y + r2.h && r1.y + r1.h > r2.y;
+
+  // Global Pipeline System Loops
+  gTimer = setInterval(() => {
+    gameTime--; document.getElementById('g-time').textContent = gameTime;
+    if (gameTime <= 0) end();
+  }, 1000);
+
+  function pipeline(now) {
+    let dt = now - lastTime; lastTime = now;
+    aCtx.clearRect(0, 0, 400, 500);
+
+    // Screen Shake Offset Mapping Matrix
+    aCtx.save(); if (screenShake > 0.5) { aCtx.translate((Math.random() - 0.5) * screenShake, (Math.random() - 0.5) * screenShake); screenShake *= 0.88; }
+
+    // Parallax Render Block
+    backgroundStars.forEach(s => { s.y += s.speed; if (s.y > 500) s.y = 0; aCtx.fillStyle = `rgba(255,255,255,${s.alpha})`; aCtx.fillRect(s.x, s.y, s.size, s.size); });
+
+    player.update(dt); player.draw();
+
+    // Spawning Vectors
+    enemySpawnTimer += dt;
+    if (enemySpawnTimer >= enemySpawnInterval) {
+      let r = Math.random(), type = 'SCOUT';
+      if (score > 150 && r > 0.75) type = 'BOMBER'; else if (score > 60 && r > 0.4) type = 'FIGHTER';
+      enemies.push(new Enemy(type)); enemySpawnTimer = 0;
+      enemySpawnInterval = Math.max(300, 1100 - score * 0.5);
+    }
+
+    // Laser Tracking Pass
+    projectiles.forEach((p, pi) => {
+      p.x += p.vx; p.y += p.vy;
+      aCtx.save(); aCtx.shadowBlur = 10; aCtx.shadowColor = '#00f5ff'; aCtx.fillStyle = '#00f5ff';
+      aCtx.fillRect(p.x - 1.5, p.y, 3, 10); aCtx.restore();
+      if (p.y < -10) projectiles.splice(pi, 1);
     });
-    gameLoopId=requestAnimationFrame(loop);
+
+    // Crystal Matrix Processing Pass
+    powerups.forEach((pu, pui) => {
+      pu.y += 1.8; pu.pulse += 0.1;
+      aCtx.save(); aCtx.shadowBlur = 10; aCtx.shadowColor = '#39ff14'; aCtx.fillStyle = '#39ff14';
+      aCtx.translate(pu.x, pu.y); aCtx.rotate(pu.pulse * 0.2); aCtx.fillRect(-6, -6, 12, 12); aCtx.restore();
+      if (collide({ x: player.x, y: player.y, w: player.w, h: player.h }, { x: pu.x - 6, y: pu.y - 6, w: 12, h: 12 })) {
+        player.weaponLevel = Math.min(3, player.weaponLevel + 1);
+        popText(player.x, player.y - 10, 'PLASMA UPGRADE!', '#39ff14'); explode(pu.x, pu.y, '#39ff14', 15);
+        powerups.splice(pui, 1);
+      } else if (pu.y > 520) powerups.splice(pui, 1);
+    });
+
+    // Grid Alien Collision Engine Trace
+    enemies.forEach((e, ei) => {
+      e.update(); e.draw();
+      if (e.y > 510) { enemies.splice(ei, 1); shield -= 15; screenShake = 10; document.getElementById('prog-fill').style.width = `${Math.max(0, shield)}%`; if (shield <= 0) end(); return; }
+      
+      // Structural Ship Hull Clash
+      if (collide({ x: player.x, y: player.y, w: player.w, h: player.h }, { x: e.x, y: e.y, w: e.w, h: e.h })) {
+        explode(e.x + e.w / 2, e.y + e.h / 2, e.color, 20); enemies.splice(ei, 1);
+        shield -= 25; screenShake = 18; document.getElementById('prog-fill').style.width = `${Math.max(0, shield)}%`; if (shield <= 0) end(); return;
+      }
+
+      // Laser Collision Intersection Matrix
+      projectiles.forEach((p, pi) => {
+        if (collide({ x: p.x - 1.5, y: p.y, w: 3, h: 10 }, { x: e.x, y: e.y, w: e.w, h: e.h })) {
+          projectiles.splice(pi, 1); e.hp--; explode(p.x, p.y, '#00f5ff', 3);
+          if (e.hp <= 0) {
+            explode(e.x + e.w / 2, e.y + e.h / 2, e.color, 15); popText(e.x, e.y, `+${e.pts}`, e.color);
+            if (Math.random() < 0.14) powerups.push({ x: e.x + e.w / 2, y: e.y + e.h / 2, pulse: 0 });
+            score += e.pts; setLive(score); enemies.splice(ei, 1);
+          }
+        }
+      });
+    });
+
+    // Particle FX Bloom Pass
+    particles.forEach((p, pi) => {
+      p.x += p.vx; p.y += p.vy; p.alpha -= p.decay;
+      if (p.alpha <= 0) { particles.splice(pi, 1); return; }
+      aCtx.save(); aCtx.globalAlpha = p.alpha; aCtx.fillStyle = p.color; aCtx.fillRect(p.x, p.y, 2, 2); aCtx.restore();
+    });
+
+    // Burst Float Text Pass
+    floatingTexts.forEach((ft, fti) => {
+      ft.y -= 0.8; ft.alpha -= 0.02;
+      if (ft.alpha <= 0) { floatingTexts.splice(fti, 1); return; }
+      aCtx.save(); aCtx.globalAlpha = ft.alpha; aCtx.font = 'bold 11px Orbitron'; aCtx.fillStyle = ft.color; aCtx.fillText(ft.txt, ft.x, ft.y); aCtx.restore();
+    });
+
+    aCtx.restore();
+    gameLoopId = requestAnimationFrame(pipeline);
   }
-  function end(){
-    clearInterval(gTimer);cancelAnimationFrame(gameLoopId);window.onkeydown=window.onkeyup=null;
-    const finalPts=Math.min(1000, score);
-    showResults('nebula', finalPts, {'👾 Overdrive Cores Wiped':score/25, '🏆 Final Score':`${finalPts} pts`});
+
+  function end() {
+    clearInterval(gTimer); cancelAnimationFrame(gameLoopId); window.onkeydown = window.onkeyup = null;
+    const finalPts = Math.min(1000, score);
+    showResults('nebula', finalPts, { '👾 Alien Matrices Purged': score / 25, '🛡️ Shield Grid Status': `${Math.max(0, shield)}%`, '🏆 Final Earnings': `${finalPts} PTS` });
   }
-  loop();
+
+  gameLoopId = requestAnimationFrame(pipeline);
 }
 
 // ════════════════════════════════════════════
@@ -335,19 +490,19 @@ function startTetris(){
     if(currentPiece){aCtx.fillStyle=COLORS[pIdx];currentPiece.forEach((r,ri)=>{r.forEach((v,ci)=>{if(v){aCtx.fillRect((currentX+ci)*40,(currentY+ri)*25,38,23)}})})}
     gameLoopId=requestAnimationFrame(loop);
   }
-  function end(){clearInterval(gTimer);cancelAnimationFrame(gameLoopId);window.onkeydown=null;showResults('tetris',Math.min(1200,score),{'🧱 Data Lines Dropped':score/150,'🏆 Final Score':`${score} pts`})}
+  function end(){clearInterval(gTimer);cancelAnimationFrame(gameLoopId);window.onkeydown=null;showResults('tetris',Math.min(1200,score),{'🧱 Data Lines Dropped':score/150,'🏆 Final Score':`${score} PTS`})}
   loop();
 }
 
-// ════════════════════════════════════════════
-//  💥 GAME 4: DODGE CORES (SMOOTH MOUSE ENGINE)
-// ════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+//  💥 GAME 4: DODGE CORES (STABILIZED SMOOTH MOUSE TRAIL TRACKING)
+// ══════════════════════════════════════════════════════════════════════
 function startDodge(){
   document.getElementById('g-canvas-holder').style.display='block';
   let score=0, time=30, isGameOver=false, player={x:200,y:250,r:8}, obstacles=[];
   document.getElementById('g-time').textContent=time;
 
-  // Track Mouse Movement Position Coordinates Smoothly
+  // Render a smooth neon tracking handler directly inside canvas bounding constraints
   aCanvas.onmousemove = e => {
     const rect = aCanvas.getBoundingClientRect();
     player.x = e.clientX - rect.left;
@@ -366,12 +521,12 @@ function startDodge(){
     if(isGameOver) return;
     aCtx.clearRect(0,0,400,500);
     
-    // Render Player Dot Core
-    aCtx.beginPath();aCtx.arc(player.x,player.y,player.r,0,Math.PI*2);
-    aCtx.fillStyle='var(--cyan)';aCtx.fill();
-    aCtx.strokeStyle='#fff';aCtx.stroke();
+    // Smooth Glowing Core Renderer
+    aCtx.save(); aCtx.beginPath();aCtx.arc(player.x,player.y,player.r,0,Math.PI*2);
+    aCtx.shadowBlur=15; aCtx.shadowColor='var(--cyan)'; aCtx.fillStyle='var(--cyan)';aCtx.fill();
+    aCtx.strokeStyle='#fff';aCtx.stroke(); aCtx.restore();
 
-    // Spawn Obstacles
+    // Spawn Matrix Bouncers
     if(Math.random()<.08) {
       obstacles.push({
         x:Math.random()*400,y:0,
@@ -380,7 +535,7 @@ function startDodge(){
       });
     }
 
-    // Process and Matrix Render Obstacles
+    // Process & Render Obstacles
     for(let i=obstacles.length-1; i>=0; i--){
       let o = obstacles[i];
       o.x += o.vx; o.y += o.vy;
@@ -388,7 +543,7 @@ function startDodge(){
       aCtx.beginPath();aCtx.arc(o.x,o.y,o.r,0,Math.PI*2);
       aCtx.fillStyle='var(--orange)';aCtx.fill();
       
-      // Calculate Circle Matrix Collision Intersection
+      // Calculate Vector Intersect Radius for Collisions
       let dx = o.x - player.x, dy = o.y - player.y;
       let dist = Math.sqrt(dx*dx + dy*dy);
       if(dist < o.r + player.r){ isGameOver=true; end(); return; }
@@ -401,7 +556,7 @@ function startDodge(){
     if(!isGameOver) isGameOver=true;
     clearInterval(gTimer);cancelAnimationFrame(gameLoopId);
     aCanvas.onmousemove=null;
-    showResults('dodge',Math.min(800,score),{'⏱️ Time Alive':score/25,'🏆 Score':`${score} pts`});
+    showResults('dodge',Math.min(800,score),{'⏱️ Operational Lifespan':score/25,'🏆 Score Accumulation':`${score} PTS`});
   }
   loop();
 }
@@ -434,7 +589,7 @@ function startMemory(){
     };
     wrap.appendChild(card);
   });
-  function end(){clearInterval(gTimer);showResults('memory',Math.min(600,score),{'🧩 Node Pairs Matched':matched,'🏆 Score':`${score} pts`})}
+  function end(){clearInterval(gTimer);showResults('memory',Math.min(600,score),{'🧩 Clusters Unified':matched,'🏆 Score Accumulation':`${score} PTS`})}
 }
 
 // ════════════════════════════════════════════
@@ -463,7 +618,7 @@ function startMath(){
   gTimer=setInterval(()=>{
     time--;document.getElementById('g-time').textContent=time;
     document.getElementById('prog-fill').style.width=`${time/20*100}%`;
-    if(time<=0){document.getElementById('math-answer').onkeydown=null;showResults('math',Math.min(750,score),{'🔢 Solutions Found':score/50,'🏆 Score':`${score} pts`})}
+    if(time<=0){document.getElementById('math-answer').onkeydown=null;showResults('math',Math.min(750,score),{'🔢 Nodes Resolved':score/50,'🏆 Score Accumulation':`${score} PTS`})}
   },1000);
 }
 
@@ -493,17 +648,17 @@ function startReaction(){
       setTimeout(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=setTimeout(()=>{state='go';box.style.background='var(--lime)';txt.textContent='CLICK NOW!';startT=performance.now()},Math.random()*2000+1000)}},1500);
     }
   };
-  function end(){clearTimeout(trigger);box.onclick=null;showResults('reaction',Math.min(400,score),{'🏆 Final Points Accumulated':score})}
+  function end(){clearTimeout(trigger);box.onclick=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
 }
 
 // ════════════════════════════════════════════
-//  🏆 LEADERBOARD DISPLAY GENERATOR
+//  🏆 SYNCED DATA MATRIX LEADERBOARD BUILDER
 // ════════════════════════════════════════════
 async function loadLeaderboard(){
-  const panel=document.getElementById('lb-panel');if(!db){panel.innerHTML='<div class="lb-empty">⚠️ Connecting Database...</div>';return}
+  const panel=document.getElementById('lb-panel');if(!db){panel.innerHTML='<div class="lb-empty">⚠️ Connecting Live Registry...</div>';return}
   try{
     db.ref('players').orderByChild('totalPoints').limitToLast(20).once('value', (snapshot) => {
-      if(!snapshot.exists()){panel.innerHTML='<div class="lb-empty">No scores yet — be first!</div>';return}
+      if(!snapshot.exists()){panel.innerHTML='<div class="lb-empty">No logged scores inside network nodes.</div>';return}
       const players=[];snapshot.forEach(c=>{players.push({uid:c.key,...c.val()})});players.reverse();
       const medals=['🥇','🥈','🥉'];panel.innerHTML='<div class="lb-title">🏆 TOP PLAYERS</div>';
       players.forEach((d,i)=>{
