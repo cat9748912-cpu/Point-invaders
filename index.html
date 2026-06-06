@@ -74,7 +74,7 @@
           <span class="gc-icon">🧱</span>
           <div class="gc-name" data-c="purple">CYBERPUNK TETRIS</div>
           <div class="gc-desc">Drop retro matrix blocks and clear solid code lines!</div>
-          <span class="gc-pts" data-c="purple">UP TO 1200 PTS</span>
+          <span class="gc-pts" data-c="purple">UP TO 1500 PTS</span>
         </div>
         <div class="game-card" data-game="dodge" data-c="orange">
           <span class="gc-icon">💥</span>
@@ -116,6 +116,7 @@
     <button class="btn btn-secondary btn-sm" id="btn-quit">← Quit</button>
     <div class="g-title" id="g-title">GAME</div>
     <div class="g-stats">
+      <div class="stat-pill" id="tetris-lvl-pill" style="display:none;">LEVEL <em id="tetris-lvl">1</em></div>
       <div class="stat-pill">⏱️ <em id="g-time">—</em></div>
       <div class="stat-pill">⭐ <em id="g-pts">0</em></div>
     </div>
@@ -130,6 +131,11 @@
     </div>
 
     <div id="g-canvas-holder" style="display:none; position:relative;">
+      <div id="tetris-next-wrap" style="display:none; position:absolute; top:10px; right:10px; background:var(--s2); border:1px solid var(--border); border-radius:8px; padding:8px; text-align:center;">
+        <div style="font-family:var(--fd); font-size:0.6rem; color:var(--cyan); margin-bottom:4px;">NEXT</div>
+        <canvas id="nextCanvas" width="80" height="80"></canvas>
+      </div>
+      
       <canvas id="arcade-canvas" width="400" height="500"></canvas>
       <div id="arcade-controls">
         <button class="ctrl-btn" id="ctrl-left">◀</button>
