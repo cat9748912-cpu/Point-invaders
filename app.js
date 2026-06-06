@@ -11,7 +11,6 @@ const FB = {
   appId:             "1:984878364213:web:fb1147a1a5ff0b02d2a37c"
 };
 
-// Explicit global initialization variables to eliminate Console ReferenceErrors
 var auth = null;
 var db = null;
 
@@ -43,7 +42,7 @@ let user=null, curGame=null, gTimer=null, gameLoopId=null;
 const META = { 
   click: { name: 'CLICK FRENZY', emoji: '🖱️', maxPts: 500 },
   nebula: { name: 'NEON NEBULA', emoji: '🚀', maxPts: 1000 },
-  tetris: { name: 'CYBERPUNK TETRIS', emoji: '🧱', maxPts: 1200 },
+  tetris: { name: 'CYBERPUNK TETRIS', emoji: '🧱', maxPts: 1500 },
   dodge: { name: 'DODGE CORES', emoji: '💥', maxPts: 800 },
   memory: { name: 'MEMORY MATCH', emoji: '🧠', maxPts: 600 },
   math: { name: 'MATH BLITZ', emoji: '🔢', maxPts: 750 },
@@ -166,6 +165,9 @@ function prepGame(gid){
   document.getElementById('g-memory').style.display='none';
   document.getElementById('g-math').style.display='none';
   document.getElementById('g-reaction').style.display='none';
+  document.getElementById('tetris-next-wrap').style.display='none';
+  document.getElementById('tetris-lvl-pill').style.display='none';
+  
   document.getElementById('g-pts').textContent='0';
   document.getElementById('g-time').textContent='—';
   document.getElementById('prog-fill').style.width='100%';
@@ -249,13 +251,11 @@ function startClick(){
   },1000);
 }
 
-// ══════════════════════════════════════════════════════════════════════
-//  🚀 GAME 2: HIGH QUALITY NEON NEBULA (PRO VECTOR ENGINE INTEGRATED)
-// ══════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════
+//  🚀 GAME 2: NEON NEBULA (OVERDRIVE ENGINE)
+// ════════════════════════════════════════════
 function startNebula(){
   document.getElementById('g-canvas-holder').style.display='block';
-  
-  // Game Setup & Scoped Variables adapted perfectly for the 400x500 viewport
   let score = 0, gameTime = 30, shield = 100, screenShake = 0;
   let projectiles = [], enemies = [], powerups = [], particles = [], floatingTexts = [], backgroundStars = [];
   let enemySpawnTimer = 0, enemySpawnInterval = 1000, lastTime = performance.now();
@@ -264,11 +264,9 @@ function startNebula(){
   document.getElementById('prog-fill').style.width = '100%';
   document.getElementById('prog-fill').style.background = 'linear-gradient(90deg, #ff0844, #ff4e50)';
 
-  // Build Parallax Starfield Matrix
   for (let i = 0; i < 30; i++) backgroundStars.push({ x: Math.random() * 400, y: Math.random() * 500, size: 1, speed: 0.5, alpha: 0.4 });
   for (let i = 0; i < 15; i++) backgroundStars.push({ x: Math.random() * 400, y: Math.random() * 500, size: 1.6, speed: 1.4, alpha: 0.8 });
 
-  // Input Mapping Systems
   let keys = {}, moveLeft = false, moveRight = false;
   window.onkeydown = e => { if(['Space','ArrowLeft','ArrowRight','KeyA','KeyD'].includes(e.code)) e.preventDefault(); keys[e.code] = true; };
   window.onkeyup = e => { if(['Space','ArrowLeft','ArrowRight','KeyA','KeyD'].includes(e.code)) e.preventDefault(); keys[e.code] = false; };
@@ -277,30 +275,21 @@ function startNebula(){
   document.getElementById('ctrl-right').onmousedown = () => moveRight = true; document.getElementById('ctrl-right').onmouseup = () => moveRight = false;
   document.getElementById('ctrl-action').onclick = () => player.shoot();
 
-  // Engine Objects & Geometry Synthesizers
   const player = {
     x: 183, y: 430, w: 34, h: 26, vx: 0, friction: 0.85, accel: 1.2, cooldown: 0, angle: 0, weaponLevel: 1,
     update(dt) {
       if (keys['ArrowLeft'] || keys['KeyA'] || moveLeft) this.vx -= this.accel;
       if (keys['ArrowRight'] || keys['KeyD'] || moveRight) this.vx += this.accel;
-      this.vx *= this.friction; this.x += this.vx;
-      this.angle = this.vx * 0.05; // Banking physics lean factor
+      this.vx *= this.friction; this.x += this.vx; this.angle = this.vx * 0.05;
       if (this.x < 5) { this.x = 5; this.vx = 0; }
       if (this.x > 400 - this.w - 5) { this.x = 400 - this.w - 5; this.vx = 0; }
       if (this.cooldown > 0) this.cooldown -= dt;
       if (keys['Space'] && this.cooldown <= 0) { this.shoot(); this.cooldown = 150; }
     },
     shoot() {
-      if (this.weaponLevel === 1) {
-        projectiles.push({ x: this.x + this.w / 2, y: this.y, vx: 0, vy: -10 });
-      } else if (this.weaponLevel === 2) {
-        projectiles.push({ x: this.x + 6, y: this.y + 5, vx: -1.5, vy: -10 });
-        projectiles.push({ x: this.x + this.w - 6, y: this.y + 5, vx: 1.5, vy: -10 });
-      } else {
-        projectiles.push({ x: this.x + 5, y: this.y + 5, vx: -2, vy: -10 });
-        projectiles.push({ x: this.x + this.w / 2, y: this.y, vx: 0, vy: -12 });
-        projectiles.push({ x: this.x + this.w - 5, y: this.y + 5, vx: 2, vy: -10 });
-      }
+      if (this.weaponLevel === 1) { projectiles.push({ x: this.x + this.w / 2, y: this.y, vx: 0, vy: -10 }); } 
+      else if (this.weaponLevel === 2) { projectiles.push({ x: this.x + 6, y: this.y + 5, vx: -1.5, vy: -10 }); projectiles.push({ x: this.x + this.w - 6, y: this.y + 5, vx: 1.5, vy: -10 }); } 
+      else { projectiles.push({ x: this.x + 5, y: this.y + 5, vx: -2, vy: -10 }); projectiles.push({ x: this.x + this.w / 2, y: this.y, vx: 0, vy: -12 }); projectiles.push({ x: this.x + this.w - 5, y: this.y + 5, vx: 2, vy: -10 }); }
     },
     draw() {
       aCtx.save(); aCtx.translate(this.x + this.w / 2, this.y + this.h / 2); aCtx.rotate(this.angle);
@@ -321,114 +310,77 @@ function startNebula(){
       else if (type === 'BOMBER') { this.w = 36; this.h = 28; this.speed = 1.2; this.hp = 3; this.color = '#ff6600'; this.pts = 40; }
       else { this.w = 26; this.h = 22; this.speed = 2.2; this.hp = 2; this.color = '#a855f7'; this.pts = 25; }
     }
-    update() {
-      this.y += this.speed;
-      if (this.type === 'FIGHTER') this.x += Math.sin(this.y * 0.03 + this.offset) * 1.5;
-    }
+    update() { this.y += this.speed; if (this.type === 'FIGHTER') this.x += Math.sin(this.y * 0.03 + this.offset) * 1.5; }
     draw() {
       aCtx.save(); aCtx.shadowBlur = 12; aCtx.shadowColor = this.color; aCtx.fillStyle = this.color;
       aCtx.beginPath();
-      if (this.type === 'BOMBER') {
-        aCtx.moveTo(this.x + this.w / 2, this.y + this.h); aCtx.lineTo(this.x, this.y + this.h * 0.4);
-        aCtx.lineTo(this.x + this.w * 0.2, this.y); aCtx.lineTo(this.x + this.w * 0.8, this.y); aCtx.lineTo(this.x + this.w, this.y + this.h * 0.4);
-      } else {
-        aCtx.moveTo(this.x + this.w / 2, this.y + this.h); aCtx.lineTo(this.x, this.y); aCtx.lineTo(this.x + this.w, this.y);
-      }
+      if (this.type === 'BOMBER') { aCtx.moveTo(this.x + this.w / 2, this.y + this.h); aCtx.lineTo(this.x, this.y + this.h * 0.4); aCtx.lineTo(this.x + this.w * 0.2, this.y); aCtx.lineTo(this.x + this.w * 0.8, this.y); aCtx.lineTo(this.x + this.w, this.y + this.h * 0.4); } 
+      else { aCtx.moveTo(this.x + this.w / 2, this.y + this.h); aCtx.lineTo(this.x, this.y); aCtx.lineTo(this.x + this.w, this.y); }
       aCtx.closePath(); aCtx.fill(); aCtx.restore();
     }
   }
 
   function explode(x, y, color, qty = 10) {
-    for (let i = 0; i < qty; i++) {
-      let ang = Math.random() * Math.PI * 2, v = Math.random() * 4 + 1;
-      particles.push({ x, y, vx: Math.cos(ang) * v, vy: Math.sin(ang) * v, alpha: 1, decay: Math.random() * 0.03 + 0.02, color });
-    }
+    for (let i = 0; i < qty; i++) { let ang = Math.random() * Math.PI * 2, v = Math.random() * 4 + 1; particles.push({ x, y, vx: Math.cos(ang) * v, vy: Math.sin(ang) * v, alpha: 1, decay: Math.random() * 0.03 + 0.02, color }); }
   }
   function popText(x, y, txt, color) { floatingTexts.push({ x, y, txt, color, alpha: 1 }); }
   const collide = (r1, r2) => r1.x < r2.x + r2.w && r1.x + r1.w > r2.x && r1.y < r2.y + r2.h && r1.y + r1.h > r2.y;
 
-  // Global Pipeline System Loops
-  gTimer = setInterval(() => {
-    gameTime--; document.getElementById('g-time').textContent = gameTime;
-    if (gameTime <= 0) end();
-  }, 1000);
+  gTimer = setInterval(() => { gameTime--; document.getElementById('g-time').textContent = gameTime; if (gameTime <= 0) end(); }, 1000);
 
   function pipeline(now) {
     let dt = now - lastTime; lastTime = now;
     aCtx.clearRect(0, 0, 400, 500);
 
-    // Screen Shake Offset Mapping Matrix
     aCtx.save(); if (screenShake > 0.5) { aCtx.translate((Math.random() - 0.5) * screenShake, (Math.random() - 0.5) * screenShake); screenShake *= 0.88; }
-
-    // Parallax Render Block
     backgroundStars.forEach(s => { s.y += s.speed; if (s.y > 500) s.y = 0; aCtx.fillStyle = `rgba(255,255,255,${s.alpha})`; aCtx.fillRect(s.x, s.y, s.size, s.size); });
 
     player.update(dt); player.draw();
 
-    // Spawning Vectors
     enemySpawnTimer += dt;
     if (enemySpawnTimer >= enemySpawnInterval) {
       let r = Math.random(), type = 'SCOUT';
       if (score > 150 && r > 0.75) type = 'BOMBER'; else if (score > 60 && r > 0.4) type = 'FIGHTER';
-      enemies.push(new Enemy(type)); enemySpawnTimer = 0;
-      enemySpawnInterval = Math.max(300, 1100 - score * 0.5);
+      enemies.push(new Enemy(type)); enemySpawnTimer = 0; enemySpawnInterval = Math.max(300, 1100 - score * 0.5);
     }
 
-    // Laser Tracking Pass
     projectiles.forEach((p, pi) => {
       p.x += p.vx; p.y += p.vy;
-      aCtx.save(); aCtx.shadowBlur = 10; aCtx.shadowColor = '#00f5ff'; aCtx.fillStyle = '#00f5ff';
-      aCtx.fillRect(p.x - 1.5, p.y, 3, 10); aCtx.restore();
+      aCtx.save(); aCtx.shadowBlur = 10; aCtx.shadowColor = '#00f5ff'; aCtx.fillStyle = '#00f5ff'; aCtx.fillRect(p.x - 1.5, p.y, 3, 10); aCtx.restore();
       if (p.y < -10) projectiles.splice(pi, 1);
     });
 
-    // Crystal Matrix Processing Pass
     powerups.forEach((pu, pui) => {
       pu.y += 1.8; pu.pulse += 0.1;
       aCtx.save(); aCtx.shadowBlur = 10; aCtx.shadowColor = '#39ff14'; aCtx.fillStyle = '#39ff14';
       aCtx.translate(pu.x, pu.y); aCtx.rotate(pu.pulse * 0.2); aCtx.fillRect(-6, -6, 12, 12); aCtx.restore();
       if (collide({ x: player.x, y: player.y, w: player.w, h: player.h }, { x: pu.x - 6, y: pu.y - 6, w: 12, h: 12 })) {
         player.weaponLevel = Math.min(3, player.weaponLevel + 1);
-        popText(player.x, player.y - 10, 'PLASMA UPGRADE!', '#39ff14'); explode(pu.x, pu.y, '#39ff14', 15);
-        powerups.splice(pui, 1);
+        popText(player.x, player.y - 10, 'PLASMA UPGRADE!', '#39ff14'); explode(pu.x, pu.y, '#39ff14', 15); powerups.splice(pui, 1);
       } else if (pu.y > 520) powerups.splice(pui, 1);
     });
 
-    // Grid Alien Collision Engine Trace
     enemies.forEach((e, ei) => {
       e.update(); e.draw();
       if (e.y > 510) { enemies.splice(ei, 1); shield -= 15; screenShake = 10; document.getElementById('prog-fill').style.width = `${Math.max(0, shield)}%`; if (shield <= 0) end(); return; }
-      
-      // Structural Ship Hull Clash
       if (collide({ x: player.x, y: player.y, w: player.w, h: player.h }, { x: e.x, y: e.y, w: e.w, h: e.h })) {
-        explode(e.x + e.w / 2, e.y + e.h / 2, e.color, 20); enemies.splice(ei, 1);
-        shield -= 25; screenShake = 18; document.getElementById('prog-fill').style.width = `${Math.max(0, shield)}%`; if (shield <= 0) end(); return;
+        explode(e.x + e.w / 2, e.y + e.h / 2, e.color, 20); enemies.splice(ei, 1); shield -= 25; screenShake = 18; document.getElementById('prog-fill').style.width = `${Math.max(0, shield)}%`; if (shield <= 0) end(); return;
       }
-
-      // Laser Collision Intersection Matrix
       projectiles.forEach((p, pi) => {
         if (collide({ x: p.x - 1.5, y: p.y, w: 3, h: 10 }, { x: e.x, y: e.y, w: e.w, h: e.h })) {
           projectiles.splice(pi, 1); e.hp--; explode(p.x, p.y, '#00f5ff', 3);
-          if (e.hp <= 0) {
-            explode(e.x + e.w / 2, e.y + e.h / 2, e.color, 15); popText(e.x, e.y, `+${e.pts}`, e.color);
-            if (Math.random() < 0.14) powerups.push({ x: e.x + e.w / 2, y: e.y + e.h / 2, pulse: 0 });
-            score += e.pts; setLive(score); enemies.splice(ei, 1);
-          }
+          if (e.hp <= 0) { explode(e.x + e.w / 2, e.y + e.h / 2, e.color, 15); popText(e.x, e.y, `+${e.pts}`, e.color); if (Math.random() < 0.14) powerups.push({ x: e.x + e.w / 2, y: e.y + e.h / 2, pulse: 0 }); score += e.pts; setLive(score); enemies.splice(ei, 1); }
         }
       });
     });
 
-    // Particle FX Bloom Pass
     particles.forEach((p, pi) => {
-      p.x += p.vx; p.y += p.vy; p.alpha -= p.decay;
-      if (p.alpha <= 0) { particles.splice(pi, 1); return; }
+      p.x += p.vx; p.y += p.vy; p.alpha -= p.decay; if (p.alpha <= 0) { particles.splice(pi, 1); return; }
       aCtx.save(); aCtx.globalAlpha = p.alpha; aCtx.fillStyle = p.color; aCtx.fillRect(p.x, p.y, 2, 2); aCtx.restore();
     });
 
-    // Burst Float Text Pass
     floatingTexts.forEach((ft, fti) => {
-      ft.y -= 0.8; ft.alpha -= 0.02;
-      if (ft.alpha <= 0) { floatingTexts.splice(fti, 1); return; }
+      ft.y -= 0.8; ft.alpha -= 0.02; if (ft.alpha <= 0) { floatingTexts.splice(fti, 1); return; }
       aCtx.save(); aCtx.globalAlpha = ft.alpha; aCtx.font = 'bold 11px Orbitron'; aCtx.fillStyle = ft.color; aCtx.fillText(ft.txt, ft.x, ft.y); aCtx.restore();
     });
 
@@ -445,53 +397,197 @@ function startNebula(){
   gameLoopId = requestAnimationFrame(pipeline);
 }
 
-// ════════════════════════════════════════════
-//  🧱 GAME 3: CYBERPUNK TETRIS
-// ════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+//  🧱 GAME 3: CYBERPUNK TETRIS (PREMIUM STANDALONE ENGINE INTEGRATED)
+// ══════════════════════════════════════════════════════════════════════
 function startTetris(){
   document.getElementById('g-canvas-holder').style.display='block';
-  let score=0, time=45, grid=Array.from({length:20},()=>Array(10).fill(0)), currentPiece=null, currentX=3, currentY=0, dropTimer=0;
-  document.getElementById('g-time').textContent=time;
+  document.getElementById('tetris-next-wrap').style.display='block';
+  document.getElementById('tetris-lvl-pill').style.display='block';
   
-  const PIECES=[[[1,1,1,1]],[[1,1,1],[0,1,0]],[[1,1],[1,1]],[[1,1,0],[0,1,1]]];
-  const COLORS=['#a855f7','#ff6600','#00f5ff','#39ff14'];let pIdx=0;
+  const nCanvas = document.getElementById('nextCanvas');
+  const nCtx = nCanvas.getContext('2d');
+  
+  let score=0, level=1, linesCleared=0, time=60;
+  let arena=createMatrix(10,20), player={pos:{x:0,y:0}, matrix:null}, nextPiece=null;
+  let dropCounter=0, dropInterval=600, lastTime=performance.now(), screenShake=0;
+  let particles = [];
+  
+  document.getElementById('g-time').textContent=time;
+  document.getElementById('tetris-lvl').textContent=level;
 
-  function spawn(){pIdx=Math.floor(Math.random()*PIECES.length);currentPiece=PIECES[pIdx];currentX=3;currentY=0}
-  spawn();
+  // Exact Standardized Shape Definitions
+  const PIECES = {
+    'T': [[0,1,0],[1,1,1],[0,0,0]],
+    'I': [[0,2,0,0],[0,2,0,0],[0,2,0,0],[0,2,0,0]],
+    'O': [[3,3],[3,3]],
+    'Z': [[4,4,0],[0,4,4],[0,0,0]],
+    'S': [[0,5,5],[5,5,0],[0,0,0]],
+    'J': [[0,6,0],[0,6,0],[6,6,0]],
+    'L': [[0,7,0],[0,7,0],[0,7,7]]
+  };
+  
+  // Cyberpunk Color Palette
+  const COLORS = [null, '#ff007f', '#00f0ff', '#ffbc00', '#9d4edd', '#39ff14', '#ff5e00', '#001eff'];
+
+  function createMatrix(w, h){ const matrix=[]; while(h--) matrix.push(new Array(w).fill(0)); return matrix; }
+  
+  function getPiece(){ const p='TILJOSZ'; return PIECES[p[p.length*Math.random()|0]]; }
+  
+  function resetPlayer(){
+    if(!nextPiece) { player.matrix = getPiece(); nextPiece = getPiece(); }
+    else { player.matrix = nextPiece; nextPiece = getPiece(); }
+    player.pos.y = 0; player.pos.x = (arena[0].length/2|0) - (player.matrix[0].length/2|0);
+    if(collide(arena, player)) end();
+  }
+  
+  function collide(a, p){
+    const m=p.matrix, o=p.pos;
+    for(let y=0; y<m.length; ++y) for(let x=0; x<m[y].length; ++x) {
+      if(m[y][x]!==0 && (a[y+o.y] && a[y+o.y][x+o.x])!==0) return true;
+    } return false;
+  }
+  
+  function merge(a, p){
+    p.matrix.forEach((row,y)=>{ row.forEach((val,x)=>{ if(val!==0) a[y+p.pos.y][x+p.pos.x]=val; }); });
+  }
+
+  function rotate(m, dir){
+    for(let y=0; y<m.length; ++y) for(let x=0; x<y; ++x) [m[x][y], m[y][x]] = [m[y][x], m[x][y]];
+    if(dir>0) m.forEach(row=>row.reverse()); else m.reverse();
+  }
+
+  function playerMove(dir){ player.pos.x+=dir; if(collide(arena,player)) player.pos.x-=dir; }
+  function playerRotate(dir){
+    const pos=player.pos.x; let offset=1; rotate(player.matrix, dir);
+    while(collide(arena,player)){ player.pos.x+=offset; offset=-(offset+(offset>0?1:-1)); if(offset>player.matrix[0].length) { rotate(player.matrix, -dir); player.pos.x=pos; return; } }
+  }
+  
+  function playerDrop(){
+    player.pos.y++;
+    if(collide(arena,player)){
+      player.pos.y--; merge(arena,player); resetPlayer(); arenaSweep();
+    } dropCounter=0;
+  }
+  
+  // Included Hard Drop standard logic
+  function playerHardDrop(){
+    while(!collide(arena, player)) player.pos.y++;
+    player.pos.y--; merge(arena, player); screenShake=8; resetPlayer(); arenaSweep();
+    dropCounter=0;
+  }
+
+  function explodeLine(y, width) {
+    for(let x=0; x<width; x++) {
+      for(let i=0; i<3; i++) {
+        let ang = Math.random()*Math.PI*2, v=Math.random()*3+1;
+        particles.push({x: x*40+20, y: y*25+12, vx: Math.cos(ang)*v, vy: Math.sin(ang)*v, alpha: 1, color: COLORS[Math.floor(Math.random()*7)+1]});
+      }
+    }
+  }
+
+  function arenaSweep(){
+    let rowCount=1;
+    outer: for(let y=arena.length-1; y>0; --y){
+      for(let x=0; x<arena[y].length; ++x) if(arena[y][x]===0) continue outer;
+      const row = arena.splice(y,1)[0].fill(0); arena.unshift(row);
+      explodeLine(y, arena[0].length);
+      ++y; score += rowCount*10; linesCleared++; rowCount*=2;
+      setLive(score); screenShake=12;
+      
+      // Included progressive drop speed calculation logic
+      if(linesCleared%10===0 && level<50) { 
+        level++; document.getElementById('tetris-lvl').textContent=level;
+        dropInterval = Math.max(50, 600 * Math.pow(0.85, level - 1));
+      }
+    }
+  }
+
+  function drawMatrix(matrix, offset, ctx, isGhost=false){
+    matrix.forEach((row,y)=>{
+      row.forEach((value,x)=>{
+        if(value!==0){
+          if(isGhost) {
+            ctx.fillStyle = COLORS[value]; ctx.globalAlpha = 0.2;
+            ctx.fillRect((x+offset.x)*40, (y+offset.y)*25, 38, 23);
+            ctx.globalAlpha = 1;
+          } else {
+            ctx.shadowBlur = 10; ctx.shadowColor = COLORS[value];
+            ctx.fillStyle = COLORS[value];
+            if(ctx===nCtx) ctx.fillRect((x+offset.x)*20, (y+offset.y)*20, 18, 18);
+            else ctx.fillRect((x+offset.x)*40, (y+offset.y)*25, 38, 23);
+            ctx.shadowBlur = 0;
+          }
+        }
+      });
+    });
+  }
 
   window.onkeydown=e=>{
-    if(e.code==='ArrowLeft') move(-1);if(e.code==='ArrowRight') move(1);
-    if(e.code==='ArrowDown') drop();if(e.code==='Space'||e.code==='ArrowUp') rotate();
+    if(e.code==='ArrowLeft') { playerMove(-1); e.preventDefault(); }
+    if(e.code==='ArrowRight') { playerMove(1); e.preventDefault(); }
+    if(e.code==='ArrowDown') { playerDrop(); e.preventDefault(); }
+    if(e.code==='ArrowUp') { playerRotate(1); e.preventDefault(); }
+    if(e.code==='Space') { playerHardDrop(); e.preventDefault(); } // Space bar hard drop
   };
-  document.getElementById('ctrl-left').onclick=()=>move(-1);
-  document.getElementById('ctrl-right').onclick=()=>move(1);
-  document.getElementById('ctrl-action').onclick=()=>rotate();
+  document.getElementById('ctrl-left').onclick=()=>playerMove(-1);
+  document.getElementById('ctrl-right').onclick=()=>playerMove(1);
+  document.getElementById('ctrl-action').onclick=()=>playerRotate(1);
 
   gTimer=setInterval(()=>{
-    time--;document.getElementById('g-time').textContent=time;
-    document.getElementById('prog-fill').style.width=`${time/45*100}%`;
+    time--; document.getElementById('g-time').textContent=time;
+    document.getElementById('prog-fill').style.width=`${time/60*100}%`;
     if(time<=0) end();
   },1000);
 
-  function checkCol(px,py,p){
-    for(let r=0;r<p.length;r++)for(let c=0;c<p[r].length;c++)if(p[r][c]){
-      let nx=px+c, ny=py+r;if(nx<0||nx>=10||ny>=20||(ny>=0&&grid[ny][nx]))return true;
-    } return false;
-  }
-  function merge(){currentPiece.forEach((r,ri)=>{r.forEach((v,ci)=>{if(v&&currentY+ri>=0)grid[currentY+ri][currentX+ci]=COLORS[pIdx]})})}
-  function clearLines(){let c=0;grid.forEach((r,ri)=>{if(r.every(v=>v!==0)){grid.splice(ri,1);grid.unshift(Array(10).fill(0));c++}});if(c>0){score+=c*150;setLive(score)}}
-  function move(dir){currentX+=dir;if(checkCol(currentX,currentY,currentPiece))currentX-=dir}
-  function drop(){currentY++;if(checkCol(currentX,currentY,currentPiece)){currentY--;merge();clearLines();spawn();if(checkCol(currentX,currentY,currentPiece))end()}}
-  function rotate(){let r=currentPiece[0].map((_,i)=>currentPiece.map(row=>row[i]).reverse());if(!checkCol(currentX,currentY,r))currentPiece=r}
+  resetPlayer();
 
-  function loop(){
-    aCtx.clearRect(0,0,400,500);dropTimer++;if(dropTimer%22===0)drop();
-    grid.forEach((r,ri)=>{r.forEach((v,ci)=>{if(v){aCtx.fillStyle=v;aCtx.fillRect(ci*40,ri*25,38,23)}})});
-    if(currentPiece){aCtx.fillStyle=COLORS[pIdx];currentPiece.forEach((r,ri)=>{r.forEach((v,ci)=>{if(v){aCtx.fillRect((currentX+ci)*40,(currentY+ri)*25,38,23)}})})}
+  function loop(now){
+    const dt = now - lastTime; lastTime = now;
+    aCtx.clearRect(0,0,400,500); nCtx.clearRect(0,0,80,80);
+    
+    dropCounter += dt; if(dropCounter > dropInterval) playerDrop();
+    
+    aCtx.save();
+    if(screenShake>0.5) { aCtx.translate((Math.random()-0.5)*screenShake, (Math.random()-0.5)*screenShake); screenShake*=0.8; }
+    
+    // Calculate Ghost Piece position
+    let ghost = { matrix: player.matrix, pos: {x: player.pos.x, y: player.pos.y} };
+    while(!collide(arena, ghost)) ghost.pos.y++;
+    ghost.pos.y--;
+    
+    // Draw Environment
+    aCtx.strokeStyle='rgba(255,255,255,0.05)';
+    for(let i=0; i<10; i++) { aCtx.beginPath(); aCtx.moveTo(i*40,0); aCtx.lineTo(i*40,500); aCtx.stroke(); }
+    for(let i=0; i<20; i++) { aCtx.beginPath(); aCtx.moveTo(0,i*25); aCtx.lineTo(400,i*25); aCtx.stroke(); }
+    
+    drawMatrix(ghost.matrix, ghost.pos, aCtx, true);
+    drawMatrix(arena, {x:0, y:0}, aCtx);
+    drawMatrix(player.matrix, player.pos, aCtx);
+    
+    // Draw Next Piece preview canvas
+    if(nextPiece){
+      const offsetX = (4 - nextPiece[0].length) / 2;
+      const offsetY = (4 - nextPiece.length) / 2;
+      drawMatrix(nextPiece, {x: offsetX, y: offsetY}, nCtx);
+    }
+    
+    // Process Particles
+    particles.forEach((p, pi) => {
+      p.x += p.vx; p.y += p.vy; p.alpha -= 0.03; if (p.alpha <= 0) { particles.splice(pi, 1); return; }
+      aCtx.save(); aCtx.globalAlpha = p.alpha; aCtx.fillStyle = p.color; aCtx.fillRect(p.x, p.y, 4, 4); aCtx.restore();
+    });
+
+    aCtx.restore();
     gameLoopId=requestAnimationFrame(loop);
   }
-  function end(){clearInterval(gTimer);cancelAnimationFrame(gameLoopId);window.onkeydown=null;showResults('tetris',Math.min(1200,score),{'🧱 Data Lines Dropped':score/150,'🏆 Final Score':`${score} PTS`})}
-  loop();
+  
+  function end(){
+    clearInterval(gTimer); cancelAnimationFrame(gameLoopId); window.onkeydown=null;
+    showResults('tetris',Math.min(1500,score),{'🧱 Base Core Lines Resolved':linesCleared, '🏆 Final Output Score':`${score} PTS`});
+  }
+  
+  gameLoopId=requestAnimationFrame(loop);
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -502,7 +598,6 @@ function startDodge(){
   let score=0, time=30, isGameOver=false, player={x:200,y:250,r:8}, obstacles=[];
   document.getElementById('g-time').textContent=time;
 
-  // Render a smooth neon tracking handler directly inside canvas bounding constraints
   aCanvas.onmousemove = e => {
     const rect = aCanvas.getBoundingClientRect();
     player.x = e.clientX - rect.left;
@@ -521,12 +616,10 @@ function startDodge(){
     if(isGameOver) return;
     aCtx.clearRect(0,0,400,500);
     
-    // Smooth Glowing Core Renderer
     aCtx.save(); aCtx.beginPath();aCtx.arc(player.x,player.y,player.r,0,Math.PI*2);
     aCtx.shadowBlur=15; aCtx.shadowColor='var(--cyan)'; aCtx.fillStyle='var(--cyan)';aCtx.fill();
     aCtx.strokeStyle='#fff';aCtx.stroke(); aCtx.restore();
 
-    // Spawn Matrix Bouncers
     if(Math.random()<.08) {
       obstacles.push({
         x:Math.random()*400,y:0,
@@ -535,7 +628,6 @@ function startDodge(){
       });
     }
 
-    // Process & Render Obstacles
     for(let i=obstacles.length-1; i>=0; i--){
       let o = obstacles[i];
       o.x += o.vx; o.y += o.vy;
@@ -543,7 +635,6 @@ function startDodge(){
       aCtx.beginPath();aCtx.arc(o.x,o.y,o.r,0,Math.PI*2);
       aCtx.fillStyle='var(--orange)';aCtx.fill();
       
-      // Calculate Vector Intersect Radius for Collisions
       let dx = o.x - player.x, dy = o.y - player.y;
       let dist = Math.sqrt(dx*dx + dy*dy);
       if(dist < o.r + player.r){ isGameOver=true; end(); return; }
