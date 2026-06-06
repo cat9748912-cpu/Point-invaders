@@ -1,21 +1,17 @@
 // ════════════════════════════════════════════
-//  🔥 FIREBASE — replace with YOUR config!
-//  Firebase Console → Project Settings → Web App
+//  🔥 FIREBASE — CONFIGURED & ONLINE!
 // ════════════════════════════════════════════
-const firebaseConfig = {
-  apiKey: "AIzaSyC1NZy2ZzNLutYAiE_QjPZGH5CymvGCnDs",
-  authDomain: "neal-with-roblox.firebaseapp.com",
-  databaseURL: "https://neal-with-roblox-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "neal-with-roblox",
-  storageBucket: "neal-with-roblox.firebasestorage.app",
+const FB = {
+  apiKey:            "AIzaSyC1NZy2ZzNLutYAiE_QjPZGH5CymvGCnDs",
+  authDomain:        "neal-with-roblox.firebaseapp.com",
+  projectId:         "neal-with-roblox",
+  storageBucket:     "neal-with-roblox.firebasestorage.app",
   messagingSenderId: "984878364213",
-  appId: "1:984878364213:web:fb1147a1a5ff0b02d2a37c",
-  measurementId: "G-0CXYDZYRS4"
+  appId:             "1:984878364213:web:fb1147a1a5ff0b02d2a37c"
 };
-
 let auth = null, db = null;
 try { firebase.initializeApp(FB); auth = firebase.auth(); db = firebase.firestore(); }
-catch(e) { console.warn('Firebase not configured yet:', e.message); }
+catch(e) { console.warn('Firebase connection failed:', e.message); }
 
 // ════════════════════════════════════════════
 //  🌌 PARTICLE BACKGROUND
@@ -95,7 +91,7 @@ document.getElementById('tab-signup').onclick=()=>{
 };
 
 document.getElementById('btn-login').onclick=async()=>{
-  if(!auth){toast('⚠️ Firebase not configured');return}
+  if(!auth){toast('⚠️ Firebase connection issue');return}
   const email=document.getElementById('l-email').value.trim();
   const pass=document.getElementById('l-pass').value;
   if(!email||!pass){setErr('Please fill in all fields.');return}
@@ -104,7 +100,7 @@ document.getElementById('btn-login').onclick=async()=>{
 };
 
 document.getElementById('btn-signup').onclick=async()=>{
-  if(!auth){toast('⚠️ Firebase not configured');return}
+  if(!auth){toast('⚠️ Firebase connection issue');return}
   const name=document.getElementById('s-name').value.trim();
   const email=document.getElementById('s-email').value.trim();
   const pass=document.getElementById('s-pass').value;
@@ -498,7 +494,7 @@ document.getElementById('btn-iframe-submit').onclick=async()=>{
 // ════════════════════════════════════════════
 async function loadLeaderboard(){
   const panel=document.getElementById('lb-panel');
-  if(!db){panel.innerHTML='<div class="lb-empty">⚠️ Add Firebase config to enable leaderboard</div>';return}
+  if(!db){panel.innerHTML='<div class="lb-empty">⚠️ Database connecting...</div>';return}
   panel.innerHTML='<div class="lb-empty">Loading...</div>';
   try{
     const snap=await db.collection('players').orderBy('totalPoints','desc').limit(20).get();
