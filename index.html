@@ -64,6 +64,42 @@
           <div class="gc-desc">Smash the button as fast as you can in 10 seconds!</div>
           <span class="gc-pts" data-c="cyan">UP TO 500 PTS</span>
         </div>
+        <div class="game-card" data-game="nebula" data-c="pink">
+          <span class="gc-icon">🚀</span>
+          <div class="gc-name" data-c="pink">NEON NEBULA</div>
+          <div class="gc-desc">Defend the grid from waves of falling pixel invaders!</div>
+          <span class="gc-pts" data-c="pink">UP TO 1000 PTS</span>
+        </div>
+        <div class="game-card" data-game="tetris" data-c="purple">
+          <span class="gc-icon">🧱</span>
+          <div class="gc-name" data-c="purple">CYBERPUNK TETRIS</div>
+          <div class="gc-desc">Drop retro matrix blocks and clear solid code lines!</div>
+          <span class="gc-pts" data-c="purple">UP TO 1200 PTS</span>
+        </div>
+        <div class="game-card" data-game="dodge" data-c="orange">
+          <span class="gc-icon">💥</span>
+          <div class="gc-name" data-c="orange">DODGE CORES</div>
+          <div class="gc-desc">Avoid the bouncing security firewalls for as long as possible!</div>
+          <span class="gc-pts" data-c="orange">UP TO 800 PTS</span>
+        </div>
+        <div class="game-card" data-game="memory" data-c="lime">
+          <span class="gc-icon">🧠</span>
+          <div class="gc-name" data-c="lime">MEMORY MATCH</div>
+          <div class="gc-desc">Find matching matrix neon pairs under the clock!</div>
+          <span class="gc-pts" data-c="lime">UP TO 600 PTS</span>
+        </div>
+        <div class="game-card" data-game="math" data-c="gold">
+          <span class="gc-icon">🔢</span>
+          <div class="gc-name" data-c="gold">MATH BLITZ</div>
+          <div class="gc-desc">Solve overclocked equation nodes fast to score!</div>
+          <span class="gc-pts" data-c="gold">UP TO 750 PTS</span>
+        </div>
+        <div class="game-card" data-game="reaction" data-c="red">
+          <span class="gc-icon">⚡</span>
+          <div class="gc-name" data-c="red">REACTION TIME</div>
+          <div class="gc-desc">Click the moment the terminal node screens switch colors!</div>
+          <span class="gc-pts" data-c="red">UP TO 400 PTS</span>
+        </div>
       </div>
     </div>
     <div>
@@ -80,17 +116,40 @@
     <button class="btn btn-secondary btn-sm" id="btn-quit">← Quit</button>
     <div class="g-title" id="g-title">GAME</div>
     <div class="g-stats">
-      <div class="stat-pill">⏱ <em id="g-time">—</em></div>
+      <div class="stat-pill">⏱️ <em id="g-time">—</em></div>
       <div class="stat-pill">⭐ <em id="g-pts">0</em></div>
     </div>
   </div>
   <div class="prog-bar"><div class="prog-fill" id="prog-fill" style="width:100%"></div></div>
   <div class="g-area">
+    
     <div id="g-click" class="click-wrap" style="display:none">
       <div id="click-count">0</div>
       <div class="click-label">CLICKS</div>
       <button id="click-btn">🖱️</button>
     </div>
+
+    <div id="g-canvas-holder" style="display:none; position:relative;">
+      <canvas id="arcade-canvas" width="400" height="500"></canvas>
+      <div id="arcade-controls">
+        <button class="ctrl-btn" id="ctrl-left">◀</button>
+        <button class="ctrl-btn" id="ctrl-action">ACTION</button>
+        <button class="ctrl-btn" id="ctrl-right">▶</button>
+      </div>
+    </div>
+
+    <div id="g-memory" class="memory-grid" style="display:none"></div>
+
+    <div id="g-math" class="math-wrap" style="display:none">
+      <div id="math-question">0 + 0</div>
+      <input type="number" id="math-answer" placeholder="?" autocomplete="off">
+      <button class="btn btn-primary" id="math-submit">Submit</button>
+    </div>
+
+    <div id="g-reaction" class="reaction-box" style="display:none">
+      <div id="reaction-text">WAIT FOR GREEN...</div>
+    </div>
+
   </div>
 </div>
 
