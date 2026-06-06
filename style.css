@@ -101,10 +101,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .stat-pill{background:var(--s2);border:1px solid var(--border);border-radius:20px;padding:5px 14px;font-family:var(--fd);font-size:.6rem;font-weight:700}
 .stat-pill em{font-style:normal;color:var(--cyan)}
 .prog-bar{width:100%;max-width:700px;height:5px;background:var(--s2);border-radius:3px;margin-bottom:20px;overflow:hidden;flex-shrink:0}
-.prog-fill{height:100%;border-radius:3px;transition:width .95s linear;background:linear-gradient(90deg,var(--cyan),var(--purple))}
+.prog-fill{height:100%;border-radius:3px;transition:width .2s ease-out;background:linear-gradient(90deg,var(--cyan),var(--purple))}
 .g-area{width:100%;max-width:700px;display:flex;flex-direction:column;align-items:center}
 
-/* Canvas Canvas Holder Shared Area */
 #arcade-canvas{background:#020208;border:2px solid var(--border);border-radius:8px;display:block}
 #arcade-controls{display:flex;width:100%;max-width:400px;gap:10px;margin-top:14px}
 .ctrl-btn{flex:1;background:var(--s2);border:1px solid var(--border);color:#fff;padding:14px;font-family:var(--fd);border-radius:8px;cursor:pointer}
