@@ -26,7 +26,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .btn-primary:active{transform:scale(.96)}
 .btn-secondary{background:var(--s2);color:var(--text);border:1px solid var(--border)}
 .btn-secondary:hover{background:rgba(255,255,255,.14);border-color:var(--border2)}
-.btn-danger{background:linear-gradient(135deg,var(--pink),var(--orange));color:#fff}
 .btn-full{width:100%}.btn-lg{padding:14px 36px;font-size:.8rem}.btn-sm{padding:7px 16px;font-size:.6rem}
 
 /* ── CARD / INPUT ── */
@@ -54,7 +53,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .hub-uname{font-family:var(--fd);font-size:.65rem;color:var(--cyan)}
 .hub-pts{background:rgba(255,215,0,.1);border:1px solid rgba(255,215,0,.3);border-radius:20px;padding:5px 14px;font-family:var(--fd);font-size:.6rem;font-weight:700;color:var(--gold)}
 .hub-body{display:grid;grid-template-columns:1fr 300px;gap:20px;width:100%;max-width:1060px}
-.games-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:14px;align-content:start}
+.games-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px;align-content:start}
 .game-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--rl);padding:22px 16px;text-align:center;cursor:pointer;transition:transform .25s ease,border-color .25s ease,box-shadow .25s ease;position:relative;overflow:hidden}
 .game-card:hover{transform:translateY(-5px) scale(1.02)}
 .game-card[data-c="cyan"]:hover  {border-color:var(--cyan);  box-shadow:0 8px 30px rgba(0,245,255,.2)}
@@ -82,7 +81,6 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .gc-pts[data-c="purple"]{color:var(--purple);border-color:var(--purple);background:rgba(168,85,247,.06)}
 .gc-pts[data-c="orange"]{color:var(--orange);border-color:var(--orange);background:rgba(255,102,0,.06)}
 .gc-pts[data-c="red"]   {color:var(--red);   border-color:var(--red);   background:rgba(255,36,66,.06)}
-.gc-ext{position:absolute;top:8px;right:8px;font-size:.48rem;font-family:var(--fd);color:var(--dimmer);border:1px solid var(--border);border-radius:4px;padding:2px 6px;letter-spacing:.05em}
 
 /* ── LEADERBOARD ── */
 .lb-panel{background:var(--s1);border:1px solid var(--border);border-radius:var(--rl);padding:18px;overflow-y:auto;max-height:520px}
@@ -90,15 +88,12 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .lb-row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--s2);margin-bottom:7px}
 .lb-row.me   {border-color:var(--cyan);background:rgba(0,245,255,.05)}
 .lb-row.r1   {border-color:rgba(255,215,0,.5);background:rgba(255,215,0,.06)}
-.lb-row.r2   {border-color:rgba(192,192,192,.4)}
-.lb-row.r3   {border-color:rgba(205,127,50,.4)}
 .lb-rank{font-family:var(--fd);font-size:.9rem;font-weight:900;width:26px;text-align:center;color:var(--dimmer)}
-.lb-row.r1 .lb-rank{color:var(--gold)}.lb-row.r2 .lb-rank{color:#c0c0c0}.lb-row.r3 .lb-rank{color:#cd7f32}
 .lb-name{flex:1;font-weight:700;font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lb-score{font-family:var(--fd);font-size:.65rem;color:var(--gold)}
 .lb-empty{color:var(--dim);font-size:.82rem;text-align:center;padding:30px 0}
 
-/* ── GAME SCREEN ── */
+/* ── GAME LAYOUT ENGINE ── */
 #game-screen{justify-content:flex-start;padding-top:18px}
 .g-hdr{display:flex;align-items:center;justify-content:space-between;width:100%;max-width:700px;margin-bottom:12px}
 .g-title{font-family:var(--fd);font-size:.95rem;font-weight:700;letter-spacing:.05em}
@@ -109,19 +104,35 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .prog-fill{height:100%;border-radius:3px;transition:width .95s linear;background:linear-gradient(90deg,var(--cyan),var(--purple))}
 .g-area{width:100%;max-width:700px;display:flex;flex-direction:column;align-items:center}
 
+/* Canvas Canvas Holder Shared Area */
+#arcade-canvas{background:#020208;border:2px solid var(--border);border-radius:8px;display:block}
+#arcade-controls{display:flex;width:100%;max-width:400px;gap:10px;margin-top:14px}
+.ctrl-btn{flex:1;background:var(--s2);border:1px solid var(--border);color:#fff;padding:14px;font-family:var(--fd);border-radius:8px;cursor:pointer}
+
 /* ─ Click Frenzy ─ */
 .click-wrap{display:flex;flex-direction:column;align-items:center;gap:16px}
-#click-count{font-family:var(--fd);font-size:5rem;font-weight:900;color:var(--cyan);text-shadow:0 0 30px rgba(0,245,255,.4);line-height:1}
+#click-count{font-family:var(--fd);font-size:5rem;font-weight:900;color:var(--cyan);line-height:1}
 .click-label{color:var(--dim);font-weight:600;font-size:.8rem;letter-spacing:.2em;text-transform:uppercase}
-#click-btn{width:195px;height:195px;border-radius:50%;border:none;background:linear-gradient(135deg,var(--cyan),var(--purple));font-size:3.5rem;cursor:pointer;box-shadow:0 0 50px rgba(0,245,255,.3),inset 0 -5px 0 rgba(0,0,0,.25);transition:transform .1s,box-shadow .1s}
-#click-btn:hover{box-shadow:0 0 70px rgba(0,245,255,.5),inset 0 -5px 0 rgba(0,0,0,.25)}
-#click-btn:active{transform:scale(.87);box-shadow:0 0 20px rgba(0,245,255,.2)}
-#click-btn:disabled{opacity:.4;cursor:default}
+#click-btn{width:180px;height:180px;border-radius:50%;border:none;background:linear-gradient(135deg,var(--cyan),var(--purple));font-size:3.5rem;cursor:pointer;box-shadow:0 0 50px rgba(0,245,255,.3)}
+#click-btn:active{transform:scale(.9)}
+
+/* ─ Memory Match Layout ─ */
+.memory-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;width:100%;max-width:340px}
+.mem-card{height:75px;background:var(--s2);border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:2rem;cursor:pointer;user-select:none;transition:background .2s}
+.mem-card.flipped{background:rgba(57,255,20,0.15);border-color:var(--lime)}
+
+/* ─ Math Blitz Layout ─ */
+.math-wrap{text-align:center;width:100%;max-width:340px}
+#math-question{font-family:var(--fd);font-size:3rem;margin-bottom:20px;color:var(--gold)}
+#math-answer{width:100%;background:var(--s2);border:1px solid var(--border);color:#fff;padding:12px;font-size:1.5rem;text-align:center;border-radius:8px;margin-bottom:14px;outline:none}
+
+/* ─ Reaction Time Layout ─ */
+.reaction-box{width:100%;max-width:400px;height:300px;border-radius:12px;border:2px solid var(--border);display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;transition:background 0.1s}
+#reaction-text{font-family:var(--fd);font-weight:700;font-size:1.5rem}
 
 /* ── RESULTS SCREEN ── */
 #results-screen .res-card{max-width:440px;width:100%;text-align:center}
-.res-emoji{font-size:4.5rem;display:block;margin-bottom:14px;animation:bIn .5s ease}
-@keyframes bIn{0%{transform:scale(.3);opacity:0}65%{transform:scale(1.15)}100%{transform:scale(1);opacity:1}}
+.res-emoji{font-size:4.5rem;display:block;margin-bottom:14px}
 .res-gname{font-family:var(--fd);font-size:.6rem;color:var(--dim);letter-spacing:.15em;text-transform:uppercase;margin-bottom:6px}
 .res-pts{font-family:var(--fd);font-size:4.5rem;font-weight:900;line-height:1;background:linear-gradient(135deg,var(--gold),var(--orange));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:4px}
 .res-pts-lbl{color:var(--dim);font-weight:600;font-size:.8rem;margin-bottom:20px}
@@ -131,7 +142,14 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .res-row .rv{color:var(--cyan);font-weight:700}
 .res-btns{display:flex;gap:10px;justify-content:center}
 
-/* ── RESPONSIVE ── */
+#toast{position:fixed;bottom:-60px;left:50%;transform:translateX(-50%);background:rgba(4,4,14,.9);border:1px solid var(--cyan);padding:12px 24px;border-radius:30px;font-family:var(--fd);font-size:.75rem;color:var(--cyan);z-index:9999;transition:bottom .3s ease;box-shadow:0 10px 30px rgba(0,245,255,.2)}
+#toast.show{bottom:30px}
+#cd-ov{position:fixed;inset:0;background:rgba(2,2,8,.85);backdrop-filter:blur(10px);z-index:999;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .3s ease}
+#cd-ov.show{opacity:1;pointer-events:all}
+#cd-num{font-family:var(--fd);font-size:7rem;font-weight:900;color:#fff}
+.cd-pop{animation:cdPop .6s ease forwards}
+@keyframes cdPop{0%{transform:scale(.4);opacity:0}20%{opacity:1}100%{transform:scale(1.4);opacity:0}}
+
 @media(max-width:720px){
   .hub-body{grid-template-columns:1fr}
   .lb-panel{max-height:260px}
