@@ -9,9 +9,6 @@ const FB = {
   messagingSenderId: "984878364213",
   appId:             "1:984878364213:web:fb1147a1a5ff0b02d2a37c"
 };
-let auth = null, db = null;
-try { firebase.initializeApp(FB); auth = firebase.auth(); db = firebase.firestore(); }
-catch(e) { console.warn('Firebase connection failed:', e.message); }
 
 // ════════════════════════════════════════════
 //  🌌 PARTICLE BACKGROUND
