@@ -149,6 +149,7 @@ document.querySelectorAll('.game-card').forEach(card=>{
 document.getElementById('btn-quit').onclick=()=>{
   clearInterval(gTimer);
   cancelAnimationFrame(gameLoopId);
+  if(aCanvas) { aCanvas.onmousemove = null; }
   enterHub();
 };
 
@@ -165,6 +166,7 @@ function prepGame(gid){
   document.getElementById('g-time').textContent='—';
   document.getElementById('prog-fill').style.width='100%';
   document.getElementById('prog-fill').style.background='var(--cyan)';
+  if(aCanvas) { aCanvas.onmousemove = null; }
   
   if(gid==='click') countdown(()=>startClick());
   else if(gid==='nebula') countdown(()=>startNebula());
@@ -180,6 +182,7 @@ const setLive=n=>document.getElementById('g-pts').textContent=n;
 function showResults(gid,pts,bd){
   clearInterval(gTimer);
   cancelAnimationFrame(gameLoopId);
+  if(aCanvas) { aCanvas.onmousemove = null; }
   const m=META[gid],pct=pts/m.maxPts;
   document.getElementById('res-emoji').textContent=pct>.75?'🎉':'💪';
   document.getElementById('res-gname').textContent=m.name;
@@ -198,13 +201,24 @@ async function saveScore(gid,pts){
     playerRef.once('value', (snapshot) => {
       const d = snapshot.val() || { totalPoints: 0, gamesPlayed: 0, highScores: {} };
       const hs = d.highScores || {};
-      const newPoints = (d.totalPoints || 0) + pts;
-      const newHighScores = { ...hs, [gid]: Math.max(hs[gid] || 0, pts) };
-      playerRef.update({ username: user.username, totalPoints: newPoints, gamesPlayed: (d.gamesPlayed || 0) + 1, highScores: newHighScores });
-      if (user) user.totalPoints = newPoints;
+      const currentHighScore = parseInt(hs[gid] || 0);
+      const pointsToAward = parseInt(pts || 0);
+      
+      const newPoints = parseInt(d.totalPoints || 0) + pointsToAward;
+      const newHighScores = { ...hs, [gid]: Math.max(currentHighScore, pointsToAward) };
+      
+      playerRef.update({ 
+        username: user.username, 
+        totalPoints: newPoints, 
+        gamesPlayed: (parseInt(d.gamesPlayed || 0) + 1), 
+        highScores: newHighScores 
+      }).then(() => {
+        if (user) user.totalPoints = newPoints;
+        loadLeaderboard();
+      });
     });
-    toast(`✅ +${pts} pts saved!`);
-  } catch (e) { console.error(e) }
+    toast(`✅ +${pts} pts synced!`);
+  } catch (e) { console.error("Database Save failure:", e) }
 }
 
 // ════════════════════════════════════════════
@@ -230,7 +244,7 @@ function startClick(){
 }
 
 // ════════════════════════════════════════════
-//  🚀 GAME 2: NEON NEBULA
+//  🚀 GAME 2: NEON NEBULA (OVERDRIVE ENGINE)
 // ════════════════════════════════════════════
 function startNebula(){
   document.getElementById('g-canvas-holder').style.display='block';
@@ -253,24 +267,25 @@ function startNebula(){
 
   function loop(){
     aCtx.clearRect(0,0,400,500);
-    if(moveLeft) shipX=Math.max(0, shipX-5);
-    if(moveRight) shipX=Math.min(360, shipX+5);
+    if(moveLeft) shipX=Math.max(0, shipX-6);
+    if(moveRight) shipX=Math.min(360, shipX+6);
     aCtx.fillStyle='#00f5ff';aCtx.fillRect(shipX,470,40,15);aCtx.fillRect(shipX+15,460,10,10);
     
-    bullets.forEach((b,bi)=>{b.y-=7;aCtx.fillStyle='#ff0090';aCtx.fillRect(b.x,b.y,5,10);if(b.y<0)bullets.splice(bi,1)});
-    enemyTimer++;if(enemyTimer%35===0){enemies.push({x:Math.random()*360,y:-20,w:30,h:20})}
+    bullets.forEach((b,bi)=>{b.y-=8;aCtx.fillStyle='#ff0090';aCtx.fillRect(b.x,b.y,5,10);if(b.y<0)bullets.splice(bi,1)});
+    enemyTimer++;if(enemyTimer%25===0){enemies.push({x:Math.random()*360,y:-20,w:30,h:20,s:Math.random()*1.5+2})}
     enemies.forEach((e,ei)=>{
-      e.y+=2;aCtx.fillStyle='#39ff14';aCtx.fillRect(e.x,e.y,e.w,e.h);
+      e.y+=e.s;aCtx.fillStyle='#39ff14';aCtx.fillRect(e.x,e.y,e.w,e.h);
       bullets.forEach((b,bi)=>{
         if(b.x>e.x&&b.x<e.x+e.w&&b.y>e.y&&b.y<e.y+e.h){score+=25;setLive(score);enemies.splice(ei,1);bullets.splice(bi,1)}
       });
+      if(e.y>500) enemies.splice(ei,1);
     });
     gameLoopId=requestAnimationFrame(loop);
   }
   function end(){
     clearInterval(gTimer);cancelAnimationFrame(gameLoopId);window.onkeydown=window.onkeyup=null;
     const finalPts=Math.min(1000, score);
-    showResults('nebula', finalPts, {'👾 Alien Cores Destroyed':score/25, '🏆 Final Score':`${finalPts} pts`});
+    showResults('nebula', finalPts, {'👾 Overdrive Cores Wiped':score/25, '🏆 Final Score':`${finalPts} pts`});
   }
   loop();
 }
@@ -315,30 +330,32 @@ function startTetris(){
   function rotate(){let r=currentPiece[0].map((_,i)=>currentPiece.map(row=>row[i]).reverse());if(!checkCol(currentX,currentY,r))currentPiece=r}
 
   function loop(){
-    aCtx.clearRect(0,0,400,500);dropTimer++;if(dropTimer%25===0)drop();
+    aCtx.clearRect(0,0,400,500);dropTimer++;if(dropTimer%22===0)drop();
     grid.forEach((r,ri)=>{r.forEach((v,ci)=>{if(v){aCtx.fillStyle=v;aCtx.fillRect(ci*40,ri*25,38,23)}})});
     if(currentPiece){aCtx.fillStyle=COLORS[pIdx];currentPiece.forEach((r,ri)=>{r.forEach((v,ci)=>{if(v){aCtx.fillRect((currentX+ci)*40,(currentY+ri)*25,38,23)}})})}
     gameLoopId=requestAnimationFrame(loop);
   }
-  function end(){clearInterval(gTimer);cancelAnimationFrame(gameLoopId);window.onkeydown=null;showResults('tetris',Math.min(1200,score),{'🧱 Lines Cleared':score/150,'🏆 Final Score':`${score} pts`})}
+  function end(){clearInterval(gTimer);cancelAnimationFrame(gameLoopId);window.onkeydown=null;showResults('tetris',Math.min(1200,score),{'🧱 Data Lines Dropped':score/150,'🏆 Final Score':`${score} pts`})}
   loop();
 }
 
 // ════════════════════════════════════════════
-//  💥 GAME 4: DODGE CORES
+//  💥 GAME 4: DODGE CORES (SMOOTH MOUSE ENGINE)
 // ════════════════════════════════════════════
 function startDodge(){
   document.getElementById('g-canvas-holder').style.display='block';
-  let score=0, time=30, player={x:190,y:400,w:20,h:20}, obstacles=[];
+  let score=0, time=30, isGameOver=false, player={x:200,y:250,r:8}, obstacles=[];
   document.getElementById('g-time').textContent=time;
 
-  let moveLeft=false, moveRight=false;
-  window.onkeydown=e=>{if(e.code==='ArrowLeft')moveLeft=true;if(e.code==='ArrowRight')moveRight=true};
-  window.onkeyup=e=>{if(e.code==='ArrowLeft')moveLeft=false;if(e.code==='ArrowRight')moveRight=false};
-  document.getElementById('ctrl-left').onmousedown=()=>moveLeft=true;document.getElementById('ctrl-left').onmouseup=()=>moveLeft=false;
-  document.getElementById('ctrl-right').onmousedown=()=>moveRight=true;document.getElementById('ctrl-right').onmouseup=()=>moveRight=false;
+  // Track Mouse Movement Position Coordinates Smoothly
+  aCanvas.onmousemove = e => {
+    const rect = aCanvas.getBoundingClientRect();
+    player.x = e.clientX - rect.left;
+    player.y = e.clientY - rect.top;
+  };
 
   gTimer=setInterval(()=>{
+    if(isGameOver) return;
     time--;document.getElementById('g-time').textContent=time;
     document.getElementById('prog-fill').style.width=`${time/30*100}%`;
     score+=25;setLive(score);
@@ -346,21 +363,46 @@ function startDodge(){
   },1000);
 
   function loop(){
+    if(isGameOver) return;
     aCtx.clearRect(0,0,400,500);
-    if(moveLeft) player.x=Math.max(0, player.x-6);
-    if(moveRight) player.x=Math.min(380, player.x+6);
     
-    aCtx.fillStyle='var(--cyan)';aCtx.fillRect(player.x,player.y,player.w,player.h);
+    // Render Player Dot Core
+    aCtx.beginPath();aCtx.arc(player.x,player.y,player.r,0,Math.PI*2);
+    aCtx.fillStyle='var(--cyan)';aCtx.fill();
+    aCtx.strokeStyle='#fff';aCtx.stroke();
 
-    if(Math.random()<.06) obstacles.push({x:Math.random()*380,y:0,w:15,h:15,s:Math.random()*3+3});
-    obstacles.forEach((o,oi)=>{
-      o.y+=o.s;aCtx.fillStyle='var(--orange)';aCtx.fillRect(o.x,o.y,o.w,o.h);
-      if(o.x<player.x+player.w&&o.x+o.w>player.x&&o.y<player.y+player.h&&o.y+o.h>player.y){end()}
-      if(o.y>500) obstacles.splice(oi,1);
-    });
+    // Spawn Obstacles
+    if(Math.random()<.08) {
+      obstacles.push({
+        x:Math.random()*400,y:0,
+        vx:(Math.random()-0.5)*4,vy:Math.random()*3+3,
+        r:Math.random()*6+6
+      });
+    }
+
+    // Process and Matrix Render Obstacles
+    for(let i=obstacles.length-1; i>=0; i--){
+      let o = obstacles[i];
+      o.x += o.vx; o.y += o.vy;
+      
+      aCtx.beginPath();aCtx.arc(o.x,o.y,o.r,0,Math.PI*2);
+      aCtx.fillStyle='var(--orange)';aCtx.fill();
+      
+      // Calculate Circle Matrix Collision Intersection
+      let dx = o.x - player.x, dy = o.y - player.y;
+      let dist = Math.sqrt(dx*dx + dy*dy);
+      if(dist < o.r + player.r){ isGameOver=true; end(); return; }
+      if(o.y>520) obstacles.splice(i,1);
+    }
     gameLoopId=requestAnimationFrame(loop);
   }
-  function end(){clearInterval(gTimer);cancelAnimationFrame(gameLoopId);window.onkeydown=window.onkeyup=null;showResults('dodge',Math.min(800,score),{'⏱️ Seconds Survived':score/25,'🏆 Score':`${score} pts`})}
+  
+  function end(){
+    if(!isGameOver) isGameOver=true;
+    clearInterval(gTimer);cancelAnimationFrame(gameLoopId);
+    aCanvas.onmousemove=null;
+    showResults('dodge',Math.min(800,score),{'⏱️ Time Alive':score/25,'🏆 Score':`${score} pts`});
+  }
   loop();
 }
 
@@ -455,11 +497,10 @@ function startReaction(){
 }
 
 // ════════════════════════════════════════════
-//  🏆 LEADERBOARD LOAD
+//  🏆 LEADERBOARD DISPLAY GENERATOR
 // ════════════════════════════════════════════
 async function loadLeaderboard(){
   const panel=document.getElementById('lb-panel');if(!db){panel.innerHTML='<div class="lb-empty">⚠️ Connecting Database...</div>';return}
-  panel.innerHTML='<div class="lb-empty">Loading...</div>';
   try{
     db.ref('players').orderByChild('totalPoints').limitToLast(20).once('value', (snapshot) => {
       if(!snapshot.exists()){panel.innerHTML='<div class="lb-empty">No scores yet — be first!</div>';return}
@@ -468,7 +509,7 @@ async function loadLeaderboard(){
       players.forEach((d,i)=>{
         const isMe=user&&d.uid===user.uid;const cls=isMe?'me':i===0?'r1':'';
         const row=document.createElement('div');row.className=`lb-row ${cls}`;
-        row.innerHTML=`<div class="lb-rank">${medals[i]||'#'+(i+1)}</div><div class="lb-name">${esc(d.username)}${isMe?' ← You':''}</div><div class="lb-score">${(d.totalPoints||0).toLocaleString()} PTS</div>`;
+        row.innerHTML=`<div class="lb-rank">${medals[i]||'#'+(i+1)}</div><div class="lb-name">${esc(d.username)}${isMe?' ← You':''}</div><div class="lb-score">${(parseInt(d.totalPoints)||0).toLocaleString()} PTS</div>`;
         panel.appendChild(row);
       });
     });
