@@ -4,11 +4,20 @@
 const FB = {
   apiKey:            "AIzaSyC1NZy2ZzNLutYAiE_QjPZGH5CymvGCnDs",
   authDomain:        "neal-with-roblox.firebaseapp.com",
+  databaseURL:       "https://neal-with-roblox-default-rtdb.asia-southeast1.firebasedatabase.app",
   projectId:         "neal-with-roblox",
   storageBucket:     "neal-with-roblox.firebasestorage.app",
   messagingSenderId: "984878364213",
   appId:             "1:984878364213:web:fb1147a1a5ff0b02d2a37c"
 };
+
+let auth = null, db = null;
+try { 
+  firebase.initializeApp(FB); 
+  auth = firebase.auth(); 
+  db = firebase.database(); // This connects to your Realtime Database!
+}
+catch(e) { console.warn('Firebase connection failed:', e.message); }
 
 // ════════════════════════════════════════════
 //  🌌 PARTICLE BACKGROUND
