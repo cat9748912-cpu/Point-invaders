@@ -266,10 +266,21 @@ function startClick(){
 // ════════════════════════════════════════════
 function startNebula(){
   document.getElementById('g-canvas-holder').style.display='block';
-  let score = 0, gameTime = 30, shield = 100, screenShake = 0;
-  let projectiles = [], enemies = [], powerups = [], particles = [], floatingTexts = [], backgroundStars = [];
+  document.getElementById('arcade-controls').style.display='flex';
+  document.getElementById('ctrl-action').textContent='SHOOT / ABILITY';
+  let score = 0, gameTime = 60, shield = 100, screenShake = 0;
+  // plasmaOrbs: total orbs collected (levels 1-3 = weapon, 4+ = special abilities)
+  let plasmaOrbs = 0;
+  // Special ability charges earned beyond level 3
+  let specialAbilities = []; // queue of ability types earned
+  let activeAbility = null;  // currently deployed ability with timer/state
+  // Enemy attack arrays
+  let projectiles = [], enemyProjectiles = [], enemies = [], powerups = [], particles = [], floatingTexts = [], backgroundStars = [];
   let enemySpawnTimer = 0, enemySpawnInterval = 1000, lastTime = performance.now();
-  
+  let shieldFlashTimer = 0; // red flash when hit
+  let timeWarpActive = false, timeWarpTimer = 0;
+  let shieldBubbleActive = false, shieldBubbleTimer = 0;
+
   document.getElementById('g-time').textContent = gameTime;
   document.getElementById('prog-fill').style.width = '100%';
   document.getElementById('prog-fill').style.background = 'linear-gradient(90deg, #ff0844, #ff4e50)';
@@ -278,16 +289,181 @@ function startNebula(){
   for (let i = 0; i < 15; i++) backgroundStars.push({ x: Math.random() * 400, y: Math.random() * 500, size: 1.6, speed: 1.4, alpha: 0.8 });
 
   let keys = {}, moveLeft = false, moveRight = false;
-  window.onkeydown = e => { if(['Space','ArrowLeft','ArrowRight','KeyA','KeyD'].includes(e.code)) e.preventDefault(); keys[e.code] = true; };
+  window.onkeydown = e => {
+    if(['Space','ArrowLeft','ArrowRight','KeyA','KeyD','KeyQ'].includes(e.code)) e.preventDefault();
+    keys[e.code] = true;
+    // Q or E to deploy special ability
+    if ((e.code === 'KeyQ' || e.code === 'KeyE') && specialAbilities.length > 0 && !activeAbility) deployAbility();
+  };
   window.onkeyup = e => { if(['Space','ArrowLeft','ArrowRight','KeyA','KeyD'].includes(e.code)) e.preventDefault(); keys[e.code] = false; };
 
   document.getElementById('ctrl-left').onmousedown = () => moveLeft = true; document.getElementById('ctrl-left').onmouseup = () => moveLeft = false;
   document.getElementById('ctrl-right').onmousedown = () => moveRight = true; document.getElementById('ctrl-right').onmouseup = () => moveRight = false;
-  document.getElementById('ctrl-action').onclick = () => player.shoot();
+  // ACTION button: shoot if no special ready, else deploy special
+  document.getElementById('ctrl-action').onclick = () => {
+    if (specialAbilities.length > 0 && !activeAbility) deployAbility();
+    else player.shoot();
+  };
+
+  // ── SPECIAL ABILITY DEFINITIONS (unlocked at plasma orb 4, 5, 6, 7+) ──
+  const ABILITY_DEFS = [
+    { id:'SMART_MISSILE', label:'🎯 SMART MISSILE', color:'#00f5ff', desc:'MISSILES LOCK ON!' },
+    { id:'SHIELD_BURST',  label:'🛡️ SHIELD BURST',  color:'#a855f7', desc:'SHIELD RESTORED!' },
+    { id:'TIME_WARP',     label:'⏳ TIME WARP',     color:'#ffd700', desc:'TIME SLOWED!' },
+    { id:'NOVA_BOMB',     label:'💥 NOVA BOMB',     color:'#ff0090', desc:'SCREEN NUKE!' },
+  ];
+  // Cycle through abilities for each extra orb
+  function getAbilityForOrb(orbIndex) {
+    // orbIndex = (plasmaOrbs - 3), 1-based → pick from cycle
+    return ABILITY_DEFS[(orbIndex - 1) % ABILITY_DEFS.length];
+  }
+
+  function deployAbility() {
+    if (specialAbilities.length === 0) return;
+    const abil = specialAbilities.shift();
+    updateAbilityHUD();
+    activeAbility = abil;
+
+    if (abil.id === 'SMART_MISSILE') {
+      // Fire 5 homing missiles targeting random enemies
+      popText(player.x, player.y - 20, '🎯 SMART MISSILES!', '#00f5ff');
+      // Spawn missiles that will home in updateLoop
+      for (let i = 0; i < 5; i++) {
+        projectiles.push({ x: player.x + player.w/2, y: player.y, vx: (i-2)*1.5, vy: -8, smart: true, smartTimer: 0 });
+      }
+      screenShake = 8;
+      setTimeout(() => { activeAbility = null; }, 2000);
+
+    } else if (abil.id === 'SHIELD_BURST') {
+      // Restore shield + EMP ring burst that damages all enemies
+      popText(200, 250, '🛡️ SHIELD BURST!', '#a855f7');
+      shield = Math.min(100, shield + 40);
+      document.getElementById('prog-fill').style.width = `${shield}%`;
+      shieldBubbleActive = true; shieldBubbleTimer = 60; // 60 frames visual
+      // Damage all enemies
+      enemies.forEach(e => {
+        e.hp -= 2;
+        explode(e.x + e.w/2, e.y + e.h/2, '#a855f7', 8);
+      });
+      enemies = enemies.filter(e => {
+        if (e.hp <= 0) { popText(e.x, e.y, `+${e.pts}`, e.color); score += e.pts; setLive(score); return false; }
+        return true;
+      });
+      // Clear enemy projectiles too
+      enemyProjectiles = [];
+      screenShake = 20;
+      setTimeout(() => { shieldBubbleActive = false; activeAbility = null; }, 1500);
+
+    } else if (abil.id === 'TIME_WARP') {
+      // Slow all enemies for 4 seconds
+      popText(200, 250, '⏳ TIME WARP!', '#ffd700');
+      timeWarpActive = true; timeWarpTimer = 240; // ~4s at 60fps
+      // Flash effect
+      for (let i = 0; i < 40; i++) {
+        const ang = (i / 40) * Math.PI * 2, r = 80 + Math.random() * 60;
+        particles.push({ x: 200 + Math.cos(ang)*r, y: 250 + Math.sin(ang)*r, vx: -Math.cos(ang)*1.5, vy: -Math.sin(ang)*1.5, alpha: 1, decay: 0.02, color: '#ffd700', size: 3 });
+      }
+      screenShake = 12;
+      // Ability cleared after warp ends
+      setTimeout(() => { timeWarpActive = false; activeAbility = null; }, 4000);
+
+    } else if (abil.id === 'NOVA_BOMB') {
+      // Destroy ALL enemies with massive explosion
+      popText(200, 200, '💥 NOVA BOMB!', '#ff0090');
+      screenShake = 35;
+      // Ring of nova particles
+      for (let i = 0; i < 80; i++) {
+        const ang = (i/80)*Math.PI*2, v = Math.random()*8+4;
+        particles.push({ x: 200, y: 250, vx: Math.cos(ang)*v, vy: Math.sin(ang)*v, alpha: 1, decay: 0.015, color: ['#ff0090','#ff6600','#ffd700','#a855f7','#00f5ff'][i%5], size: Math.random()*4+2 });
+      }
+      // Cascade explosions on each enemy
+      enemies.forEach(e => {
+        for (let w = 0; w < 3; w++) setTimeout(() => { explode(e.x + e.w/2, e.y + e.h/2, e.color, 20); }, w * 120);
+        score += e.pts * 2; // double points for nova
+        popText(e.x, e.y, `+${e.pts*2} NOVA!`, '#ff0090');
+      });
+      setLive(score);
+      enemies = [];
+      enemyProjectiles = [];
+      // Second shockwave
+      setTimeout(() => {
+        for (let i = 0; i < 40; i++) {
+          const ang = (i/40)*Math.PI*2, v = Math.random()*5+2;
+          particles.push({ x: 200, y: 250, vx: Math.cos(ang)*v, vy: Math.sin(ang)*v, alpha: 0.8, decay: 0.02, color: '#ffffff', size: 2 });
+        }
+      }, 300);
+      setTimeout(() => { activeAbility = null; }, 2000);
+    }
+  }
+
+  // ── ABILITY HUD OVERLAY (bottom of canvas) ──
+  let abilPulse = 0;
+  function drawAbilityHUD() {
+    abilPulse += 0.08;
+    if (specialAbilities.length === 0 && !activeAbility) return;
+    aCtx.save();
+
+    if (specialAbilities.length > 0 && !activeAbility) {
+      const next = specialAbilities[0];
+      const pulse = Math.sin(abilPulse) * 0.4 + 0.7;
+      aCtx.fillStyle = 'rgba(0,0,0,0.7)';
+      aCtx.strokeStyle = next.color;
+      aCtx.lineWidth = 2;
+      aCtx.shadowBlur = 12 * pulse; aCtx.shadowColor = next.color;
+      aCtx.beginPath(); aCtx.roundRect(6, 448, 388, 46, 8); aCtx.fill(); aCtx.stroke();
+      aCtx.shadowBlur = 8 * pulse; aCtx.shadowColor = next.color;
+      aCtx.fillStyle = next.color;
+      aCtx.font = 'bold 8.5px Orbitron';
+      aCtx.fillText('PRESS [ACTION] BUTTON  OR  [Q]/[E] KEY TO DEPLOY:', 14, 462);
+      aCtx.fillStyle = '#fff';
+      aCtx.font = 'bold 12px Orbitron';
+      aCtx.shadowBlur = 10; aCtx.shadowColor = next.color;
+      aCtx.fillText(next.label, 14, 487);
+      if (specialAbilities.length > 1) {
+        aCtx.fillStyle = 'rgba(255,255,255,0.55)';
+        aCtx.font = 'bold 9px Orbitron';
+        aCtx.fillText('(+' + (specialAbilities.length - 1) + ' more queued)', 200, 487);
+      }
+    } else if (activeAbility) {
+      aCtx.fillStyle = 'rgba(0,0,0,0.65)';
+      aCtx.strokeStyle = activeAbility.color;
+      aCtx.lineWidth = 1.5;
+      aCtx.beginPath(); aCtx.roundRect(6, 448, 388, 46, 8); aCtx.fill(); aCtx.stroke();
+      aCtx.fillStyle = activeAbility.color;
+      aCtx.font = 'bold 10px Orbitron';
+      aCtx.shadowBlur = 12; aCtx.shadowColor = activeAbility.color;
+      aCtx.textAlign = 'center';
+      aCtx.fillText('ACTIVE: ' + activeAbility.desc, 200, 475);
+      aCtx.textAlign = 'left';
+    }
+
+    aCtx.restore();
+  }
+
+  // ── PLASMA ORB LEVEL DISPLAY ──
+  function drawPlasmaLevel() {
+    const wl = Math.min(3, plasmaOrbs + 1); // visual weapon tier 1-3
+    const extra = Math.max(0, plasmaOrbs - 2); // extra orbs beyond max weapon
+    aCtx.save();
+    aCtx.fillStyle = 'rgba(0,0,0,0.5)'; aCtx.strokeStyle = '#39ff14'; aCtx.lineWidth = 1;
+    aCtx.beginPath(); aCtx.roundRect(8, 10, 110, 24, 5); aCtx.fill(); aCtx.stroke();
+    aCtx.fillStyle = '#39ff14'; aCtx.font = 'bold 8px Orbitron'; aCtx.shadowBlur = 6; aCtx.shadowColor = '#39ff14';
+    const label = plasmaOrbs < 3 ? `PLASMA LV${wl}` : `PLASMA MAX +${extra}`;
+    aCtx.fillText(label, 14, 25);
+    // Pip bars
+    for (let i = 0; i < Math.min(5, plasmaOrbs + 1); i++) {
+      aCtx.fillStyle = i < 3 ? '#39ff14' : ['#00f5ff','#ffd700','#ff0090','#a855f7'][i-3];
+      aCtx.shadowColor = aCtx.fillStyle; aCtx.shadowBlur = 8;
+      aCtx.fillRect(82 + i * 7, 14, 5, 14);
+    }
+    aCtx.restore();
+  }
 
   const player = {
-    x: 183, y: 430, w: 34, h: 26, vx: 0, friction: 0.85, accel: 1.2, cooldown: 0, angle: 0, weaponLevel: 1,
+    x: 183, y: 430, w: 34, h: 26, vx: 0, friction: 0.85, accel: 1.2, cooldown: 0, angle: 0,
+    get weaponLevel() { return Math.min(3, plasmaOrbs + 1); },
     update(dt) {
+      const speedMult = timeWarpActive ? 1.0 : 1.0; // player always normal
       if (keys['ArrowLeft'] || keys['KeyA'] || moveLeft) this.vx -= this.accel;
       if (keys['ArrowRight'] || keys['KeyD'] || moveRight) this.vx += this.accel;
       this.vx *= this.friction; this.x += this.vx; this.angle = this.vx * 0.05;
@@ -297,111 +473,471 @@ function startNebula(){
       if (keys['Space'] && this.cooldown <= 0) { this.shoot(); this.cooldown = 150; }
     },
     shoot() {
-      if (this.weaponLevel === 1) { projectiles.push({ x: this.x + this.w / 2, y: this.y, vx: 0, vy: -10 }); } 
-      else if (this.weaponLevel === 2) { projectiles.push({ x: this.x + 6, y: this.y + 5, vx: -1.5, vy: -10 }); projectiles.push({ x: this.x + this.w - 6, y: this.y + 5, vx: 1.5, vy: -10 }); } 
-      else { projectiles.push({ x: this.x + 5, y: this.y + 5, vx: -2, vy: -10 }); projectiles.push({ x: this.x + this.w / 2, y: this.y, vx: 0, vy: -12 }); projectiles.push({ x: this.x + this.w - 5, y: this.y + 5, vx: 2, vy: -10 }); }
+      const wl = this.weaponLevel;
+      if (wl === 1) {
+        projectiles.push({ x: this.x + this.w/2, y: this.y, vx: 0, vy: -10 });
+      } else if (wl === 2) {
+        projectiles.push({ x: this.x + 6, y: this.y + 5, vx: -1.5, vy: -10 });
+        projectiles.push({ x: this.x + this.w - 6, y: this.y + 5, vx: 1.5, vy: -10 });
+      } else {
+        projectiles.push({ x: this.x + 5, y: this.y + 5, vx: -2, vy: -10 });
+        projectiles.push({ x: this.x + this.w/2, y: this.y, vx: 0, vy: -12 });
+        projectiles.push({ x: this.x + this.w - 5, y: this.y + 5, vx: 2, vy: -10 });
+        // Extra orbs beyond lv3: add spread plasma bolts
+        if (plasmaOrbs >= 3) {
+          projectiles.push({ x: this.x + this.w/2, y: this.y + 5, vx: -3.5, vy: -8, plasma: true });
+          projectiles.push({ x: this.x + this.w/2, y: this.y + 5, vx: 3.5, vy: -8, plasma: true });
+        }
+        if (plasmaOrbs >= 5) {
+          projectiles.push({ x: this.x + this.w/2, y: this.y + 8, vx: -5, vy: -6, plasma: true });
+          projectiles.push({ x: this.x + this.w/2, y: this.y + 8, vx: 5, vy: -6, plasma: true });
+        }
+      }
     },
     draw() {
-      aCtx.save(); aCtx.translate(this.x + this.w / 2, this.y + this.h / 2); aCtx.rotate(this.angle);
-      aCtx.shadowBlur = 15; aCtx.shadowColor = '#00f5ff'; aCtx.fillStyle = '#00f5ff';
-      aCtx.beginPath(); aCtx.moveTo(0, -this.h / 2); aCtx.lineTo(-this.w / 2, this.h / 2); aCtx.lineTo(-this.w / 4, this.h / 4);
-      aCtx.lineTo(this.w / 4, this.h / 4); aCtx.lineTo(this.w / 2, this.h / 2); aCtx.closePath(); aCtx.fill();
+      aCtx.save(); aCtx.translate(this.x + this.w/2, this.y + this.h/2); aCtx.rotate(this.angle);
+      // Shield bubble visual
+      if (shieldBubbleActive) {
+        aCtx.strokeStyle = `rgba(168,85,247,${0.4 + Math.sin(shieldBubbleTimer*0.3)*0.3})`;
+        aCtx.lineWidth = 3; aCtx.shadowBlur = 20; aCtx.shadowColor = '#a855f7';
+        aCtx.beginPath(); aCtx.arc(0, 0, 30, 0, Math.PI*2); aCtx.stroke();
+      }
+      const glowColor = plasmaOrbs >= 3 ? '#a855f7' : '#00f5ff';
+      aCtx.shadowBlur = plasmaOrbs >= 3 ? 25 : 15; aCtx.shadowColor = glowColor; aCtx.fillStyle = glowColor;
+      aCtx.beginPath(); aCtx.moveTo(0, -this.h/2); aCtx.lineTo(-this.w/2, this.h/2); aCtx.lineTo(-this.w/4, this.h/4);
+      aCtx.lineTo(this.w/4, this.h/4); aCtx.lineTo(this.w/2, this.h/2); aCtx.closePath(); aCtx.fill();
       aCtx.shadowBlur = 5; aCtx.shadowColor = '#fff'; aCtx.fillStyle = '#fff';
-      aCtx.beginPath(); aCtx.moveTo(0, -this.h / 3); aCtx.lineTo(-3, 3); aCtx.lineTo(3, 3); aCtx.closePath(); aCtx.fill();
-      aCtx.fillStyle = Math.random() > 0.5 ? '#ff0844' : '#ff6600'; aCtx.fillRect(-3, this.h / 2 - 2, 6, Math.random() * 6 + 3);
+      aCtx.beginPath(); aCtx.moveTo(0, -this.h/3); aCtx.lineTo(-3, 3); aCtx.lineTo(3, 3); aCtx.closePath(); aCtx.fill();
+      aCtx.fillStyle = Math.random() > 0.5 ? '#ff0844' : '#ff6600'; aCtx.fillRect(-3, this.h/2 - 2, 6, Math.random()*6+3);
       aCtx.restore();
     }
   };
 
+  // ── ENEMY CLASS (with attack behaviours) ──
   class Enemy {
     constructor(type) {
-      this.type = type; this.x = Math.random() * 350 + 10; this.y = -30; this.offset = Math.random() * 100;
-      if (type === 'SCOUT') { this.w = 20; this.h = 20; this.speed = 3.5; this.hp = 1; this.color = '#ff0090'; this.pts = 15; }
-      else if (type === 'BOMBER') { this.w = 36; this.h = 28; this.speed = 1.2; this.hp = 3; this.color = '#ff6600'; this.pts = 40; }
-      else { this.w = 26; this.h = 22; this.speed = 2.2; this.hp = 2; this.color = '#a855f7'; this.pts = 25; }
+      this.type = type; this.x = Math.random() * 340 + 10; this.y = -30; this.offset = Math.random() * 100;
+      this.attackTimer = 0;
+      if (type === 'SCOUT') {
+        // PINK — dives straight down fast, accelerates over time
+        this.w = 20; this.h = 20; this.speed = 3.5; this.hp = 1; this.color = '#ff0090'; this.pts = 15;
+        this.dive = false; this.diveSpeed = 0;
+      } else if (type === 'BOMBER') {
+        // ORANGE — moves slowly, drops bombs periodically
+        this.w = 36; this.h = 28; this.speed = 1.2; this.hp = 3; this.color = '#ff6600'; this.pts = 40;
+        this.attackCooldown = 120; // frames between bombs (2s at 60fps)
+      } else {
+        // PURPLE FIGHTER — weaves, shoots lasers at player
+        this.w = 26; this.h = 22; this.speed = 2.2; this.hp = 2; this.color = '#a855f7'; this.pts = 25;
+        this.attackCooldown = 90; // frames between laser shots
+        this.laserFlash = 0;
+      }
     }
-    update() { this.y += this.speed; if (this.type === 'FIGHTER') this.x += Math.sin(this.y * 0.03 + this.offset) * 1.5; }
+
+    update(frame) {
+      const warpMult = timeWarpActive ? 0.35 : 1.0;
+
+      if (this.type === 'SCOUT') {
+        // Pink scout: dive behaviour — after entering screen, occasionally
+        // locks onto player X and dives diagonally
+        if (!this.dive && this.y > 50 && Math.random() < 0.004) {
+          this.dive = true; this.diveSpeed = 6 + Math.random() * 3;
+          this.diveVx = (player.x - this.x) * 0.04;
+        }
+        if (this.dive) {
+          this.y += this.diveSpeed * warpMult;
+          this.x += this.diveVx * warpMult;
+          this.diveSpeed = Math.min(12, this.diveSpeed + 0.12); // accelerate
+        } else {
+          this.y += this.speed * warpMult;
+        }
+
+      } else if (this.type === 'BOMBER') {
+        this.y += this.speed * warpMult;
+        this.attackTimer++;
+        if (this.attackTimer >= this.attackCooldown / warpMult) {
+          this.attackTimer = 0;
+          // Drop a bomb straight down from the enemy center
+          enemyProjectiles.push({
+            type: 'BOMB', x: this.x + this.w/2, y: this.y + this.h,
+            vx: (Math.random() - 0.5) * 1.2, vy: 3.5,
+            r: 7, alpha: 1, trail: [], fuseTimer: 0
+          });
+        }
+
+      } else {
+        // Purple FIGHTER — sine wave + laser shots
+        this.y += this.speed * warpMult;
+        this.x += Math.sin(this.y * 0.03 + this.offset) * 1.5 * warpMult;
+        this.attackTimer++;
+        if (this.laserFlash > 0) this.laserFlash--;
+        if (this.attackTimer >= this.attackCooldown / warpMult) {
+          this.attackTimer = 0; this.laserFlash = 8;
+          // Shoot laser aimed at player
+          const dx = player.x + player.w/2 - (this.x + this.w/2);
+          const dy = player.y + player.h/2 - (this.y + this.h/2);
+          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+          const speed = 5.5;
+          enemyProjectiles.push({
+            type: 'LASER', x: this.x + this.w/2, y: this.y + this.h,
+            vx: (dx/dist)*speed, vy: (dy/dist)*speed,
+            len: 18, alpha: 1
+          });
+        }
+      }
+    }
+
     draw() {
-      aCtx.save(); aCtx.shadowBlur = 12; aCtx.shadowColor = this.color; aCtx.fillStyle = this.color;
-      aCtx.beginPath();
-      if (this.type === 'BOMBER') { aCtx.moveTo(this.x + this.w / 2, this.y + this.h); aCtx.lineTo(this.x, this.y + this.h * 0.4); aCtx.lineTo(this.x + this.w * 0.2, this.y); aCtx.lineTo(this.x + this.w * 0.8, this.y); aCtx.lineTo(this.x + this.w, this.y + this.h * 0.4); } 
-      else { aCtx.moveTo(this.x + this.w / 2, this.y + this.h); aCtx.lineTo(this.x, this.y); aCtx.lineTo(this.x + this.w, this.y); }
-      aCtx.closePath(); aCtx.fill(); aCtx.restore();
+      aCtx.save(); aCtx.shadowBlur = 12; aCtx.shadowColor = this.color;
+
+      if (this.type === 'BOMBER') {
+        // Orange chunky diamond-ish shape
+        aCtx.fillStyle = this.dive ? '#ffaa00' : this.color;
+        aCtx.beginPath();
+        aCtx.moveTo(this.x + this.w/2, this.y + this.h);
+        aCtx.lineTo(this.x, this.y + this.h*0.4);
+        aCtx.lineTo(this.x + this.w*0.2, this.y);
+        aCtx.lineTo(this.x + this.w*0.8, this.y);
+        aCtx.lineTo(this.x + this.w, this.y + this.h*0.4);
+        aCtx.closePath(); aCtx.fill();
+        // Warning glow when about to bomb
+        if (this.attackTimer > this.attackCooldown * 0.7) {
+          const glow = Math.sin(this.attackTimer * 0.4) * 0.5 + 0.5;
+          aCtx.strokeStyle = `rgba(255,255,0,${glow})`; aCtx.lineWidth = 2;
+          aCtx.stroke();
+        }
+
+      } else if (this.type === 'FIGHTER') {
+        // Purple fighter — arrow with laser charge glow
+        aCtx.fillStyle = this.laserFlash > 0 ? '#ffffff' : this.color;
+        aCtx.shadowBlur = this.laserFlash > 0 ? 25 : 12;
+        aCtx.beginPath();
+        aCtx.moveTo(this.x + this.w/2, this.y + this.h);
+        aCtx.lineTo(this.x, this.y);
+        aCtx.lineTo(this.x + this.w*0.35, this.y + this.h*0.4);
+        aCtx.lineTo(this.x + this.w/2, this.y + this.h*0.2);
+        aCtx.lineTo(this.x + this.w*0.65, this.y + this.h*0.4);
+        aCtx.lineTo(this.x + this.w, this.y);
+        aCtx.closePath(); aCtx.fill();
+
+      } else {
+        // Pink scout — sleek triangle, red-hot when diving
+        aCtx.fillStyle = this.dive ? '#ff4444' : this.color;
+        aCtx.shadowBlur = this.dive ? 22 : 12;
+        aCtx.shadowColor = this.dive ? '#ff0000' : this.color;
+        aCtx.beginPath();
+        aCtx.moveTo(this.x + this.w/2, this.y + this.h);
+        aCtx.lineTo(this.x, this.y);
+        aCtx.lineTo(this.x + this.w, this.y);
+        aCtx.closePath(); aCtx.fill();
+        // Dive trail
+        if (this.dive) {
+          aCtx.strokeStyle = 'rgba(255,68,68,0.4)'; aCtx.lineWidth = 1;
+          aCtx.beginPath(); aCtx.moveTo(this.x+this.w/2, this.y); aCtx.lineTo(this.x+this.w/2, this.y-18); aCtx.stroke();
+        }
+      }
+
+      // HP bar (only for multi-HP enemies)
+      if ((this.type === 'BOMBER' && this.hp < 3) || (this.type === 'FIGHTER' && this.hp < 2)) {
+        const maxHp = this.type === 'BOMBER' ? 3 : 2;
+        aCtx.fillStyle = 'rgba(0,0,0,0.6)'; aCtx.fillRect(this.x, this.y - 7, this.w, 4);
+        aCtx.fillStyle = '#39ff14'; aCtx.fillRect(this.x, this.y - 7, this.w * (this.hp/maxHp), 4);
+      }
+
+      aCtx.restore();
+    }
+  }
+
+  // ── ENEMY PROJECTILE DRAWING & UPDATE ──
+  function updateEnemyProjectiles(dt) {
+    const warpMult = timeWarpActive ? 0.35 : 1.0;
+    for (let i = enemyProjectiles.length - 1; i >= 0; i--) {
+      const ep = enemyProjectiles[i];
+      ep.x += ep.vx * warpMult; ep.y += ep.vy * warpMult;
+
+      if (ep.type === 'BOMB') {
+        ep.fuseTimer++;
+        // Trail
+        ep.trail.push({ x: ep.x, y: ep.y, alpha: 0.7 });
+        if (ep.trail.length > 10) ep.trail.shift();
+        // Draw trail
+        ep.trail.forEach((t, ti) => {
+          aCtx.save(); aCtx.globalAlpha = t.alpha * (ti/ep.trail.length) * 0.5;
+          aCtx.fillStyle = '#ff6600';
+          aCtx.beginPath(); aCtx.arc(t.x, t.y, 3, 0, Math.PI*2); aCtx.fill(); aCtx.restore();
+        });
+        // Draw bomb
+        aCtx.save();
+        aCtx.shadowBlur = 14; aCtx.shadowColor = '#ff6600';
+        // Pulsing fuse glow
+        const fuseGlow = Math.sin(ep.fuseTimer * 0.3) * 0.4 + 0.6;
+        aCtx.fillStyle = `rgba(255,100,0,${fuseGlow})`;
+        aCtx.beginPath(); aCtx.arc(ep.x, ep.y, ep.r, 0, Math.PI*2); aCtx.fill();
+        aCtx.strokeStyle = '#ffcc00'; aCtx.lineWidth = 1.5; aCtx.stroke();
+        // Fuse spark
+        aCtx.fillStyle = '#ffff00';
+        aCtx.beginPath(); aCtx.arc(ep.x + Math.sin(ep.fuseTimer*0.8)*3, ep.y - ep.r - 3, 2, 0, Math.PI*2); aCtx.fill();
+        aCtx.restore();
+
+        // Shield collision — immune if bubble active
+        if (!shieldBubbleActive &&
+            Math.hypot(ep.x - (player.x+player.w/2), ep.y - (player.y+player.h/2)) < ep.r + 14) {
+          explode(ep.x, ep.y, '#ff6600', 18);
+          shield -= 20; screenShake = 16; shieldFlashTimer = 15;
+          document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
+          enemyProjectiles.splice(i,1); if (shield <= 0) end(); continue;
+        }
+        if (ep.y > 520) { enemyProjectiles.splice(i,1); continue; }
+
+      } else if (ep.type === 'LASER') {
+        // Draw laser bolt
+        aCtx.save();
+        aCtx.shadowBlur = 12; aCtx.shadowColor = '#a855f7';
+        aCtx.strokeStyle = '#a855f7'; aCtx.lineWidth = 2.5;
+        aCtx.beginPath();
+        aCtx.moveTo(ep.x, ep.y);
+        aCtx.lineTo(ep.x - ep.vx * (ep.len/5), ep.y - ep.vy * (ep.len/5));
+        aCtx.stroke();
+        aCtx.strokeStyle = 'rgba(255,255,255,0.7)'; aCtx.lineWidth = 1;
+        aCtx.beginPath();
+        aCtx.moveTo(ep.x, ep.y);
+        aCtx.lineTo(ep.x - ep.vx*2, ep.y - ep.vy*2);
+        aCtx.stroke();
+        aCtx.restore();
+
+        // Player collision
+        if (!shieldBubbleActive &&
+            collide({ x: ep.x - 4, y: ep.y - 4, w: 8, h: 8 }, { x: player.x, y: player.y, w: player.w, h: player.h })) {
+          explode(ep.x, ep.y, '#a855f7', 8);
+          shield -= 12; screenShake = 10; shieldFlashTimer = 10;
+          document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
+          enemyProjectiles.splice(i,1); if (shield <= 0) end(); continue;
+        }
+        if (ep.y > 520 || ep.y < -20 || ep.x < -20 || ep.x > 420) { enemyProjectiles.splice(i,1); continue; }
+      }
     }
   }
 
   function explode(x, y, color, qty = 10) {
-    for (let i = 0; i < qty; i++) { let ang = Math.random() * Math.PI * 2, v = Math.random() * 4 + 1; particles.push({ x, y, vx: Math.cos(ang) * v, vy: Math.sin(ang) * v, alpha: 1, decay: Math.random() * 0.03 + 0.02, color }); }
+    for (let i = 0; i < qty; i++) {
+      let ang = Math.random() * Math.PI * 2, v = Math.random() * 4 + 1;
+      particles.push({ x, y, vx: Math.cos(ang)*v, vy: Math.sin(ang)*v, alpha: 1, decay: Math.random()*0.03+0.02, color, size: Math.random()*2+1 });
+    }
   }
-  function popText(x, y, txt, color) { floatingTexts.push({ x, y, txt, color, alpha: 1 }); }
+  function popText(x, y, txt, color) { floatingTexts.push({ x, y, txt, color, alpha: 1, vy: -0.8 }); }
   const collide = (r1, r2) => r1.x < r2.x + r2.w && r1.x + r1.w > r2.x && r1.y < r2.y + r2.h && r1.y + r1.h > r2.y;
 
   gTimer = setInterval(() => { gameTime--; document.getElementById('g-time').textContent = gameTime; if (gameTime <= 0) end(); }, 1000);
 
+  let frame = 0;
+
   function pipeline(now) {
     let dt = now - lastTime; lastTime = now;
+    frame++;
     aCtx.clearRect(0, 0, 400, 500);
 
-    aCtx.save(); if (screenShake > 0.5) { aCtx.translate((Math.random() - 0.5) * screenShake, (Math.random() - 0.5) * screenShake); screenShake *= 0.88; }
-    backgroundStars.forEach(s => { s.y += s.speed; if (s.y > 500) s.y = 0; aCtx.fillStyle = `rgba(255,255,255,${s.alpha})`; aCtx.fillRect(s.x, s.y, s.size, s.size); });
+    aCtx.save();
+    if (screenShake > 0.5) { aCtx.translate((Math.random()-0.5)*screenShake, (Math.random()-0.5)*screenShake); screenShake *= 0.88; }
+
+    // Shield flash overlay
+    if (shieldFlashTimer > 0) {
+      shieldFlashTimer--;
+      aCtx.fillStyle = `rgba(255,0,0,${shieldFlashTimer/15*0.25})`;
+      aCtx.fillRect(0, 0, 400, 500);
+    }
+
+    // Time warp visual (blue tint + slowdown label)
+    if (timeWarpActive) {
+      if (timeWarpTimer > 0) timeWarpTimer--;
+      aCtx.fillStyle = 'rgba(255,215,0,0.04)';
+      aCtx.fillRect(0, 0, 400, 500);
+      // Pulsing border
+      aCtx.strokeStyle = `rgba(255,215,0,${0.3 + Math.sin(frame*0.2)*0.2})`;
+      aCtx.lineWidth = 3;
+      aCtx.strokeRect(2, 2, 396, 496);
+    }
+
+    backgroundStars.forEach(s => {
+      s.y += s.speed * (timeWarpActive ? 0.35 : 1);
+      if (s.y > 500) s.y = 0;
+      aCtx.fillStyle = `rgba(255,255,255,${s.alpha})`; aCtx.fillRect(s.x, s.y, s.size, s.size);
+    });
 
     player.update(dt); player.draw();
+
+    // Shield bubble countdown
+    if (shieldBubbleActive && shieldBubbleTimer > 0) shieldBubbleTimer--;
 
     enemySpawnTimer += dt;
     if (enemySpawnTimer >= enemySpawnInterval) {
       let r = Math.random(), type = 'SCOUT';
-      if (score > 150 && r > 0.75) type = 'BOMBER'; else if (score > 60 && r > 0.4) type = 'FIGHTER';
-      enemies.push(new Enemy(type)); enemySpawnTimer = 0; enemySpawnInterval = Math.max(300, 1100 - score * 0.5);
+      if (score > 150 && r > 0.75) type = 'BOMBER';
+      else if (score > 60 && r > 0.4) type = 'FIGHTER';
+      enemies.push(new Enemy(type)); enemySpawnTimer = 0;
+      enemySpawnInterval = Math.max(300, 1100 - score * 0.5);
     }
 
-    projectiles.forEach((p, pi) => {
-      p.x += p.vx; p.y += p.vy;
-      aCtx.save(); aCtx.shadowBlur = 10; aCtx.shadowColor = '#00f5ff'; aCtx.fillStyle = '#00f5ff'; aCtx.fillRect(p.x - 1.5, p.y, 3, 10); aCtx.restore();
-      if (p.y < -10) projectiles.splice(pi, 1);
-    });
-
-    powerups.forEach((pu, pui) => {
-      pu.y += 1.8; pu.pulse += 0.1;
-      aCtx.save(); aCtx.shadowBlur = 10; aCtx.shadowColor = '#39ff14'; aCtx.fillStyle = '#39ff14';
-      aCtx.translate(pu.x, pu.y); aCtx.rotate(pu.pulse * 0.2); aCtx.fillRect(-6, -6, 12, 12); aCtx.restore();
-      if (collide({ x: player.x, y: player.y, w: player.w, h: player.h }, { x: pu.x - 6, y: pu.y - 6, w: 12, h: 12 })) {
-        player.weaponLevel = Math.min(3, player.weaponLevel + 1);
-        popText(player.x, player.y - 10, 'PLASMA UPGRADE!', '#39ff14'); explode(pu.x, pu.y, '#39ff14', 15); powerups.splice(pui, 1);
-      } else if (pu.y > 520) powerups.splice(pui, 1);
-    });
-
-    enemies.forEach((e, ei) => {
-      e.update(); e.draw();
-      if (e.y > 510) { enemies.splice(ei, 1); shield -= 15; screenShake = 10; document.getElementById('prog-fill').style.width = `${Math.max(0, shield)}%`; if (shield <= 0) end(); return; }
-      if (collide({ x: player.x, y: player.y, w: player.w, h: player.h }, { x: e.x, y: e.y, w: e.w, h: e.h })) {
-        explode(e.x + e.w / 2, e.y + e.h / 2, e.color, 20); enemies.splice(ei, 1); shield -= 25; screenShake = 18; document.getElementById('prog-fill').style.width = `${Math.max(0, shield)}%`; if (shield <= 0) end(); return;
+    // ── Player projectiles ──
+    for (let pi = projectiles.length - 1; pi >= 0; pi--) {
+      const p = projectiles[pi];
+      // Smart missile homing
+      if (p.smart && enemies.length > 0) {
+        // Find nearest enemy
+        let best = enemies[0], bestD = Infinity;
+        enemies.forEach(e => {
+          const d = Math.hypot(e.x - p.x, e.y - p.y);
+          if (d < bestD) { bestD = d; best = e; }
+        });
+        const tx = best.x + best.w/2 - p.x, ty = best.y + best.h/2 - p.y;
+        const dist = Math.hypot(tx,ty) || 1;
+        p.vx += (tx/dist)*0.9; p.vy += (ty/dist)*0.9;
+        // Normalize speed
+        const spd = Math.hypot(p.vx,p.vy);
+        if (spd > 11) { p.vx = p.vx/spd*11; p.vy = p.vy/spd*11; }
+        // Homing trail
+        particles.push({ x:p.x, y:p.y, vx:(Math.random()-0.5), vy:0.5, alpha:0.7, decay:0.08, color:'#00f5ff', size:1.5 });
       }
-      projectiles.forEach((p, pi) => {
-        if (collide({ x: p.x - 1.5, y: p.y, w: 3, h: 10 }, { x: e.x, y: e.y, w: e.w, h: e.h })) {
-          projectiles.splice(pi, 1); e.hp--; explode(p.x, p.y, '#00f5ff', 3);
-          if (e.hp <= 0) { explode(e.x + e.w / 2, e.y + e.h / 2, e.color, 15); popText(e.x, e.y, `+${e.pts}`, e.color); if (Math.random() < 0.14) powerups.push({ x: e.x + e.w / 2, y: e.y + e.h / 2, pulse: 0 }); score += e.pts; setLive(score); enemies.splice(ei, 1); }
+      p.x += p.vx; p.y += p.vy;
+      // Draw
+      aCtx.save();
+      if (p.smart) {
+        aCtx.shadowBlur = 15; aCtx.shadowColor = '#00f5ff';
+        aCtx.fillStyle = '#fff';
+        aCtx.beginPath(); aCtx.arc(p.x, p.y, 4, 0, Math.PI*2); aCtx.fill();
+        aCtx.fillStyle = '#00f5ff';
+        aCtx.beginPath(); aCtx.arc(p.x, p.y, 2, 0, Math.PI*2); aCtx.fill();
+      } else if (p.plasma) {
+        // Extra wide plasma bolt from max+ level
+        aCtx.shadowBlur = 14; aCtx.shadowColor = '#a855f7';
+        aCtx.fillStyle = '#a855f7';
+        aCtx.beginPath(); aCtx.arc(p.x, p.y, 3, 0, Math.PI*2); aCtx.fill();
+        aCtx.fillStyle = '#ff0090';
+        aCtx.beginPath(); aCtx.arc(p.x, p.y, 1.5, 0, Math.PI*2); aCtx.fill();
+      } else {
+        aCtx.shadowBlur = 10; aCtx.shadowColor = '#00f5ff'; aCtx.fillStyle = '#00f5ff';
+        aCtx.fillRect(p.x - 1.5, p.y, 3, 10);
+      }
+      aCtx.restore();
+      if (p.y < -20 || p.y > 520 || p.x < -20 || p.x > 420) { projectiles.splice(pi, 1); }
+    }
+
+    // ── Power-ups (plasma orbs) ──
+    for (let pui = powerups.length - 1; pui >= 0; pui--) {
+      const pu = powerups[pui];
+      pu.y += 1.8; pu.pulse += 0.1;
+      // Colour shifts based on how many orbs already collected
+      const orbColor = ['#39ff14','#00f5ff','#ffd700','#ff0090','#a855f7'][Math.min(4, plasmaOrbs)];
+      aCtx.save();
+      aCtx.shadowBlur = 14; aCtx.shadowColor = orbColor; aCtx.fillStyle = orbColor;
+      aCtx.translate(pu.x, pu.y); aCtx.rotate(pu.pulse * 0.2);
+      // Octagon shape for max+ orbs
+      if (plasmaOrbs >= 3) {
+        aCtx.beginPath();
+        for (let s=0;s<8;s++) { const a=(s/8)*Math.PI*2; aCtx.lineTo(Math.cos(a)*8, Math.sin(a)*8); }
+        aCtx.closePath(); aCtx.fill();
+      } else {
+        aCtx.fillRect(-6, -6, 12, 12);
+      }
+      aCtx.restore();
+
+      if (collide({ x: player.x, y: player.y, w: player.w, h: player.h }, { x: pu.x-8, y: pu.y-8, w: 16, h: 16 })) {
+        plasmaOrbs++;
+        powerups.splice(pui, 1);
+        explode(pu.x, pu.y, orbColor, 18);
+        if (plasmaOrbs <= 3) {
+          popText(player.x, player.y - 10, `PLASMA LV${plasmaOrbs}!`, '#39ff14');
+        } else {
+          const abilIndex = plasmaOrbs - 3;
+          const abil = getAbilityForOrb(abilIndex);
+          specialAbilities.push(abil);
+          popText(player.x, player.y - 10, abil.label + ' CHARGED!', abil.color);
+          // Big particle burst for bonus orbs
+          for (let k=0;k<6;k++) {
+            setTimeout(()=>explode(pu.x + (Math.random()-0.5)*40, pu.y + (Math.random()-0.5)*30, abil.color, 12), k*80);
+          }
         }
-      });
-    });
+      } else if (pu.y > 520) powerups.splice(pui, 1);
+    }
 
-    particles.forEach((p, pi) => {
-      p.x += p.vx; p.y += p.vy; p.alpha -= p.decay; if (p.alpha <= 0) { particles.splice(pi, 1); return; }
-      aCtx.save(); aCtx.globalAlpha = p.alpha; aCtx.fillStyle = p.color; aCtx.fillRect(p.x, p.y, 2, 2); aCtx.restore();
-    });
+    // ── Enemies ──
+    for (let ei = enemies.length - 1; ei >= 0; ei--) {
+      const e = enemies[ei];
+      e.update(frame); e.draw();
 
-    floatingTexts.forEach((ft, fti) => {
-      ft.y -= 0.8; ft.alpha -= 0.02; if (ft.alpha <= 0) { floatingTexts.splice(fti, 1); return; }
-      aCtx.save(); aCtx.globalAlpha = ft.alpha; aCtx.font = 'bold 11px Orbitron'; aCtx.fillStyle = ft.color; aCtx.fillText(ft.txt, ft.x, ft.y); aCtx.restore();
-    });
+      if (e.y > 510) {
+        enemies.splice(ei, 1); shield -= 15; screenShake = 10; shieldFlashTimer = 12;
+        document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
+        if (shield <= 0) end(); continue;
+      }
+      if (!shieldBubbleActive && collide({ x: player.x, y: player.y, w: player.w, h: player.h }, { x: e.x, y: e.y, w: e.w, h: e.h })) {
+        explode(e.x + e.w/2, e.y + e.h/2, e.color, 20);
+        enemies.splice(ei, 1); shield -= 25; screenShake = 18; shieldFlashTimer = 18;
+        document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
+        if (shield <= 0) end(); continue;
+      }
+      // Check player projectile hits
+      let destroyed = false;
+      for (let pi = projectiles.length - 1; pi >= 0; pi--) {
+        const p = projectiles[pi];
+        const pBox = p.smart
+          ? { x: p.x-5, y: p.y-5, w: 10, h: 10 }
+          : { x: p.x-2, y: p.y, w: 4, h: 12 };
+        if (collide(pBox, { x: e.x, y: e.y, w: e.w, h: e.h })) {
+          projectiles.splice(pi, 1);
+          e.hp -= p.plasma ? 2 : 1; // plasma bolts do double damage
+          explode(p.x, p.y, p.plasma ? '#a855f7' : '#00f5ff', p.plasma ? 6 : 3);
+          if (e.hp <= 0) {
+            explode(e.x + e.w/2, e.y + e.h/2, e.color, 15);
+            popText(e.x, e.y, `+${e.pts}`, e.color);
+            if (Math.random() < 0.18) powerups.push({ x: e.x + e.w/2, y: e.y + e.h/2, pulse: 0 });
+            score += e.pts; setLive(score); enemies.splice(ei, 1); destroyed = true; break;
+          }
+        }
+      }
+      if (destroyed) continue;
+    }
+
+    // ── Enemy projectiles ──
+    updateEnemyProjectiles(dt);
+
+    // ── Particles ──
+    for (let pi = particles.length - 1; pi >= 0; pi--) {
+      const p = particles[pi];
+      p.x += p.vx; p.y += p.vy; p.alpha -= p.decay;
+      if (p.alpha <= 0) { particles.splice(pi, 1); continue; }
+      aCtx.save(); aCtx.globalAlpha = p.alpha; aCtx.fillStyle = p.color;
+      const sz = p.size || 2;
+      aCtx.fillRect(p.x, p.y, sz, sz); aCtx.restore();
+    }
+
+    // ── Floating texts ──
+    for (let fti = floatingTexts.length - 1; fti >= 0; fti--) {
+      const ft = floatingTexts[fti];
+      ft.y += ft.vy || -0.8; ft.alpha -= 0.018;
+      if (ft.alpha <= 0) { floatingTexts.splice(fti, 1); continue; }
+      aCtx.save(); aCtx.globalAlpha = ft.alpha;
+      aCtx.shadowBlur = 8; aCtx.shadowColor = ft.color;
+      aCtx.font = 'bold 11px Orbitron'; aCtx.fillStyle = ft.color;
+      aCtx.fillText(ft.txt, ft.x, ft.y); aCtx.restore();
+    }
+
+    drawPlasmaLevel();
+    drawAbilityHUD();
 
     aCtx.restore();
     gameLoopId = requestAnimationFrame(pipeline);
   }
 
   function end() {
-    clearInterval(gTimer); cancelAnimationFrame(gameLoopId); window.onkeydown = window.onkeyup = null;
+    clearInterval(gTimer); cancelAnimationFrame(gameLoopId);
+    window.onkeydown = window.onkeyup = null;
     const finalPts = Math.min(1000, score);
-    showResults('nebula', finalPts, { '👾 Alien Matrices Purged': score / 25, '🛡️ Shield Grid Status': `${Math.max(0, shield)}%`, '🏆 Final Earnings': `${finalPts} PTS` });
+    showResults('nebula', finalPts, {
+      '👾 Alien Matrices Purged': Math.floor(score / 20),
+      '⚡ Plasma Orbs Absorbed': plasmaOrbs,
+      '🛡️ Shield Grid Status': `${Math.max(0, shield)}%`,
+      '🏆 Final Earnings': `${finalPts} PTS`
+    });
   }
 
   gameLoopId = requestAnimationFrame(pipeline);
