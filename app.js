@@ -39,7 +39,23 @@ try {
 //  📦 ENGINE GLOBAL COMPLIANCE ENVIRONMENT
 // ════════════════════════════════════════════
 let user=null, curGame=null, gTimer=null, gameLoopId=null;
-const META = { 
+
+function stopGame(){
+  clearInterval(gTimer); gTimer=null;
+  cancelAnimationFrame(gameLoopId); gameLoopId=null;
+  window.onkeydown=window.onkeyup=null;
+  if(aCanvas){
+    aCanvas.onmousemove=null; aCanvas.onclick=null;
+    aCanvas.ontouchmove=null; aCanvas.ontouchstart=null;
+  }
+  const cl=document.getElementById('ctrl-left');
+  const cr=document.getElementById('ctrl-right');
+  const ca=document.getElementById('ctrl-action');
+  if(cl){cl.onmousedown=cl.onmouseup=cl.ontouchstart=cl.ontouchend=null;}
+  if(cr){cr.onmousedown=cr.onmouseup=cr.ontouchstart=cr.ontouchend=null;}
+  if(ca){ca.onclick=null;}
+}
+const META = {
   click: { name: 'CLICK FRENZY', emoji: '🖱️', maxPts: 500 },
   nebula: { name: 'NEON NEBULA', emoji: '🚀', maxPts: 1000 },
   tetris: { name: 'CYBERPUNK TETRIS', emoji: '🧱', maxPts: 1500 },
@@ -51,6 +67,13 @@ const META = {
   snake: { name: 'GRID SNAKE', emoji: '🐍', maxPts: 1200 },
   flappy: { name: 'FLAPPY DRONE', emoji: '🚁', maxPts: 1000 }
 };
+
+// Difficulty settings
+let currentDifficulty = 'normal';
+
+function getDifficultyModifier(){
+  return 1.0; // Always normal difficulty since difficulty selector was removed
+}
 
 const aCanvas = document.getElementById('arcade-canvas');
 const aCtx = aCanvas?.getContext('2d');
@@ -152,10 +175,7 @@ document.querySelectorAll('.game-card').forEach(card=>{
 });
 
 document.getElementById('btn-quit').onclick=()=>{
-  clearInterval(gTimer);
-  cancelAnimationFrame(gameLoopId);
-  window.onkeydown = window.onkeyup = null;
-  if(aCanvas) { aCanvas.onmousemove = null; aCanvas.onclick = null; aCanvas.ontouchmove = null; aCanvas.ontouchstart = null; }
+  stopGame();
   document.getElementById('ctrl-left').style.display='';
   document.getElementById('ctrl-right').style.display='';
   enterHub();
@@ -165,6 +185,7 @@ document.getElementById('btn-quit').onclick=()=>{
 //  🎮 ROUTING & SCHEDULING INTERFACE
 // ════════════════════════════════════════════
 function prepGame(gid){
+  stopGame();
   document.getElementById('g-click').style.display='none';
   document.getElementById('g-canvas-holder').style.display='none';
   document.getElementById('g-memory').style.display='none';
@@ -197,10 +218,7 @@ function prepGame(gid){
 const setLive=n=>document.getElementById('g-pts').textContent=n;
 
 function showResults(gid,pts,bd){
-  clearInterval(gTimer);
-  cancelAnimationFrame(gameLoopId);
-  window.onkeydown = window.onkeyup = null;
-  if(aCanvas) { aCanvas.onmousemove = null; }
+  stopGame();
   const m=META[gid],pct=pts/m.maxPts;
   document.getElementById('res-emoji').textContent=pct>.75?'🎉':'💪';
   document.getElementById('res-gname').textContent=m.name;
@@ -244,17 +262,17 @@ async function saveScore(gid,pts){
 // ════════════════════════════════════════════
 function startClick(){
   document.getElementById('g-click').style.display='flex';
-  let clicks=0,t=10;
+  let clicks=0,t=10,ended=false;
   document.getElementById('click-count').textContent='0';
   document.getElementById('g-time').textContent='10';
   const btn=document.getElementById('click-btn');
   btn.disabled=false;
-  btn.onclick=()=>{clicks++;document.getElementById('click-count').textContent=clicks;setLive(Math.min(500,clicks*8))};
+  btn.onclick=()=>{if(!ended){clicks++;document.getElementById('click-count').textContent=clicks;setLive(Math.min(500,clicks*8))}};
   gTimer=setInterval(()=>{
     t--;document.getElementById('g-time').textContent=t;
     document.getElementById('prog-fill').style.width=`${t/10*100}%`;
     if(t<=0){
-      clearInterval(gTimer);btn.disabled=true;btn.onclick=null;
+      clearInterval(gTimer);ended=true;btn.disabled=true;btn.onclick=null;
       const pts=Math.min(500,clicks*8);
       setTimeout(()=>showResults('click',pts,{'🖱️ Structural Actions':clicks,'🏆 Final Score':`${pts} PTS`}),400);
     }
@@ -268,6 +286,7 @@ function startNebula(){
   document.getElementById('g-canvas-holder').style.display='block';
   document.getElementById('arcade-controls').style.display='flex';
   document.getElementById('ctrl-action').textContent='SHOOT / ABILITY';
+  const diffMod = getDifficultyModifier();
   let score = 0, gameTime = 60, shield = 100, screenShake = 0;
   // plasmaOrbs: total orbs collected (levels 1-3 = weapon, 4+ = special abilities)
   let plasmaOrbs = 0;
@@ -294,6 +313,18 @@ function startNebula(){
     keys[e.code] = true;
     // Q or E to deploy special ability
     if ((e.code === 'KeyQ' || e.code === 'KeyE') && specialAbilities.length > 0 && !activeAbility) deployAbility();
+
+    // Show ability hint briefly when abilities are available
+    if (specialAbilities.length > 0 && !activeAbility && (e.code === 'KeyQ' || e.code === 'KeyE')) {
+      // Flash the action button to indicate it's usable
+      const actionBtn = document.getElementById('ctrl-action');
+      actionBtn.style.transform = 'scale(1.2)';
+      setTimeout(() => actionBtn.style.transform = '', 200);
+
+      // Show toast with ability hint
+      const nextAbility = specialAbilities[0];
+      toast(`Press [ACTION] or [Q]/[E] to use ${nextAbility.label}`, 1500);
+    }
   };
   window.onkeyup = e => { if(['Space','ArrowLeft','ArrowRight','KeyA','KeyD'].includes(e.code)) e.preventDefault(); keys[e.code] = false; };
 
@@ -325,75 +356,109 @@ function startNebula(){
     activeAbility = abil;
 
     if (abil.id === 'SMART_MISSILE') {
-      // Fire 5 homing missiles targeting random enemies
-      popText(player.x, player.y - 20, '🎯 SMART MISSILES!', '#00f5ff');
-      // Spawn missiles that will home in updateLoop
-      for (let i = 0; i < 5; i++) {
-        projectiles.push({ x: player.x + player.w/2, y: player.y, vx: (i-2)*1.5, vy: -8, smart: true, smartTimer: 0 });
-      }
-      screenShake = 8;
-      setTimeout(() => { activeAbility = null; }, 2000);
+      // Fire 3 homing missiles that launch FROM the ship nose and track nearest enemies
+      popText(200, player.y - 24, '🎯 SMART MISSILES!', '#00f5ff');
+      screenShake = 6;
+      const shipNoseX = player.x + player.w/2;
+      const shipNoseY = player.y;
+      // Stagger missile launches for visual effect
+      [0, 1, 2].forEach(i => {
+        setTimeout(() => {
+          if (!enemies.length) return;
+          // Find target (different enemy for each missile if possible)
+          const sortedEnemies = [...enemies].sort((a,b)=>Math.hypot(a.x-shipNoseX,a.y-shipNoseY)-Math.hypot(b.x-shipNoseX,b.y-shipNoseY));
+          const target = sortedEnemies[i % sortedEnemies.length];
+          projectiles.push({
+            x: shipNoseX + (i-1)*6,
+            y: shipNoseY,
+            vx: (i-1)*1.5,
+            vy: -9,
+            smart: true,
+            lockedTarget: target, // lock to a specific enemy
+            smartTimer: 0
+          });
+          // launch flash
+          explode(shipNoseX, shipNoseY, '#00f5ff', 5);
+        }, i * 120);
+      });
+      setTimeout(() => { activeAbility = null; }, 2500);
 
     } else if (abil.id === 'SHIELD_BURST') {
-      // Restore shield + EMP ring burst that damages all enemies
-      popText(200, 250, '🛡️ SHIELD BURST!', '#a855f7');
-      shield = Math.min(100, shield + 40);
-      document.getElementById('prog-fill').style.width = `${shield}%`;
-      shieldBubbleActive = true; shieldBubbleTimer = 60; // 60 frames visual
-      // Damage all enemies
-      enemies.forEach(e => {
-        e.hp -= 2;
-        explode(e.x + e.w/2, e.y + e.h/2, '#a855f7', 8);
-      });
-      enemies = enemies.filter(e => {
-        if (e.hp <= 0) { popText(e.x, e.y, `+${e.pts}`, e.color); score += e.pts; setLive(score); return false; }
-        return true;
-      });
-      // Clear enemy projectiles too
-      enemyProjectiles = [];
-      screenShake = 20;
-      setTimeout(() => { shieldBubbleActive = false; activeAbility = null; }, 1500);
+      // Restore shield to 100% — pure healing, no damage component
+      shield = 100;
+      document.getElementById('prog-fill').style.width = '100%';
+      shieldBubbleActive = true;
+      shieldBubbleTimer = 180; // 3 seconds of invincibility bubble
+      enemyProjectiles = []; // clear all incoming fire
+      screenShake = 12;
+      // Big purple burst from the ship
+      for (let i = 0; i < 40; i++) {
+        const ang = (i/40)*Math.PI*2, v = Math.random()*5+2;
+        particles.push({ x: player.x+player.w/2, y: player.y+player.h/2, vx: Math.cos(ang)*v, vy: Math.sin(ang)*v, alpha: 1, decay: 0.025, color: '#a855f7', size: Math.random()*3+1 });
+      }
+      popText(200, player.y - 24, '🛡️ SHIELD RESTORED!', '#a855f7');
+      setTimeout(() => {
+        shieldBubbleActive = false;
+        activeAbility = null;
+      }, 3000);
 
     } else if (abil.id === 'TIME_WARP') {
-      // Slow all enemies for 4 seconds
-      popText(200, 250, '⏳ TIME WARP!', '#ffd700');
-      timeWarpActive = true; timeWarpTimer = 240; // ~4s at 60fps
-      // Flash effect
-      for (let i = 0; i < 40; i++) {
-        const ang = (i / 40) * Math.PI * 2, r = 80 + Math.random() * 60;
-        particles.push({ x: 200 + Math.cos(ang)*r, y: 250 + Math.sin(ang)*r, vx: -Math.cos(ang)*1.5, vy: -Math.sin(ang)*1.5, alpha: 1, decay: 0.02, color: '#ffd700', size: 3 });
+      // Slow all enemies and their projectiles to 50% speed for 3 seconds
+      timeWarpActive = true;
+      timeWarpTimer = 180; // 3 seconds at 60fps
+      screenShake = 8;
+      popText(200, 200, '⏳ TIME WARP!', '#ffd700');
+      // Radial particle ring
+      for (let i = 0; i < 36; i++) {
+        const ang = (i/36)*Math.PI*2;
+        particles.push({
+          x: 200 + Math.cos(ang)*120, y: 250 + Math.sin(ang)*100,
+          vx: -Math.cos(ang)*0.8, vy: -Math.sin(ang)*0.8,
+          alpha: 0.9, decay: 0.008, color: '#ffd700', size: 2.5
+        });
       }
-      screenShake = 12;
-      // Ability cleared after warp ends
-      setTimeout(() => { timeWarpActive = false; activeAbility = null; }, 4000);
+      // Auto-end after 3 seconds
+      setTimeout(() => {
+        timeWarpActive = false;
+        activeAbility = null;
+      }, 3000);
 
     } else if (abil.id === 'NOVA_BOMB') {
-      // Destroy ALL enemies with massive explosion
+      // Destroy ALL enemies on screen with massive expanding shockwave
+      screenShake = 30;
       popText(200, 200, '💥 NOVA BOMB!', '#ff0090');
-      screenShake = 35;
-      // Ring of nova particles
-      for (let i = 0; i < 80; i++) {
-        const ang = (i/80)*Math.PI*2, v = Math.random()*8+4;
-        particles.push({ x: 200, y: 250, vx: Math.cos(ang)*v, vy: Math.sin(ang)*v, alpha: 1, decay: 0.015, color: ['#ff0090','#ff6600','#ffd700','#a855f7','#00f5ff'][i%5], size: Math.random()*4+2 });
-      }
-      // Cascade explosions on each enemy
+      // Award points for all enemies destroyed
+      const enemyCount = enemies.length;
       enemies.forEach(e => {
-        for (let w = 0; w < 3; w++) setTimeout(() => { explode(e.x + e.w/2, e.y + e.h/2, e.color, 20); }, w * 120);
-        score += e.pts * 2; // double points for nova
-        popText(e.x, e.y, `+${e.pts*2} NOVA!`, '#ff0090');
+        score += e.pts;
+        popText(e.x + e.w/2, e.y, `+${e.pts}`, e.color);
+        explode(e.x + e.w/2, e.y + e.h/2, e.color, 20);
       });
       setLive(score);
       enemies = [];
       enemyProjectiles = [];
-      // Second shockwave
-      setTimeout(() => {
-        for (let i = 0; i < 40; i++) {
-          const ang = (i/40)*Math.PI*2, v = Math.random()*5+2;
-          particles.push({ x: 200, y: 250, vx: Math.cos(ang)*v, vy: Math.sin(ang)*v, alpha: 0.8, decay: 0.02, color: '#ffffff', size: 2 });
-        }
-      }, 300);
+      // Expanding shockwave rings
+      for (let ring = 0; ring < 3; ring++) {
+        setTimeout(() => {
+          for (let i = 0; i < 60; i++) {
+            const ang = (i/60)*Math.PI*2, v = (Math.random()*3+2)*(ring+1)*0.6;
+            particles.push({
+              x: 200, y: 250,
+              vx: Math.cos(ang)*v, vy: Math.sin(ang)*v,
+              alpha: 1, decay: 0.018,
+              color: ['#ff0090','#ff6600','#ffd700','#fff','#a855f7'][i%5],
+              size: Math.random()*3+1.5
+            });
+          }
+        }, ring * 200);
+      }
       setTimeout(() => { activeAbility = null; }, 2000);
     }
+  }
+
+  function updateAbilityHUD() {
+    // Called after consuming an ability from the queue — no extra DOM needed,
+    // the canvas draw handles it. This is a no-op placeholder kept for call-site clarity.
   }
 
   // ── ABILITY HUD OVERLAY (bottom of canvas) ──
@@ -535,7 +600,7 @@ function startNebula(){
     }
 
     update(frame) {
-      const warpMult = timeWarpActive ? 0.35 : 1.0;
+      const warpMult = timeWarpActive ? 0.5 : 1.0;
 
       if (this.type === 'SCOUT') {
         // Pink scout: dive behaviour — after entering screen, occasionally
@@ -732,6 +797,7 @@ function startNebula(){
   let frame = 0;
 
   function pipeline(now) {
+    if (isOver) return;
     let dt = now - lastTime; lastTime = now;
     frame++;
     aCtx.clearRect(0, 0, 400, 500);
@@ -774,28 +840,39 @@ function startNebula(){
       if (score > 150 && r > 0.75) type = 'BOMBER';
       else if (score > 60 && r > 0.4) type = 'FIGHTER';
       enemies.push(new Enemy(type)); enemySpawnTimer = 0;
-      enemySpawnInterval = Math.max(300, 1100 - score * 0.5);
+      enemySpawnInterval = Math.max(300 / diffMod, 1100 / diffMod - score * 0.5 * diffMod);
     }
 
     // ── Player projectiles ──
     for (let pi = projectiles.length - 1; pi >= 0; pi--) {
       const p = projectiles[pi];
-      // Smart missile homing
-      if (p.smart && enemies.length > 0) {
-        // Find nearest enemy
-        let best = enemies[0], bestD = Infinity;
-        enemies.forEach(e => {
-          const d = Math.hypot(e.x - p.x, e.y - p.y);
-          if (d < bestD) { bestD = d; best = e; }
-        });
-        const tx = best.x + best.w/2 - p.x, ty = best.y + best.h/2 - p.y;
-        const dist = Math.hypot(tx,ty) || 1;
-        p.vx += (tx/dist)*0.9; p.vy += (ty/dist)*0.9;
-        // Normalize speed
-        const spd = Math.hypot(p.vx,p.vy);
-        if (spd > 11) { p.vx = p.vx/spd*11; p.vy = p.vy/spd*11; }
-        // Homing trail
-        particles.push({ x:p.x, y:p.y, vx:(Math.random()-0.5), vy:0.5, alpha:0.7, decay:0.08, color:'#00f5ff', size:1.5 });
+      // Smart missile homing — lock onto assigned target or nearest if target gone
+      if (p.smart) {
+        let target = null;
+        // Use locked target if it's still alive
+        if (p.lockedTarget && enemies.includes(p.lockedTarget)) {
+          target = p.lockedTarget;
+        } else if (enemies.length > 0) {
+          // Re-lock to nearest enemy
+          let bestD = Infinity;
+          enemies.forEach(e => {
+            const d = Math.hypot(e.x - p.x, e.y - p.y);
+            if (d < bestD) { bestD = d; target = e; }
+          });
+          p.lockedTarget = target;
+        }
+        if (target) {
+          const tx = (target.x + target.w/2) - p.x;
+          const ty = (target.y + target.h/2) - p.y;
+          const dist = Math.hypot(tx, ty) || 1;
+          p.vx += (tx/dist) * 1.1;
+          p.vy += (ty/dist) * 1.1;
+          // Cap speed
+          const spd = Math.hypot(p.vx, p.vy);
+          if (spd > 12) { p.vx = p.vx/spd*12; p.vy = p.vy/spd*12; }
+        }
+        // Cyan homing trail
+        particles.push({ x:p.x, y:p.y, vx:(Math.random()-0.5)*0.5, vy:0.5, alpha:0.8, decay:0.07, color:'#00f5ff', size:2 });
       }
       p.x += p.vx; p.y += p.vy;
       // Draw
@@ -865,13 +942,13 @@ function startNebula(){
       e.update(frame); e.draw();
 
       if (e.y > 510) {
-        enemies.splice(ei, 1); shield -= 15; screenShake = 10; shieldFlashTimer = 12;
+        enemies.splice(ei, 1); shield -= 15 * diffMod; screenShake = 10; shieldFlashTimer = 12;
         document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
         if (shield <= 0) end(); continue;
       }
       if (!shieldBubbleActive && collide({ x: player.x, y: player.y, w: player.w, h: player.h }, { x: e.x, y: e.y, w: e.w, h: e.h })) {
         explode(e.x + e.w/2, e.y + e.h/2, e.color, 20);
-        enemies.splice(ei, 1); shield -= 25; screenShake = 18; shieldFlashTimer = 18;
+        enemies.splice(ei, 1); shield -= 25 * diffMod; screenShake = 18; shieldFlashTimer = 18;
         document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
         if (shield <= 0) end(); continue;
       }
@@ -889,7 +966,7 @@ function startNebula(){
           if (e.hp <= 0) {
             explode(e.x + e.w/2, e.y + e.h/2, e.color, 15);
             popText(e.x, e.y, `+${e.pts}`, e.color);
-            if (Math.random() < 0.18) powerups.push({ x: e.x + e.w/2, y: e.y + e.h/2, pulse: 0 });
+            if (Math.random() < 0.18 / diffMod) powerups.push({ x: e.x + e.w/2, y: e.y + e.h/2, pulse: 0 });
             score += e.pts; setLive(score); enemies.splice(ei, 1); destroyed = true; break;
           }
         }
@@ -916,9 +993,15 @@ function startNebula(){
       ft.y += ft.vy || -0.8; ft.alpha -= 0.018;
       if (ft.alpha <= 0) { floatingTexts.splice(fti, 1); continue; }
       aCtx.save(); aCtx.globalAlpha = ft.alpha;
-      aCtx.shadowBlur = 8; aCtx.shadowColor = ft.color;
-      aCtx.font = 'bold 11px Orbitron'; aCtx.fillStyle = ft.color;
-      aCtx.fillText(ft.txt, ft.x, ft.y); aCtx.restore();
+      // Bigger font for ability announcements (longer strings)
+      const isAbility = ft.txt.length > 8;
+      const fontSize = isAbility ? 13 : 11;
+      aCtx.shadowBlur = isAbility ? 14 : 8; aCtx.shadowColor = ft.color;
+      aCtx.font = `bold ${fontSize}px Orbitron`; aCtx.fillStyle = ft.color;
+      aCtx.textAlign = 'center';
+      // Clamp x so text stays within canvas
+      const clampedX = Math.max(60, Math.min(340, ft.x));
+      aCtx.fillText(ft.txt, clampedX, ft.y); aCtx.restore();
     }
 
     drawPlasmaLevel();
@@ -928,9 +1011,9 @@ function startNebula(){
     gameLoopId = requestAnimationFrame(pipeline);
   }
 
+  let isOver = false;
   function end() {
-    clearInterval(gTimer); cancelAnimationFrame(gameLoopId);
-    window.onkeydown = window.onkeyup = null;
+    if (isOver) return; isOver = true;
     const finalPts = Math.min(1000, score);
     showResults('nebula', finalPts, {
       '👾 Alien Matrices Purged': Math.floor(score / 20),
@@ -950,13 +1033,14 @@ function startTetris(){
   document.getElementById('g-canvas-holder').style.display='block';
   document.getElementById('tetris-next-wrap').style.display='block';
   document.getElementById('tetris-lvl-pill').style.display='block';
-  
+  const diffMod = getDifficultyModifier();
+
   const nCanvas = document.getElementById('nextCanvas');
   const nCtx = nCanvas.getContext('2d');
-  
-  let score=0, level=1, linesCleared=0, time=60;
+
+  let score=0, level=1, linesCleared=0, time=60 / diffMod;
   let arena=createMatrix(10,20), player={pos:{x:0,y:0}, matrix:null}, nextPiece=null;
-  let dropCounter=0, dropInterval=600, lastTime=performance.now(), screenShake=0;
+  let dropCounter=0, dropInterval=600 * diffMod, lastTime=performance.now(), screenShake=0;
   let particles = [];
   
   document.getElementById('g-time').textContent=time;
@@ -1042,9 +1126,9 @@ function startTetris(){
       setLive(score); screenShake=12;
       
       // Included progressive drop speed calculation logic
-      if(linesCleared%10===0 && level<50) { 
+      if(linesCleared%10===0 && level<50) {
         level++; document.getElementById('tetris-lvl').textContent=level;
-        dropInterval = Math.max(50, 600 * Math.pow(0.85, level - 1));
+        dropInterval = Math.max(50, (600 * Math.pow(0.85, level - 1)) / diffMod);
       }
     }
   }
@@ -1079,6 +1163,7 @@ function startTetris(){
   document.getElementById('ctrl-left').onclick=()=>playerMove(-1);
   document.getElementById('ctrl-right').onclick=()=>playerMove(1);
   document.getElementById('ctrl-action').onclick=()=>playerRotate(1);
+  document.getElementById('ctrl-action').textContent='ROTATE';
 
   gTimer=setInterval(()=>{
     time--; document.getElementById('g-time').textContent=time;
@@ -1089,6 +1174,7 @@ function startTetris(){
   resetPlayer();
 
   function loop(now){
+    if(tetrisOver)return;
     const dt = now - lastTime; lastTime = now;
     aCtx.clearRect(0,0,400,500); nCtx.clearRect(0,0,80,80);
     
@@ -1128,8 +1214,9 @@ function startTetris(){
     gameLoopId=requestAnimationFrame(loop);
   }
   
+  let tetrisOver=false;
   function end(){
-    clearInterval(gTimer); cancelAnimationFrame(gameLoopId); window.onkeydown=null;
+    if(tetrisOver)return;tetrisOver=true;
     showResults('tetris',Math.min(1500,score),{'🧱 Base Core Lines Resolved':linesCleared, '🏆 Final Output Score':`${score} PTS`});
   }
   
@@ -1190,12 +1277,11 @@ function startDodge(){
   }
   
   function end(){
-    if(!isGameOver) isGameOver=true;
-    clearInterval(gTimer);cancelAnimationFrame(gameLoopId);
+    if(isGameOver) return; isGameOver=true;
     aCanvas.onmousemove=null;
     showResults('dodge',Math.min(800,score),{'⏱️ Operational Lifespan':score/25,'🏆 Score Accumulation':`${score} PTS`});
   }
-  loop();
+  gameLoopId=requestAnimationFrame(loop);
 }
 
 // ════════════════════════════════════════════
@@ -1226,7 +1312,8 @@ function startMemory(){
     };
     wrap.appendChild(card);
   });
-  function end(){clearInterval(gTimer);showResults('memory',Math.min(600,score),{'🧩 Clusters Unified':matched,'🏆 Score Accumulation':`${score} PTS`})}
+  let memEnded=false;
+  function end(){if(memEnded)return;memEnded=true;showResults('memory',Math.min(600,score),{'🧩 Clusters Unified':matched,'🏆 Score Accumulation':`${score} PTS`})}
 }
 
 // ════════════════════════════════════════════
@@ -1252,10 +1339,11 @@ function startMath(){
   document.getElementById('math-submit').onclick=check;
   document.getElementById('math-answer').onkeydown=e=>{if(e.code==='Enter')check()};
 
+  let mathEnded=false;
   gTimer=setInterval(()=>{
     time--;document.getElementById('g-time').textContent=time;
     document.getElementById('prog-fill').style.width=`${time/20*100}%`;
-    if(time<=0){document.getElementById('math-answer').onkeydown=null;showResults('math',Math.min(750,score),{'🔢 Nodes Resolved':score/50,'🏆 Score Accumulation':`${score} PTS`})}
+    if(time<=0&&!mathEnded){mathEnded=true;document.getElementById('math-answer').onkeydown=null;document.getElementById('math-submit').onclick=null;showResults('math',Math.min(750,score),{'🔢 Nodes Resolved':score/50,'🏆 Score Accumulation':`${score} PTS`})}
   },1000);
 }
 
@@ -1265,7 +1353,7 @@ function startMath(){
 function startReaction(){
   const box=document.getElementById('g-reaction');box.style.display='flex';box.style.background='var(--red)';
   const txt=document.getElementById('reaction-text');txt.textContent='WAIT FOR GREEN...';
-  let state='wait', startT=0, time=15, score=0;
+  let state='wait', startT=0, time=15, score=0, reactionEnded=false;
   document.getElementById('g-time').textContent=time;
 
   gTimer=setInterval(()=>{
@@ -1285,7 +1373,7 @@ function startReaction(){
       setTimeout(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=setTimeout(()=>{state='go';box.style.background='var(--lime)';txt.textContent='CLICK NOW!';startT=performance.now()},Math.random()*2000+1000)}},1500);
     }
   };
-  function end(){clearTimeout(trigger);box.onclick=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
+  function end(){if(reactionEnded)return;reactionEnded=true;clearTimeout(trigger);box.onclick=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
 }
 
 // ════════════════════════════════════════════
@@ -1318,11 +1406,18 @@ function startPong(){
   document.getElementById('ctrl-action').textContent='ACTION';
 
   const W=400, H=500, PAD_W=10, PAD_H=70, BALL_R=7;
-  let score=0, time=45, isOver=false;
+  let userScore=0, cpuScore=0, time=45, isOver=false;
   let playerY=H/2-PAD_H/2, aiY=H/2-PAD_H/2;
   let ballX=W/2, ballY=H/2, ballVX=4*(Math.random()<0.5?1:-1), ballVY=3*(Math.random()<0.5?1:-1);
-  let aiSpeed=2.8, rallyCount=0;
-  document.getElementById('g-time').textContent=time;
+  let aiSpeed=2.8;
+  let rallyCount = 0; // Track current rally length
+  const updateScore = () => {
+    const raw = (userScore - cpuScore) * 50;
+    const displayScore = Math.max(0, raw);
+    setLive(displayScore);
+  };
+  updateScore();
+  document.getElementById('g-time').textContent=Math.ceil(time);
   document.getElementById('prog-fill').style.background='linear-gradient(90deg,var(--cyan),var(--purple))';
 
   // Mouse / touch control
@@ -1358,19 +1453,15 @@ function startPong(){
 
   gTimer=setInterval(()=>{
     if(isOver)return;
-    time--;document.getElementById('g-time').textContent=time;
+    time--;document.getElementById('g-time').textContent=Math.ceil(time);
     document.getElementById('prog-fill').style.width=`${time/45*100}%`;
     if(time<=0)end();
   },1000);
 
   function end(){
     if(isOver)return; isOver=true;
-    clearInterval(gTimer);cancelAnimationFrame(gameLoopId);
-    aCanvas.onmousemove=null;aCanvas.ontouchmove=null;
-    window.onkeydown=window.onkeyup=null;
-    document.getElementById('ctrl-left').onmousedown=document.getElementById('ctrl-left').onmouseup=null;
-    document.getElementById('ctrl-right').onmousedown=document.getElementById('ctrl-right').onmouseup=null;
-    showResults('pong',Math.min(900,score),{'🏓 Rallies Landed':rallyCount,'🏆 Score Accumulation':`${score} PTS`});
+    const finalScore = Math.max(0, (userScore - cpuScore) * 50);
+    showResults('pong', Math.min(900, Math.max(0, userScore*50)), {'🏓 Your Goals': userScore, '🤖 CPU Goals': cpuScore, '🏆 Final Score': `${finalScore} PTS`});
   }
 
   function drawGlow(color,alpha=0.18){
@@ -1400,27 +1491,42 @@ function startPong(){
 
     // Player paddle (left, x=20..20+PAD_W)
     if(ballX-BALL_R<20+PAD_W && ballX-BALL_R>20 && ballY>playerY && ballY<playerY+PAD_H){
+      // Player hit the ball - increase rally count
+      rallyCount++;
       ballVX=Math.abs(ballVX)*1.04;
       ballVY=((ballY-(playerY+PAD_H/2))/(PAD_H/2))*6;
       ballX=20+PAD_W+BALL_R;
-      rallyCount++;score+=20+rallyCount*3;setLive(score);
     }
 
     // AI paddle (right, x=W-20-PAD_W..W-20)
     if(ballX+BALL_R>W-20-PAD_W && ballX+BALL_R<W-20 && ballY>aiY && ballY<aiY+PAD_H){
+      // AI hit the ball - rally continues
+      rallyCount++;
       ballVX=-Math.abs(ballVX)*1.02;
       ballVY=((ballY-(aiY+PAD_H/2))/(PAD_H/2))*5;
       ballX=W-20-PAD_W-BALL_R;
     }
 
-    // Ball misses — reset
+    // Ball misses — reset and award points
     if(ballX<0||ballX>W){
-      if(ballX>W){score=Math.max(0,score-50);setLive(score);}
-      rallyCount=0;
-      ballX=W/2;ballY=H/2;
-      ballVX=4*(Math.random()<0.5?1:-1);ballVY=3*(Math.random()<0.5?1:-1);
-      ballVX=Math.abs(ballVX)*(ballX<0?1:-1);
-      aiSpeed=Math.min(5,2.8+score*0.002);
+      if(ballX < 0) {
+        // Ball passed LEFT wall — player missed — CPU scores
+        cpuScore++;
+        updateScore();
+      } else {
+        // Ball passed RIGHT wall — CPU missed — player scores
+        userScore++;
+        updateScore();
+      }
+
+      // Reset for next point — always send ball toward whoever just scored
+      rallyCount = 0;
+      ballX=W/2; ballY=H/2;
+      // Send toward the scorer's side to make it fair
+      ballVX=4*(ballX>W?-1:1); // toward the winner
+      ballVX=4*(Math.random()<0.5?1:-1); // random direction after point
+      ballVY=3*(Math.random()<0.5?1:-1);
+      aiSpeed=Math.min(5,2.8+userScore*0.002);
     }
 
     // ── DRAW ──
@@ -1463,14 +1569,18 @@ function startSnake(){
   document.getElementById('arcade-controls').style.display='flex';
   document.getElementById('ctrl-action').textContent='⟳ DIR';
 
+  const diffMod = getDifficultyModifier();
+  const baseTime = 60;
+  const adjustedTime = baseTime / diffMod;
+
   const W=400,H=500,CELL=20,COLS=W/CELL,ROWS=H/CELL;
-  let score=0,time=60,isOver=false;
+  let score=0,time=adjustedTime,isOver=false;
   let dir={x:1,y:0},nextDir={x:1,y:0};
   let snake=[{x:10,y:12},{x:9,y:12},{x:8,y:12}];
-  let food=spawnFood(),speed=160,lastMoveTime=0,particles=[];
+  let food=spawnFood(),speed=160 / diffMod,lastMoveTime=0,particles=[];
   let dirs=[{x:1,y:0},{x:0,y:1},{x:-1,y:0},{x:0,y:-1}],dirIdx=0; // for action button cycling
 
-  document.getElementById('g-time').textContent=time;
+  document.getElementById('g-time').textContent=Math.ceil(time);
   document.getElementById('prog-fill').style.background='linear-gradient(90deg,var(--lime),var(--cyan))';
   document.getElementById('prog-fill').style.width='100%';
 
@@ -1505,15 +1615,13 @@ function startSnake(){
 
   gTimer=setInterval(()=>{
     if(isOver)return;
-    time--;document.getElementById('g-time').textContent=time;
-    document.getElementById('prog-fill').style.width=`${time/60*100}%`;
+    time--;document.getElementById('g-time').textContent=Math.ceil(time);
+    document.getElementById('prog-fill').style.width=`${time/adjustedTime*100}%`;
     if(time<=0)end('timeout');
   },1000);
 
   function end(reason){
     if(isOver)return;isOver=true;
-    clearInterval(gTimer);cancelAnimationFrame(gameLoopId);
-    window.onkeydown=null;
     showResults('snake',Math.min(1200,score),{
       '🐍 Nodes Consumed':Math.floor(score/30),
       '📏 Max Length':snake.length,
@@ -1610,7 +1718,9 @@ function startFlappy(){
   document.getElementById('ctrl-left').style.display='none';
   document.getElementById('ctrl-right').style.display='none';
 
-  const W=400,H=500,GAP=140,PIPE_W=46,GRAVITY=0.42,FLAP=-7.5,PIPE_SPEED=2.4;
+  const diffMod = getDifficultyModifier();
+
+  const W=400,H=500,GAP=140,PIPE_W=46,GRAVITY=0.42*diffMod,FLAP=-7.5/diffMod,PIPE_SPEED=2.4*diffMod;
   let score=0,time=0,isOver=false,frame=0;
   let droneY=H/2,droneVY=0;
   let pipes=[],particles=[];
@@ -1639,11 +1749,6 @@ function startFlappy(){
 
   function end(){
     if(isOver)return;isOver=true;
-    clearInterval(gTimer);cancelAnimationFrame(gameLoopId);
-    aCanvas.onclick=null;aCanvas.ontouchstart=null;
-    window.onkeydown=null;
-    document.getElementById('ctrl-left').style.display='';
-    document.getElementById('ctrl-right').style.display='';
     const earned=Math.min(1000,score*50);
     showResults('flappy',earned,{
       '🚧 Firewalls Cleared':score,
@@ -1699,8 +1804,8 @@ function startFlappy(){
     droneVY+=GRAVITY;
     droneY+=droneVY;
 
-    // Spawn pipes every ~90 frames
-    if(frame%90===0)spawnPipe();
+    // Spawn pipes every ~90 frames -> adjusted by difficulty
+    if(frame%(90/diffMod)===0)spawnPipe();
 
     // Move & score pipes
     for(let i=pipes.length-1;i>=0;i--){
