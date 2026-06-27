@@ -1245,41 +1245,70 @@ function startDodge(){
     if(time<=0) end();
   },1000);
 
+  let obstacleColors = ['#ff6600','#ff2442','#ffd700','#ff0090','#a855f7'];
+  let frame = 0;
+
   function loop(){
     if(isGameOver) return;
-    aCtx.clearRect(0,0,400,500);
-    
-    aCtx.save(); aCtx.beginPath();aCtx.arc(player.x,player.y,player.r,0,Math.PI*2);
-    aCtx.shadowBlur=15; aCtx.shadowColor='var(--cyan)'; aCtx.fillStyle='var(--cyan)';aCtx.fill();
-    aCtx.strokeStyle='#fff';aCtx.stroke(); aCtx.restore();
+    frame++;
 
-    if(Math.random()<.08) {
+    // Solid dark background so nothing blends into page
+    aCtx.fillStyle = '#0a0a1a';
+    aCtx.fillRect(0,0,400,500);
+
+    // Subtle grid lines for depth
+    aCtx.strokeStyle = 'rgba(255,255,255,0.04)';
+    aCtx.lineWidth = 1;
+    for(let gx=0;gx<=400;gx+=40){ aCtx.beginPath();aCtx.moveTo(gx,0);aCtx.lineTo(gx,500);aCtx.stroke(); }
+    for(let gy=0;gy<=500;gy+=40){ aCtx.beginPath();aCtx.moveTo(0,gy);aCtx.lineTo(400,gy);aCtx.stroke(); }
+
+    // Player dot — bright cyan with glow
+    aCtx.save();
+    aCtx.shadowBlur = 24; aCtx.shadowColor = '#00f5ff';
+    aCtx.beginPath(); aCtx.arc(player.x, player.y, player.r, 0, Math.PI*2);
+    aCtx.fillStyle = '#00f5ff'; aCtx.fill();
+    aCtx.shadowBlur = 6; aCtx.shadowColor = '#fff';
+    aCtx.strokeStyle = '#fff'; aCtx.lineWidth = 2; aCtx.stroke();
+    aCtx.restore();
+
+    // Spawn obstacles
+    if(Math.random() < .08) {
+      const col = obstacleColors[Math.floor(Math.random()*obstacleColors.length)];
       obstacles.push({
-        x:Math.random()*400,y:0,
-        vx:(Math.random()-0.5)*4,vy:Math.random()*3+3,
-        r:Math.random()*6+6
+        x: Math.random()*380+10, y: -10,
+        vx: (Math.random()-0.5)*4, vy: Math.random()*3+3,
+        r: Math.random()*6+8,
+        color: col
       });
     }
 
+    // Draw & move obstacles
     for(let i=obstacles.length-1; i>=0; i--){
       let o = obstacles[i];
       o.x += o.vx; o.y += o.vy;
-      
-      aCtx.beginPath();aCtx.arc(o.x,o.y,o.r,0,Math.PI*2);
-      aCtx.fillStyle='var(--orange)';aCtx.fill();
-      
-      let dx = o.x - player.x, dy = o.y - player.y;
-      let dist = Math.sqrt(dx*dx + dy*dy);
-      if(dist < o.r + player.r){ isGameOver=true; end(); return; }
-      if(o.y>520) obstacles.splice(i,1);
+
+      // Glowing obstacle
+      aCtx.save();
+      aCtx.shadowBlur = 18; aCtx.shadowColor = o.color;
+      aCtx.beginPath(); aCtx.arc(o.x, o.y, o.r, 0, Math.PI*2);
+      aCtx.fillStyle = o.color; aCtx.fill();
+      // Bright core highlight
+      aCtx.shadowBlur = 0;
+      aCtx.beginPath(); aCtx.arc(o.x - o.r*0.28, o.y - o.r*0.28, o.r*0.3, 0, Math.PI*2);
+      aCtx.fillStyle = 'rgba(255,255,255,0.35)'; aCtx.fill();
+      aCtx.restore();
+
+      const dx = o.x - player.x, dy = o.y - player.y;
+      if(Math.sqrt(dx*dx + dy*dy) < o.r + player.r){ isGameOver=true; end(); return; }
+      if(o.y > 520) obstacles.splice(i,1);
     }
-    gameLoopId=requestAnimationFrame(loop);
+
+    gameLoopId = requestAnimationFrame(loop);
   }
   
   function end(){
-    if(isGameOver) return; isGameOver=true;
     aCanvas.onmousemove=null;
-    showResults('dodge',Math.min(800,score),{'⏱️ Operational Lifespan':score/25,'🏆 Score Accumulation':`${score} PTS`});
+    showResults('dodge',Math.min(800,score),{'⏱️ Operational Lifespan':score/25+'s','🏆 Score Accumulation':`${score} PTS`});
   }
   gameLoopId=requestAnimationFrame(loop);
 }
