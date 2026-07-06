@@ -1969,6 +1969,59 @@ function startArena() {
   let botSpawnTimer = 0, botWave = 1;
   let invincibleTimer = 0;
   let comboCount = 0, comboTimer = 0;
+  // Temporary buffs picked up from data nodes
+  let buffHasteTimer = 0, buffShieldTimer = 0, buffOverchargeTimer = 0;
+  // Special abilities earned from CORE data nodes — queued, deployed with E / double-tap
+  let specialAbilities = [];
+  let lastTapTime = 0;
+  const ABILITY_TYPES = [
+    { id:'NOVA',       label:'NOVA BLAST',  color:'#ffd700', desc:'Damages & knocks back all nearby bots' },
+    { id:'FREEZE',     label:'TIME FREEZE', color:'#00f5ff', desc:'Stuns every bot on the field' },
+    { id:'HEAL',       label:'REPAIR PULSE',color:'#39ff14', desc:'Instantly restores HP' },
+    { id:'OVERCHARGE', label:'OVERCHARGE',  color:'#ff2442', desc:'Boosts attack & speed for a few seconds' },
+    { id:'SHIELD',     label:'AEGIS SHIELD',color:'#a855f7', desc:'Grants temporary invincibility' },
+  ];
+  function deployAbility() {
+    if (specialAbilities.length === 0) return;
+    const abil = specialAbilities.shift();
+    screenShake = 10;
+    popText(player.x, player.y - 34, abil.label + '!', abil.color);
+    if (abil.id === 'NOVA') {
+      enemyBots.forEach(bot => {
+        if (bot.dead) return;
+        const dx = bot.x - player.x, dy = bot.y - player.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 220) {
+          const dmg = Math.round((player.attackPower + (playerLevel - 1) * 5) * 1.3);
+          bot.hp -= dmg;
+          bot.vx += (dx / (dist || 1)) * 8; bot.vy += (dy / (dist || 1)) * 8;
+          bot.stunTimer = 20;
+          explode(bot.x, bot.y, abil.color, 10);
+          popText(bot.x, bot.y - 14, `-${dmg}`, abil.color);
+          if (bot.hp <= 0 && !bot.dead) {
+            bot.dead = true;
+            const earned = Math.round(bot.pts * (1 + (playerLevel - 1) * 0.1));
+            score += earned; setLive(score);
+            explode(bot.x, bot.y, bot.color, 18);
+          }
+        }
+      });
+      explode(player.x, player.y, abil.color, 30);
+    } else if (abil.id === 'FREEZE') {
+      enemyBots.forEach(bot => { if (!bot.dead) bot.stunTimer = 150; });
+      explode(player.x, player.y, abil.color, 20);
+    } else if (abil.id === 'HEAL') {
+      player.hp = Math.min(player.maxHp, player.hp + player.maxHp * 0.5);
+      document.getElementById('prog-fill').style.width = `${(player.hp / player.maxHp) * 100}%`;
+      explode(player.x, player.y, abil.color, 20);
+    } else if (abil.id === 'OVERCHARGE') {
+      buffOverchargeTimer = 360; buffHasteTimer = 360;
+      explode(player.x, player.y, abil.color, 20);
+    } else if (abil.id === 'SHIELD') {
+      buffShieldTimer = 240;
+      explode(player.x, player.y, abil.color, 20);
+    }
+  }
 
   // ── PLAYER ──
   const player = {
@@ -2010,6 +2063,22 @@ function startArena() {
   walls = wallDefs;
 
   // Initial data node scatter
+  // Weighted node type pool — mostly plain DATA, with rarer utility/buff/ability nodes
+  const NODE_POOL = [
+    { type:'DATA',       weight:58 },
+    { type:'MEGA',       weight:14 },
+    { type:'HEAL',       weight:10 },
+    { type:'HASTE',      weight:7  },
+    { type:'OVERCHARGE', weight:6  },
+    { type:'SHIELD',     weight:4  },
+    { type:'CORE',       weight:3  },
+  ];
+  function pickNodeType() {
+    const totalW = NODE_POOL.reduce((s, n) => s + n.weight, 0);
+    let r = Math.random() * totalW;
+    for (const n of NODE_POOL) { r -= n.weight; if (r <= 0) return n.type; }
+    return 'DATA';
+  }
   function spawnDataNodes(count) {
     for (let i = 0; i < count; i++) {
       let nx, ny, attempts = 0;
@@ -2020,7 +2089,7 @@ function startArena() {
       } while (attempts < 20 && isCollidingWall(nx, ny, 10));
       dataNodes.push({
         x: nx, y: ny, r: 9,
-        type: Math.random() < 0.15 ? 'MEGA' : 'DATA',
+        type: pickNodeType(),
         pulse: Math.random() * Math.PI * 2,
         collected: false
       });
@@ -2055,11 +2124,15 @@ function startArena() {
 
   // ── ENEMY BOT CLASS ──
   const BOT_TYPES = [
-    { id:'GRUNT',   color:'#ff0090', r:12, speed:1.5, hp:40,  maxHp:40,  dmg:12, pts:20,  xp:15,  label:'GRUNT'   },
-    { id:'CHASER',  color:'#ff6600', r:11, speed:2.6, hp:25,  maxHp:25,  dmg:8,  pts:30,  xp:20,  label:'CHASER'  },
-    { id:'TANK',    color:'#a855f7', r:18, speed:0.9, hp:120, maxHp:120, dmg:20, pts:60,  xp:50,  label:'TANK'    },
-    { id:'SNIPER',  color:'#ffd700', r:10, speed:1.8, hp:30,  maxHp:30,  dmg:15, pts:40,  xp:35,  label:'SNIPER'  },
-    { id:'ELITE',   color:'#ff2442', r:14, speed:2.0, hp:80,  maxHp:80,  dmg:25, pts:100, xp:80,  label:'ELITE'   },
+    { id:'GRUNT',    color:'#ff0090', r:12, speed:1.5, hp:40,  maxHp:40,  dmg:12, pts:20,  xp:15,  label:'GRUNT'    },
+    { id:'CHASER',   color:'#ff6600', r:11, speed:2.6, hp:25,  maxHp:25,  dmg:8,  pts:30,  xp:20,  label:'CHASER'   },
+    { id:'TANK',     color:'#a855f7', r:18, speed:0.9, hp:120, maxHp:120, dmg:20, pts:60,  xp:50,  label:'TANK'     },
+    { id:'SNIPER',   color:'#ffd700', r:10, speed:1.8, hp:30,  maxHp:30,  dmg:15, pts:40,  xp:35,  label:'SNIPER'   },
+    { id:'ELITE',    color:'#ff2442', r:14, speed:2.0, hp:80,  maxHp:80,  dmg:25, pts:100, xp:80,  label:'ELITE'    },
+    { id:'SWARMER',  color:'#39ff14', r:8,  speed:3.4, hp:15,  maxHp:15,  dmg:6,  pts:15,  xp:10,  label:'SWARMER'  },
+    { id:'BOMBER',   color:'#ff6600', r:13, speed:1.7, hp:35,  maxHp:35,  dmg:35, pts:50,  xp:30,  label:'BOMBER'   },
+    { id:'SHIELDER', color:'#00f5ff', r:15, speed:1.1, hp:70,  maxHp:70,  dmg:14, pts:70,  xp:45,  label:'SHIELDER' },
+    { id:'HEALER',   color:'#ff90e8', r:11, speed:1.3, hp:35,  maxHp:35,  dmg:6,  pts:55,  xp:40,  label:'HEALER'   },
   ];
 
   class Bot {
@@ -2077,6 +2150,11 @@ function startArena() {
       this.wobble = Math.random() * Math.PI * 2;
       this.dead = false;
       this.deathTimer = 0;
+      // ── per-type extras ──
+      this.jitterTimer = 0; // SWARMER erratic movement
+      this.healCooldown = 90; // HEALER
+      this.exploded = false; // BOMBER
+      this.shieldAngle = Math.random() * Math.PI * 2; // SHIELDER — rotates slowly, must be flanked
     }
 
     update() {
@@ -2087,19 +2165,71 @@ function startArena() {
       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
       this.angle = Math.atan2(dy, dx);
       this.wobble += 0.05;
+      if (this.id === 'SHIELDER') this.shieldAngle += 0.018; // shield slowly rotates — flank it to land full damage
 
       const warpMult = 1.0; // future: can tie into time warp
-      const inRange = dist < this.aggroRadius;
+      const inRange = true; // bots always actively chase/attack the player, regardless of distance
 
       if (inRange) {
         if (this.id === 'SNIPER' && dist > 120) {
           // Sniper keeps distance
           this.vx += (dx / dist) * this.speed * 0.3;
           this.vy += (dy / dist) * this.speed * 0.3;
-        } else if (this.id !== 'SNIPER') {
+        } else if (this.id === 'HEALER' && dist < 160) {
+          // Healer keeps its distance from the player, preferring to hover near allies
+          this.vx -= (dx / dist) * this.speed * 0.3;
+          this.vy -= (dy / dist) * this.speed * 0.3;
+        } else if (this.id === 'SWARMER') {
+          // Swarmer darts erratically while closing in
+          this.jitterTimer--;
+          if (this.jitterTimer <= 0) {
+            this.jitterTimer = 10 + Math.random() * 14;
+            const jitterAngle = Math.atan2(dy, dx) + (Math.random() - 0.5) * 1.6;
+            this.vx += Math.cos(jitterAngle) * this.speed * 0.4;
+            this.vy += Math.sin(jitterAngle) * this.speed * 0.4;
+          }
+          this.vx += (dx / dist) * this.speed * 0.22;
+          this.vy += (dy / dist) * this.speed * 0.22;
+        } else {
           this.vx += (dx / dist) * this.speed * 0.25;
           this.vy += (dy / dist) * this.speed * 0.25;
         }
+
+        // BOMBER: charge in and self-destruct in a damaging blast
+        if (this.id === 'BOMBER' && !this.exploded) {
+          if (dist < this.r + player.r + 26) {
+            this.exploded = true;
+            this.dead = true;
+            this.deathTimer = 0;
+            explode(this.x, this.y, this.color, 26);
+            popText(this.x, this.y - 10, 'BOOM!', '#ff6600');
+            const bdx = player.x - this.x, bdy = player.y - this.y;
+            const bdist = Math.sqrt(bdx * bdx + bdy * bdy) || 1;
+            if (bdist < 70) hitPlayer(this.dmg, this.color);
+          }
+        }
+
+        // HEALER: periodically pulse-heal the most wounded nearby ally
+        if (this.id === 'HEALER') {
+          this.healCooldown--;
+          if (this.healCooldown <= 0) {
+            this.healCooldown = 150;
+            let target = null, lowestPct = 1;
+            enemyBots.forEach(ally => {
+              if (ally === this || ally.dead) return;
+              const adx = ally.x - this.x, ady = ally.y - this.y;
+              if (Math.sqrt(adx * adx + ady * ady) > 180) return;
+              const pct = ally.hp / ally.maxHp;
+              if (pct < 1 && pct < lowestPct) { lowestPct = pct; target = ally; }
+            });
+            if (target) {
+              target.hp = Math.min(target.maxHp, target.hp + target.maxHp * 0.3);
+              popText(target.x, target.y - target.r - 14, '+HEAL', '#ff90e8');
+              explode(target.x, target.y, '#ff90e8', 8);
+            }
+          }
+        }
+
         // Attack logic
         this.attackTimer++;
         if (this.attackTimer >= this.attackCooldown) {
@@ -2113,7 +2243,7 @@ function startArena() {
               r: 5, color: this.color, dmg: this.dmg,
               alpha: 1, trail: []
             });
-          } else if (dist < this.r + player.r + 20) {
+          } else if (this.id !== 'BOMBER' && this.id !== 'HEALER' && dist < this.r + player.r + 20) {
             // Melee
             hitPlayer(this.dmg, this.color);
           }
@@ -2134,7 +2264,7 @@ function startArena() {
       resolveWall(this, this.r);
 
       // Direct melee collision with player
-      if (dist < this.r + player.r + 4 && this.id !== 'SNIPER' && this.id !== 'ELITE') {
+      if (dist < this.r + player.r + 4 && this.id !== 'SNIPER' && this.id !== 'ELITE' && this.id !== 'BOMBER' && this.id !== 'HEALER') {
         if (this.attackTimer <= 0) {
           this.attackTimer = this.attackCooldown * 0.6;
           hitPlayer(this.dmg * 0.4, this.color);
@@ -2192,6 +2322,52 @@ function startArena() {
         // Rotating ring
         aCtx.strokeStyle = `rgba(255,36,66,${0.4 + pulse * 0.4})`; aCtx.lineWidth = 1.5;
         aCtx.beginPath(); aCtx.arc(0, 0, this.r + 6, 0, Math.PI * 2); aCtx.stroke();
+      } else if (this.id === 'SWARMER') {
+        // Tiny sharp triangle, always pointed toward the player
+        aCtx.fillStyle = this.stunTimer > 0 ? '#888' : this.color;
+        aCtx.save(); aCtx.rotate(this.angle);
+        aCtx.beginPath();
+        aCtx.moveTo(this.r * 1.3, 0);
+        aCtx.lineTo(-this.r * 0.8, this.r * 0.8);
+        aCtx.lineTo(-this.r * 0.8, -this.r * 0.8);
+        aCtx.closePath(); aCtx.fill();
+        aCtx.restore();
+      } else if (this.id === 'BOMBER') {
+        // Spiky bomb that flashes faster the closer it gets
+        const flash = Math.sin(this.wobble * 3) > 0;
+        aCtx.fillStyle = this.stunTimer > 0 ? '#888' : (flash ? '#fff' : this.color);
+        aCtx.beginPath(); aCtx.arc(0, 0, this.r, 0, Math.PI * 2); aCtx.fill();
+        aCtx.strokeStyle = this.color; aCtx.lineWidth = 2;
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2;
+          aCtx.beginPath();
+          aCtx.moveTo(Math.cos(a) * this.r, Math.sin(a) * this.r);
+          aCtx.lineTo(Math.cos(a) * (this.r + 6), Math.sin(a) * (this.r + 6));
+          aCtx.stroke();
+        }
+      } else if (this.id === 'SHIELDER') {
+        // Core body
+        aCtx.fillStyle = this.stunTimer > 0 ? '#888' : '#0d3a3f';
+        aCtx.beginPath(); aCtx.arc(0, 0, this.r, 0, Math.PI * 2); aCtx.fill();
+        aCtx.strokeStyle = this.color; aCtx.lineWidth = 1.5; aCtx.stroke();
+        // Rotating shield arc — reduces damage taken from this side, must be flanked
+        aCtx.strokeStyle = this.color; aCtx.lineWidth = 5;
+        aCtx.shadowBlur = 16; aCtx.shadowColor = this.color;
+        aCtx.beginPath();
+        aCtx.arc(0, 0, this.r + 6, this.shieldAngle - Math.PI * 0.4, this.shieldAngle + Math.PI * 0.4);
+        aCtx.stroke();
+      } else if (this.id === 'HEALER') {
+        // Circle with a cross, pulsing when about to heal
+        aCtx.fillStyle = this.stunTimer > 0 ? '#888' : this.color;
+        aCtx.beginPath(); aCtx.arc(0, 0, this.r, 0, Math.PI * 2); aCtx.fill();
+        aCtx.fillStyle = '#fff';
+        aCtx.fillRect(-2, -this.r * 0.6, 4, this.r * 1.2);
+        aCtx.fillRect(-this.r * 0.6, -2, this.r * 1.2, 4);
+        if (this.healCooldown < 20) {
+          aCtx.strokeStyle = `rgba(255,144,232,${1 - this.healCooldown / 20})`;
+          aCtx.lineWidth = 2;
+          aCtx.beginPath(); aCtx.arc(0, 0, this.r + 8, 0, Math.PI * 2); aCtx.stroke();
+        }
       } else {
         // GRUNT / CHASER — circle with direction indicator
         aCtx.fillStyle = this.stunTimer > 0 ? '#888' : this.color;
@@ -2236,11 +2412,15 @@ function startArena() {
     bx = Math.max(30, Math.min(ARENA_W - 30, bx));
     by = Math.max(30, Math.min(ARENA_H - 30, by));
 
-    // Pick type by wave
+    // Pick type by wave — pool grows with wave for more variety over time
+    const byId = id => BOT_TYPES.find(t => t.id === id);
     let typePool;
-    if (botWave <= 2) typePool = [BOT_TYPES[0], BOT_TYPES[1]];
-    else if (botWave <= 4) typePool = [BOT_TYPES[0], BOT_TYPES[1], BOT_TYPES[3]];
-    else typePool = BOT_TYPES;
+    if (botWave <= 1) typePool = [byId('GRUNT'), byId('CHASER'), byId('SWARMER')];
+    else if (botWave <= 2) typePool = [byId('GRUNT'), byId('CHASER'), byId('SWARMER'), byId('SNIPER')];
+    else if (botWave <= 3) typePool = [byId('GRUNT'), byId('CHASER'), byId('SWARMER'), byId('SNIPER'), byId('BOMBER')];
+    else if (botWave <= 4) typePool = [byId('GRUNT'), byId('CHASER'), byId('SWARMER'), byId('SNIPER'), byId('BOMBER'), byId('TANK')];
+    else if (botWave <= 5) typePool = [byId('GRUNT'), byId('CHASER'), byId('SWARMER'), byId('SNIPER'), byId('BOMBER'), byId('TANK'), byId('SHIELDER')];
+    else typePool = BOT_TYPES; // full roster, ELITE and HEALER join in
     const type = typePool[Math.floor(Math.random() * typePool.length)];
     enemyBots.push(new Bot(type, bx, by));
   }
@@ -2250,7 +2430,7 @@ function startArena() {
 
   // ── HELPER: PLAYER HIT ──
   function hitPlayer(dmg, color) {
-    if (invincibleTimer > 0) return;
+    if (invincibleTimer > 0 || buffShieldTimer > 0) return;
     player.hp = Math.max(0, player.hp - dmg);
     invincibleTimer = 30;
     screenShake = 8;
@@ -2305,12 +2485,21 @@ function startArena() {
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
         if (Math.abs(diff) < Math.PI * 0.67) {
-          const dmg = player.attackPower + (playerLevel - 1) * 5;
+          let dmg = player.attackPower + (playerLevel - 1) * 5 + (buffOverchargeTimer > 0 ? 20 : 0);
+          let blocked = false;
+          if (bot.id === 'SHIELDER') {
+            // Hits landing on the shielded side are heavily reduced — flank for full damage
+            let sdiff = angleToBot - bot.shieldAngle;
+            while (sdiff > Math.PI) sdiff -= Math.PI * 2;
+            while (sdiff < -Math.PI) sdiff += Math.PI * 2;
+            if (Math.abs(sdiff) < Math.PI * 0.4) { dmg = Math.round(dmg * 0.2); blocked = true; }
+          }
+          dmg = Math.round(dmg);
           bot.hp -= dmg;
           bot.stunTimer = 12;
           hitAny = true;
-          explode(bot.x, bot.y, bot.color, 6);
-          popText(bot.x, bot.y - 14, `-${dmg}`, '#ff2442');
+          explode(bot.x, bot.y, blocked ? '#00f5ff' : bot.color, blocked ? 3 : 6);
+          popText(bot.x, bot.y - 14, blocked ? `-${dmg} (BLOCKED)` : `-${dmg}`, blocked ? '#00f5ff' : '#ff2442');
           // Combo
           comboCount++;
           comboTimer = 120;
@@ -2394,6 +2583,7 @@ function startArena() {
     keys[e.code] = true;
     if (e.code === 'Space') { e.preventDefault(); doSlash(); }
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { e.preventDefault(); doDash(); }
+    if (e.code === 'KeyE') { e.preventDefault(); deployAbility(); }
     if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.code)) e.preventDefault();
   };
   window.onkeyup = e => { keys[e.code] = false; };
@@ -2425,8 +2615,13 @@ function startArena() {
     const wx = mx + camX, wy = my + camY;
     player.angle = Math.atan2(wy - player.y, wx - player.x);
   };
-  // Touch tap = slash
-  aCanvas.ontouchstart = e => { e.preventDefault(); doSlash(); };
+  // Touch tap = slash, double-tap = deploy special ability (mobile equivalent of KeyE)
+  aCanvas.ontouchstart = e => {
+    e.preventDefault();
+    const now = Date.now();
+    if (now - lastTapTime < 320) { deployAbility(); lastTapTime = 0; }
+    else { doSlash(); lastTapTime = now; }
+  };
 
   // ── WORLD TILE COLORS (cyber grid) ──
   function drawWorld() {
@@ -2489,6 +2684,15 @@ function startArena() {
       aCtx.globalAlpha = 0.35;
     }
 
+    // AEGIS SHIELD buff glow ring
+    if (buffShieldTimer > 0) {
+      aCtx.save();
+      aCtx.strokeStyle = `rgba(168,85,247,${0.5 + Math.sin(frame * 0.2) * 0.3})`;
+      aCtx.lineWidth = 3; aCtx.shadowBlur = 16; aCtx.shadowColor = '#a855f7';
+      aCtx.beginPath(); aCtx.arc(0, 0, player.r + 12, 0, Math.PI * 2); aCtx.stroke();
+      aCtx.restore();
+    }
+
     // Dash trail
     if (isDashing) {
       aCtx.shadowBlur = 30; aCtx.shadowColor = '#00f5ff';
@@ -2539,20 +2743,56 @@ function startArena() {
       if (sx < -20 || sx > W + 20 || sy < -20 || sy > H + 20) return;
 
       const p = 0.7 + Math.sin(node.pulse) * 0.3;
-      const isMega = node.type === 'MEGA';
-      const color = isMega ? '#ffd700' : '#39ff14';
-      const size = isMega ? 11 : 8;
+      const NODE_STYLE = {
+        DATA:       { color:'#39ff14', size:8  },
+        MEGA:       { color:'#ffd700', size:11 },
+        HEAL:       { color:'#ff4d6d', size:10 },
+        HASTE:      { color:'#00f5ff', size:10 },
+        OVERCHARGE: { color:'#ff2442', size:10 },
+        SHIELD:     { color:'#a855f7', size:10 },
+        CORE:       { color:'#ffffff', size:12 },
+      };
+      const style = NODE_STYLE[node.type] || NODE_STYLE.DATA;
+      const color = style.color, size = style.size;
 
       aCtx.save();
       aCtx.shadowBlur = 14 * p; aCtx.shadowColor = color;
       aCtx.fillStyle = color;
-      // Rotating square
       aCtx.translate(sx, sy);
-      aCtx.rotate(node.pulse * 0.6);
-      aCtx.fillRect(-size / 2, -size / 2, size, size);
-      // Inner core
-      aCtx.fillStyle = '#ffffff';
-      aCtx.fillRect(-2, -2, 4, 4);
+
+      if (node.type === 'HEAL') {
+        // Cross icon
+        aCtx.fillRect(-size/2, -2, size, 4);
+        aCtx.fillRect(-2, -size/2, 4, size);
+      } else if (node.type === 'CORE') {
+        // Rotating diamond ring — ability core
+        aCtx.rotate(node.pulse * 0.8);
+        aCtx.beginPath();
+        aCtx.moveTo(0, -size); aCtx.lineTo(size, 0); aCtx.lineTo(0, size); aCtx.lineTo(-size, 0);
+        aCtx.closePath(); aCtx.fill();
+        aCtx.strokeStyle = '#00f5ff'; aCtx.lineWidth = 1.5;
+        aCtx.beginPath(); aCtx.arc(0, 0, size + 5, 0, Math.PI * 2); aCtx.stroke();
+      } else if (node.type === 'HASTE') {
+        // Chevron / speed arrow
+        aCtx.rotate(node.pulse * 0.4);
+        aCtx.beginPath();
+        aCtx.moveTo(-size*0.6, -size*0.7); aCtx.lineTo(size*0.6, 0); aCtx.lineTo(-size*0.6, size*0.7);
+        aCtx.closePath(); aCtx.fill();
+      } else if (node.type === 'SHIELD') {
+        // Hexagon shield icon
+        aCtx.beginPath();
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2 - Math.PI / 6;
+          i === 0 ? aCtx.moveTo(Math.cos(a) * size, Math.sin(a) * size) : aCtx.lineTo(Math.cos(a) * size, Math.sin(a) * size);
+        }
+        aCtx.closePath(); aCtx.fill();
+      } else {
+        // DATA / MEGA / OVERCHARGE — rotating square
+        aCtx.rotate(node.pulse * 0.6);
+        aCtx.fillRect(-size / 2, -size / 2, size, size);
+        aCtx.fillStyle = '#ffffff';
+        aCtx.fillRect(-2, -2, 4, 4);
+      }
       aCtx.restore();
     });
   }
@@ -2728,12 +2968,43 @@ function startArena() {
     if (frame < 300) {
       const hintAlpha = Math.max(0, 1 - frame / 300);
       aCtx.save(); aCtx.globalAlpha = hintAlpha * 0.7;
-      aCtx.fillStyle = 'rgba(0,0,0,0.6)'; aCtx.fillRect(W/2 - 90, H/2 + 30, 180, 38);
+      aCtx.fillStyle = 'rgba(0,0,0,0.6)'; aCtx.fillRect(W/2 - 100, H/2 + 30, 200, 48);
       aCtx.fillStyle = '#ffffff'; aCtx.font = '7px Orbitron'; aCtx.textAlign = 'center';
       aCtx.fillText('WASD / ARROWS = MOVE', W/2, H/2 + 44);
       aCtx.fillText('SPACE = SLASH  SHIFT = DASH', W/2, H/2 + 58);
+      aCtx.fillText('E (OR DOUBLE-TAP) = ABILITY', W/2, H/2 + 72);
       aCtx.restore(); aCtx.textAlign = 'left';
     }
+
+    // Special ability queue indicator (top center, below bot count)
+    if (specialAbilities.length > 0) {
+      const abil = specialAbilities[0];
+      const bob = Math.sin(frame * 0.1) * 2;
+      aCtx.save();
+      aCtx.fillStyle = 'rgba(0,0,0,0.6)'; aCtx.fillRect(W / 2 - 70, 24 + bob, 140, 15);
+      aCtx.strokeStyle = abil.color; aCtx.lineWidth = 1; aCtx.strokeRect(W / 2 - 70, 24 + bob, 140, 15);
+      aCtx.fillStyle = abil.color; aCtx.font = 'bold 7px Orbitron'; aCtx.textAlign = 'center';
+      aCtx.shadowBlur = 8; aCtx.shadowColor = abil.color;
+      aCtx.fillText(`[E] ${abil.label}${specialAbilities.length > 1 ? ` x${specialAbilities.length}` : ''}`, W / 2, 34 + bob);
+      aCtx.restore(); aCtx.textAlign = 'left';
+    }
+
+    // Active buff indicators (right side, under score)
+    let buffY = 30;
+    const drawBuff = (label, color, timer, maxTimer) => {
+      if (timer <= 0) return;
+      const pct = timer / maxTimer;
+      aCtx.save();
+      aCtx.fillStyle = 'rgba(0,0,0,0.55)'; aCtx.fillRect(W - 66, buffY, 58, 12);
+      aCtx.fillStyle = color; aCtx.globalAlpha = 0.85; aCtx.fillRect(W - 66, buffY, 58 * pct, 12);
+      aCtx.globalAlpha = 1; aCtx.fillStyle = '#000'; aCtx.font = 'bold 6.5px Orbitron'; aCtx.textAlign = 'center';
+      aCtx.fillText(label, W - 37, buffY + 9);
+      aCtx.restore(); aCtx.textAlign = 'left';
+      buffY += 15;
+    };
+    drawBuff('HASTE', '#00f5ff', buffHasteTimer, 300);
+    drawBuff('OVERCHARGE', '#ff2442', buffOverchargeTimer, 300);
+    drawBuff('AEGIS', '#a855f7', buffShieldTimer, 180);
   }
 
   // ── MAIN LOOP ──
@@ -2751,9 +3022,10 @@ function startArena() {
       if (keys['ArrowUp']    || keys['KeyW'])              dy -= 1;
       if (keys['ArrowDown']  || keys['KeyS'])              dy += 1;
 
+      const hasteMult = buffHasteTimer > 0 ? 1.6 : 1;
       if (dx !== 0 || dy !== 0) {
         const len = Math.sqrt(dx * dx + dy * dy);
-        const spd = isDashing ? player.speed * 3 : player.speed;
+        const spd = (isDashing ? player.speed * 3 : player.speed) * hasteMult;
         player.vx += (dx / len) * spd * 0.4;
         player.vy += (dy / len) * spd * 0.4;
         // Update facing if not mouse-aiming recently
@@ -2763,7 +3035,7 @@ function startArena() {
       }
       player.vx *= 0.82; player.vy *= 0.82;
       const pspd = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
-      const maxSpd = isDashing ? player.speed * 4 : player.speed;
+      const maxSpd = (isDashing ? player.speed * 4 : player.speed) * hasteMult;
       if (pspd > maxSpd) { player.vx = (player.vx / pspd) * maxSpd; player.vy = (player.vy / pspd) * maxSpd; }
 
       player.x += player.vx; player.y += player.vy;
@@ -2778,6 +3050,9 @@ function startArena() {
       if (slashTimer > 0) slashTimer--; else slashActive = false;
       if (dashTimer > 0) dashTimer--; else isDashing = false;
       if (comboTimer > 0) comboTimer--; else if (comboTimer === 0 && comboCount > 0) comboCount = 0;
+      if (buffHasteTimer > 0) buffHasteTimer--;
+      if (buffShieldTimer > 0) buffShieldTimer--;
+      if (buffOverchargeTimer > 0) buffOverchargeTimer--;
 
       // ── UPDATE BOTS ──
       enemyBots.forEach(bot => bot.update());
@@ -2788,12 +3063,39 @@ function startArena() {
         const dx2 = player.x - node.x, dy2 = player.y - node.y;
         if (Math.sqrt(dx2 * dx2 + dy2 * dy2) < player.r + node.r + 4) {
           node.collected = true;
-          const pts = node.type === 'MEGA' ? 50 : 20;
-          score += pts;
-          setLive(score);
-          gainXP(node.type === 'MEGA' ? 30 : 10);
-          explode(node.x, node.y, node.type === 'MEGA' ? '#ffd700' : '#39ff14', 8);
-          popText(node.x, node.y - 12, `+${pts}`, node.type === 'MEGA' ? '#ffd700' : '#39ff14');
+          if (node.type === 'MEGA') {
+            score += 50; setLive(score); gainXP(30);
+            explode(node.x, node.y, '#ffd700', 8);
+            popText(node.x, node.y - 12, '+50', '#ffd700');
+          } else if (node.type === 'DATA') {
+            score += 20; setLive(score); gainXP(10);
+            explode(node.x, node.y, '#39ff14', 8);
+            popText(node.x, node.y - 12, '+20', '#39ff14');
+          } else if (node.type === 'HEAL') {
+            player.hp = Math.min(player.maxHp, player.hp + player.maxHp * 0.25);
+            document.getElementById('prog-fill').style.width = `${(player.hp / player.maxHp) * 100}%`;
+            explode(node.x, node.y, '#ff4d6d', 10);
+            popText(node.x, node.y - 12, '+HP', '#ff4d6d');
+          } else if (node.type === 'HASTE') {
+            buffHasteTimer = 300;
+            explode(node.x, node.y, '#00f5ff', 10);
+            popText(node.x, node.y - 12, 'HASTE!', '#00f5ff');
+          } else if (node.type === 'OVERCHARGE') {
+            buffOverchargeTimer = 300;
+            explode(node.x, node.y, '#ff2442', 10);
+            popText(node.x, node.y - 12, 'OVERCHARGE!', '#ff2442');
+          } else if (node.type === 'SHIELD') {
+            buffShieldTimer = 180;
+            explode(node.x, node.y, '#a855f7', 10);
+            popText(node.x, node.y - 12, 'SHIELDED!', '#a855f7');
+          } else if (node.type === 'CORE') {
+            const abil = ABILITY_TYPES[Math.floor(Math.random() * ABILITY_TYPES.length)];
+            specialAbilities.push(abil);
+            if (specialAbilities.length > 3) specialAbilities.shift();
+            explode(node.x, node.y, abil.color, 14);
+            popText(node.x, node.y - 12, `${abil.label} READY`, abil.color);
+            toast(`⚡ Ability acquired: ${abil.label} — press E (or double-tap) to use`, 2200);
+          }
         }
       });
 
@@ -2854,7 +3156,7 @@ function startArena() {
   }
 
   // Show controls hint in the game header
-  document.getElementById('g-controls').textContent = 'WASD/ARROWS=MOVE · SPACE=SLASH · SHIFT=DASH · AIM WITH MOUSE';
+  document.getElementById('g-controls').textContent = 'WASD/ARROWS=MOVE · SPACE=SLASH · SHIFT=DASH · E=ABILITY · AIM WITH MOUSE';
   onQuitGame = () => { if(!isOver) endArena(); };
   requestAnimationFrame(loop);
 }
