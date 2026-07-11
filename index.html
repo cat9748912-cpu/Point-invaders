@@ -51,6 +51,8 @@
     <div class="hub-right">
       <div class="hub-uname" id="h-uname">PLAYER</div>
       <div class="hub-pts" id="h-pts">🏆 0 PTS</div>
+      <div class="hub-credits" id="h-credits">💎 0 CR</div>
+      <button class="btn btn-secondary btn-sm" id="btn-market">🛒 Black Market</button>
       <button class="btn btn-secondary btn-sm" id="btn-fs-hub" title="Toggle Fullscreen">⛶</button>
       <button class="btn btn-secondary btn-sm" id="btn-logout">Exit</button>
     </div>
@@ -133,6 +135,46 @@
         <div class="lb-empty">Loading scores...</div>
       </div>
     </div>
+  </div>
+</div>
+
+<div class="screen" id="market-screen">
+  <div class="market-bar">
+    <button class="btn btn-secondary btn-sm" id="btn-market-back">← Hub</button>
+    <div class="market-title">🛒 BLACK MARKET</div>
+    <div class="market-bal">
+      <span id="m-pts">🏆 0 PTS</span>
+      <span id="m-credits">💎 0 CR</span>
+    </div>
+  </div>
+  <div class="market-tabs">
+    <button class="market-tab active" data-tab="convert">🔄 Convert</button>
+    <button class="market-tab" data-tab="colors">🎨 Colors</button>
+    <button class="market-tab" data-tab="cursors">🖱️ Cursors</button>
+    <button class="market-tab" data-tab="skins">🤖 Skins</button>
+  </div>
+  <div class="market-body">
+    <div class="market-panel active" id="panel-convert">
+      <div class="convert-grid">
+        <div class="card convert-card">
+          <div class="input-label">Points → Credits</div>
+          <div class="convert-rate">100 PTS = 1 CR</div>
+          <input type="number" class="input" id="conv-pts-input" placeholder="Points to convert" min="0" step="100">
+          <div class="convert-preview" id="conv-pts-preview">= 0 CR</div>
+          <button class="btn btn-primary btn-full" id="btn-conv-to-credits">Convert to Credits</button>
+        </div>
+        <div class="card convert-card">
+          <div class="input-label">Credits → Points</div>
+          <div class="convert-rate">1 CR = 100 PTS</div>
+          <input type="number" class="input" id="conv-credits-input" placeholder="Credits to convert" min="0" step="1">
+          <div class="convert-preview" id="conv-credits-preview">= 0 PTS</div>
+          <button class="btn btn-primary btn-full" id="btn-conv-to-points">Convert to Points</button>
+        </div>
+      </div>
+    </div>
+    <div class="market-panel" id="panel-colors"><div class="shop-grid" id="shop-colors"></div></div>
+    <div class="market-panel" id="panel-cursors"><div class="shop-grid" id="shop-cursors"></div></div>
+    <div class="market-panel" id="panel-skins"><div class="shop-grid" id="shop-skins"></div></div>
   </div>
 </div>
 
