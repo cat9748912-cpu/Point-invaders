@@ -319,7 +319,8 @@ const SHOP_ITEMS = {
     { id:'col-gold',   name:'Gold Protocol', price:8,  color:'#ffd700' },
     { id:'col-purple', name:'Violet Static', price:8,  color:'#a855f7' },
     { id:'col-orange', name:'Amber Overload',price:10, color:'#ff6600' },
-    { id:'col-red',    name:'Crimson Alert', price:10, color:'#ff2442' }
+    { id:'col-red',    name:'Crimson Alert', price:10, color:'#ff2442' },
+    { id:'col-matrix', name:'Matrix Cascade',price:14, color:'#00ff41' }
   ],
   cursors: [
     { id:'cur-default', name:'Standard Pointer', price:0,  emoji:'➤', default:true },
@@ -327,7 +328,8 @@ const SHOP_ITEMS = {
     { id:'cur-blade',   name:'Neon Blade',        price:6,  emoji:'🗡️' },
     { id:'cur-claw',    name:'Cyber Claw',        price:10, emoji:'🦾' },
     { id:'cur-skull',   name:'Ghost Skull',       price:10, emoji:'💀' },
-    { id:'cur-star',    name:'Nova Star',         price:12, emoji:'✨' }
+    { id:'cur-star',    name:'Nova Star',         price:12, emoji:'✨' },
+    { id:'cur-wraith',  name:'Data Wraith',       price:16, emoji:'👁️' }
   ],
   skins: [
     { id:'skin-default', name:'Recruit',      price:0,  emoji:'🤖', default:true },
@@ -335,11 +337,23 @@ const SHOP_ITEMS = {
     { id:'skin-android', name:'Android X',    price:15, emoji:'👾' },
     { id:'skin-phantom', name:'Phantom Unit', price:20, emoji:'👻' },
     { id:'skin-mech',    name:'War Mech',     price:25, emoji:'🦿' },
-    { id:'skin-alien',   name:'Void Alien',   price:25, emoji:'👽' }
+    { id:'skin-alien',   name:'Void Alien',   price:25, emoji:'👽' },
+    { id:'skin-quantum', name:'Quantum Dragon',price:30, emoji:'🐉' }
   ]
 };
 
 function findItem(cat, id){ return (SHOP_ITEMS[cat]||[]).find(i=>i.id===id); }
+
+// Rarity is computed relative to the other paid items in the same category,
+// so the priciest items automatically get the flashiest shop-card treatment.
+function getRarity(cat, item){
+  if(item.default || !item.price) return null;
+  const prices = (SHOP_ITEMS[cat]||[]).filter(i=>!i.default).map(i=>i.price);
+  const max = Math.max(...prices), min = Math.min(...prices);
+  if(item.price===max) return 'legendary';
+  if(item.price >= min + (max-min)*0.5) return 'epic';
+  return 'rare';
+}
 
 function hexToRgba(hex, alpha){
   const h = hex.replace('#','');
@@ -368,27 +382,71 @@ function drawSkinBadge(x, y, size=13){
   aCtx.restore();
 }
 
+let customCursorEl = null;
+let codeCursorTimer = null;
+
+function ensureCustomCursorEl(){
+  if(customCursorEl) return customCursorEl;
+  customCursorEl = document.createElement('div');
+  customCursorEl.id = 'custom-cursor-fx';
+  document.body.appendChild(customCursorEl);
+  document.addEventListener('mousemove', e=>{
+    customCursorEl.style.left = e.clientX + 'px';
+    customCursorEl.style.top = e.clientY + 'px';
+  });
+  return customCursorEl;
+}
+
+function stopCodeCursorAnim(){
+  if(codeCursorTimer){ clearInterval(codeCursorTimer); codeCursorTimer = null; }
+}
+
 function applyEquippedCosmetics(){
   if(!user) return;
   const colorItem = findItem('colors', user.equipped && user.equipped.colors) || SHOP_ITEMS.colors[0];
   document.documentElement.style.setProperty('--cyan', colorItem.color);
 
   const cursorItem = findItem('cursors', user.equipped && user.equipped.cursors) || SHOP_ITEMS.cursors[0];
+  const cursorRarity = getRarity('cursors', cursorItem);
   let cursorStyleTag = document.getElementById('custom-cursor-style');
   if(!cursorStyleTag){
     cursorStyleTag = document.createElement('style');
     cursorStyleTag.id = 'custom-cursor-style';
     document.head.appendChild(cursorStyleTag);
   }
+
+  stopCodeCursorAnim();
+  const fx = ensureCustomCursorEl();
+
   if(cursorItem.default){
     cursorStyleTag.textContent = '';
     document.body.style.cursor = '';
+    fx.style.display = 'none';
+    fx.className = '';
+  } else if(cursorRarity==='epic' || cursorRarity==='legendary'){
+    // Epic/legendary cursors swap the real OS pointer for an animated element that tracks the mouse.
+    cursorStyleTag.textContent = `*{cursor:none !important;}`;
+    document.body.style.cursor = 'none';
+    fx.style.display = 'block';
+    if(cursorRarity==='legendary'){
+      fx.className = 'ccur ccur-legendary';
+      const chars = '01';
+      const randomCode = () => Array.from({length:6}, () => chars[Math.floor(Math.random()*chars.length)]).join('');
+      fx.innerHTML = `<span class="ccur-code">${randomCode()}</span>`;
+      const codeEl = fx.querySelector('.ccur-code');
+      codeCursorTimer = setInterval(() => { codeEl.textContent = randomCode(); }, 130);
+    } else {
+      fx.className = 'ccur ccur-epic';
+      fx.innerHTML = `<span class="ccur-inner">${cursorItem.emoji}</span>`;
+    }
   } else {
     const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><text x='0' y='24' font-size='26'>${cursorItem.emoji}</text></svg>`;
     const cursorCss = `url("data:image/svg+xml,${encodeURIComponent(svg)}") 4 4, auto`;
     // !important beats element-level cursor:pointer rules on buttons, cards, canvas, etc.
     cursorStyleTag.textContent = `*{cursor:${cursorCss} !important;}`;
     document.body.style.cursor = cursorCss;
+    fx.style.display = 'none';
+    fx.className = '';
   }
 }
 
@@ -466,11 +524,15 @@ function renderShop(cat){
   SHOP_ITEMS[cat].forEach(item=>{
     const owned = item.default || (user?.owned?.[cat]||[]).includes(item.id);
     const equipped = user?.equipped?.[cat]===item.id;
+    const rarity = getRarity(cat, item);
     const card = document.createElement('div');
-    card.className = 'shop-card' + (equipped ? ' equipped' : '');
+    card.className = 'shop-card' + (rarity ? ` rarity-${rarity}` : '') + (equipped ? ' equipped' : '');
     const preview = cat==='colors'
-      ? `<div class="shop-swatch" style="background:${item.color};box-shadow:0 0 20px ${item.color}"></div>`
+      ? (item.id==='col-matrix'
+          ? `<div class="shop-swatch matrix-swatch"></div>`
+          : `<div class="shop-swatch" style="background:${item.color};box-shadow:0 0 20px ${item.color}"></div>`)
       : `<div class="shop-emoji">${item.emoji}</div>`;
+    const badge = rarity ? `<div class="rarity-badge ${rarity}">${rarity}</div>` : '';
     let btnHtml;
     if(equipped){
       btnHtml = `<button class="btn btn-secondary btn-sm shop-btn" data-act="unequip" data-cat="${cat}" data-id="${item.id}">Unequip</button>`;
@@ -479,7 +541,7 @@ function renderShop(cat){
     } else {
       btnHtml = `<button class="btn btn-primary btn-sm shop-btn" data-act="buy" data-cat="${cat}" data-id="${item.id}">Buy · 💎${item.price}</button>`;
     }
-    card.innerHTML = `${preview}<div class="shop-name">${esc(item.name)}</div>${equipped?'<div class="shop-tag">EQUIPPED</div>':''}${btnHtml}`;
+    card.innerHTML = `${preview}${badge}<div class="shop-name">${esc(item.name)}</div>${equipped?'<div class="shop-tag">EQUIPPED</div>':''}${btnHtml}`;
     grid.appendChild(card);
   });
   grid.querySelectorAll('.shop-btn').forEach(btn=>{
@@ -1749,8 +1811,8 @@ function startPong(){
 
   function end(){
     if(isOver)return; isOver=true;
-    const finalScore = Math.max(0, (userScore - cpuScore) * 50);
-    showResults('pong', Math.min(900, Math.max(0, userScore*50)), {'🏓 Your Goals': userScore, '🤖 CPU Goals': cpuScore, '🏆 Final Score': `${finalScore} PTS`});
+    const pts = Math.min(900, Math.max(0, (userScore - cpuScore) * 50));
+    showResults('pong', pts, {'🏓 Your Goals': userScore, '🤖 CPU Goals': cpuScore, '🏆 Final Score': `${pts} PTS`});
   }
 
   function drawGlow(color,alpha=0.18){

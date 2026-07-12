@@ -75,14 +75,49 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .convert-rate{font-family:var(--fd);font-size:.6rem;color:var(--gold);letter-spacing:.1em;margin:6px 0 14px}
 .convert-preview{font-family:var(--fd);font-size:1rem;color:var(--cyan);margin:12px 0;font-weight:700}
 
-.shop-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:14px}
-.shop-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--rl);padding:20px 14px;text-align:center;transition:all .2s ease}
+.shop-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:18px 14px}
+.shop-card{position:relative;background:var(--s1);border:1px solid var(--border);border-radius:var(--rl);padding:20px 14px;text-align:center;transition:all .2s ease}
 .shop-card.equipped{border-color:var(--gold);box-shadow:0 8px 24px rgba(255,215,0,.15)}
 .shop-swatch{width:56px;height:56px;border-radius:50%;margin:0 auto 12px;border:2px solid rgba(255,255,255,.2)}
 .shop-emoji{font-size:2.4rem;margin-bottom:10px}
 .shop-name{font-family:var(--fd);font-size:.62rem;font-weight:700;margin-bottom:8px;letter-spacing:.04em}
 .shop-tag{display:inline-block;font-family:var(--fd);font-size:.5rem;color:var(--gold);border:1px solid var(--gold);border-radius:20px;padding:2px 10px;margin-bottom:10px;letter-spacing:.1em}
 .shop-btn{width:100%}
+
+/* ── RARITY TIERS (pricier Black Market items get flashier treatment) ── */
+.rarity-badge{display:inline-block;font-family:var(--fd);font-size:.48rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;padding:2px 10px;border-radius:20px;margin-bottom:8px}
+.rarity-badge.rare{color:var(--cyan);border:1px solid var(--cyan);background:rgba(0,245,255,.08)}
+.rarity-badge.epic{color:#e879f9;border:1px solid #e879f9;background:rgba(232,121,249,.08)}
+.rarity-badge.legendary{position:relative;border:1px solid var(--gold);background:linear-gradient(90deg,var(--gold),var(--pink),var(--cyan),var(--gold));background-size:300% 100%;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;animation:legendary-text-shift 3s linear infinite}
+@keyframes legendary-text-shift{0%{background-position:0% 50%}100%{background-position:300% 50%}}
+
+/* RARE — gentle cyan breathing glow */
+@keyframes pulse-rare{0%,100%{box-shadow:0 0 0 rgba(0,245,255,0)}50%{box-shadow:0 0 16px rgba(0,245,255,.4)}}
+.shop-card.rarity-rare{animation:pulse-rare 2.6s ease-in-out infinite}
+
+/* EPIC — stronger glow + a diagonal light sweep across the card */
+@keyframes pulse-epic{0%,100%{box-shadow:0 0 0 rgba(232,121,249,0)}50%{box-shadow:0 0 24px rgba(232,121,249,.45)}}
+.shop-card.rarity-epic{animation:pulse-epic 2.2s ease-in-out infinite;overflow:hidden}
+.shop-card.rarity-epic::after{content:'';position:absolute;top:0;left:-150%;width:60%;height:100%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.28),transparent);animation:shimmer-sweep 2.6s ease-in-out infinite;pointer-events:none}
+@keyframes shimmer-sweep{0%{left:-150%}60%,100%{left:150%}}
+
+/* LEGENDARY — pulsing gold glow + colour-shifting badge text (no rotation) */
+.shop-card.rarity-legendary{border-color:var(--gold);animation:pulse-legendary 2.2s ease-in-out infinite}
+@keyframes pulse-legendary{0%,100%{box-shadow:0 0 20px rgba(255,215,0,.22)}50%{box-shadow:0 0 38px rgba(255,215,0,.5)}}
+.shop-card.rarity-legendary .shop-emoji{animation:float-icon 2.4s ease-in-out infinite}
+@keyframes float-icon{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-6px) scale(1.08)}}
+
+/* Matrix Cascade — animated "digital rain" swatch, always legendary tier */
+.shop-swatch.matrix-swatch{background:repeating-linear-gradient(0deg,rgba(0,255,65,.95) 0 2px,rgba(0,20,5,.95) 2px 6px);background-size:100% 24px;box-shadow:0 0 20px rgba(0,255,65,.6);animation:matrix-fall 1s linear infinite,pulse-legendary 2.2s ease-in-out infinite,float-icon 2.4s ease-in-out infinite}
+@keyframes matrix-fall{0%{background-position:0 0}100%{background-position:0 24px}}
+
+/* ── ANIMATED EQUIPPED CURSORS (epic & legendary tiers) ── */
+#custom-cursor-fx{position:fixed;top:0;left:0;display:none;pointer-events:none;z-index:99999;transform:translate(-50%,-50%)}
+.ccur-epic{font-size:26px;filter:drop-shadow(0 0 6px #e879f9)}
+.ccur-epic .ccur-inner{display:inline-block;animation:ccur-epic-spin 1.2s ease-in-out infinite}
+@keyframes ccur-epic-spin{0%,100%{transform:scale(1) rotate(0deg)}50%{transform:scale(1.3) rotate(180deg)}}
+.ccur-legendary .ccur-code{font-family:var(--fd),monospace;font-size:12px;font-weight:700;letter-spacing:2px;color:#00ff41;text-shadow:0 0 6px #00ff41,0 0 14px #00ff41;white-space:nowrap;display:inline-block;animation:ccur-code-flicker 1.4s ease-in-out infinite}
+@keyframes ccur-code-flicker{0%,100%{opacity:1;transform:translateY(0)}50%{opacity:.75;transform:translateY(-3px)}}
 .hub-body{display:grid;grid-template-columns:1fr 300px;gap:20px;width:100%;max-width:1060px}
 .games-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px;align-content:start}
 .game-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--rl);padding:22px 16px;text-align:center;cursor:pointer;transition:transform .25s ease,border-color .25s ease,box-shadow .25s ease;position:relative;overflow:hidden}
