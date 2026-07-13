@@ -70,15 +70,15 @@ const META = {
   arena:  { name: 'CYBER ARENA',  emoji: '⚔️', maxPts: 99999 }
 };
 
-// ════════════════════════════════════════════
+// ══════════════════════════════════════════════
 //  ⚙️ SYSTEM STABILITY — GLOBAL DIFFICULTY ENGINE
-// ════════════════════════════════════════════
+// ══════════════════════════════════════════════
 // Three operational tiers. `pointMult` scales final awarded score.
 // `speedMult` scales hazard/spawn/object velocities (>1 = more intense).
 // `timeMult` scales countdown clocks (<1 = less time on the clock).
 const DIFFICULTY_TIERS = {
   stable:      { key:'stable',      label:'STABLE CORE',      icon:'🟢', pointMult:1.0, speedMult:1.0, timeMult:1.0 },
-  overclocked: { key:'overclocked', label:'OVERCLOCKED',      icon:'🟡', pointMult:1.5, speedMult:1.3, timeMult:0.75 },
+  overclocked: { key:'overclocked', label:'OVERCLOCKED',      icon:'🟡', pointMult:1.5, speedMult:1.5, timeMult:0.75 },
   meltdown:    { key:'meltdown',    label:'CRITICAL MELTDOWN',icon:'🔴', pointMult:2.0, speedMult:2.0, timeMult:0.5 }
 };
 
@@ -102,6 +102,8 @@ function setDifficultyTier(tierKey){
   document.querySelectorAll('.diff-btn').forEach(b=>b.classList.toggle('active', b.dataset.tier===tierKey));
   const multEl = document.getElementById('diff-mult');
   if(multEl) multEl.textContent = `×${tier.pointMult.toFixed(1)} PTS`;
+  updateGameCardMaxPoints();
+  updateHubDiffDisplay();
 }
 
 function lockDifficultySelector(){
@@ -126,6 +128,46 @@ document.querySelectorAll('.diff-btn').forEach(btn=>{
     toast(`${tier.icon} SYSTEM STABILITY: ${tier.label} (×${tier.pointMult.toFixed(1)} PTS)`);
   });
 });
+
+function initGameCardBasePoints() {
+  document.querySelectorAll('.gc-pts').forEach(el => {
+    const txt = el.textContent.match(/UP TO (\d+) PTS/);
+    if (txt) {
+      const base = parseInt(txt[1],10);
+      el.dataset.basePts = base;
+    }
+  });
+}
+function updateGameCardMaxPoints() {
+  const diff = getDifficultyModifier();
+  document.querySelectorAll('.gc-pts').forEach(el => {
+    const base = parseInt(el.dataset.basePts,10);
+    const displayed = Math.floor(base * diff);
+    el.textContent = `UP TO ${displayed} PTS`;
+  });
+}
+function updateHubDiffDisplay() {
+  const diff = getDifficultyModifier();
+  const hubPtsEl = document.getElementById('h-pts');
+  let diffEl = document.getElementById('hub-diff');
+  if (!diffEl) {
+    diffEl = document.createElement('span');
+    diffEl.id = 'hub-diff';
+    diffEl.style.fontSize = '0.8rem';
+    diffEl.style.marginLeft = '6px';
+    diffEl.style.color = 'var(--dim)';
+    // Append after existing content
+    hubPtsEl.appendChild(diffEl);
+  }
+  diffEl.textContent = `(x${diff})`;
+}
+
+// Initialize
+initGameCardBasePoints();
+updateGameCardMaxPoints();
+updateHubDiffDisplay();
+const multEl = document.getElementById('diff-mult');
+if(multEl) multEl.textContent = `×${gameDifficultyMultiplier.toFixed(1)} PTS`;
 
 const aCanvas = document.getElementById('arcade-canvas');
 const aCtx = aCanvas?.getContext('2d');
@@ -255,7 +297,6 @@ function enterHub(){
   document.getElementById('h-credits').textContent=`💎 ${(user.credits||0).toLocaleString()} CR`;
   showScreen('hub-screen');
   loadLeaderboard();
-  unlockDifficultySelector();
 }
 
 document.getElementById('btn-market').onclick=()=>openMarket();
@@ -285,7 +326,6 @@ document.getElementById('btn-quit').onclick=()=>{
 function prepGame(gid){
   stopGame();
   onQuitGame=null;
-  lockDifficultySelector();
   document.getElementById('g-click').style.display='none';
   document.getElementById('g-canvas-holder').style.display='none';
   document.getElementById('g-memory').style.display='none';
@@ -318,18 +358,28 @@ function prepGame(gid){
 
 const setLive=n=>document.getElementById('g-pts').textContent=n;
 
-function showResults(gid,basePts,bd){
+function showResults(gid,pts,bd){
   stopGame();
-  const tier = DIFFICULTY_TIERS[currentDifficultyTier];
-  const finalScore = Math.round(basePts * gameDifficultyMultiplier);
-  const m=META[gid],pct=finalScore/m.maxPts;
+  const diff = getDifficultyModifier();
+  const finalPts = Math.floor(pts * diff);
+  const m=META[gid],pct=finalPts/m.maxPts;
   document.getElementById('res-emoji').textContent=pct>.75?'🎉':'💪';
   document.getElementById('res-gname').textContent=m.name;
-  document.getElementById('res-pts').textContent=finalScore;
-  const fullBd = {...bd, [`${tier.icon} ${tier.label} Bonus`]: `×${gameDifficultyMultiplier.toFixed(1)}`};
-  document.getElementById('res-bd').innerHTML=Object.entries(fullBd).map(([k,v])=>`<div class="res-row"><span>${k}</span><span class="rv">${v}</span></div>`).join('');
+  // add subheader indicating multiplier
+  const gnameEl = document.getElementById('res-gname');
+  const existing = document.querySelector('.res-subheader');
+  if (existing) existing.remove();
+  const sub = document.createElement('div');
+  sub.className = 'res-subheader';
+  sub.style.fontSize = '.6rem';
+  sub.style.color = 'var(--dim)';
+  sub.style.marginTop = '4px';
+  sub.textContent = `(×${diff})`;
+  gnameEl.parentNode.insertBefore(sub, gnameEl.nextSibling);
+  document.getElementById('res-pts').textContent=finalPts;
+  document.getElementById('res-bd').innerHTML=Object.entries(bd).map(([k,v])=>`<div class="res-row"><span>${k}</span><span class="rv">${v}</span></div>`).join('');
   showScreen('results-screen');
-  saveScore(gid,finalScore);
+  saveScore(gid,finalPts);
   document.getElementById('btn-again').onclick=()=>{showScreen('game-screen');prepGame(gid)};
   document.getElementById('btn-hub').onclick=()=>{document.getElementById('h-pts').textContent=`🏆 ${(user?.totalPoints||0).toLocaleString()} PTS`;document.getElementById('h-credits').textContent=`💎 ${(user?.credits||0).toLocaleString()} CR`;enterHub()};
 }
@@ -636,17 +686,15 @@ async function handleShopAction(act, cat, id){
 // ════════════════════════════════════════════
 function startClick(){
   document.getElementById('g-click').style.display='flex';
-  const timeMod = getTimeModifier();
-  const baseTime = Math.max(3, Math.round(10*timeMod));
-  let clicks=0,t=baseTime,ended=false;
+  let clicks=0,t=10,ended=false;
   document.getElementById('click-count').textContent='0';
-  document.getElementById('g-time').textContent=baseTime;
+  document.getElementById('g-time').textContent='10';
   const btn=document.getElementById('click-btn');
   btn.disabled=false;
   btn.onclick=()=>{if(!ended){clicks++;document.getElementById('click-count').textContent=clicks;setLive(Math.min(500,clicks*8))}};
   gTimer=setInterval(()=>{
     t--;document.getElementById('g-time').textContent=t;
-    document.getElementById('prog-fill').style.width=`${t/baseTime*100}%`;
+    document.getElementById('prog-fill').style.width=`${t/10*100}%`;
     if(t<=0){
       clearInterval(gTimer);ended=true;btn.disabled=true;btn.onclick=null;
       const pts=Math.min(500,clicks*8);
@@ -663,8 +711,7 @@ function startNebula(){
   document.getElementById('arcade-controls').style.display='flex';
   document.getElementById('ctrl-action').textContent='SHOOT / ABILITY';
   const diffMod = getDifficultyModifier();
-  const timeMod = getTimeModifier();
-  let score = 0, gameTime = Math.round(60*timeMod), shield = 100, screenShake = 0;
+  let score = 0, gameTime = 60, shield = 100, screenShake = 0;
   // plasmaOrbs: total orbs collected (levels 1-3 = weapon, 4+ = special abilities)
   let plasmaOrbs = 0;
   // Special ability charges earned beyond level 3
@@ -794,11 +841,7 @@ function startNebula(){
           alpha: 0.9, decay: 0.008, color: '#ffd700', size: 2.5
         });
       }
-      // Auto-end after 3 seconds
-      setTimeout(() => {
-        timeWarpActive = false;
-        activeAbility = null;
-      }, 3000);
+      // Auto-end when timer reaches 0 (handled in render loop)
 
     } else if (abil.id === 'NOVA_BOMB') {
       // Destroy ALL enemies on screen with massive expanding shockwave
@@ -963,16 +1006,16 @@ function startNebula(){
       this.attackTimer = 0;
       if (type === 'SCOUT') {
         // PINK — dives straight down fast, accelerates over time
-        this.w = 20; this.h = 20; this.speed = 3.5 * diffMod; this.hp = 1; this.color = '#ff0090'; this.pts = 15;
+        this.w = 20; this.h = 20; this.speed = 3.5; this.hp = 1; this.color = '#ff0090'; this.pts = 15;
         this.dive = false; this.diveSpeed = 0;
       } else if (type === 'BOMBER') {
         // ORANGE — moves slowly, drops bombs periodically
-        this.w = 36; this.h = 28; this.speed = 1.2 * diffMod; this.hp = 3; this.color = '#ff6600'; this.pts = 40;
-        this.attackCooldown = 120 / diffMod; // frames between bombs (2s at 60fps)
+        this.w = 36; this.h = 28; this.speed = 1.2; this.hp = 3; this.color = '#ff6600'; this.pts = 40;
+        this.attackCooldown = 120; // frames between bombs (2s at 60fps)
       } else {
         // PURPLE FIGHTER — weaves, shoots lasers at player
-        this.w = 26; this.h = 22; this.speed = 2.2 * diffMod; this.hp = 2; this.color = '#a855f7'; this.pts = 25;
-        this.attackCooldown = 90 / diffMod; // frames between laser shots
+        this.w = 26; this.h = 22; this.speed = 2.2; this.hp = 2; this.color = '#a855f7'; this.pts = 25;
+        this.attackCooldown = 90; // frames between laser shots
         this.laserFlash = 0;
       }
     }
@@ -1093,7 +1136,7 @@ function startNebula(){
 
   // ── ENEMY PROJECTILE DRAWING & UPDATE ──
   function updateEnemyProjectiles(dt) {
-    const warpMult = timeWarpActive ? 0.35 : 1.0;
+    const warpMult = timeWarpActive ? 0.5 : 1.0;
     for (let i = enemyProjectiles.length - 1; i >= 0; i--) {
       const ep = enemyProjectiles[i];
       ep.x += ep.vx * warpMult; ep.y += ep.vy * warpMult;
@@ -1192,7 +1235,13 @@ function startNebula(){
 
     // Time warp visual (blue tint + slowdown label)
     if (timeWarpActive) {
-      if (timeWarpTimer > 0) timeWarpTimer--;
+      if (timeWarpTimer > 0) {
+        timeWarpTimer--;
+      } else {
+        // Time warp has ended
+        timeWarpActive = false;
+        activeAbility = null;
+      }
       aCtx.fillStyle = 'rgba(255,215,0,0.04)';
       aCtx.fillRect(0, 0, 400, 500);
       // Pulsing border
@@ -1412,14 +1461,13 @@ function startTetris(){
   document.getElementById('tetris-next-wrap').style.display='block';
   document.getElementById('tetris-lvl-pill').style.display='block';
   const diffMod = getDifficultyModifier();
-  const timeMod = getTimeModifier();
 
   const nCanvas = document.getElementById('nextCanvas');
   const nCtx = nCanvas.getContext('2d');
 
-  let score=0, level=1, linesCleared=0, time=Math.round(60 * timeMod);
+  let score=0, level=1, linesCleared=0, time=60 / diffMod;
   let arena=createMatrix(10,20), player={pos:{x:0,y:0}, matrix:null}, nextPiece=null;
-  let dropCounter=0, dropInterval=600 / diffMod, lastTime=performance.now(), screenShake=0;
+  let dropCounter=0, dropInterval=600 * diffMod, lastTime=performance.now(), screenShake=0;
   let particles = [];
   
   document.getElementById('g-time').textContent=time;
@@ -1607,10 +1655,7 @@ function startTetris(){
 // ══════════════════════════════════════════════════════════════════════
 function startDodge(){
   document.getElementById('g-canvas-holder').style.display='block';
-  const speedMod = getDifficultyModifier();
-  const timeMod = getTimeModifier();
-  const baseTime = Math.round(30*timeMod);
-  let score=0, time=baseTime, isGameOver=false, player={x:200,y:250,r:8}, obstacles=[];
+  let score=0, time=30, isGameOver=false, player={x:200,y:250,r:8}, obstacles=[];
   document.getElementById('g-time').textContent=time;
 
   aCanvas.onmousemove = e => {
@@ -1622,7 +1667,7 @@ function startDodge(){
   gTimer=setInterval(()=>{
     if(isGameOver) return;
     time--;document.getElementById('g-time').textContent=time;
-    document.getElementById('prog-fill').style.width=`${time/baseTime*100}%`;
+    document.getElementById('prog-fill').style.width=`${time/30*100}%`;
     score+=25;setLive(score);
     if(time<=0) end();
   },1000);
@@ -1656,11 +1701,11 @@ function startDodge(){
     drawSkinBadge(player.x, player.y - player.r - 10);
 
     // Spawn obstacles
-    if(Math.random() < .08*speedMod) {
+    if(Math.random() < .08) {
       const col = obstacleColors[Math.floor(Math.random()*obstacleColors.length)];
       obstacles.push({
         x: Math.random()*380+10, y: -10,
-        vx: (Math.random()-0.5)*4*speedMod, vy: (Math.random()*3+3)*speedMod,
+        vx: (Math.random()-0.5)*4, vy: Math.random()*3+3,
         r: Math.random()*6+8,
         color: col
       });
@@ -1702,15 +1747,13 @@ function startDodge(){
 // ════════════════════════════════════════════
 function startMemory(){
   const wrap = document.getElementById('g-memory');wrap.style.display='grid';wrap.innerHTML='';
-  const timeMod = getTimeModifier();
-  const baseTime = Math.round(25*timeMod);
-  let icons=['🚀','🚀','🧱','🧱','🖱️','🖱️','💥','💥','🧠','🧠','🔢','🔢','⚡','⚡','🏆','🏆'], flipped=[], matched=0, score=0, time=baseTime;
+  let icons=['🚀','🚀','🧱','🧱','🖱️','🖱️','💥','💥','🧠','🧠','🔢','🔢','⚡','⚡','🏆','🏆'], flipped=[], matched=0, score=0, time=25;
   document.getElementById('g-time').textContent=time;
   icons.sort(()=>Math.random()-.5);
 
   gTimer=setInterval(()=>{
     time--;document.getElementById('g-time').textContent=time;
-    document.getElementById('prog-fill').style.width=`${time/baseTime*100}%`;
+    document.getElementById('prog-fill').style.width=`${time/25*100}%`;
     if(time<=0) end();
   },1000);
 
@@ -1736,9 +1779,7 @@ function startMemory(){
 // ════════════════════════════════════════════
 function startMath(){
   document.getElementById('g-math').style.display='block';
-  const timeMod = getTimeModifier();
-  const baseTime = Math.round(20*timeMod);
-  let score=0, time=baseTime, curAns=0;
+  let score=0, time=20, curAns=0;
   document.getElementById('g-time').textContent=time;
 
   function gen(){
@@ -1759,7 +1800,7 @@ function startMath(){
   let mathEnded=false;
   gTimer=setInterval(()=>{
     time--;document.getElementById('g-time').textContent=time;
-    document.getElementById('prog-fill').style.width=`${time/baseTime*100}%`;
+    document.getElementById('prog-fill').style.width=`${time/20*100}%`;
     if(time<=0&&!mathEnded){mathEnded=true;document.getElementById('math-answer').onkeydown=null;document.getElementById('math-submit').onclick=null;showResults('math',Math.min(750,score),{'🔢 Nodes Resolved':score/50,'🏆 Score Accumulation':`${score} PTS`})}
   },1000);
 }
@@ -1770,15 +1811,12 @@ function startMath(){
 function startReaction(){
   const box=document.getElementById('g-reaction');box.style.display='flex';box.style.background='var(--red)';
   const txt=document.getElementById('reaction-text');txt.textContent='WAIT FOR GREEN...';
-  const speedMod = getDifficultyModifier();
-  const timeMod = getTimeModifier();
-  const baseTime = Math.round(15*timeMod);
-  let state='wait', startT=0, time=baseTime, score=0, reactionEnded=false;
+  let state='wait', startT=0, time=15, score=0, reactionEnded=false;
   document.getElementById('g-time').textContent=time;
 
   gTimer=setInterval(()=>{
     time--;document.getElementById('g-time').textContent=time;
-    document.getElementById('prog-fill').style.width=`${time/baseTime*100}%`;
+    document.getElementById('prog-fill').style.width=`${time/15*100}%`;
     if(time<=0) end();
   },1000);
 
@@ -1788,7 +1826,7 @@ function startReaction(){
     if(state==='wait'){clearTimeout(trigger);txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--orange)';state='hold';setTimeout(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=setTimeout(()=>{state='go';box.style.background='var(--lime)';txt.textContent='CLICK NOW!';startT=performance.now()},Math.random()*2000+1000)}},1200)}
     else if(state==='go'){
       let diff=Math.round(performance.now()-startT);
-      let earned=Math.max(10,(400/speedMod)-diff);score+=earned;setLive(score);
+      let earned=Math.max(10,400-diff);score+=earned;setLive(score);
       txt.textContent=`${diff}ms! REBOOTING...`;box.style.background='var(--cyan)';state='hold';
       setTimeout(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=setTimeout(()=>{state='go';box.style.background='var(--lime)';txt.textContent='CLICK NOW!';startT=performance.now()},Math.random()*2000+1000)}},1500);
     }
@@ -1825,14 +1863,11 @@ function startPong(){
   document.getElementById('arcade-controls').style.display='flex';
   document.getElementById('ctrl-action').textContent='ACTION';
 
-  const speedMod = getDifficultyModifier();
-  const timeMod = getTimeModifier();
   const W=400, H=500, PAD_W=10, PAD_H=70, BALL_R=7;
-  const baseTime = Math.round(45*timeMod);
-  let userScore=0, cpuScore=0, time=baseTime, isOver=false;
+  let userScore=0, cpuScore=0, time=45, isOver=false;
   let playerY=H/2-PAD_H/2, aiY=H/2-PAD_H/2;
   let ballX=W/2, ballY=H/2, ballVX=4*(Math.random()<0.5?1:-1), ballVY=3*(Math.random()<0.5?1:-1);
-  let aiSpeed=2.8*speedMod; // hyper-aggressive AI at higher stability tiers
+  let aiSpeed=2.8;
   let rallyCount = 0; // Track current rally length
   const updateScore = () => {
     const raw = (userScore - cpuScore) * 50;
@@ -1877,7 +1912,7 @@ function startPong(){
   gTimer=setInterval(()=>{
     if(isOver)return;
     time--;document.getElementById('g-time').textContent=Math.ceil(time);
-    document.getElementById('prog-fill').style.width=`${time/baseTime*100}%`;
+    document.getElementById('prog-fill').style.width=`${time/45*100}%`;
     if(time<=0)end();
   },1000);
 
@@ -1949,7 +1984,7 @@ function startPong(){
       ballVX=4*(ballX>W?-1:1); // toward the winner
       ballVX=4*(Math.random()<0.5?1:-1); // random direction after point
       ballVY=3*(Math.random()<0.5?1:-1);
-      aiSpeed=Math.min(5*speedMod,2.8*speedMod+userScore*0.002);
+      aiSpeed=Math.min(5,2.8+userScore*0.002);
     }
 
     // ── DRAW ──
@@ -1995,9 +2030,8 @@ function startSnake(){
   document.getElementById('ctrl-action').textContent='⟳ DIR';
 
   const diffMod = getDifficultyModifier();
-  const timeMod = getTimeModifier();
   const baseTime = 60;
-  const adjustedTime = Math.round(baseTime * timeMod);
+  const adjustedTime = baseTime / diffMod;
 
   const W=400,H=500,CELL=20,COLS=W/CELL,ROWS=H/CELL;
   let score=0,time=adjustedTime,isOver=false;
@@ -2327,7 +2361,6 @@ function startArena() {
   document.getElementById('ctrl-action').textContent = '⚔ SLASH';
 
   // ── CONSTANTS ──
-  const speedMod = getDifficultyModifier();
   const W = 400, H = 500;
   const ARENA_W = 800, ARENA_H = 900; // scrollable world larger than canvas
   const TILE = 40;
@@ -2517,10 +2550,9 @@ function startArena() {
       this.x = x; this.y = y;
       this.vx = 0; this.vy = 0;
       this.hp = type.hp; this.maxHp = type.maxHp;
-      this.speed = type.speed * speedMod; // hazard velocity scales with SYSTEM STABILITY
       this.angle = 0;
       this.attackTimer = 0;
-      this.attackCooldown = (type.id === 'SNIPER' ? 180 : type.id === 'TANK' ? 90 : 60) / speedMod;
+      this.attackCooldown = type.id === 'SNIPER' ? 180 : type.id === 'TANK' ? 90 : 60;
       this.projectile = null;
       this.stunTimer = 0;
       this.aggroRadius = type.id === 'SNIPER' ? 280 : 200;
@@ -3496,7 +3528,7 @@ function startArena() {
 
       // ── SPAWN BOTS ──
       botSpawnTimer++;
-      const spawnInterval = Math.max(180, 420 - botWave * 30) / speedMod;
+      const spawnInterval = Math.max(180, 420 - botWave * 30);
       if (botSpawnTimer >= spawnInterval) {
         botSpawnTimer = 0;
         const maxBots = Math.min(12, 4 + botWave * 2);
