@@ -102,6 +102,18 @@ function setDifficultyTier(tierKey){
   document.querySelectorAll('.diff-btn').forEach(b=>b.classList.toggle('active', b.dataset.tier===tierKey));
   const multEl = document.getElementById('diff-mult');
   if(multEl) multEl.textContent = `×${tier.pointMult.toFixed(1)} PTS`;
+  // Recolor the ambient glow behind the panel to match the newly active tier,
+  // and give it a brief brighter flash so the change reads as an event, not just a state.
+  const sel = document.getElementById('diff-selector');
+  if(sel){
+    sel.classList.remove('tier-stable','tier-overclocked','tier-meltdown');
+    sel.classList.add(`tier-${tierKey}`);
+    sel.classList.remove('flash');
+    void sel.offsetWidth; // restart the animation/transition even if the same tier is clicked again
+    sel.classList.add('flash');
+    clearTimeout(sel._flashTimer);
+    sel._flashTimer = setTimeout(()=>sel.classList.remove('flash'), 350);
+  }
   updateGameCardMaxPoints();
   updateHubDiffDisplay();
 }
@@ -125,7 +137,7 @@ document.querySelectorAll('.diff-btn').forEach(btn=>{
     const tierKey = btn.dataset.tier;
     setDifficultyTier(tierKey);
     const tier = DIFFICULTY_TIERS[tierKey];
-    toast(`${tier.icon} SYSTEM STABILITY: ${tier.label} (×${tier.pointMult.toFixed(1)} PTS)`);
+    toast(`${tier.icon} SYSTEM STABILITY: ${tier.label} (×${tier.pointMult.toFixed(1)} PTS)`, 2500, `toast-${tierKey}`);
   });
 });
 
@@ -139,7 +151,7 @@ function initGameCardBasePoints() {
   });
 }
 function updateGameCardMaxPoints() {
-  const diff = getDifficultyModifier();
+  const diff = gameDifficultyMultiplier;
   document.querySelectorAll('.gc-pts').forEach(el => {
     const base = parseInt(el.dataset.basePts,10);
     const displayed = Math.floor(base * diff);
@@ -147,7 +159,7 @@ function updateGameCardMaxPoints() {
   });
 }
 function updateHubDiffDisplay() {
-  const diff = getDifficultyModifier();
+  const diff = gameDifficultyMultiplier;
   const hubPtsEl = document.getElementById('h-pts');
   let diffEl = document.getElementById('hub-diff');
   if (!diffEl) {
@@ -168,6 +180,7 @@ updateGameCardMaxPoints();
 updateHubDiffDisplay();
 const multEl = document.getElementById('diff-mult');
 if(multEl) multEl.textContent = `×${gameDifficultyMultiplier.toFixed(1)} PTS`;
+document.getElementById('diff-selector')?.classList.add(`tier-${currentDifficultyTier}`);
 
 const aCanvas = document.getElementById('arcade-canvas');
 const aCtx = aCanvas?.getContext('2d');
@@ -178,7 +191,7 @@ const showScreen=id=>{
 };
 
 let _tt;
-const toast=(msg,ms=2500)=>{const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');clearTimeout(_tt);_tt=setTimeout(()=>el.classList.remove('show'),ms)};
+const toast=(msg,ms=2500,tintClass=null)=>{const el=document.getElementById('toast');el.textContent=msg;el.classList.remove('toast-stable','toast-overclocked','toast-meltdown');if(tintClass)el.classList.add(tintClass);el.classList.add('show');clearTimeout(_tt);_tt=setTimeout(()=>el.classList.remove('show'),ms)};
 
 // ── FULLSCREEN TOGGLE ──
 function toggleFullscreen(){
@@ -297,6 +310,7 @@ function enterHub(){
   document.getElementById('h-credits').textContent=`💎 ${(user.credits||0).toLocaleString()} CR`;
   showScreen('hub-screen');
   loadLeaderboard();
+  unlockDifficultySelector();
 }
 
 document.getElementById('btn-market').onclick=()=>openMarket();
@@ -326,6 +340,7 @@ document.getElementById('btn-quit').onclick=()=>{
 function prepGame(gid){
   stopGame();
   onQuitGame=null;
+  lockDifficultySelector();
   document.getElementById('g-click').style.display='none';
   document.getElementById('g-canvas-holder').style.display='none';
   document.getElementById('g-memory').style.display='none';
@@ -360,22 +375,23 @@ const setLive=n=>document.getElementById('g-pts').textContent=n;
 
 function showResults(gid,pts,bd){
   stopGame();
-  const diff = getDifficultyModifier();
-  const finalPts = Math.floor(pts * diff);
+  const tier = DIFFICULTY_TIERS[currentDifficultyTier];
+  const finalPts = Math.round(pts * gameDifficultyMultiplier);
   const m=META[gid],pct=finalPts/m.maxPts;
   document.getElementById('res-emoji').textContent=pct>.75?'🎉':'💪';
   document.getElementById('res-gname').textContent=m.name;
-  // add subheader indicating multiplier
+
+  // Bonus badge — shows the active tier's point multiplier (×1.0 / ×1.5 / ×2.0), colored to match
   const gnameEl = document.getElementById('res-gname');
-  const existing = document.querySelector('.res-subheader');
-  if (existing) existing.remove();
-  const sub = document.createElement('div');
-  sub.className = 'res-subheader';
-  sub.style.fontSize = '.6rem';
-  sub.style.color = 'var(--dim)';
-  sub.style.marginTop = '4px';
-  sub.textContent = `(×${diff})`;
-  gnameEl.parentNode.insertBefore(sub, gnameEl.nextSibling);
+  let bonusEl = document.getElementById('res-bonus');
+  if(!bonusEl){
+    bonusEl = document.createElement('div');
+    bonusEl.id = 'res-bonus';
+    gnameEl.parentNode.insertBefore(bonusEl, gnameEl.nextSibling);
+  }
+  bonusEl.className = `res-bonus res-bonus-${tier.key}`;
+  bonusEl.textContent = `${tier.icon} ${tier.label} · ×${tier.pointMult.toFixed(1)} BONUS`;
+
   document.getElementById('res-pts').textContent=finalPts;
   document.getElementById('res-bd').innerHTML=Object.entries(bd).map(([k,v])=>`<div class="res-row"><span>${k}</span><span class="rv">${v}</span></div>`).join('');
   showScreen('results-screen');

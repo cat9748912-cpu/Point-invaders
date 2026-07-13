@@ -236,7 +236,35 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   gap:8px;
   margin-bottom:20px;
   flex-direction:column;
+  position:relative;
+  isolation:isolate;
+  background:var(--s1);
+  border:1px solid var(--border);
+  border-radius:var(--r);
+  padding:12px 20px;
+  transition:border-color .4s ease;
 }
+/* Ambient glow "emitted from behind" the panel — color follows the active tier */
+.diff-selector::before{
+  content:'';
+  position:absolute;
+  inset:-4px;
+  z-index:-1;
+  border-radius:inherit;
+  background:transparent;
+  filter:blur(22px);
+  opacity:.45;
+  transition:background .5s ease, opacity .3s ease;
+  pointer-events:none;
+}
+.diff-selector.tier-stable{border-color:rgba(0,255,102,.4)}
+.diff-selector.tier-stable::before{background:#00ff66}
+.diff-selector.tier-overclocked{border-color:rgba(255,204,0,.4)}
+.diff-selector.tier-overclocked::before{background:#ffcc00}
+.diff-selector.tier-meltdown{border-color:rgba(255,0,51,.45)}
+.diff-selector.tier-meltdown::before{background:#ff0033}
+/* Brief brighter pulse the instant a tier button is clicked */
+.diff-selector.flash::before{opacity:.9}
 .diff-label{
   font-family:var(--fd);
   font-size:.65rem;
@@ -253,13 +281,31 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .diff-meltdown{
   /* inherit from .diff-btn */
 }
-.diff-btn.active{
+/* Active glow now matches the specific tier, not a hardcoded green */
+.diff-btn.diff-stable.active{
   background:rgba(0,255,102,.1);
   color:#00ff66;
   box-shadow:0 0 10px #00ff66;
 }
-.diff-btn.active:hover{
+.diff-btn.diff-stable.active:hover{
   box-shadow:0 0 15px #00ff66;
+}
+.diff-btn.diff-overclocked.active{
+  background:rgba(255,204,0,.1);
+  color:#ffcc00;
+  box-shadow:0 0 10px #ffcc00;
+}
+.diff-btn.diff-overclocked.active:hover{
+  box-shadow:0 0 15px #ffcc00;
+}
+.diff-btn.diff-meltdown.active{
+  background:rgba(255,0,51,.1);
+  color:#ff0033;
+  box-shadow:0 0 10px #ff0033;
+  animation:pulse 1.5s infinite;
+}
+.diff-btn.diff-meltdown.active:hover{
+  box-shadow:0 0 15px #ff0033;
 }
 .diff-mult{
   font-family:var(--fd);
@@ -318,6 +364,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 #results-screen .res-card{max-width:440px;width:100%;text-align:center}
 .res-emoji{font-size:4.5rem;display:block;margin-bottom:14px}
 .res-gname{font-family:var(--fd);font-size:.6rem;color:var(--dim);letter-spacing:.15em;text-transform:uppercase;margin-bottom:6px}
+.res-bonus{display:inline-block;font-family:var(--fd);font-size:.62rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:5px 14px;border-radius:20px;margin:0 0 14px;border:1px solid var(--border);background:var(--s2);color:var(--dim)}
+.res-bonus.res-bonus-stable{border-color:#00ff66;color:#00ff66;background:rgba(0,255,102,.08);box-shadow:0 0 10px rgba(0,255,102,.35)}
+.res-bonus.res-bonus-overclocked{border-color:#ffcc00;color:#ffcc00;background:rgba(255,204,0,.08);box-shadow:0 0 10px rgba(255,204,0,.35)}
+.res-bonus.res-bonus-meltdown{border-color:#ff0033;color:#ff0033;background:rgba(255,0,51,.08);box-shadow:0 0 10px rgba(255,0,51,.35);animation:pulse 1.5s infinite}
 .res-pts{font-family:var(--fd);font-size:4.5rem;font-weight:900;line-height:1;background:linear-gradient(135deg,var(--gold),var(--orange));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:4px}
 .res-pts-lbl{color:var(--dim);font-weight:600;font-size:.8rem;margin-bottom:20px}
 .res-bd{background:var(--s2);border-radius:10px;padding:14px;margin-bottom:20px;text-align:left}
@@ -327,8 +377,12 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .res-btns{display:flex;gap:10px;justify-content:center}
 
 /* Toast */
-#toast{position:fixed;bottom:-60px;left:50%;transform:translateX(-50%);background:rgba(4,4,14,.9);border:1px solid var(--cyan);padding:12px 24px;border-radius:30px;font-family:var(--fd);font-size:.75rem;color:var(--cyan);z-index:9999;transition:bottom .3s ease;box-shadow:0 10px 30px rgba(0,245,255,.2)}
+#toast{position:fixed;bottom:-60px;left:50%;transform:translateX(-50%);background:rgba(4,4,14,.9);border:1px solid var(--cyan);padding:12px 24px;border-radius:30px;font-family:var(--fd);font-size:.75rem;color:var(--cyan);z-index:9999;transition:bottom .3s ease, border-color .3s ease, color .3s ease, box-shadow .3s ease;box-shadow:0 10px 30px rgba(0,245,255,.2)}
 #toast.show{bottom:30px}
+/* Tier-tinted variants used for SYSTEM STABILITY change messages */
+#toast.toast-stable{border-color:#00ff66;color:#00ff66;box-shadow:0 10px 30px rgba(0,255,102,.25)}
+#toast.toast-overclocked{border-color:#ffcc00;color:#ffcc00;box-shadow:0 10px 30px rgba(255,204,0,.25)}
+#toast.toast-meltdown{border-color:#ff0033;color:#ff0033;box-shadow:0 10px 30px rgba(255,0,51,.25)}
 
 /* Countdown Overlay */
 #cd-ov{position:fixed;inset:0;background:rgba(2,2,8,.85);backdrop-filter:blur(10px);z-index:999;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .3s ease}
