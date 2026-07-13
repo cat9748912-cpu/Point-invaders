@@ -54,6 +54,29 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .hub-pts{background:rgba(255,215,0,.1);border:1px solid rgba(255,215,0,.3);border-radius:20px;padding:5px 14px;font-family:var(--fd);font-size:.6rem;font-weight:700;color:var(--gold)}
 .hub-credits{background:rgba(0,245,255,.08);border:1px solid rgba(0,245,255,.3);border-radius:20px;padding:5px 14px;font-family:var(--fd);font-size:.6rem;font-weight:700;color:var(--cyan)}
 
+/* ── SYSTEM STABILITY (DIFFICULTY) SELECTOR ── */
+.diff-selector{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:14px;width:100%;max-width:1060px;background:var(--s1);border:1px solid var(--border);border-radius:var(--r);padding:12px 20px;margin-bottom:20px;flex-shrink:0;transition:opacity .25s ease}
+.diff-label{font-family:var(--fd);font-size:.6rem;font-weight:700;color:var(--dim);letter-spacing:.18em;text-transform:uppercase;white-space:nowrap}
+.diff-btns{display:flex;gap:8px;flex-wrap:wrap}
+.diff-btn{font-family:var(--fd);font-size:.6rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:8px 16px;background:var(--s2);border:1.5px solid var(--border);border-radius:20px;color:var(--dim);cursor:pointer;transition:all .2s ease}
+.diff-btn:hover:not(:disabled){transform:translateY(-1px);border-color:var(--border2);color:var(--text)}
+.diff-btn:disabled{cursor:not-allowed}
+
+.diff-btn.diff-stable.active{background:rgba(0,255,102,.12);border-color:#00ff66;color:#00ff66;box-shadow:0 0 10px #00ff66}
+.diff-btn.diff-overclocked.active{background:rgba(255,204,0,.12);border-color:#ffcc00;color:#ffcc00;box-shadow:0 0 10px #ffcc00}
+.diff-btn.diff-meltdown.active{background:rgba(255,0,51,.12);border-color:#ff0033;color:#ff0033;animation:meltdownPulse 1.1s ease-in-out infinite}
+@keyframes meltdownPulse{0%,100%{box-shadow:0 0 10px #ff0033}50%{box-shadow:0 0 20px #ff0033, inset 0 0 6px #ff0033}}
+
+.diff-mult{font-family:var(--fd);font-size:.65rem;font-weight:700;color:var(--gold);letter-spacing:.08em;white-space:nowrap}
+
+.diff-selector.locked{opacity:.45;filter:grayscale(.4)}
+.diff-selector.locked .diff-btn{cursor:not-allowed}
+.diff-selector.locked .diff-btn:hover{transform:none}
+
+@media(max-width:720px){
+  .diff-selector{flex-direction:column;gap:10px}
+}
+
 /* ── BLACK MARKET SCREEN ── */
 #market-screen{justify-content:flex-start;padding-top:20px}
 .market-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;max-width:1060px;background:var(--s1);border:1px solid var(--border);border-radius:var(--r);padding:12px 20px;margin-bottom:16px;flex-shrink:0}
