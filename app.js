@@ -52,8 +52,7 @@ function stopGame(){
   const cl=document.getElementById('ctrl-left');
   const cr=document.getElementById('ctrl-right');
   const ca=document.getElementById('ctrl-action');
-  if(cl){cl.onmousedown=cl.onmouseup=cl.ontouchstart=cl.ontouchend=null;}
-  if(cr){cr.onmousedown=cr.onmouseup=cr.ontouchstart=cr.ontouchend=null;}
+  clearHold(cl); clearHold(cr); clearHold(ca);
   if(ca){ca.onclick=null;}
 }
 const META = {
@@ -194,25 +193,85 @@ let _tt;
 const toast=(msg,ms=2500,tintClass=null)=>{const el=document.getElementById('toast');el.textContent=msg;el.classList.remove('toast-stable','toast-overclocked','toast-meltdown');if(tintClass)el.classList.add(tintClass);el.classList.add('show');clearTimeout(_tt);_tt=setTimeout(()=>el.classList.remove('show'),ms)};
 
 // ── FULLSCREEN TOGGLE ──
+// iOS Safari exposes NO Fullscreen API on ordinary elements, and older
+// Android/Safari builds only expose the webkit-prefixed one. The previous
+// version called the unprefixed method unconditionally, which throws a
+// TypeError on iOS before any promise exists — so .catch() never ran and
+// the button silently did nothing. Probe for what's actually there.
+const FS = (function(){
+  const d = document.documentElement;
+  const req  = d.requestFullscreen || d.webkitRequestFullscreen || d.webkitRequestFullScreen || d.msRequestFullscreen;
+  const exit = document.exitFullscreen || document.webkitExitFullscreen || document.webkitCancelFullScreen || document.msExitFullscreen;
+  return (req && exit) ? { req, exit } : null;
+})();
+const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement || null;
+const fsSupported = () => !!FS;
+
 function toggleFullscreen(){
-  if(!document.fullscreenElement){
-    document.documentElement.requestFullscreen().catch(()=>{});
-  } else {
-    document.exitFullscreen().catch(()=>{});
-  }
+  if(!FS) return;
+  try{
+    const p = fsElement() ? FS.exit.call(document) : FS.req.call(document.documentElement);
+    if(p && p.catch) p.catch(e => console.warn('Fullscreen request refused:', e));
+  }catch(e){ console.warn('Fullscreen unavailable:', e); }
 }
 function updateFsButtons(){
-  const isFs=!!document.fullscreenElement;
+  const isFs=!!fsElement();
   const icon=isFs?'⛉':'⛶';
   const tip=isFs?'Exit Fullscreen':'Enter Fullscreen';
   ['btn-fs-hub','btn-fs-game'].forEach(id=>{
     const el=document.getElementById(id);
-    if(el){el.textContent=icon;el.title=tip;}
+    if(!el)return;
+    // No API at all (iPhone Safari): hide rather than leave a dead button
+    if(!FS){ el.style.display='none'; return; }
+    el.textContent=icon;el.title=tip;
   });
 }
-document.addEventListener('fullscreenchange',updateFsButtons);
+['fullscreenchange','webkitfullscreenchange','msfullscreenchange']
+  .forEach(ev => document.addEventListener(ev, updateFsButtons));
 document.getElementById('btn-fs-hub').onclick=toggleFullscreen;
 document.getElementById('btn-fs-game').onclick=toggleFullscreen;
+updateFsButtons();   // hides the buttons up front where unsupported
+
+// ── TOUCH-SAFE HOLD BUTTONS ──
+// Mobile browsers only synthesise mousedown AFTER the finger lifts, so
+// hold-to-move never worked with plain onmousedown/onmouseup. Pointer
+// events cover mouse, touch and stylus in one path. Pointer capture keeps
+// the release bound to the button even when the finger slides off it, and
+// pointercancel stops a direction sticking "on" when the browser or an
+// interruption steals the touch mid-hold.
+function bindHold(el, onDown, onUp){
+  if(!el) return;
+  clearHold(el);
+  let held = false;
+  const release = () => { if(!held) return; held = false; onUp(); };
+
+  if(window.PointerEvent){
+    el.onpointerdown = e => {
+      e.preventDefault();
+      if(held) return;
+      held = true;
+      try{ el.setPointerCapture(e.pointerId); }catch(_){}
+      onDown();
+    };
+    el.onpointerup = release;
+    el.onpointercancel = release;
+    el.onlostpointercapture = release;
+    return;
+  }
+  // Fallback for anything without Pointer Events
+  el.ontouchstart = e => { e.preventDefault(); if(held) return; held = true; onDown(); };
+  el.ontouchend = release;
+  el.ontouchcancel = release;
+  el.onmousedown = () => { if(held) return; held = true; onDown(); };
+  el.onmouseup = release;
+  el.onmouseleave = release;
+}
+function clearHold(el){
+  if(!el) return;
+  el.onpointerdown = el.onpointerup = el.onpointercancel = el.onlostpointercapture = null;
+  el.onmousedown = el.onmouseup = el.onmouseleave = null;
+  el.ontouchstart = el.ontouchend = el.ontouchcancel = null;
+}
 
 const countdown=cb=>{
   const ov=document.getElementById('cd-ov'),nm=document.getElementById('cd-num');
@@ -856,8 +915,8 @@ function startNebula(){
   };
   window.onkeyup = e => { if(['Space','ArrowLeft','ArrowRight','KeyA','KeyD'].includes(e.code)) e.preventDefault(); keys[e.code] = false; };
 
-  document.getElementById('ctrl-left').onmousedown = () => moveLeft = true; document.getElementById('ctrl-left').onmouseup = () => moveLeft = false;
-  document.getElementById('ctrl-right').onmousedown = () => moveRight = true; document.getElementById('ctrl-right').onmouseup = () => moveRight = false;
+  bindHold(document.getElementById('ctrl-left'),  ()=>moveLeft=true,  ()=>moveLeft=false);
+  bindHold(document.getElementById('ctrl-right'), ()=>moveRight=true, ()=>moveRight=false);
   // ACTION button: shoot if no special ready, else deploy special
   document.getElementById('ctrl-action').onclick = () => {
     if (specialAbilities.length > 0 && !activeAbility) deployAbility();
@@ -1999,14 +2058,8 @@ function startPong(){
 
   // Mobile buttons
   let moveUp=false,moveDown=false;
-  document.getElementById('ctrl-left').onmousedown=()=>moveUp=true;
-  document.getElementById('ctrl-left').onmouseup=()=>moveUp=false;
-  document.getElementById('ctrl-left').ontouchstart=e=>{e.preventDefault();moveUp=true};
-  document.getElementById('ctrl-left').ontouchend=()=>moveUp=false;
-  document.getElementById('ctrl-right').onmousedown=()=>moveDown=true;
-  document.getElementById('ctrl-right').onmouseup=()=>moveDown=false;
-  document.getElementById('ctrl-right').ontouchstart=e=>{e.preventDefault();moveDown=true};
-  document.getElementById('ctrl-right').ontouchend=()=>moveDown=false;
+  bindHold(document.getElementById('ctrl-left'),  ()=>moveUp=true,   ()=>moveUp=false);
+  bindHold(document.getElementById('ctrl-right'), ()=>moveDown=true, ()=>moveDown=false);
 
   // Keyboard
   let keys={};
@@ -3102,14 +3155,8 @@ function startArena() {
   window.onkeyup = e => { keys[e.code] = false; };
 
   // Mobile controls
-  document.getElementById('ctrl-left').onmousedown = () => moveLeft = true;
-  document.getElementById('ctrl-left').onmouseup = () => moveLeft = false;
-  document.getElementById('ctrl-left').ontouchstart = e => { e.preventDefault(); moveLeft = true; };
-  document.getElementById('ctrl-left').ontouchend = () => moveLeft = false;
-  document.getElementById('ctrl-right').onmousedown = () => moveRight = true;
-  document.getElementById('ctrl-right').onmouseup = () => moveRight = false;
-  document.getElementById('ctrl-right').ontouchstart = e => { e.preventDefault(); moveRight = true; };
-  document.getElementById('ctrl-right').ontouchend = () => moveRight = false;
+  bindHold(document.getElementById('ctrl-left'),  ()=>moveLeft=true,  ()=>moveLeft=false);
+  bindHold(document.getElementById('ctrl-right'), ()=>moveRight=true, ()=>moveRight=false);
   document.getElementById('ctrl-action').onclick = () => doSlash();
 
   // Mouse/touch for aiming

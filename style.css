@@ -474,3 +474,105 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .up-carry{background:rgba(0,245,255,.06);border:1px solid rgba(0,245,255,.28);border-radius:10px;padding:12px 14px;margin-bottom:18px;text-align:center;font-family:var(--fd);font-size:.56rem;letter-spacing:.1em;color:var(--cyan);line-height:2}
 .up-carry b{color:#fff;font-weight:700}
 .up-hint{font-size:.68rem;color:var(--dimmer);margin-top:6px;letter-spacing:.02em}
+
+/* ══════════════════════════════════════════════════════════════
+   📱 MOBILE / TOUCH
+   ══════════════════════════════════════════════════════════════ */
+
+/* Double-tap-to-zoom is what made every button press zoom the page.
+   touch-action:manipulation removes the double-tap gesture (and its
+   ~300ms click delay) while LEAVING pinch-to-zoom intact, so the page
+   stays accessible to anyone who needs to magnify it. */
+button, .btn, .auth-tab, .market-tab, .diff-btn, .game-card, .shop-card,
+.memory-card, .fb-node, .fb-close, select, #click-btn, #math-submit {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Stop long-press selecting label text or raising the iOS callout menu
+   mid-game. Inputs and the feedback textarea stay selectable. */
+button, .btn, .auth-tab, .market-tab, .diff-btn, .game-card, .shop-card,
+.memory-card, .fb-node, .ctrl-btn, .hub-bar, .g-hdr, .market-bar {
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Play surfaces: swallow every browser gesture so a drag or hold never
+   scrolls, zooms, or pulls-to-refresh the page out from under the game. */
+#arcade-canvas, .ctrl-btn, #click-btn { touch-action: none; }
+body { overscroll-behavior: none; }
+
+/* iOS zooms the viewport when focusing any field under 16px. Everything
+   the player can type into is pinned to 16px so that never fires. */
+.input, .fb-textarea, .fb-select, #math-answer, input, textarea, select {
+  font-size: 16px;
+}
+.fb-textarea { line-height: 1.5; }
+
+/* Real viewport height on mobile — 100% ignores the collapsing browser
+   chrome, leaving the hub cut off behind the address bar. */
+@supports (height: 100dvh) {
+  html, body { height: 100dvh; }
+}
+
+/* Keep the UI clear of notches and the home indicator. */
+.hub-bar, .market-bar, .g-hdr {
+  padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right));
+}
+.screen { padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+
+/* Finger-sized targets on touch devices (44px is the accessibility floor). */
+@media (pointer: coarse) {
+  .btn-sm { padding: 11px 16px; min-height: 44px; }
+  .btn { min-height: 44px; }
+  .ctrl-btn { min-height: 68px; font-size: 1.05rem; }
+  .auth-tab, .market-tab, .diff-btn { min-height: 44px; }
+  .fb-node { padding: 15px 0; }
+  .fb-close { width: 38px; height: 38px; }
+}
+
+/* ── Narrow screens ── */
+@media (max-width: 700px) {
+  /* The hub bar carries 5 buttons plus 3 stats — let it stack instead of
+     overflowing off-screen. */
+  .hub-bar, .market-bar {
+    flex-direction: column; align-items: stretch; gap: 10px; padding: 12px 14px;
+  }
+  .hub-right { justify-content: center; gap: 8px; }
+  .hub-logo-sm, .market-title { text-align: center; }
+  .games-grid { grid-template-columns: 1fr; }
+  .hub-body { grid-template-columns: 1fr; }
+
+  .g-hdr { flex-wrap: wrap; gap: 8px; justify-content: center; }
+  .g-title { order: -1; width: 100%; text-align: center; }
+  .g-area { max-width: 100%; }
+  #arcade-canvas { width: 100%; max-width: 400px; height: auto; }
+  #arcade-controls { max-width: 100%; }
+
+  .convert-grid { grid-template-columns: 1fr; }
+  .shop-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  #click-btn { width: 150px; height: 150px; font-size: 3rem; }
+}
+
+/* Landscape phones: reclaim vertical space so the canvas still fits. */
+@media (max-height: 500px) and (orientation: landscape) {
+  #hub-screen, #market-screen { padding-top: 8px; }
+  .hub-bar { margin-bottom: 10px; }
+  .g-hdr { margin-bottom: 6px; }
+  #arcade-controls { margin-top: 8px; }
+  .ctrl-btn { min-height: 52px; padding: 10px; }
+}
+
+/* Toasts sit at the bottom on desktop, which on a phone lands them right
+   on top of the game control buttons. Flip them to the top on narrow
+   screens so a confirmation can't swallow a tap mid-game. */
+@media (max-width: 700px) {
+  #toast {
+    bottom: auto; top: -100px;
+    max-width: calc(100vw - 32px);
+    font-size: .62rem; padding: 10px 16px; text-align: center; line-height: 1.5;
+    transition: top .3s ease, border-color .3s ease, color .3s ease, box-shadow .3s ease;
+  }
+  #toast.show { top: max(12px, env(safe-area-inset-top)); bottom: auto; }
+}
