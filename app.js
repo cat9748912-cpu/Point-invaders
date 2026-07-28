@@ -3705,31 +3705,58 @@ showScreen('auth-screen');
  *   submittedAt, userAgent, screen
  * }
  *
- * Swap the simulated block below for any one of the options underneath it.
+ * Archives to the Realtime Database, then emails via Formspree.
  */
+// Formspree endpoint — every report is emailed to the inbox registered on
+// this form's Formspree account. Change the recipient in the Formspree
+// dashboard, not here. Set to '' to stop sending mail; reports are always
+// archived to the database either way.
+const FEEDBACK_EMAIL_ENDPOINT = 'https://formspree.io/f/xpqvbjjp';
+
 async function sendFeedback(payload){
-  // ── ACTIVE · Firebase Realtime Database ────────────────────────────
-  // Lands under the "feedback" node of the same database the game uses,
-  // one push-key per report. Read them in the Firebase Console:
-  //   Build → Realtime Database → Data → feedback
   if(!db) throw new Error('Database offline');
-  return db.ref('feedback').push({
+
+  // ── 1. Always archive to the Realtime Database ─────────────────────
+  // One push-key per report under the "feedback" node. This is the record
+  // of truth — it survives even if the email step below fails.
+  const saved = await db.ref('feedback').push({
     ...payload,
     createdAt: firebase.database.ServerValue.TIMESTAMP,
     handled: false            // flip to true in the console once actioned
   });
 
-  /* ── OPTION A · Formspree (emails you each report) ──────────────────
-  const r = await fetch('https://formspree.io/f/YOUR_FORM_ID', {
-    method:'POST',
-    headers:{ 'Content-Type':'application/json', Accept:'application/json' },
-    body: JSON.stringify(payload)
-  });
-  if(!r.ok) throw new Error('Formspree rejected the transmission');
-  return r.json();
-  */
+  // ── 2. Also email it, if an endpoint is configured ─────────────────
+  // Deliberately non-fatal: the report is already saved, so a mail outage
+  // must not show the player an error or make them retype anything.
+  if(FEEDBACK_EMAIL_ENDPOINT){
+    try{
+      const res = await fetch(FEEDBACK_EMAIL_ENDPOINT, {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', Accept:'application/json' },
+        body: JSON.stringify({
+          // Flat, readable fields — this is what lands in your inbox
+          _subject: `[POINT INVADERS] ${payload.typeLabel} from ${payload.username}`,
+          player:     payload.username,
+          type:       payload.typeLabel,
+          rating:     payload.rating ? `${payload.rating}/5` : 'not rated',
+          message:    payload.message,
+          difficulty: payload.difficultyTier,
+          points:     payload.totalPoints,
+          credits:    payload.credits,
+          guest:      payload.isGuest ? 'yes' : 'no',
+          uid:        payload.uid,
+          submitted:  payload.submittedAt
+        })
+      });
+      if(!res.ok) console.warn('[FEEDBACK] email relay returned', res.status, '— report is still saved in the database');
+    }catch(e){
+      console.warn('[FEEDBACK] email relay unreachable — report is still saved in the database:', e);
+    }
+  }
 
-  /* ── OPTION B · EmailJS (add its CDN <script> to index.html first) ──
+  return saved;
+
+  /* ── ALTERNATIVE · EmailJS (add its CDN <script> to index.html first) ──
   return emailjs.send('SERVICE_ID','TEMPLATE_ID', payload, 'PUBLIC_KEY');
   */
 
