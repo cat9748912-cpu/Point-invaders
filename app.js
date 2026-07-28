@@ -226,6 +226,10 @@ const countdown=cb=>{
 // ════════════════════════════════════════════
 const setErr=msg=>document.getElementById('auth-err').textContent=msg;
 
+// True while an explicit sign-in flow is still seeding its player node.
+// Keeps onAuthStateChanged from racing ahead and loading a half-written profile.
+let authPending=false;
+
 document.getElementById('tab-login').onclick=()=>{
   document.getElementById('tab-login').classList.add('active');
   document.getElementById('tab-signup').classList.remove('active');
@@ -257,14 +261,54 @@ document.getElementById('btn-signup').onclick=async()=>{
   const pass=document.getElementById('s-pass').value;
   if(!name||!email||!pass){setErr('Fields cannot remain unassigned.');return}
   if(!/^[a-zA-Z0-9_-]{2,20}$/.test(name)){setErr('Format error inside username syntax.');return}
+  authPending=true;
   try{
     const c=await auth.createUserWithEmailAndPassword(email,pass);
     await db.ref('players/' + c.user.uid).set({ username: name, totalPoints: 0, gamesPlayed: 0 });
     await loadUser(c.user.uid);
   }catch(e){setErr(fErr(e.code))}
+  finally{authPending=false}
 };
 
-const fErr=c=>({'auth/email-already-in-use':'Target email node already claimed.','auth/wrong-password':'Input encryption key mismatch.','auth/user-not-found':'Identity node missing.','auth/weak-password':'Minimum signature length unfulfilled.','auth/invalid-email':'Malformed structural routing email.'}[c]||'Matrix validation anomaly.');
+const fErr=c=>({'auth/email-already-in-use':'Target email node already claimed.','auth/wrong-password':'Input encryption key mismatch.','auth/user-not-found':'Identity node missing.','auth/weak-password':'Minimum signature length unfulfilled.','auth/invalid-email':'Malformed structural routing email.','auth/operation-not-allowed':'Guest protocol offline — enable Anonymous sign-in in the Firebase Console.','auth/admin-restricted-operation':'Guest protocol offline — enable Anonymous sign-in in the Firebase Console.','auth/credential-already-in-use':'That email is already bound to another identity node.','auth/provider-already-linked':'This session already holds a permanent identity.','auth/requires-recent-login':'Session too old to re-key. Exit and sign in again.','auth/email-already-exists':'Target email node already claimed.'}[c]||'Matrix validation anomaly.');
+
+// ── 🎮 GUEST ACCESS — FIREBASE ANONYMOUS AUTH ──
+// Derives a stable display handle from the anonymous UID, e.g. "Guest_A1B2C".
+const guestTag = uid => 'Guest_' + String(uid).replace(/[^a-zA-Z0-9]/g,'').slice(0,5).toUpperCase();
+
+async function signInAsGuest(){
+  if(!auth||!db){toast('⚠️ Connection state unconfigured');return}
+  const btn=document.getElementById('btn-guest');
+  const label=btn.textContent;
+  btn.disabled=true;btn.textContent='⏳ Booting guest node...';
+  setErr('');
+  authPending=true; // hold off onAuthStateChanged until the profile node exists
+  try{
+    const c=await auth.signInAnonymously();
+    const ref=db.ref('players/' + c.user.uid);
+    const snap=await ref.once('value');
+    if(!snap.exists()){
+      await ref.set({
+        username: guestTag(c.user.uid),
+        totalPoints: 0,
+        gamesPlayed: 0,
+        credits: 0,
+        isGuest: true,
+        createdAt: firebase.database.ServerValue.TIMESTAMP
+      });
+    }
+    await loadUser(c.user.uid);
+    toast('🎮 Guest access granted — progress lives in this browser only.',4000);
+  }catch(e){
+    console.error('Guest sign-in failed:',e);
+    setErr(fErr(e.code));
+  }finally{
+    authPending=false;
+    btn.disabled=false;btn.textContent=label;
+  }
+}
+
+document.getElementById('btn-guest').onclick=signInAsGuest;
 
 function ensureUserDefaults(raw){
   raw = raw || {};
@@ -286,19 +330,51 @@ function ensureUserDefaults(raw){
 
 async function loadUser(uid){
   if(!db)return;
-  db.ref('players/' + uid).once('value', (snapshot) => {
-    const data = snapshot.exists() ? snapshot.val() : {};
-    user = { uid, ...ensureUserDefaults(data) };
-    applyEquippedCosmetics();
-    enterHub();
-  });
+  const snapshot = await db.ref('players/' + uid).once('value');
+  const data = snapshot.exists() ? snapshot.val() : {};
+  user = { uid, ...ensureUserDefaults(data) };
+  // Anonymous sessions are the source of truth for guest status, not the DB flag.
+  user.isGuest = !!(auth && auth.currentUser && auth.currentUser.isAnonymous);
+  if(user.isGuest && !snapshot.exists()) user.username = guestTag(uid);
+  applyEquippedCosmetics();
+  enterHub();
 }
 
-if(auth)auth.onAuthStateChanged(async u=>{if(u&&!user)await loadUser(u.uid)});
+// Restores an existing session on reload — including anonymous guests, whose
+// UID persists in browser storage until they sign out or clear site data.
+if(auth)auth.onAuthStateChanged(async u=>{
+  if(!u||user||authPending)return;
+  try{await loadUser(u.uid)}catch(e){console.error('Session restore failed:',e)}
+});
 
-document.getElementById('btn-logout').onclick=()=>{
+// Wipes an unclaimed guest: removes their leaderboard node AND deletes the
+// anonymous identity, so abandoned guests don't pile up in Auth or the DB.
+// Only ever runs on an account still flagged isAnonymous — once a guest has
+// upgraded via linkWithCredential() this is a no-op and their data is safe.
+async function purgeGuestAccount(){
+  const cu = auth && auth.currentUser;
+  if(!cu || !cu.isAnonymous) return false;
+  const uid = cu.uid;
+  try{ if(db) await db.ref('players/' + uid).remove(); }
+  catch(e){ console.warn('Guest data purge failed:', e); }
+  try{ await cu.delete(); }            // delete() also ends the session
+  catch(e){ console.warn('Guest identity purge failed:', e); if(auth) auth.signOut(); }
+  return true;
+}
+
+document.getElementById('btn-logout').onclick=async()=>{
+  if(user && user.isGuest){
+    const pts = (user.totalPoints||0).toLocaleString();
+    const warn = (user.totalPoints>0)
+      ? `Exiting deletes this guest profile and its ${pts} PTS permanently.\n\nWant to keep them? Cancel, then use “💾 Save Account”.\n\nExit and delete anyway?`
+      : 'Exiting deletes this guest profile permanently. Exit anyway?';
+    if(!confirm(warn)) return;
+    await purgeGuestAccount();
+    user=null;showScreen('auth-screen');setErr('');toast('🗑️ Guest profile wiped from the grid.');
+    return;
+  }
   if(auth)auth.signOut();
-  user=null;showScreen('auth-screen');toast('👋 Terminal connection closed.');
+  user=null;showScreen('auth-screen');setErr('');toast('👋 Terminal connection closed.');
 };
 
 // ════════════════════════════════════════════
@@ -306,6 +382,18 @@ document.getElementById('btn-logout').onclick=()=>{
 // ════════════════════════════════════════════
 function enterHub(){
   document.getElementById('h-uname').textContent=user.username;
+  let guestTagEl=document.getElementById('h-guest-tag');
+  if(user.isGuest){
+    if(!guestTagEl){
+      guestTagEl=document.createElement('div');
+      guestTagEl.id='h-guest-tag';guestTagEl.className='hub-guest-tag';guestTagEl.textContent='GUEST';
+      const un=document.getElementById('h-uname');un.parentNode.insertBefore(guestTagEl,un.nextSibling);
+    }
+    guestTagEl.style.display='';
+  }else if(guestTagEl){guestTagEl.style.display='none'}
+  // "Save Account" is only meaningful while the session is still anonymous
+  const saveBtn=document.getElementById('btn-save-acct');
+  if(saveBtn)saveBtn.style.display=user.isGuest?'':'none';
   document.getElementById('h-pts').textContent=`🏆 ${(user.totalPoints||0).toLocaleString()} PTS`;
   document.getElementById('h-credits').textContent=`💎 ${(user.credits||0).toLocaleString()} CR`;
   showScreen('hub-screen');
@@ -3601,3 +3689,382 @@ function startArena() {
 }
 
 showScreen('auth-screen');
+// ══════════════════════════════════════════════════════════════════════
+//  💬 FEEDBACK TERMINAL — modal, validation, transmit hook
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * ⬇️  BACKEND HOOK — THIS IS THE ONLY FUNCTION YOU NEED TO EDIT  ⬇️
+ *
+ * Receives the assembled payload and delivers it somewhere. Resolve to
+ * signal success; throw to surface an error inside the modal.
+ *
+ * payload = {
+ *   username, type, typeLabel, rating, message,
+ *   uid, isGuest, totalPoints, credits, difficultyTier,
+ *   submittedAt, userAgent, screen
+ * }
+ *
+ * Swap the simulated block below for any one of the options underneath it.
+ */
+async function sendFeedback(payload){
+  // ── ACTIVE · Firebase Realtime Database ────────────────────────────
+  // Lands under the "feedback" node of the same database the game uses,
+  // one push-key per report. Read them in the Firebase Console:
+  //   Build → Realtime Database → Data → feedback
+  if(!db) throw new Error('Database offline');
+  return db.ref('feedback').push({
+    ...payload,
+    createdAt: firebase.database.ServerValue.TIMESTAMP,
+    handled: false            // flip to true in the console once actioned
+  });
+
+  /* ── OPTION A · Formspree (emails you each report) ──────────────────
+  const r = await fetch('https://formspree.io/f/YOUR_FORM_ID', {
+    method:'POST',
+    headers:{ 'Content-Type':'application/json', Accept:'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if(!r.ok) throw new Error('Formspree rejected the transmission');
+  return r.json();
+  */
+
+  /* ── OPTION B · EmailJS (add its CDN <script> to index.html first) ──
+  return emailjs.send('SERVICE_ID','TEMPLATE_ID', payload, 'PUBLIC_KEY');
+  */
+
+  /* ── OPTION C · your own API ───────────────────────────────────────
+  const r = await fetch('/api/feedback', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  if(!r.ok) throw new Error(`API responded ${r.status}`);
+  return r.json();
+  */
+
+  /* ── OPTION D · simulate only (no delivery, logs to console) ───────
+  console.log('[FEEDBACK] payload →', payload);
+  await new Promise(res => setTimeout(res, 900));
+  return { ok:true };
+  */
+}
+
+(function(){
+  const overlay = document.getElementById('fb-overlay');
+  if(!overlay) return;                     // markup absent — bail quietly
+
+  const body    = document.getElementById('fb-body');
+  const success = document.getElementById('fb-success');
+  const term    = document.getElementById('fb-term');
+  const nameEl  = document.getElementById('fb-name');
+  const typeEl  = document.getElementById('fb-type');
+  const msgEl   = document.getElementById('fb-msg');
+  const errEl   = document.getElementById('fb-err');
+  const countEl = document.getElementById('fb-count');
+  const rateWrap= document.getElementById('fb-rating');
+  const rateLbl = document.getElementById('fb-rating-lbl');
+  const submitEl= document.getElementById('fb-submit');
+
+  const MIN_CHARS = 5;
+  const RATING_LABELS = ['','☠️ Critical Failure','⚠️ Unstable','➖ Functional','⚡ Overclocked','🏆 Legendary'];
+
+  let rating = 0;
+  let isOpen = false;
+  let sending = false;
+  let lastFocus = null;
+  let termTimers = [];
+
+  // ── Rating: five core nodes ──
+  for(let i=1;i<=5;i++){
+    const node = document.createElement('button');
+    node.type='button'; node.className='fb-node'; node.dataset.v=i;
+    node.textContent='◆';
+    node.setAttribute('role','radio');
+    node.setAttribute('aria-label',`${i} of 5 — ${RATING_LABELS[i]}`);
+    rateWrap.appendChild(node);
+  }
+  const paintRating = v => {
+    rateWrap.querySelectorAll('.fb-node').forEach(n=>{
+      n.classList.toggle('lit', Number(n.dataset.v) <= v);
+      n.setAttribute('aria-checked', Number(n.dataset.v) === rating ? 'true' : 'false');
+    });
+    rateLbl.textContent = v ? RATING_LABELS[v] : 'Awaiting calibration…';
+    rateLbl.classList.toggle('set', !!v);
+  };
+  rateWrap.addEventListener('click', e=>{
+    const n = e.target.closest('.fb-node'); if(!n) return;
+    rating = Number(n.dataset.v); paintRating(rating);
+  });
+  rateWrap.addEventListener('mouseover', e=>{
+    const n = e.target.closest('.fb-node'); if(n) paintRating(Number(n.dataset.v));
+  });
+  rateWrap.addEventListener('mouseleave', ()=>paintRating(rating));
+
+  // ── Character counter ──
+  msgEl.addEventListener('input', ()=>{
+    const len = msgEl.value.length;
+    countEl.textContent = len;
+    countEl.parentNode.classList.toggle('warn', len > 900);
+    if(errEl.textContent) errEl.textContent='';
+  });
+
+  // ── Open / close ─────────────────────────────────────────────────
+  // Purely additive: never calls showScreen(), so the hub stays mounted
+  // and the player's PTS/CR state is untouched.
+  function openFeedback(){
+    if(isOpen) return;
+    lastFocus = document.activeElement;
+    // Prefill the handle from the live session (read-only — never writes back)
+    if(!nameEl.value && typeof user !== 'undefined' && user && user.username){
+      nameEl.value = user.username;
+    }
+    errEl.textContent='';
+    isOpen = true;
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden','false');
+    setTimeout(()=>msgEl.focus(), 260);
+  }
+
+  function closeFeedback(){
+    if(!isOpen || sending) return;
+    isOpen = false;
+    overlay.classList.remove('show');
+    overlay.setAttribute('aria-hidden','true');
+    termTimers.forEach(clearTimeout); termTimers=[];
+    // Reset back to the form state for next time
+    setTimeout(()=>{
+      if(isOpen) return;
+      success.classList.remove('show');
+      body.style.display='';
+      term.innerHTML='';
+    }, 240);
+    if(lastFocus && lastFocus.focus) lastFocus.focus();
+  }
+
+  document.getElementById('btn-feedback').onclick = openFeedback;
+  document.getElementById('fb-close').onclick = closeFeedback;
+  overlay.addEventListener('mousedown', e=>{ if(e.target === overlay) closeFeedback(); });
+
+  // Capture phase: while the modal is open, swallow keys before they can
+  // reach any window.onkeydown handler a mini-game may still have bound.
+  document.addEventListener('keydown', e=>{
+    if(!isOpen) return;
+    if(e.key === 'Escape'){ closeFeedback(); return; }
+    if((e.ctrlKey || e.metaKey) && e.key === 'Enter'){ e.preventDefault(); transmit(); }
+    e.stopPropagation();
+  }, true);
+
+  // ── Terminal readout ──
+  function typeTerminal(lines, done){
+    term.innerHTML=''; let delay=0;
+    lines.forEach((line, i)=>{
+      delay += 420;
+      termTimers.push(setTimeout(()=>{
+        const div=document.createElement('div');
+        div.className = line.ok ? 'ok' : '';
+        div.textContent = line.text;
+        term.appendChild(div);
+        if(i === lines.length-1){
+          const c=document.createElement('span'); c.className='caret'; c.textContent='▊';
+          term.appendChild(c);
+          if(done) termTimers.push(setTimeout(done, 900));
+        }
+      }, delay));
+    });
+  }
+
+  // ── Submit ───────────────────────────────────────────────────────
+  async function transmit(){
+    if(sending) return;
+    const message = msgEl.value.trim();
+    if(message.length < MIN_CHARS){
+      errEl.textContent = `Transmission too short — ${MIN_CHARS} characters minimum.`;
+      msgEl.focus(); return;
+    }
+
+    const payload = {
+      username:   nameEl.value.trim() || (typeof user!=='undefined' && user && user.username) || 'Anonymous Operative',
+      type:       typeEl.value,
+      typeLabel:  typeEl.options[typeEl.selectedIndex].text,
+      rating:     rating,                              // 0 = not rated
+      message:    message,
+      uid:            (typeof user!=='undefined' && user) ? user.uid : null,
+      isGuest:        !!(typeof user!=='undefined' && user && user.isGuest),
+      totalPoints:    (typeof user!=='undefined' && user) ? user.totalPoints : null,
+      credits:        (typeof user!=='undefined' && user) ? user.credits : null,
+      difficultyTier: (typeof currentDifficultyTier !== 'undefined') ? currentDifficultyTier : null,
+      submittedAt: new Date().toISOString(),
+      userAgent:   navigator.userAgent,
+      screen:      (document.querySelector('.screen.active')||{}).id || null
+    };
+
+    sending = true;
+    errEl.textContent='';
+    submitEl.disabled = true;
+    submitEl.textContent = '📡 Transmitting…';
+
+    try{
+      await sendFeedback(payload);                     // ← the hook above
+      sending = false;                                 // readout is dismissible
+      body.style.display='none';
+      success.classList.add('show');
+      typeTerminal([
+        { text:'> establishing uplink…' },
+        { text:'> encrypting payload…' },
+        { text:'> FEEDBACK UPLOADED TO MAINFRAME SUCCESSFULLY', ok:true },
+        { text:'> signal received. thanks, operative.' }
+      ], closeFeedback);
+      toast('📡 Feedback uploaded to Mainframe successfully!', 3200);
+      // Clear for the next report
+      msgEl.value=''; countEl.textContent='0';
+      rating=0; paintRating(0);
+    }catch(err){
+      console.error('[FEEDBACK] transmission failed:', err);
+      errEl.textContent = 'Uplink failed — mainframe unreachable. Try again.';
+      sending = false;
+    }finally{
+      submitEl.disabled = false;
+      submitEl.textContent = '📡 Transmit Feedback';
+    }
+  }
+
+  submitEl.onclick = transmit;
+  paintRating(0);
+
+  // Optional: lets you open the terminal from anywhere, e.g. openFeedbackTerminal()
+  window.openFeedbackTerminal = openFeedback;
+})();
+
+// ══════════════════════════════════════════════════════════════════════
+//  💾 SAVE ACCOUNT — guest → permanent, keeping the same UID
+// ══════════════════════════════════════════════════════════════════════
+(function(){
+  const overlay = document.getElementById('up-overlay');
+  if(!overlay) return;
+
+  const body    = document.getElementById('up-body');
+  const success = document.getElementById('up-success');
+  const term    = document.getElementById('up-term');
+  const carryEl = document.getElementById('up-carry');
+  const nameEl  = document.getElementById('up-name');
+  const emailEl = document.getElementById('up-email');
+  const passEl  = document.getElementById('up-pass');
+  const errEl   = document.getElementById('up-err');
+  const submitEl= document.getElementById('up-submit');
+
+  let isOpen = false, saving = false, timers = [];
+
+  function openUpgrade(){
+    if(isOpen || !user || !user.isGuest) return;
+    // Show exactly what's being carried across, so the value is obvious
+    carryEl.innerHTML =
+      `CARRYING OVER<br><b>${(user.totalPoints||0).toLocaleString()}</b> PTS · ` +
+      `<b>${(user.credits||0).toLocaleString()}</b> CR · ` +
+      `<b>${(user.gamesPlayed||0).toLocaleString()}</b> MISSIONS`;
+    errEl.textContent='';
+    isOpen = true;
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden','false');
+    setTimeout(()=>nameEl.focus(), 260);
+  }
+
+  function closeUpgrade(){
+    if(!isOpen || saving) return;
+    isOpen = false;
+    overlay.classList.remove('show');
+    overlay.setAttribute('aria-hidden','true');
+    timers.forEach(clearTimeout); timers=[];
+    setTimeout(()=>{
+      if(isOpen) return;
+      success.classList.remove('show');
+      body.style.display='';
+      term.innerHTML='';
+    }, 240);
+  }
+
+  document.getElementById('btn-save-acct').onclick = openUpgrade;
+  document.getElementById('up-close').onclick = closeUpgrade;
+  overlay.addEventListener('mousedown', e=>{ if(e.target === overlay) closeUpgrade(); });
+  document.addEventListener('keydown', e=>{
+    if(!isOpen) return;
+    if(e.key === 'Escape'){ closeUpgrade(); return; }
+    if(e.key === 'Enter'){ e.preventDefault(); upgrade(); }
+    e.stopPropagation();
+  }, true);
+
+  function typeTerm(lines, done){
+    term.innerHTML=''; let delay=0;
+    lines.forEach((l,i)=>{
+      delay += 420;
+      timers.push(setTimeout(()=>{
+        const d=document.createElement('div');
+        d.className = l.ok ? 'ok' : ''; d.textContent = l.text;
+        term.appendChild(d);
+        if(i === lines.length-1){
+          const c=document.createElement('span'); c.className='caret'; c.textContent='▊';
+          term.appendChild(c);
+          if(done) timers.push(setTimeout(done, 1000));
+        }
+      }, delay));
+    });
+  }
+
+  async function upgrade(){
+    if(saving) return;
+    const name  = nameEl.value.trim();
+    const email = emailEl.value.trim();
+    const pass  = passEl.value;
+
+    if(!name || !email || !pass){ errEl.textContent='Fields cannot remain unassigned.'; return; }
+    if(!/^[a-zA-Z0-9_-]{2,20}$/.test(name)){ errEl.textContent='Format error inside username syntax.'; return; }
+    if(pass.length < 6){ errEl.textContent='Minimum signature length unfulfilled.'; return; }
+    if(!auth || !auth.currentUser || !auth.currentUser.isAnonymous){
+      errEl.textContent='No guest session to upgrade.'; return;
+    }
+
+    saving = true;
+    errEl.textContent='';
+    submitEl.disabled = true;
+    submitEl.textContent = '🔒 Re-keying identity…';
+
+    try{
+      // linkWithCredential keeps the SAME uid — every score, credit and
+      // cosmetic already stored under players/<uid> stays exactly where it is.
+      const cred = firebase.auth.EmailAuthProvider.credential(email, pass);
+      await auth.currentUser.linkWithCredential(cred);
+
+      const uid = auth.currentUser.uid;
+      await db.ref('players/' + uid).update({
+        username:   name,
+        isGuest:    false,
+        upgradedAt: firebase.database.ServerValue.TIMESTAMP
+      });
+
+      user.username = name;
+      user.isGuest  = false;
+
+      saving = false;
+      body.style.display='none';
+      success.classList.add('show');
+      typeTerm([
+        { text:'> binding credentials to node…' },
+        { text:`> handle registered: ${name}` },
+        { text:'> ACCOUNT SECURED — PROGRESS PRESERVED', ok:true },
+        { text:'> welcome to the grid, operative.' }
+      ], ()=>{ closeUpgrade(); enterHub(); });
+
+      toast(`🔒 Account saved — welcome, ${name}!`, 3500);
+      loadLeaderboard();
+    }catch(e){
+      console.error('Account upgrade failed:', e);
+      errEl.textContent = fErr(e.code);
+      saving = false;
+    }finally{
+      submitEl.disabled = false;
+      submitEl.textContent = '🔒 Lock In Account';
+    }
+  }
+
+  submitEl.onclick = upgrade;
+  window.openSaveAccount = openUpgrade;
+})();

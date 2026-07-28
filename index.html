@@ -41,6 +41,10 @@
         <button class="btn btn-primary btn-full btn-lg" id="btn-signup">Create Account →</button>
       </div>
       <div class="auth-err" id="auth-err"></div>
+
+      <div class="auth-divider">or</div>
+      <button class="btn btn-guest btn-full btn-lg" id="btn-guest">🎮 Play as Guest</button>
+      <div class="guest-note">No signup — progress is tied to this browser only.</div>
     </div>
   </div>
 </div>
@@ -52,7 +56,9 @@
       <div class="hub-uname" id="h-uname">PLAYER</div>
       <div class="hub-pts" id="h-pts">🏆 0 PTS</div>
       <div class="hub-credits" id="h-credits">💎 0 CR</div>
+      <button class="btn btn-save-acct btn-sm" id="btn-save-acct" style="display:none">💾 Save Account</button>
       <button class="btn btn-secondary btn-sm" id="btn-market">🛒 Black Market</button>
+      <button class="btn btn-secondary btn-sm btn-feedback" id="btn-feedback">💬 Feedback</button>
       <button class="btn btn-secondary btn-sm" id="btn-fs-hub" title="Toggle Fullscreen">⛶</button>
       <button class="btn btn-secondary btn-sm" id="btn-logout">Exit</button>
     </div>
@@ -247,6 +253,106 @@
     <div class="res-btns">
       <button class="btn btn-primary" id="btn-again">Play Again</button>
       <button class="btn btn-secondary" id="btn-hub">Hub</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     💬 FEEDBACK TERMINAL — overlay modal.
+     Lives OUTSIDE every .screen so opening it never unmounts the hub,
+     a running game, or the player's live PTS/CR state.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay" id="fb-overlay" aria-hidden="true">
+  <div class="fb-modal" role="dialog" aria-modal="true" aria-labelledby="fb-heading">
+    <button class="fb-close" id="fb-close" aria-label="Close feedback terminal">✕</button>
+
+    <div class="fb-head">
+      <div class="fb-title" id="fb-heading">💬 FEEDBACK TERMINAL</div>
+      <div class="fb-sub">Transmit a report to the mainframe</div>
+    </div>
+
+    <!-- ── FORM STATE ── -->
+    <div class="fb-body" id="fb-body">
+      <div class="field">
+        <label class="input-label" for="fb-name">Player Handle <span class="fb-opt">optional</span></label>
+        <input class="input" type="text" id="fb-name" maxlength="20" placeholder="Anonymous Operative" autocomplete="off">
+      </div>
+
+      <div class="field">
+        <label class="input-label" for="fb-type">Signal Type</label>
+        <select class="input fb-select" id="fb-type">
+          <option value="bug">🐞 Bug Report</option>
+          <option value="feature">✨ Feature Suggestion</option>
+          <option value="balance">⚖️ Balancing Issue</option>
+          <option value="praise">🏆 General Praise</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label class="input-label">Core Node Rating</label>
+        <div class="fb-rating" id="fb-rating" role="radiogroup" aria-label="Rating, 1 to 5 core nodes"></div>
+        <div class="fb-rating-lbl" id="fb-rating-lbl">Awaiting calibration…</div>
+      </div>
+
+      <div class="field">
+        <label class="input-label" for="fb-msg">Transmission</label>
+        <textarea class="input fb-textarea" id="fb-msg" maxlength="1000" placeholder="> Describe the anomaly, operative…&#10;> e.g. GRID SNAKE hitbox desyncs on Meltdown tier"></textarea>
+        <div class="fb-count"><span id="fb-count">0</span> / 1000</div>
+      </div>
+
+      <div class="fb-err" id="fb-err"></div>
+      <button class="btn btn-primary btn-full btn-lg" id="fb-submit">📡 Transmit Feedback</button>
+    </div>
+
+    <!-- ── SUCCESS STATE (terminal readout) ── -->
+    <div class="fb-success" id="fb-success">
+      <div class="fb-success-icon">📡</div>
+      <div class="fb-term" id="fb-term"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     💾 SAVE ACCOUNT — upgrades an anonymous guest into a permanent
+     email/password account via linkWithCredential(). The Firebase UID
+     never changes, so points, credits and cosmetics carry over intact.
+     Reuses the .fb-overlay / .fb-modal shell, tinted cyan.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay up-tint" id="up-overlay" aria-hidden="true">
+  <div class="fb-modal" role="dialog" aria-modal="true" aria-labelledby="up-heading">
+    <button class="fb-close" id="up-close" aria-label="Close">✕</button>
+
+    <div class="fb-head">
+      <div class="fb-title" id="up-heading">💾 SAVE YOUR ACCOUNT</div>
+      <div class="fb-sub">Claim a permanent handle · keep your progress</div>
+    </div>
+
+    <div class="fb-body" id="up-body">
+      <div class="up-carry" id="up-carry"></div>
+
+      <div class="field">
+        <label class="input-label" for="up-name">Choose Your Username</label>
+        <input class="input" type="text" id="up-name" maxlength="20" placeholder="CoolPlayer99" autocomplete="off">
+        <div class="up-hint">2–20 characters · letters, numbers, _ and - only</div>
+      </div>
+
+      <div class="field">
+        <label class="input-label" for="up-email">Email</label>
+        <input class="input" type="email" id="up-email" placeholder="you@email.com" autocomplete="email">
+      </div>
+
+      <div class="field">
+        <label class="input-label" for="up-pass">Password (min 6)</label>
+        <input class="input" type="password" id="up-pass" placeholder="••••••••" autocomplete="new-password">
+      </div>
+
+      <div class="fb-err" id="up-err"></div>
+      <button class="btn btn-primary btn-full btn-lg" id="up-submit">🔒 Lock In Account</button>
+    </div>
+
+    <div class="fb-success" id="up-success">
+      <div class="fb-success-icon">🔒</div>
+      <div class="fb-term up-term" id="up-term"></div>
     </div>
   </div>
 </div>
