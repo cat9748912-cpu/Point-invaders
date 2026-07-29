@@ -222,15 +222,23 @@
     </div>
 
     <div id="g-canvas-holder" style="display:none; position:relative;">
-      <div id="tetris-next-wrap" style="display:none; position:absolute; top:10px; right:10px; background:var(--s2); border:1px solid var(--border); border-radius:8px; padding:8px; text-align:center;">
-        <div style="font-family:var(--fd); font-size:0.6rem; color:var(--cyan); margin-bottom:4px;">NEXT</div>
-        <canvas id="nextCanvas" width="80" height="80"></canvas>
+      <!-- board-frame hugs the canvas exactly, so the overlays below anchor to
+           the play field rather than to the holder (which also carries the
+           control pad, and would have pushed them onto the buttons). -->
+      <div id="board-frame">
+        <div id="tetris-next-wrap" style="display:none">
+          <div class="next-label">NEXT</div>
+          <canvas id="nextCanvas" width="80" height="80"></canvas>
+        </div>
+        <canvas id="arcade-canvas" width="400" height="500"></canvas>
+        <!-- Touch tutorial: fades in over the board for a few seconds when a
+             game starts on a touch device, then gets out of the way. -->
+        <div id="touch-hint" aria-hidden="true"></div>
       </div>
-
-      <canvas id="arcade-canvas" width="400" height="500"></canvas>
       <div id="arcade-controls">
         <button class="ctrl-btn" id="ctrl-left">◀</button>
         <button class="ctrl-btn" id="ctrl-action">ACTION</button>
+        <button class="ctrl-btn ctrl-drop" id="ctrl-drop" style="display:none">⬇⬇ DROP</button>
         <button class="ctrl-btn" id="ctrl-right">▶</button>
       </div>
     </div>

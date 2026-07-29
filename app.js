@@ -48,12 +48,17 @@ function stopGame(){
   if(aCanvas){
     aCanvas.onmousemove=null; aCanvas.onclick=null;
     aCanvas.ontouchmove=null; aCanvas.ontouchstart=null;
+    clearCanvasDrag();
   }
+  hideTouchHint();
+  const rbox=document.getElementById('g-reaction');
+  if(rbox){ rbox.onpointerdown=null; rbox.onclick=null; }
   const cl=document.getElementById('ctrl-left');
   const cr=document.getElementById('ctrl-right');
   const ca=document.getElementById('ctrl-action');
-  clearHold(cl); clearHold(cr); clearHold(ca);
-  if(ca){ca.onclick=null;}
+  const cd=document.getElementById('ctrl-drop');
+  clearHold(cl); clearHold(cr); clearHold(ca); clearHold(cd);
+  [cl,cr,ca,cd].forEach(el=>{ if(el) el.onclick=null; });
 }
 const META = {
   click: { name: 'CLICK FRENZY', emoji: '🖱️', maxPts: 500 },
@@ -273,6 +278,155 @@ function clearHold(el){
   el.ontouchstart = el.ontouchend = el.ontouchcancel = null;
 }
 
+// ══════════════════════════════════════════════════════════════════════
+//  📱 TOUCH ENGINE — canvas gestures, board fitting, control pad layout
+// ══════════════════════════════════════════════════════════════════════
+
+// Phones and tablets get the finger-first control scheme (drag to move, hold
+// to fire, tap to strike); anything with a mouse keeps keyboard + pointer.
+const isTouchDevice = (window.matchMedia && matchMedia('(pointer: coarse)').matches) || ('ontouchstart' in window);
+
+// The 400×500 canvas is CSS-scaled down on a phone, so a raw
+// `clientX - rect.left` reads short by the scale factor — a finger on the far
+// right of a 340px-wide board reported x≈340 into a 400-wide play field, and
+// every game silently lost the last 15% of its width. Everything that turns a
+// pointer into game coordinates goes through here.
+function canvasPos(e){
+  const rect = aCanvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (aCanvas.width  / (rect.width  || 1)),
+    y: (e.clientY - rect.top ) * (aCanvas.height / (rect.height || 1))
+  };
+}
+
+// Single-pointer drag binding for the play surface. Pointer events cover
+// mouse, touch and stylus in one path, and pointer capture keeps a drag alive
+// when the finger slides off the canvas — without it the ship freezes the
+// moment you overshoot the edge, which is exactly when you're dodging.
+function bindCanvasDrag(handlers){
+  clearCanvasDrag();
+  if(!aCanvas) return;
+  let id = null;
+  aCanvas.onpointerdown = e => {
+    if(id !== null) return;             // ignore extra fingers
+    e.preventDefault();
+    id = e.pointerId;
+    try{ aCanvas.setPointerCapture(id); }catch(_){}
+    handlers.onDown && handlers.onDown(canvasPos(e), e);
+  };
+  aCanvas.onpointermove = e => {
+    if(id === null){
+      // No active drag — still useful for mouse hover aiming.
+      handlers.onHover && handlers.onHover(canvasPos(e), e);
+      return;
+    }
+    if(e.pointerId !== id) return;
+    e.preventDefault();
+    handlers.onMove && handlers.onMove(canvasPos(e), e);
+  };
+  const end = e => {
+    if(id === null || e.pointerId !== id) return;
+    id = null;
+    handlers.onUp && handlers.onUp(canvasPos(e), e);
+  };
+  aCanvas.onpointerup = end;
+  aCanvas.onpointercancel = end;
+  aCanvas.onlostpointercapture = end;
+}
+function clearCanvasDrag(){
+  if(!aCanvas) return;
+  aCanvas.onpointerdown = aCanvas.onpointermove = null;
+  aCanvas.onpointerup = aCanvas.onpointercancel = aCanvas.onlostpointercapture = null;
+}
+
+// ── BOARD FITTING ──
+// 400×500 is taller than most phone viewports once the header, progress bar
+// and control pad have taken their cut, so the bottom of the play field ended
+// up below the fold. Measure what's actually left and scale the canvas to it,
+// preserving aspect ratio. Capped at 1× so desktop stays pixel-exact.
+function fitCanvas(){
+  const holder = document.getElementById('g-canvas-holder');
+  if(!holder || holder.style.display === 'none' || !aCanvas) return;
+  const area = document.querySelector('.g-area');
+  if(!area) return;
+
+  const controls = document.getElementById('arcade-controls');
+  const ctrlVisible = controls && getComputedStyle(controls).display !== 'none';
+  // Landscape parks the pad beside the board instead of beneath it, so it eats
+  // width there and height everywhere else.
+  const beside = ctrlVisible && getComputedStyle(holder).display === 'flex';
+  const ctrlBox = ctrlVisible ? controls.getBoundingClientRect() : null;
+  const ctrlH = (ctrlVisible && !beside) ? ctrlBox.height + 14 : 0;
+  const ctrlW = beside ? ctrlBox.width + 12 : 0;
+
+  const availW = area.clientWidth - ctrlW;
+  // holder.top is independent of the canvas's own height, so measuring it
+  // before resizing doesn't feed back on itself. The 24px covers the screen's
+  // bottom padding and the home-indicator safe area.
+  const availH = window.innerHeight - holder.getBoundingClientRect().top - ctrlH - 24;
+
+  // Floor is deliberately low: on a landscape phone there genuinely isn't much
+  // height, and a small board beats one whose bottom half is off-screen.
+  const scale = Math.min(availW / aCanvas.width, Math.max(130, availH) / aCanvas.height, 1);
+  aCanvas.style.width  = Math.round(aCanvas.width  * scale) + 'px';
+  aCanvas.style.height = Math.round(aCanvas.height * scale) + 'px';
+}
+let _fitRaf = 0;
+function scheduleFit(){ cancelAnimationFrame(_fitRaf); _fitRaf = requestAnimationFrame(fitCanvas); }
+window.addEventListener('resize', scheduleFit);
+// Orientation flips report the old viewport for a beat on iOS, so re-measure late.
+window.addEventListener('orientationchange', () => setTimeout(fitCanvas, 260));
+if(window.visualViewport) visualViewport.addEventListener('resize', scheduleFit);
+
+// ── CONTROL PAD LAYOUT ──
+// Every game declares which buttons it wants and what they say; anything not
+// named is hidden. Keeps the pad from carrying a stale ROTATE label into the
+// next game and sizes the row for however many buttons survive.
+function setControls(cfg){
+  const bar = document.getElementById('arcade-controls');
+  if(!bar) return;
+  bar.style.display = cfg ? 'flex' : 'none';
+  bar.classList.remove('four-up','solo-action');
+
+  let shown = 0;
+  [['left','ctrl-left'],['action','ctrl-action'],['drop','ctrl-drop'],['right','ctrl-right']]
+    .forEach(([key, id]) => {
+      const el = document.getElementById(id);
+      if(!el) return;
+      const label = cfg && cfg[key];
+      if(label == null){ el.style.display = 'none'; return; }
+      el.style.display = '';
+      el.textContent = label;
+      shown++;
+    });
+  if(shown >= 4) bar.classList.add('four-up');
+  if(shown === 1) bar.classList.add('solo-action');
+}
+
+// ── TOUCH TUTORIAL ──
+// A finger-driven scheme is invisible until someone tries it, so each touch
+// game states its gesture once over the board and clears on first contact.
+let _hintTimer = null;
+function showTouchHint(text, ms = 3600){
+  const el = document.getElementById('touch-hint');
+  if(!el) return;
+  clearTimeout(_hintTimer);
+  if(!isTouchDevice || !text){ el.classList.remove('show'); return; }
+  el.textContent = text;
+  el.classList.add('show');
+  _hintTimer = setTimeout(hideTouchHint, ms);
+}
+function hideTouchHint(){
+  clearTimeout(_hintTimer);
+  document.getElementById('touch-hint')?.classList.remove('show');
+}
+
+// Header hint line: touch players need the gesture, mouse players the keys.
+function setControlHint(touchText, keyText){
+  const el = document.getElementById('g-controls');
+  if(el) el.textContent = (isTouchDevice ? touchText : keyText) || '';
+}
+
 const countdown=cb=>{
   const ov=document.getElementById('cd-ov'),nm=document.getElementById('cd-num');
   ov.classList.add('show');let n=3;
@@ -476,8 +630,8 @@ document.querySelectorAll('.game-card').forEach(card=>{
 document.getElementById('btn-quit').onclick=()=>{
   if(onQuitGame){const fn=onQuitGame;onQuitGame=null;fn();return;}
   stopGame();
-  document.getElementById('ctrl-left').style.display='';
-  document.getElementById('ctrl-right').style.display='';
+  setControls(null);
+  document.getElementById('game-screen').classList.remove('canvas-game');
   enterHub();
 };
 
@@ -495,16 +649,18 @@ function prepGame(gid){
   document.getElementById('g-reaction').style.display='none';
   document.getElementById('tetris-next-wrap').style.display='none';
   document.getElementById('tetris-lvl-pill').style.display='none';
-  document.getElementById('ctrl-left').style.display='';
-  document.getElementById('ctrl-right').style.display='';
-  
+  setControls(null);                 // every game re-declares its own pad
+  document.getElementById('g-controls').textContent='';   // and its own hint
+  const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','arena'].includes(gid);
+  document.getElementById('game-screen').classList.toggle('canvas-game', canvasGame);
+
   document.getElementById('g-pts').textContent='0';
   document.getElementById('g-time').textContent='—';
   document.getElementById('prog-fill').style.width='100%';
   document.getElementById('prog-fill').style.background='var(--cyan)';
   window.onkeydown = window.onkeyup = null;
   if(aCanvas) { aCanvas.onmousemove = null; }
-  
+
   if(gid==='click') countdown(()=>startClick());
   else if(gid==='nebula') countdown(()=>startNebula());
   else if(gid==='tetris') countdown(()=>startTetris());
@@ -871,8 +1027,14 @@ function startClick(){
 // ════════════════════════════════════════════
 function startNebula(){
   document.getElementById('g-canvas-holder').style.display='block';
-  document.getElementById('arcade-controls').style.display='flex';
-  document.getElementById('ctrl-action').textContent='SHOOT / ABILITY';
+  // Touch flies by dragging, so the D-pad collapses to a single ability key.
+  // Mouse and keyboard keep the full pad.
+  setControls(isTouchDevice ? { action:'⚡ SHOOT / ABILITY' }
+                            : { left:'◀', action:'SHOOT / ABILITY', right:'▶' });
+  setControlHint('HOLD TO FIRE · DRAG TO FLY · TAP ⚡ FOR ABILITY',
+                 '← → / A D = MOVE · SPACE = FIRE · Q/E = ABILITY');
+  showTouchHint('HOLD ANYWHERE TO FIRE · DRAG TO FLY');
+  fitCanvas();
   const diffMod = getDifficultyModifier();
   let score = 0, gameTime = 60, shield = 100, screenShake = 0;
   // plasmaOrbs: total orbs collected (levels 1-3 = weapon, 4+ = special abilities)
@@ -895,8 +1057,17 @@ function startNebula(){
   for (let i = 0; i < 15; i++) backgroundStars.push({ x: Math.random() * 400, y: Math.random() * 500, size: 1.6, speed: 1.4, alpha: 0.8 });
 
   let keys = {}, moveLeft = false, moveRight = false;
+  // ── TOUCH FLIGHT STATE ──
+  // touchFiring: a finger is down anywhere on the board → hold-to-fire.
+  // touchFlying: that finger has taken over steering, so update() stops
+  //   integrating velocity and lets the drag drive position directly.
+  // grabDX/grabDY: the ship-to-finger offset captured on touch-down, so
+  //   grabbing the board never teleports the ship under your thumb.
+  let touchFiring = false, touchFlying = false, grabDX = 0, grabDY = 0;
+  const FLY_Y_MIN = 300, FLY_Y_MAX = 466;   // ship stays in the lower band
+
   window.onkeydown = e => {
-    if(['Space','ArrowLeft','ArrowRight','KeyA','KeyD','KeyQ'].includes(e.code)) e.preventDefault();
+    if(['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS','KeyQ'].includes(e.code)) e.preventDefault();
     keys[e.code] = true;
     // Q or E to deploy special ability
     if ((e.code === 'KeyQ' || e.code === 'KeyE') && specialAbilities.length > 0 && !activeAbility) deployAbility();
@@ -913,7 +1084,7 @@ function startNebula(){
       toast(`Press [ACTION] or [Q]/[E] to use ${nextAbility.label}`, 1500);
     }
   };
-  window.onkeyup = e => { if(['Space','ArrowLeft','ArrowRight','KeyA','KeyD'].includes(e.code)) e.preventDefault(); keys[e.code] = false; };
+  window.onkeyup = e => { if(['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS'].includes(e.code)) e.preventDefault(); keys[e.code] = false; };
 
   bindHold(document.getElementById('ctrl-left'),  ()=>moveLeft=true,  ()=>moveLeft=false);
   bindHold(document.getElementById('ctrl-right'), ()=>moveRight=true, ()=>moveRight=false);
@@ -922,6 +1093,29 @@ function startNebula(){
     if (specialAbilities.length > 0 && !activeAbility) deployAbility();
     else player.shoot();
   };
+
+  // ── HOLD TO FIRE · DRAG TO FLY ──
+  // One gesture does both: putting a finger on the board opens fire and
+  // grabs the ship, moving it steers, lifting it stops. Firing is driven by
+  // the `touchFiring` flag inside player.update() so it respects the same
+  // weapon cooldown as holding Space — no tap-spam advantage.
+  bindCanvasDrag({
+    onDown(p){
+      hideTouchHint();
+      touchFiring = true; touchFlying = true;
+      grabDX = (player.x + player.w / 2) - p.x;
+      grabDY = (player.y + player.h / 2) - p.y;
+    },
+    onMove(p){
+      const prevX = player.x;
+      player.x = p.x + grabDX - player.w / 2;
+      player.y = p.y + grabDY - player.h / 2;
+      player.x = Math.max(5, Math.min(400 - player.w - 5, player.x));
+      player.y = Math.max(FLY_Y_MIN, Math.min(FLY_Y_MAX, player.y));
+      player.vx = (player.x - prevX) * 0.55;   // feeds the hull's banking tilt
+    },
+    onUp(){ touchFiring = false; touchFlying = false; }
+  });
 
   // ── SPECIAL ABILITY DEFINITIONS (unlocked at plasma orb 4, 5, 6, 7+) ──
   const ABILITY_DEFS = [
@@ -1108,17 +1302,32 @@ function startNebula(){
   }
 
   const player = {
-    x: 183, y: 430, w: 34, h: 26, vx: 0, friction: 0.85, accel: 1.2, cooldown: 0, angle: 0,
+    x: 183, y: 430, w: 34, h: 26, vx: 0, vy: 0, friction: 0.85, accel: 1.2, cooldown: 0, angle: 0,
     get weaponLevel() { return Math.min(3, plasmaOrbs + 1); },
     update(dt) {
-      const speedMult = timeWarpActive ? 1.0 : 1.0; // player always normal
-      if (keys['ArrowLeft'] || keys['KeyA'] || moveLeft) this.vx -= this.accel;
-      if (keys['ArrowRight'] || keys['KeyD'] || moveRight) this.vx += this.accel;
-      this.vx *= this.friction; this.x += this.vx; this.angle = this.vx * 0.05;
+      if (touchFlying) {
+        // The finger owns position this frame — only decay the velocity so
+        // the hull keeps banking into the turn it was just thrown through.
+        this.vx *= this.friction; this.vy = 0;
+        this.angle = this.vx * 0.05;
+      } else {
+        if (keys['ArrowLeft']  || keys['KeyA'] || moveLeft)  this.vx -= this.accel;
+        if (keys['ArrowRight'] || keys['KeyD'] || moveRight) this.vx += this.accel;
+        // Vertical thrust keeps keyboard play in step with what a drag can do.
+        if (keys['ArrowUp']    || keys['KeyW']) this.vy -= this.accel;
+        if (keys['ArrowDown']  || keys['KeyS']) this.vy += this.accel;
+        this.vx *= this.friction; this.vy *= this.friction;
+        this.x += this.vx; this.y += this.vy;
+        this.angle = this.vx * 0.05;
+      }
       if (this.x < 5) { this.x = 5; this.vx = 0; }
       if (this.x > 400 - this.w - 5) { this.x = 400 - this.w - 5; this.vx = 0; }
+      if (this.y < FLY_Y_MIN) { this.y = FLY_Y_MIN; this.vy = 0; }
+      if (this.y > FLY_Y_MAX) { this.y = FLY_Y_MAX; this.vy = 0; }
       if (this.cooldown > 0) this.cooldown -= dt;
-      if (keys['Space'] && this.cooldown <= 0) { this.shoot(); this.cooldown = 150; }
+      // Holding a finger on the board fires on the same cooldown as Space,
+      // so touch gets no tap-spam edge over keyboard.
+      if ((keys['Space'] || touchFiring) && this.cooldown <= 0) { this.shoot(); this.cooldown = 150; }
     },
     shoot() {
       const wl = this.weaponLevel;
@@ -1623,11 +1832,17 @@ function startTetris(){
   document.getElementById('g-canvas-holder').style.display='block';
   document.getElementById('tetris-next-wrap').style.display='block';
   document.getElementById('tetris-lvl-pill').style.display='block';
+  setControls({ left:'◀', action:'⟳', drop:'⬇⬇ DROP', right:'▶' });
+  setControlHint('DRAG = SLIDE · TAP = ROTATE · ⬇⬇ = SLAM IT DOWN',
+                 '← → = MOVE · ↑ = ROTATE · ↓ = SOFT DROP · SPACE = HARD DROP');
+  showTouchHint('DRAG TO SLIDE · TAP TO ROTATE · ⬇⬇ TO SLAM');
+  fitCanvas();
   const diffMod = getDifficultyModifier();
 
   const nCanvas = document.getElementById('nextCanvas');
   const nCtx = nCanvas.getContext('2d');
 
+  let tetrisOver=false;
   let score=0, level=1, linesCleared=0, time=60 / diffMod;
   let arena=createMatrix(10,20), player={pos:{x:0,y:0}, matrix:null}, nextPiece=null;
   let dropCounter=0, dropInterval=600 * diffMod, lastTime=performance.now(), screenShake=0;
@@ -1750,10 +1965,56 @@ function startTetris(){
     if(e.code==='ArrowUp') { playerRotate(1); e.preventDefault(); }
     if(e.code==='Space') { playerHardDrop(); e.preventDefault(); } // Space bar hard drop
   };
-  document.getElementById('ctrl-left').onclick=()=>playerMove(-1);
-  document.getElementById('ctrl-right').onclick=()=>playerMove(1);
-  document.getElementById('ctrl-action').onclick=()=>playerRotate(1);
-  document.getElementById('ctrl-action').textContent='ROTATE';
+  // ── CONTROL PAD ──
+  // Tapping ◀ nine times to cross the board is miserable on a phone, so the
+  // arrows auto-repeat on hold after the usual delayed-auto-shift pause.
+  const repeatStoppers = [];
+  function bindRepeat(el, fn){
+    let delay = null, rep = null;
+    const stop = () => { clearTimeout(delay); clearInterval(rep); delay = rep = null; };
+    const tick = () => { if(tetrisOver){ stop(); return; } fn(); };
+    bindHold(el, () => { tick(); delay = setTimeout(() => { rep = setInterval(tick, 60); }, 220); }, stop);
+    repeatStoppers.push(stop);
+  }
+  bindRepeat(document.getElementById('ctrl-left'),  ()=>playerMove(-1));
+  bindRepeat(document.getElementById('ctrl-right'), ()=>playerMove(1));
+  document.getElementById('ctrl-action').onclick = ()=>{ if(!tetrisOver) playerRotate(1); };
+  // Slam the active piece straight to the stack — the mobile stand-in for
+  // holding Space, and the only way to keep pace once the drop speed climbs.
+  document.getElementById('ctrl-drop').onclick = ()=>{ if(!tetrisOver) playerHardDrop(); };
+
+  // ── BOARD GESTURES ──
+  // Drag sideways to slide a column at a time, pull down to soft drop, flick
+  // down to slam, tap to rotate. The pad below does the same jobs for anyone
+  // who'd rather press buttons.
+  const COL_PX = 40, ROW_PX = 25;          // one cell of the 10×20 board
+  let gStartX=0, gStartY=0, gAccX=0, gAccY=0, gStartT=0, gMoved=false;
+  bindCanvasDrag({
+    onDown(p){
+      hideTouchHint();
+      gStartX = gAccX = p.x; gStartY = gAccY = p.y;
+      gStartT = performance.now(); gMoved = false;
+    },
+    onMove(p){
+      if(tetrisOver) return;
+      while(p.x - gAccX >= COL_PX){ playerMove(1);  gAccX += COL_PX; gMoved = true; }
+      while(gAccX - p.x >= COL_PX){ playerMove(-1); gAccX -= COL_PX; gMoved = true; }
+      // Soft drop only once the gesture has settled into a slow pull-down. A
+      // fast flick skips this entirely so it can't sink the piece, lock it,
+      // and then hard-drop the *next* one on release.
+      if(performance.now() - gStartT > 260){
+        while(p.y - gAccY >= ROW_PX){ playerDrop(); gAccY += ROW_PX; gMoved = true; }
+      }
+      if(p.y < gAccY) gAccY = p.y;         // pulling back up re-arms the drop
+    },
+    onUp(p){
+      if(tetrisOver) return;
+      const held = performance.now() - gStartT;
+      const dy = p.y - gStartY, dx = Math.abs(p.x - gStartX);
+      if(held < 260 && dy > 55 && dy > dx * 1.6) playerHardDrop();   // flick down
+      else if(!gMoved && held < 260 && dy < 20 && dx < 20) playerRotate(1);  // tap
+    }
+  });
 
   gTimer=setInterval(()=>{
     time--; document.getElementById('g-time').textContent=time;
@@ -1804,9 +2065,9 @@ function startTetris(){
     gameLoopId=requestAnimationFrame(loop);
   }
   
-  let tetrisOver=false;
   function end(){
     if(tetrisOver)return;tetrisOver=true;
+    repeatStoppers.forEach(stop=>stop());   // don't leave a held arrow ticking
     showResults('tetris',Math.min(1500,score),{'🧱 Base Core Lines Resolved':linesCleared, '🏆 Final Output Score':`${score} PTS`});
   }
   
@@ -1818,14 +2079,38 @@ function startTetris(){
 // ══════════════════════════════════════════════════════════════════════
 function startDodge(){
   document.getElementById('g-canvas-holder').style.display='block';
+  setControls(null);   // pure drag control — no pad to steal board height
+  setControlHint('DRAG ANYWHERE TO STEER YOUR CORE', 'MOVE THE MOUSE TO STEER YOUR CORE');
+  showTouchHint('DRAG ANYWHERE TO STEER');
+  fitCanvas();
   let score=0, time=30, isGameOver=false, player={x:200,y:250,r:8}, obstacles=[];
   document.getElementById('g-time').textContent=time;
 
-  aCanvas.onmousemove = e => {
-    const rect = aCanvas.getBoundingClientRect();
-    player.x = e.clientX - rect.left;
-    player.y = e.clientY - rect.top;
+  const place = (x, y) => {
+    player.x = Math.max(player.r, Math.min(400 - player.r, x));
+    player.y = Math.max(player.r, Math.min(500 - player.r, y));
   };
+
+  // ── STEERING ──
+  // Mouse keeps the cursor-is-the-dot feel. Touch uses a *relative* drag: the
+  // dot tracks how far the finger travels rather than snapping under it, so
+  // your thumb never covers the one pixel you're trying to thread between
+  // cores. Grab anywhere on the board and steer from there.
+  let lastP = null;
+  bindCanvasDrag({
+    onHover(p){ if(!isTouchDevice) place(p.x, p.y); },
+    onDown(p){
+      hideTouchHint();
+      lastP = p;
+      if(!isTouchDevice) place(p.x, p.y);
+    },
+    onMove(p){
+      if(isTouchDevice && lastP) place(player.x + (p.x - lastP.x), player.y + (p.y - lastP.y));
+      else place(p.x, p.y);
+      lastP = p;
+    },
+    onUp(){ lastP = null; }
+  });
 
   gTimer=setInterval(()=>{
     if(isGameOver) return;
@@ -1899,7 +2184,7 @@ function startDodge(){
   }
   
   function end(){
-    aCanvas.onmousemove=null;
+    clearCanvasDrag();
     showResults('dodge',Math.min(800,score),{'⏱️ Operational Lifespan':score/25+'s','🏆 Score Accumulation':`${score} PTS`});
   }
   gameLoopId=requestAnimationFrame(loop);
@@ -1983,18 +2268,25 @@ function startReaction(){
     if(time<=0) end();
   },1000);
 
-  let trigger=setTimeout(()=>{if(state==='wait'){state='go';box.style.background='var(--lime)';txt.textContent='CLICK NOW!';startT=performance.now()}},Math.random()*2500+1500);
+  setControlHint('TAP THE INSTANT IT TURNS GREEN','CLICK THE INSTANT IT TURNS GREEN');
+  const goLabel = isTouchDevice ? 'TAP NOW!' : 'CLICK NOW!';
 
-  box.onclick=()=>{
-    if(state==='wait'){clearTimeout(trigger);txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--orange)';state='hold';setTimeout(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=setTimeout(()=>{state='go';box.style.background='var(--lime)';txt.textContent='CLICK NOW!';startT=performance.now()},Math.random()*2000+1000)}},1200)}
+  let trigger=setTimeout(()=>{if(state==='wait'){state='go';box.style.background='var(--lime)';txt.textContent=goLabel;startT=performance.now()}},Math.random()*2500+1500);
+
+  // Timed on pointerdown, not click. A synthesised click doesn't land until
+  // the finger lifts, which was quietly adding its own latency to every
+  // reading — this game's whole score is that number.
+  box.onpointerdown=e=>{
+    e.preventDefault();
+    if(state==='wait'){clearTimeout(trigger);txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--orange)';state='hold';setTimeout(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=setTimeout(()=>{state='go';box.style.background='var(--lime)';txt.textContent=goLabel;startT=performance.now()},Math.random()*2000+1000)}},1200)}
     else if(state==='go'){
       let diff=Math.round(performance.now()-startT);
       let earned=Math.max(10,400-diff);score+=earned;setLive(score);
       txt.textContent=`${diff}ms! REBOOTING...`;box.style.background='var(--cyan)';state='hold';
-      setTimeout(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=setTimeout(()=>{state='go';box.style.background='var(--lime)';txt.textContent='CLICK NOW!';startT=performance.now()},Math.random()*2000+1000)}},1500);
+      setTimeout(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=setTimeout(()=>{state='go';box.style.background='var(--lime)';txt.textContent=goLabel;startT=performance.now()},Math.random()*2000+1000)}},1500);
     }
   };
-  function end(){if(reactionEnded)return;reactionEnded=true;clearTimeout(trigger);box.onclick=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
+  function end(){if(reactionEnded)return;reactionEnded=true;clearTimeout(trigger);box.onpointerdown=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
 }
 
 // ════════════════════════════════════════════
@@ -2023,8 +2315,12 @@ const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 // ════════════════════════════════════════════
 function startPong(){
   document.getElementById('g-canvas-holder').style.display='block';
-  document.getElementById('arcade-controls').style.display='flex';
-  document.getElementById('ctrl-action').textContent='ACTION';
+  // Dragging the paddle covers everything a finger needs; the buttons are the
+  // keyboard-less fallback on desktop.
+  setControls(isTouchDevice ? null : { left:'▲ UP', right:'▼ DOWN' });
+  setControlHint('DRAG UP AND DOWN TO RALLY', '↑ ↓ OR MOUSE TO MOVE YOUR PADDLE');
+  showTouchHint('DRAG UP AND DOWN TO MOVE YOUR PADDLE');
+  fitCanvas();
 
   const W=400, H=500, PAD_W=10, PAD_H=70, BALL_R=7;
   let userScore=0, cpuScore=0, time=45, isOver=false;
@@ -2041,20 +2337,17 @@ function startPong(){
   document.getElementById('g-time').textContent=Math.ceil(time);
   document.getElementById('prog-fill').style.background='linear-gradient(90deg,var(--cyan),var(--purple))';
 
-  // Mouse / touch control
-  aCanvas.onmousemove=e=>{
-    const rect=aCanvas.getBoundingClientRect();
-    const scale=H/rect.height;
-    playerY=(e.clientY-rect.top)*scale-PAD_H/2;
-    playerY=Math.max(0,Math.min(H-PAD_H,playerY));
+  // Mouse / touch control. Pointer capture matters here: a rally pulls your
+  // finger past the top and bottom edges constantly, and without it the
+  // paddle used to stall the instant the touch left the canvas.
+  const trackPaddle = p => {
+    playerY = Math.max(0, Math.min(H-PAD_H, p.y - PAD_H/2));
   };
-  aCanvas.ontouchmove=e=>{
-    e.preventDefault();
-    const rect=aCanvas.getBoundingClientRect();
-    const scale=H/rect.height;
-    playerY=(e.touches[0].clientY-rect.top)*scale-PAD_H/2;
-    playerY=Math.max(0,Math.min(H-PAD_H,playerY));
-  };
+  bindCanvasDrag({
+    onHover(p){ if(!isTouchDevice) trackPaddle(p); },
+    onDown(p){ hideTouchHint(); trackPaddle(p); },
+    onMove: trackPaddle
+  });
 
   // Mobile buttons
   let moveUp=false,moveDown=false;
@@ -2183,8 +2476,10 @@ function startPong(){
 // ════════════════════════════════════════════
 function startSnake(){
   document.getElementById('g-canvas-holder').style.display='block';
-  document.getElementById('arcade-controls').style.display='flex';
-  document.getElementById('ctrl-action').textContent='⟳ DIR';
+  setControls({ left:'↰ LEFT', action:'⟳ DIR', right:'↱ RIGHT' });
+  setControlHint('SWIPE TO STEER · OR USE THE TURN KEYS', 'ARROW KEYS TO STEER');
+  showTouchHint('SWIPE ANY DIRECTION TO STEER');
+  fitCanvas();
 
   const diffMod = getDifficultyModifier();
   const baseTime = 60;
@@ -2229,6 +2524,26 @@ function startSnake(){
     const nd=dirs[dirIdx];
     if(nd.x!==-dir.x||nd.y!==-dir.y)nextDir=nd;
   };
+
+  // ── SWIPE STEERING ──
+  // Relative-turn buttons are hard to think in at speed. A swipe names the
+  // direction outright: flick the way you want to go. Reversing onto your own
+  // neck is ignored, same as pressing the opposite arrow.
+  const steer=(x,y)=>{ if(x!==-dir.x||y!==-dir.y) nextDir={x,y}; };
+  let swStartX=0, swStartY=0, swDone=false;
+  bindCanvasDrag({
+    onDown(p){ hideTouchHint(); swStartX=p.x; swStartY=p.y; swDone=false; },
+    onMove(p){
+      if(swDone) return;
+      const dx=p.x-swStartX, dy=p.y-swStartY;
+      if(Math.max(Math.abs(dx),Math.abs(dy))<26) return;   // ignore jitter
+      if(Math.abs(dx)>Math.abs(dy)) steer(dx>0?1:-1,0); else steer(0,dy>0?1:-1);
+      // One turn per swipe, then re-arm from here so a long S-curve drag can
+      // chain turns without lifting your finger.
+      swStartX=p.x; swStartY=p.y;
+    },
+    onUp(){ swDone=true; }
+  });
 
   gTimer=setInterval(()=>{
     if(isOver)return;
@@ -2332,10 +2647,10 @@ function startSnake(){
 // ════════════════════════════════════════════
 function startFlappy(){
   document.getElementById('g-canvas-holder').style.display='block';
-  document.getElementById('arcade-controls').style.display='flex';
-  document.getElementById('ctrl-action').textContent='TAP / FLAP';
-  document.getElementById('ctrl-left').style.display='none';
-  document.getElementById('ctrl-right').style.display='none';
+  setControls({ action: isTouchDevice ? 'TAP / FLAP' : 'CLICK / FLAP' });
+  setControlHint('TAP ANYWHERE TO FLAP', 'SPACE OR CLICK TO FLAP');
+  showTouchHint('TAP ANYWHERE TO FLAP');
+  fitCanvas();
 
   const diffMod = getDifficultyModifier();
 
@@ -2351,12 +2666,13 @@ function startFlappy(){
 
   function flap(){if(!isOver){droneVY=FLAP;}}
 
-  aCanvas.onclick=flap;
   document.getElementById('ctrl-action').onclick=flap;
   window.onkeydown=e=>{if(e.code==='Space'){flap();e.preventDefault();}};
 
-  // Touch anywhere on canvas
-  aCanvas.ontouchstart=e=>{e.preventDefault();flap();};
+  // Tap anywhere on the board. One pointerdown path instead of click +
+  // touchstart, so a single tap can't register as two flaps — and it lifts on
+  // contact rather than waiting out the click synthesis.
+  bindCanvasDrag({ onDown(){ hideTouchHint(); flap(); } });
 
   function spawnPipe(){
     const topH=Math.random()*(H-GAP-80)+40;
@@ -2510,12 +2826,16 @@ function startFlappy(){
 // ════════════════════════════════════════════
 function startArena() {
   document.getElementById('g-canvas-holder').style.display = 'block';
-  document.getElementById('arcade-controls').style.display = 'flex';
-  document.getElementById('ctrl-left').style.display = '';
-  document.getElementById('ctrl-right').style.display = '';
-  document.getElementById('ctrl-left').textContent = '◀';
-  document.getElementById('ctrl-right').textContent = '▶';
-  document.getElementById('ctrl-action').textContent = '⚔ SLASH';
+  // On touch the board itself is the controller — drag to move, tap to slash —
+  // so the pad only carries the two things a gesture can't express.
+  setControls(isTouchDevice ? { left:'⚡ DASH', action:'✦ ABILITY' }
+                            : { left:'◀', action:'⚔ SLASH', right:'▶' });
+  // Hint text has to land before fitCanvas() measures — it's a header row, and
+  // adding it afterwards pushes the board it just sized off the bottom.
+  setControlHint('DRAG = MOVE · TAP = SLASH · DOUBLE-TAP = ABILITY · ⚡ = DASH',
+                 'WASD/ARROWS=MOVE · SPACE=SLASH · SHIFT=DASH · E=ABILITY · AIM WITH MOUSE');
+  showTouchHint('DRAG TO MOVE · TAP TO SLASH · DOUBLE-TAP = ABILITY', 4200);
+  fitCanvas();
 
   // ── CONSTANTS ──
   const W = 400, H = 500;
@@ -2532,6 +2852,12 @@ function startArena() {
   let slashActive = false, slashTimer = 0, slashAngle = 0;
   let screenShake = 0;
   let keys = {}, moveLeft = false, moveRight = false, moveUp = false, moveDown = false;
+  // ── VIRTUAL STICK ──
+  // Touching the board plants an invisible thumbstick wherever the finger
+  // lands; steering is the offset from that anchor. Only becomes a stick once
+  // the finger clears the dead zone, so a clean tap still reads as a slash.
+  const STICK_R = 46, STICK_DEAD = 14;
+  let stickActive = false, stickX = 0, stickY = 0, stickOX = 0, stickOY = 0;
   let botSpawnTimer = 0, botWave = 1;
   let invincibleTimer = 0;
   let comboCount = 0, comboTimer = 0;
@@ -3154,34 +3480,84 @@ function startArena() {
   };
   window.onkeyup = e => { keys[e.code] = false; };
 
-  // Mobile controls
-  bindHold(document.getElementById('ctrl-left'),  ()=>moveLeft=true,  ()=>moveLeft=false);
-  bindHold(document.getElementById('ctrl-right'), ()=>moveRight=true, ()=>moveRight=false);
-  document.getElementById('ctrl-action').onclick = () => doSlash();
+  // Pad controls. On touch these are DASH and ABILITY (movement and slashing
+  // are gestures); on desktop they stay the original ◀ / SLASH / ▶.
+  if (isTouchDevice) {
+    document.getElementById('ctrl-left').onclick  = () => doDash();
+    document.getElementById('ctrl-action').onclick = () => deployAbility();
+  } else {
+    bindHold(document.getElementById('ctrl-left'),  ()=>moveLeft=true,  ()=>moveLeft=false);
+    bindHold(document.getElementById('ctrl-right'), ()=>moveRight=true, ()=>moveRight=false);
+    document.getElementById('ctrl-action').onclick = () => doSlash();
+  }
 
-  // Mouse/touch for aiming
-  aCanvas.onmousemove = e => {
-    const rect = aCanvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-    // Canvas coords → world coords via camera
-    const wx = mx + camX, wy = my + camY;
-    player.angle = Math.atan2(wy - player.y, wx - player.x);
-  };
-  aCanvas.ontouchmove = e => {
-    e.preventDefault();
-    const rect = aCanvas.getBoundingClientRect();
-    const t = e.touches[0];
-    const mx = t.clientX - rect.left, my = t.clientY - rect.top;
-    const wx = mx + camX, wy = my + camY;
-    player.angle = Math.atan2(wy - player.y, wx - player.x);
-  };
-  // Touch tap = slash, double-tap = deploy special ability (mobile equivalent of KeyE)
-  aCanvas.ontouchstart = e => {
-    e.preventDefault();
-    const now = Date.now();
-    if (now - lastTapTime < 320) { deployAbility(); lastTapTime = 0; }
-    else { doSlash(); lastTapTime = now; }
-  };
+  // ── BOARD GESTURES ──
+  // Drag = move (and face where you're heading). Tap = slash toward the point
+  // you tapped. Double-tap = deploy the queued ability, same as KeyE.
+  let tapT = 0, tapX = 0, tapY = 0;
+  bindCanvasDrag({
+    // Mouse hover keeps free aiming; a coarse pointer has no hover to speak of.
+    onHover(p){
+      if (isTouchDevice) return;
+      player.angle = Math.atan2((p.y + camY) - player.y, (p.x + camX) - player.x);
+    },
+    onDown(p){
+      hideTouchHint();
+      tapT = performance.now(); tapX = p.x; tapY = p.y;
+      stickOX = p.x; stickOY = p.y; stickActive = false; stickX = stickY = 0;
+    },
+    onMove(p){
+      const dx = p.x - stickOX, dy = p.y - stickOY;
+      const dist = Math.hypot(dx, dy);
+      if (dist < STICK_DEAD) {
+        if (!stickActive) return;          // still inside the tap dead zone
+        stickX = stickY = 0;
+        return;
+      }
+      stickActive = true;
+      stickX = dx / dist; stickY = dy / dist;
+      player.angle = Math.atan2(dy, dx);   // you face where you're running
+      // Let the anchor trail the finger so the stick never runs out of throw
+      // on a long drag across the board.
+      if (dist > STICK_R) {
+        stickOX = p.x - stickX * STICK_R;
+        stickOY = p.y - stickY * STICK_R;
+      }
+    },
+    onUp(p){
+      const wasStick = stickActive;
+      stickActive = false; stickX = stickY = 0;
+      if (wasStick) return;                // that was steering, not a tap
+      if (performance.now() - tapT > 320) return;
+      if (Math.hypot(p.x - tapX, p.y - tapY) > STICK_DEAD) return;
+
+      const now = Date.now();
+      if (now - lastTapTime < 320) { deployAbility(); lastTapTime = 0; return; }
+      lastTapTime = now;
+      // Aim at what you tapped, unless you tapped yourself — then keep facing.
+      const sx = player.x - camX, sy = player.y - camY;
+      if (Math.hypot(p.x - sx, p.y - sy) > 12) {
+        player.angle = Math.atan2((p.y + camY) - player.y, (p.x + camX) - player.x);
+      }
+      doSlash();
+    }
+  });
+
+  // Virtual stick overlay — drawn only while a finger is steering, so it never
+  // sits on the board as clutter.
+  function drawTouchStick(){
+    if (!stickActive) return;
+    aCtx.save();
+    aCtx.strokeStyle = '#00f5ff'; aCtx.lineWidth = 2;
+    aCtx.shadowBlur = 12; aCtx.shadowColor = '#00f5ff';
+    aCtx.globalAlpha = 0.45;
+    aCtx.beginPath(); aCtx.arc(stickOX, stickOY, STICK_R, 0, Math.PI * 2); aCtx.stroke();
+    aCtx.globalAlpha = 0.8;
+    aCtx.beginPath();
+    aCtx.arc(stickOX + stickX * STICK_R, stickOY + stickY * STICK_R, 15, 0, Math.PI * 2);
+    aCtx.fillStyle = 'rgba(0,245,255,0.25)'; aCtx.fill(); aCtx.stroke();
+    aCtx.restore();
+  }
 
   // ── WORLD TILE COLORS (cyber grid) ──
   function drawWorld() {
@@ -3538,8 +3914,10 @@ function startArena() {
       aCtx.textAlign = 'left';
     }
 
-    // Controls hint (fades after 5s)
-    if (frame < 300) {
+    // Controls hint (fades after 5s). Keyboard only — 7px Orbitron scaled down
+    // to phone size is unreadable, so touch gets the #touch-hint overlay
+    // instead and this stays out of its way.
+    if (frame < 300 && !isTouchDevice) {
       const hintAlpha = Math.max(0, 1 - frame / 300);
       aCtx.save(); aCtx.globalAlpha = hintAlpha * 0.7;
       aCtx.fillStyle = 'rgba(0,0,0,0.6)'; aCtx.fillRect(W/2 - 100, H/2 + 30, 200, 48);
@@ -3595,6 +3973,7 @@ function startArena() {
       if (keys['ArrowRight'] || keys['KeyD'] || moveRight) dx += 1;
       if (keys['ArrowUp']    || keys['KeyW'])              dy -= 1;
       if (keys['ArrowDown']  || keys['KeyS'])              dy += 1;
+      if (stickActive) { dx += stickX; dy += stickY; }
 
       const hasteMult = buffHasteTimer > 0 ? 1.6 : 1;
       if (dx !== 0 || dy !== 0) {
@@ -3726,11 +4105,10 @@ function startArena() {
       updateFloatingTexts();
       drawHUD();
       aCtx.restore();
+      drawTouchStick();   // outside the shake transform — a control shouldn't jitter
     }
   }
 
-  // Show controls hint in the game header
-  document.getElementById('g-controls').textContent = 'WASD/ARROWS=MOVE · SPACE=SLASH · SHIFT=DASH · E=ABILITY · AIM WITH MOUSE';
   onQuitGame = () => { if(!isOver) endArena(); };
   requestAnimationFrame(loop);
 }

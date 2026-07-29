@@ -347,6 +347,38 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 #arcade-controls{display:flex;width:100%;max-width:400px;gap:10px;margin-top:14px}
 .ctrl-btn{flex:1;background:var(--s2);border:1px solid var(--border);color:#fff;padding:14px;font-family:var(--fd);border-radius:8px;cursor:pointer}
 
+/* Hard drop — the one control that permanently commits a piece, so it reads
+   as its own thing rather than another grey sibling of ◀ / ROTATE / ▶. */
+.ctrl-drop{background:rgba(168,85,247,.16);border-color:rgba(168,85,247,.55);color:#d8b4fe;font-weight:700;letter-spacing:.04em}
+.ctrl-drop:active{background:rgba(168,85,247,.34);transform:scale(.96)}
+
+/* Shrink-wraps the canvas so #tetris-next-wrap and #touch-hint position
+   against the play field, not against the holder that also owns the pad. */
+#board-frame{position:relative;width:fit-content;max-width:100%;margin:0 auto}
+
+/* NEXT-piece preview (was inline styles; moved here so the mobile rules below
+   can actually shrink it — inline wins over a stylesheet otherwise). */
+#tetris-next-wrap{position:absolute;top:10px;right:10px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center;pointer-events:none}
+#tetris-next-wrap .next-label{font-family:var(--fd);font-size:.6rem;color:var(--cyan);margin-bottom:4px}
+#nextCanvas{display:block;width:80px;height:80px}
+
+/* ── TOUCH TUTORIAL OVERLAY ──
+   One line of "here's how you play this with a finger", shown over the canvas
+   for the first few seconds and dismissed by the first touch. */
+#touch-hint{
+  position:absolute;left:50%;bottom:18px;transform:translateX(-50%);
+  /* Sized against the viewport, not the board — on a scaled-down board 88%
+     of the frame wrapped one sentence into six lines and buried the game.
+     Overflowing into the margin beside the board is fine and stays centred. */
+  display:none;width:max-content;max-width:min(86vw,420px);padding:10px 18px;
+  background:rgba(4,4,14,.82);border:1px solid rgba(0,245,255,.45);border-radius:24px;
+  font-family:var(--fd);font-size:.58rem;line-height:1.7;letter-spacing:.08em;
+  color:var(--cyan);text-align:center;text-shadow:0 0 10px rgba(0,245,255,.5);
+  box-shadow:0 0 24px rgba(0,245,255,.18);
+  pointer-events:none;z-index:5;opacity:0;transition:opacity .35s ease
+}
+#touch-hint.show{display:block;opacity:1}
+
 /* ── Click Frenzy ── */
 .click-wrap{display:flex;flex-direction:column;align-items:center;gap:16px}
 #click-count{font-family:var(--fd);font-size:5rem;font-weight:900;color:var(--cyan);line-height:1}
@@ -499,8 +531,13 @@ button, .btn, .auth-tab, .market-tab, .diff-btn, .game-card, .shop-card,
 
 /* Play surfaces: swallow every browser gesture so a drag or hold never
    scrolls, zooms, or pulls-to-refresh the page out from under the game. */
-#arcade-canvas, .ctrl-btn, #click-btn { touch-action: none; }
+#arcade-canvas, .ctrl-btn, #click-btn, .reaction-box { touch-action: none; }
 body { overscroll-behavior: none; }
+
+/* A canvas game is driven entirely by finger-on-canvas — no page scrolling to
+   preserve — so lock the screen down and let fitCanvas() size the board. */
+#game-screen.canvas-game { overflow: hidden; }
+#g-canvas-holder { max-width: 100%; }
 
 /* iOS zooms the viewport when focusing any field under 16px. Everything
    the player can type into is pinned to 16px so that never fires. */
@@ -522,6 +559,21 @@ body { overscroll-behavior: none; }
 }
 .screen { padding-bottom: max(20px, env(safe-area-inset-bottom)); }
 
+/* A finger has no hover, but tapping still latches :hover on most mobile
+   browsers — cards stayed lifted and glowing long after you'd moved on. Drop
+   the hover treatment entirely there and give taps a real press state. */
+@media (hover: none) {
+  .game-card:hover, .shop-card:hover, .btn-primary:hover, .diff-btn:hover,
+  .fb-node:hover, .btn-guest:hover:not(:disabled), .btn-save-acct:hover {
+    transform: none;
+    box-shadow: none;
+  }
+  .game-card[data-c]:hover { border-color: var(--border); }
+  .game-card:active { transform: scale(.97); border-color: var(--border2); }
+  .shop-card:active, .btn:active { transform: scale(.97); }
+  .btn-primary { box-shadow: 0 0 20px rgba(0,245,255,.25); }
+}
+
 /* Finger-sized targets on touch devices (44px is the accessibility floor). */
 @media (pointer: coarse) {
   .btn-sm { padding: 11px 16px; min-height: 44px; }
@@ -530,6 +582,14 @@ body { overscroll-behavior: none; }
   .auth-tab, .market-tab, .diff-btn { min-height: 44px; }
   .fb-node { padding: 15px 0; }
   .fb-close { width: 38px; height: 38px; }
+
+  /* Tetris runs four buttons (◀ ROTATE DROP ▶) on a ~340px row — the 3-button
+     sizing overflows there, so the 4-up layout gets its own scale. */
+  #arcade-controls.four-up { gap: 7px; }
+  #arcade-controls.four-up .ctrl-btn { font-size: .7rem; padding: 12px 2px; min-width: 0; }
+
+  /* Games driven by finger-on-canvas keep one wide button instead of a pad. */
+  #arcade-controls.solo-action .ctrl-btn { font-size: .82rem; }
 }
 
 /* ── Narrow screens ── */
@@ -541,14 +601,45 @@ body { overscroll-behavior: none; }
   }
   .hub-right { justify-content: center; gap: 8px; }
   .hub-logo-sm, .market-title { text-align: center; }
-  .games-grid { grid-template-columns: 1fr; }
   .hub-body { grid-template-columns: 1fr; }
 
+  /* One full-bleed card per row meant scrolling past eleven screen-tall tiles
+     to reach the last game. Two compact tiles per row makes the roster
+     scannable; the blurb is clamped so every card is the same height. */
+  .games-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .game-card { padding: 15px 10px; }
+  .gc-icon { font-size: 1.9rem; margin-bottom: 6px; }
+  .gc-name { font-size: .52rem; margin-bottom: 6px; }
+  .gc-desc {
+    font-size: .68rem; line-height: 1.35; margin-bottom: 9px;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .gc-pts { font-size: .44rem; padding: 2px 8px; }
+  .lb-panel { max-height: 320px; }
+
   .g-hdr { flex-wrap: wrap; gap: 8px; justify-content: center; }
-  .g-title { order: -1; width: 100%; text-align: center; }
+  .g-title { order: -1; width: 100%; text-align: center; font-size: .8rem; }
+  /* Control hints are a full-width caption under the title, not a squeezed
+     column fighting the Quit button and stat pills for the same row. */
+  .g-controls { order: 99; width: 100%; text-align: center; margin-top: 0; font-size: .52rem; line-height: 1.6; }
+  .g-controls:empty { display: none; }
+  .stat-pill { padding: 5px 10px; font-size: .55rem; }
+  .prog-bar { margin-bottom: 10px; }
+  #game-screen { padding-top: 10px; }
   .g-area { max-width: 100%; }
-  #arcade-canvas { width: 100%; max-width: 400px; height: auto; }
   #arcade-controls { max-width: 100%; }
+
+  /* The NEXT box is a fixed 80px block sitting on top of a play field that is
+     now only ~220–340px wide — it swallowed three of Tetris's ten columns.
+     Shrink it and make it translucent so the stack underneath stays readable
+     right up to the top-out. */
+  #tetris-next-wrap {
+    top: 5px; right: 5px; padding: 4px 5px;
+    background: rgba(10,10,26,.45); border-color: rgba(255,255,255,.14);
+  }
+  #tetris-next-wrap .next-label { font-size: .42rem; margin-bottom: 1px; opacity: .75; }
+  #nextCanvas { width: 46px; height: 46px; opacity: .78; }
 
   .convert-grid { grid-template-columns: 1fr; }
   .shop-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
@@ -562,6 +653,27 @@ body { overscroll-behavior: none; }
   .g-hdr { margin-bottom: 6px; }
   #arcade-controls { margin-top: 8px; }
   .ctrl-btn { min-height: 52px; padding: 10px; }
+
+  /* Every header row here costs the board twice its height (it scales to fit).
+     The gesture hint has already been shown as an on-board overlay, and the
+     title is in the card you just tapped — drop both and give the space back. */
+  #game-screen { padding-top: 6px; }
+  .g-controls { display: none; }
+  .g-title { order: 0; width: auto; font-size: .7rem; }
+  .g-hdr { flex-wrap: nowrap; gap: 6px; }
+  .prog-bar { margin-bottom: 6px; height: 4px; }
+
+  /* Landscape has width to spare and no height at all, so the pad moves to the
+     side of the board instead of underneath it — the board then gets the full
+     column height. !important is needed because each game sets the holder's
+     display inline when it mounts. */
+  #g-canvas-holder { display: flex !important; align-items: center; gap: 12px; }
+  #arcade-controls {
+    flex-direction: column; width: auto; min-width: 96px; max-width: 130px;
+    margin-top: 0; gap: 8px;
+  }
+  #arcade-controls .ctrl-btn { min-height: 46px; font-size: .68rem; padding: 8px 6px; }
+  #arcade-controls.four-up .ctrl-btn { min-height: 38px; }
 }
 
 /* Toasts sit at the bottom on desktop, which on a phone lands them right
