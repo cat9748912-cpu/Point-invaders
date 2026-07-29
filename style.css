@@ -347,10 +347,14 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 #arcade-controls{display:flex;width:100%;max-width:400px;gap:10px;margin-top:14px}
 .ctrl-btn{flex:1;background:var(--s2);border:1px solid var(--border);color:#fff;padding:14px;font-family:var(--fd);border-radius:8px;cursor:pointer}
 
-/* Hard drop — the one control that permanently commits a piece, so it reads
-   as its own thing rather than another grey sibling of ◀ / ROTATE / ▶. */
-.ctrl-drop{background:rgba(168,85,247,.16);border-color:rgba(168,85,247,.55);color:#d8b4fe;font-weight:700;letter-spacing:.04em}
-.ctrl-drop:active{background:rgba(168,85,247,.34);transform:scale(.96)}
+/* Marks a control that permanently commits something (Tetris's hard drop), so
+   it reads as its own thing rather than another grey sibling of ◀ / ⟳ / ▶.
+   Opt-in via setControls({accentDrop:true}) — Snake's ↓ is just an arrow. */
+.ctrl-btn.accent{background:rgba(168,85,247,.16);border-color:rgba(168,85,247,.55);color:#d8b4fe;font-weight:700;letter-spacing:.04em}
+.ctrl-btn.accent:active{background:rgba(168,85,247,.34);transform:scale(.96)}
+/* Bare-glyph buttons (◀ ↑ ⟳) get a size of their own — at label size a lone
+   arrow is a speck, while worded buttons still need the smaller type. */
+.ctrl-btn.glyph{font-size:1.3rem;line-height:1}
 
 /* Shrink-wraps the canvas so #tetris-next-wrap and #touch-hint position
    against the play field, not against the holder that also owns the pad. */
@@ -587,6 +591,7 @@ body { overscroll-behavior: none; }
      sizing overflows there, so the 4-up layout gets its own scale. */
   #arcade-controls.four-up { gap: 7px; }
   #arcade-controls.four-up .ctrl-btn { font-size: .7rem; padding: 12px 2px; min-width: 0; }
+  #arcade-controls.four-up .ctrl-btn.glyph { font-size: 1.15rem; }
 
   /* Games driven by finger-on-canvas keep one wide button instead of a pad. */
   #arcade-controls.solo-action .ctrl-btn { font-size: .82rem; }
@@ -673,6 +678,7 @@ body { overscroll-behavior: none; }
     margin-top: 0; gap: 8px;
   }
   #arcade-controls .ctrl-btn { min-height: 46px; font-size: .68rem; padding: 8px 6px; }
+  #arcade-controls .ctrl-btn.glyph { font-size: 1.05rem; }
   #arcade-controls.four-up .ctrl-btn { min-height: 38px; }
 }
 

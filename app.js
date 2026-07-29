@@ -248,31 +248,31 @@ function bindHold(el, onDown, onUp){
   if(!el) return;
   clearHold(el);
   let held = false;
+  const press = e => { if(held) return; if(e && e.cancelable) e.preventDefault(); held = true; onDown(); };
   const release = () => { if(!held) return; held = false; onUp(); };
 
-  if(window.PointerEvent){
-    el.onpointerdown = e => {
-      e.preventDefault();
-      if(held) return;
-      held = true;
-      try{ el.setPointerCapture(e.pointerId); }catch(_){}
-      onDown();
-    };
-    el.onpointerup = release;
-    el.onpointercancel = release;
-    el.onlostpointercapture = release;
-    return;
+  const bound = [];
+  const on = (target, type, fn, opts) => { target.addEventListener(type, fn, opts); bound.push([target, type, fn, opts]); };
+
+  // Touch events, not Pointer Events — same reason as bindCanvasDrag. Mobile
+  // browsers cancel the pointer stream out from under a held button the moment
+  // they suspect a scroll, so hold-to-move died a few frames in. That left
+  // Pong and Nebula, whose only controls were these buttons, unplayable on a
+  // phone while onclick-driven games looked fine.
+  if('ontouchstart' in window){
+    on(el, 'touchstart',  press,   { passive:false });
+    on(el, 'touchend',    release, { passive:false });
+    on(el, 'touchcancel', release, { passive:false });
   }
-  // Fallback for anything without Pointer Events
-  el.ontouchstart = e => { e.preventDefault(); if(held) return; held = true; onDown(); };
-  el.ontouchend = release;
-  el.ontouchcancel = release;
-  el.onmousedown = () => { if(held) return; held = true; onDown(); };
-  el.onmouseup = release;
-  el.onmouseleave = release;
+  on(el, 'mousedown', press);
+  on(el, 'mouseleave', release);
+  on(window, 'mouseup', release);   // releasing off the button still counts
+
+  el._holdCleanup = () => bound.forEach(([t, type, fn, opts]) => t.removeEventListener(type, fn, opts));
 }
 function clearHold(el){
   if(!el) return;
+  if(el._holdCleanup){ el._holdCleanup(); el._holdCleanup = null; }
   el.onpointerdown = el.onpointerup = el.onpointercancel = el.onlostpointercapture = null;
   el.onmousedown = el.onmouseup = el.onmouseleave = null;
   el.ontouchstart = el.ontouchend = el.ontouchcancel = null;
@@ -299,42 +299,93 @@ function canvasPos(e){
   };
 }
 
-// Single-pointer drag binding for the play surface. Pointer events cover
-// mouse, touch and stylus in one path, and pointer capture keeps a drag alive
-// when the finger slides off the canvas — without it the ship freezes the
-// moment you overshoot the edge, which is exactly when you're dodging.
+// Drag binding for the play surface.
+//
+// This deliberately does NOT use Pointer Events. Pointer capture on a canvas
+// is fragile on real phones: mobile Safari and Android Chrome fire
+// pointercancel the moment they suspect the gesture might be a scroll, an
+// edge swipe or a browser gesture, which kills the drag a few frames in — the
+// game looks frozen even though its loop is running fine. Desktop Chromium
+// never reproduces it, which is exactly why it shipped.
+//
+// Touch Events with a non-passive preventDefault hold the gesture properly,
+// and mouse events are bound alongside them so hybrid touch laptops work with
+// either input. preventDefault on touchstart also suppresses the synthesised
+// mouse events, so a tap can't fire both paths.
+const _drag = { touch: [], mouse: [] };
 function bindCanvasDrag(handlers){
   clearCanvasDrag();
   if(!aCanvas) return;
-  let id = null;
-  aCanvas.onpointerdown = e => {
-    if(id !== null) return;             // ignore extra fingers
+
+  const pos = t => {
+    const rect = aCanvas.getBoundingClientRect();
+    return {
+      x: (t.clientX - rect.left) * (aCanvas.width  / (rect.width  || 1)),
+      y: (t.clientY - rect.top ) * (aCanvas.height / (rect.height || 1))
+    };
+  };
+  const on = (target, type, fn, bucket) => {
+    target.addEventListener(type, fn, { passive: false });
+    _drag[bucket].push([target, type, fn]);
+  };
+
+  // ── TOUCH ──
+  if('ontouchstart' in window){
+    let id = null;
+    const mine = list => { for(let i=0;i<list.length;i++) if(list[i].identifier === id) return list[i]; return null; };
+    on(aCanvas, 'touchstart', e => {
+      if(id !== null) return;                    // one finger drives; ignore extras
+      const t = e.changedTouches[0];
+      if(!t) return;
+      e.preventDefault();
+      id = t.identifier;
+      handlers.onDown && handlers.onDown(pos(t), e);
+    }, 'touch');
+    on(aCanvas, 'touchmove', e => {
+      const t = mine(e.changedTouches);
+      if(!t) return;
+      e.preventDefault();
+      handlers.onMove && handlers.onMove(pos(t), e);
+    }, 'touch');
+    const endTouch = e => {
+      const t = mine(e.changedTouches);
+      if(!t) return;
+      e.preventDefault();
+      id = null;
+      handlers.onUp && handlers.onUp(pos(t), e);
+    };
+    on(aCanvas, 'touchend', endTouch, 'touch');
+    on(aCanvas, 'touchcancel', endTouch, 'touch');
+  }
+
+  // ── MOUSE ──
+  // move/up live on window so a drag survives the cursor leaving the canvas,
+  // which is what pointer capture used to buy us.
+  let down = false;
+  on(aCanvas, 'mousedown', e => {
     e.preventDefault();
-    id = e.pointerId;
-    try{ aCanvas.setPointerCapture(id); }catch(_){}
-    handlers.onDown && handlers.onDown(canvasPos(e), e);
-  };
-  aCanvas.onpointermove = e => {
-    if(id === null){
-      // No active drag — still useful for mouse hover aiming.
-      handlers.onHover && handlers.onHover(canvasPos(e), e);
-      return;
-    }
-    if(e.pointerId !== id) return;
-    e.preventDefault();
-    handlers.onMove && handlers.onMove(canvasPos(e), e);
-  };
-  const end = e => {
-    if(id === null || e.pointerId !== id) return;
-    id = null;
-    handlers.onUp && handlers.onUp(canvasPos(e), e);
-  };
-  aCanvas.onpointerup = end;
-  aCanvas.onpointercancel = end;
-  aCanvas.onlostpointercapture = end;
+    down = true;
+    handlers.onDown && handlers.onDown(pos(e), e);
+  }, 'mouse');
+  on(aCanvas, 'mousemove', e => {
+    if(!down) handlers.onHover && handlers.onHover(pos(e), e);
+  }, 'mouse');
+  on(window, 'mousemove', e => {
+    if(down) handlers.onMove && handlers.onMove(pos(e), e);
+  }, 'mouse');
+  on(window, 'mouseup', e => {
+    if(!down) return;
+    down = false;
+    handlers.onUp && handlers.onUp(pos(e), e);
+  }, 'mouse');
 }
 function clearCanvasDrag(){
+  ['touch','mouse'].forEach(k => {
+    _drag[k].forEach(([target, type, fn]) => target.removeEventListener(type, fn));
+    _drag[k] = [];
+  });
   if(!aCanvas) return;
+  // Legacy inline handlers from the pre-gesture code, in case anything set them.
   aCanvas.onpointerdown = aCanvas.onpointermove = null;
   aCanvas.onpointerup = aCanvas.onpointercancel = aCanvas.onlostpointercapture = null;
 }
@@ -397,10 +448,16 @@ function setControls(cfg){
       if(label == null){ el.style.display = 'none'; return; }
       el.style.display = '';
       el.textContent = label;
+      // A bare glyph (◀, ↑, ⟳) reads tiny at the label font size — scale those
+      // up without stretching worded buttons like "⬇⬇ DROP".
+      el.classList.toggle('glyph', [...label].length <= 2);
       shown++;
     });
   if(shown >= 4) bar.classList.add('four-up');
   if(shown === 1) bar.classList.add('solo-action');
+  // The purple treatment marks a committing action (Tetris's hard drop), so
+  // it's opt-in — Snake's ↓ is just another arrow and shouldn't stand out.
+  document.getElementById('ctrl-drop')?.classList.toggle('accent', !!(cfg && cfg.accentDrop));
 }
 
 // ── TOUCH TUTORIAL ──
@@ -1027,11 +1084,10 @@ function startClick(){
 // ════════════════════════════════════════════
 function startNebula(){
   document.getElementById('g-canvas-holder').style.display='block';
-  // Touch flies by dragging, so the D-pad collapses to a single ability key.
-  // Mouse and keyboard keep the full pad.
-  setControls(isTouchDevice ? { action:'⚡ SHOOT / ABILITY' }
-                            : { left:'◀', action:'SHOOT / ABILITY', right:'▶' });
-  setControlHint('HOLD TO FIRE · DRAG TO FLY · TAP ⚡ FOR ABILITY',
+  // Drag-to-fly is the good way to play, but the D-pad stays put so the game
+  // is never dead if a browser refuses the gesture.
+  setControls({ left:'◀', action: isTouchDevice ? '⚡ FIRE / ABILITY' : 'SHOOT / ABILITY', right:'▶' });
+  setControlHint('HOLD TO FIRE · DRAG TO FLY · OR USE ◀ ▶',
                  '← → / A D = MOVE · SPACE = FIRE · Q/E = ABILITY');
   showTouchHint('HOLD ANYWHERE TO FIRE · DRAG TO FLY');
   fitCanvas();
@@ -1086,8 +1142,14 @@ function startNebula(){
   };
   window.onkeyup = e => { if(['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS'].includes(e.code)) e.preventDefault(); keys[e.code] = false; };
 
-  bindHold(document.getElementById('ctrl-left'),  ()=>moveLeft=true,  ()=>moveLeft=false);
-  bindHold(document.getElementById('ctrl-right'), ()=>moveRight=true, ()=>moveRight=false);
+  // Pressing a direction also drops any stale drag claim, so a gesture the
+  // browser cut off mid-flight can't leave the buttons inert.
+  // The impulse gives a tap a visible shove; holding still accelerates as before.
+  const KICK = 4;
+  bindHold(document.getElementById('ctrl-left'),
+           ()=>{ touchFlying=false; touchFiring=false; player.vx -= KICK; moveLeft=true; },  ()=>moveLeft=false);
+  bindHold(document.getElementById('ctrl-right'),
+           ()=>{ touchFlying=false; touchFiring=false; player.vx += KICK; moveRight=true; }, ()=>moveRight=false);
   // ACTION button: shoot if no special ready, else deploy special
   document.getElementById('ctrl-action').onclick = () => {
     if (specialAbilities.length > 0 && !activeAbility) deployAbility();
@@ -1832,7 +1894,7 @@ function startTetris(){
   document.getElementById('g-canvas-holder').style.display='block';
   document.getElementById('tetris-next-wrap').style.display='block';
   document.getElementById('tetris-lvl-pill').style.display='block';
-  setControls({ left:'◀', action:'⟳', drop:'⬇⬇ DROP', right:'▶' });
+  setControls({ left:'◀', action:'⟳', drop:'⬇⬇ DROP', right:'▶', accentDrop:true });
   setControlHint('DRAG = SLIDE · TAP = ROTATE · ⬇⬇ = SLAM IT DOWN',
                  '← → = MOVE · ↑ = ROTATE · ↓ = SOFT DROP · SPACE = HARD DROP');
   showTouchHint('DRAG TO SLIDE · TAP TO ROTATE · ⬇⬇ TO SLAM');
@@ -2315,10 +2377,10 @@ const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 // ════════════════════════════════════════════
 function startPong(){
   document.getElementById('g-canvas-holder').style.display='block';
-  // Dragging the paddle covers everything a finger needs; the buttons are the
-  // keyboard-less fallback on desktop.
-  setControls(isTouchDevice ? null : { left:'▲ UP', right:'▼ DOWN' });
-  setControlHint('DRAG UP AND DOWN TO RALLY', '↑ ↓ OR MOUSE TO MOVE YOUR PADDLE');
+  // Drag is the natural way to rally, but the buttons stay so the game still
+  // plays if a browser refuses the gesture.
+  setControls({ left:'▲ UP', right:'▼ DOWN' });
+  setControlHint('DRAG TO RALLY · OR USE ▲ ▼', '↑ ↓ OR MOUSE TO MOVE YOUR PADDLE');
   showTouchHint('DRAG UP AND DOWN TO MOVE YOUR PADDLE');
   fitCanvas();
 
@@ -2349,10 +2411,15 @@ function startPong(){
     onMove: trackPaddle
   });
 
-  // Mobile buttons
+  // Mobile buttons. Each press nudges immediately as well as starting the
+  // glide — hold-to-move alone meant a quick tap moved the paddle by a couple
+  // of pixels and read as a dead button.
   let moveUp=false,moveDown=false;
-  bindHold(document.getElementById('ctrl-left'),  ()=>moveUp=true,   ()=>moveUp=false);
-  bindHold(document.getElementById('ctrl-right'), ()=>moveDown=true, ()=>moveDown=false);
+  const NUDGE=34;
+  bindHold(document.getElementById('ctrl-left'),
+           ()=>{ playerY=Math.max(0,playerY-NUDGE); moveUp=true; },   ()=>moveUp=false);
+  bindHold(document.getElementById('ctrl-right'),
+           ()=>{ playerY=Math.min(H-PAD_H,playerY+NUDGE); moveDown=true; }, ()=>moveDown=false);
 
   // Keyboard
   let keys={};
@@ -2476,8 +2543,11 @@ function startPong(){
 // ════════════════════════════════════════════
 function startSnake(){
   document.getElementById('g-canvas-holder').style.display='block';
-  setControls({ left:'↰ LEFT', action:'⟳ DIR', right:'↱ RIGHT' });
-  setControlHint('SWIPE TO STEER · OR USE THE TURN KEYS', 'ARROW KEYS TO STEER');
+  // Four absolute arrows. The old pad was two relative turns plus a cycle
+  // button, which meant working out "which way is left of me right now" while
+  // the snake was already moving — arrows say where you're going outright.
+  setControls({ left:'←', action:'↑', drop:'↓', right:'→' });
+  setControlHint('SWIPE OR TAP AN ARROW TO STEER', 'ARROW KEYS TO STEER');
   showTouchHint('SWIPE ANY DIRECTION TO STEER');
   fitCanvas();
 
@@ -2490,7 +2560,6 @@ function startSnake(){
   let dir={x:1,y:0},nextDir={x:1,y:0};
   let snake=[{x:10,y:12},{x:9,y:12},{x:8,y:12}];
   let food=spawnFood(),speed=160 / diffMod,lastMoveTime=0,particles=[];
-  let dirs=[{x:1,y:0},{x:0,y:1},{x:-1,y:0},{x:0,y:-1}],dirIdx=0; // for action button cycling
 
   document.getElementById('g-time').textContent=Math.ceil(time);
   document.getElementById('prog-fill').style.background='linear-gradient(90deg,var(--lime),var(--cyan))';
@@ -2511,25 +2580,18 @@ function startSnake(){
     if(e.code==='ArrowDown'&&dir.y!==-1){nextDir={x:0,y:1};e.preventDefault();}
   };
 
-  // Mobile buttons — left/right to steer, action to cycle direction
-  document.getElementById('ctrl-left').onclick=()=>{
-    const left={x:dir.y,y:-dir.x};nextDir=left;
-  };
-  document.getElementById('ctrl-right').onclick=()=>{
-    const right={x:-dir.y,y:dir.x};nextDir=right;
-  };
-  document.getElementById('ctrl-action').onclick=()=>{
-    // cycle through cardinal directions
-    dirIdx=(dirIdx+1)%4;
-    const nd=dirs[dirIdx];
-    if(nd.x!==-dir.x||nd.y!==-dir.y)nextDir=nd;
-  };
+  // Turning onto your own neck is a no-op, exactly as pressing the opposite
+  // arrow key already was.
+  const steer=(x,y)=>{ if(x!==-dir.x||y!==-dir.y) nextDir={x,y}; };
+
+  // Four absolute arrows, matching the arrow keys one for one.
+  document.getElementById('ctrl-left').onclick  = ()=>steer(-1, 0);
+  document.getElementById('ctrl-action').onclick= ()=>steer( 0,-1);
+  document.getElementById('ctrl-drop').onclick  = ()=>steer( 0, 1);
+  document.getElementById('ctrl-right').onclick = ()=>steer( 1, 0);
 
   // ── SWIPE STEERING ──
-  // Relative-turn buttons are hard to think in at speed. A swipe names the
-  // direction outright: flick the way you want to go. Reversing onto your own
-  // neck is ignored, same as pressing the opposite arrow.
-  const steer=(x,y)=>{ if(x!==-dir.x||y!==-dir.y) nextDir={x,y}; };
+  // Flick the way you want to go — the same four directions as the arrows.
   let swStartX=0, swStartY=0, swDone=false;
   bindCanvasDrag({
     onDown(p){ hideTouchHint(); swStartX=p.x; swStartY=p.y; swDone=false; },
@@ -2826,9 +2888,10 @@ function startFlappy(){
 // ════════════════════════════════════════════
 function startArena() {
   document.getElementById('g-canvas-holder').style.display = 'block';
-  // On touch the board itself is the controller — drag to move, tap to slash —
-  // so the pad only carries the two things a gesture can't express.
-  setControls(isTouchDevice ? { left:'⚡ DASH', action:'✦ ABILITY' }
+  // The board is the controller on touch — drag to move, tap to slash — but
+  // the original pad stays underneath it so the game is never unplayable, with
+  // the spare slot carrying the ability that used to be keyboard-only.
+  setControls(isTouchDevice ? { left:'◀', action:'⚔ SLASH', drop:'✦ ABIL', right:'▶' }
                             : { left:'◀', action:'⚔ SLASH', right:'▶' });
   // Hint text has to land before fitCanvas() measures — it's a header row, and
   // adding it afterwards pushes the board it just sized off the bottom.
@@ -3480,16 +3543,16 @@ function startArena() {
   };
   window.onkeyup = e => { keys[e.code] = false; };
 
-  // Pad controls. On touch these are DASH and ABILITY (movement and slashing
-  // are gestures); on desktop they stay the original ◀ / SLASH / ▶.
-  if (isTouchDevice) {
-    document.getElementById('ctrl-left').onclick  = () => doDash();
-    document.getElementById('ctrl-action').onclick = () => deployAbility();
-  } else {
-    bindHold(document.getElementById('ctrl-left'),  ()=>moveLeft=true,  ()=>moveLeft=false);
-    bindHold(document.getElementById('ctrl-right'), ()=>moveRight=true, ()=>moveRight=false);
-    document.getElementById('ctrl-action').onclick = () => doSlash();
-  }
+  // Pad controls. Same on both: hold to strafe, tap to slash. Touch gets the
+  // extra ABILITY key, which was E-only before. Pressing a direction clears any
+  // stale stick claim so a gesture the browser cut off can't jam the buttons.
+  bindHold(document.getElementById('ctrl-left'),
+           ()=>{ stickActive=false; stickX=stickY=0; moveLeft=true; },  ()=>moveLeft=false);
+  bindHold(document.getElementById('ctrl-right'),
+           ()=>{ stickActive=false; stickX=stickY=0; moveRight=true; }, ()=>moveRight=false);
+  document.getElementById('ctrl-action').onclick = () => doSlash();
+  const abilBtn = document.getElementById('ctrl-drop');
+  if (abilBtn) abilBtn.onclick = () => deployAbility();
 
   // ── BOARD GESTURES ──
   // Drag = move (and face where you're heading). Tap = slash toward the point

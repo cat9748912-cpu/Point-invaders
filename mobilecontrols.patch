@@ -1,7 +1,7 @@
-From cf93d4b35189fa79a40e92396a720c9009ef3104 Mon Sep 17 00:00:00 2001
+From 57812fe692e472b96dbc1d8f5a7b423c39ad0090 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Tue, 28 Jul 2026 23:12:33 +0000
-Subject: [PATCH] Make the arcade playable by finger, not just keyboard
+Date: Tue, 28 Jul 2026 23:16:34 +0000
+Subject: [PATCH 1/2] Make the arcade playable by finger, not just keyboard
 
 The games were reachable on a phone but not really playable: canvas
 coordinates ignored the CSS scale factor, the play field ran off the
@@ -1066,6 +1066,491 @@ index f0a7777..a08b5ff 100644
  }
  
  /* Toasts sit at the bottom on desktop, which on a phone lands them right
+-- 
+2.43.0
+
+
+From 2774f67208b91505659c3c2986a48003279fc583 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 29 Jul 2026 05:41:48 +0000
+Subject: [PATCH 2/2] Fix dead controls on real phones; give Snake four arrow
+ keys
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Pong and Neon Nebula were unplayable on a phone. Both were driven only by
+handlers built on Pointer Events, and mobile browsers cancel the pointer
+stream out from under you the moment they suspect the gesture might be a
+scroll or an edge swipe. The game loop kept running, so it looked frozen
+rather than broken. Desktop Chromium never reproduces it, which is why it
+shipped and why the earlier tests passed.
+
+The tell was which games survived: Snake, Tetris and Flappy drove their
+buttons with onclick and worked, while every control routed through
+bindHold or the canvas drag was dead. Pong and Nebula had nothing else.
+
+- bindCanvasDrag and bindHold are now built on Touch Events with a
+  non-passive preventDefault, which holds a gesture reliably on mobile.
+  Mouse events are bound alongside them, with move/up on window so a drag
+  survives leaving the element - what pointer capture used to buy us.
+  preventDefault on touchstart also suppresses the synthesised mouse
+  events, so one tap can't fire both paths.
+- Buttons are back on every game that has them, alongside the gestures.
+  Pong keeps UP/DOWN, Nebula and Arena keep their D-pad, and Arena's
+  spare slot now carries the ability that used to be E-only. No game can
+  be dead if a browser refuses a gesture.
+- Pressing a direction clears any stale drag claim, so a gesture the
+  browser cut off mid-flight can't leave the buttons inert.
+- A tap on Pong's UP/DOWN and Nebula's arrows now nudges immediately as
+  well as starting the glide. Hold-to-move alone meant a quick tap moved
+  the paddle two pixels and read as a dead button.
+
+Snake gets four absolute arrows (← ↑ ↓ →) in place of the two relative
+turns plus a cycle button, which had you working out "which way is left
+of me right now" while the snake was already moving. Swipes still work
+and map to the same four directions.
+
+Also: the purple accent is now opt-in rather than attached to the fourth
+slot, so Snake's ↓ doesn't stand out as if it were special, and bare
+glyph buttons get their own type size instead of the label size.
+
+Verified by driving each game through the real path - tap the card, sit
+through the countdown - and sampling the canvas to confirm the specific
+object moved: Pong's paddle tracks a drag and its button, Nebula's ship
+tracks a drag while hold-to-fire puts bullets on screen, and each of
+Snake's four arrows steers the right way.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01FjjupQrZdE9cqVd8omPVhz
+---
+ app.js     | 253 +++++++++++++++++++++++++++++++++--------------------
+ index.html |   3 +-
+ style.css  |  14 ++-
+ 3 files changed, 170 insertions(+), 100 deletions(-)
+
+diff --git a/app.js b/app.js
+index 4f31405..1bc5e19 100644
+--- a/app.js
++++ b/app.js
+@@ -248,31 +248,31 @@ function bindHold(el, onDown, onUp){
+   if(!el) return;
+   clearHold(el);
+   let held = false;
++  const press = e => { if(held) return; if(e && e.cancelable) e.preventDefault(); held = true; onDown(); };
+   const release = () => { if(!held) return; held = false; onUp(); };
+ 
+-  if(window.PointerEvent){
+-    el.onpointerdown = e => {
+-      e.preventDefault();
+-      if(held) return;
+-      held = true;
+-      try{ el.setPointerCapture(e.pointerId); }catch(_){}
+-      onDown();
+-    };
+-    el.onpointerup = release;
+-    el.onpointercancel = release;
+-    el.onlostpointercapture = release;
+-    return;
++  const bound = [];
++  const on = (target, type, fn, opts) => { target.addEventListener(type, fn, opts); bound.push([target, type, fn, opts]); };
++
++  // Touch events, not Pointer Events — same reason as bindCanvasDrag. Mobile
++  // browsers cancel the pointer stream out from under a held button the moment
++  // they suspect a scroll, so hold-to-move died a few frames in. That left
++  // Pong and Nebula, whose only controls were these buttons, unplayable on a
++  // phone while onclick-driven games looked fine.
++  if('ontouchstart' in window){
++    on(el, 'touchstart',  press,   { passive:false });
++    on(el, 'touchend',    release, { passive:false });
++    on(el, 'touchcancel', release, { passive:false });
+   }
+-  // Fallback for anything without Pointer Events
+-  el.ontouchstart = e => { e.preventDefault(); if(held) return; held = true; onDown(); };
+-  el.ontouchend = release;
+-  el.ontouchcancel = release;
+-  el.onmousedown = () => { if(held) return; held = true; onDown(); };
+-  el.onmouseup = release;
+-  el.onmouseleave = release;
++  on(el, 'mousedown', press);
++  on(el, 'mouseleave', release);
++  on(window, 'mouseup', release);   // releasing off the button still counts
++
++  el._holdCleanup = () => bound.forEach(([t, type, fn, opts]) => t.removeEventListener(type, fn, opts));
+ }
+ function clearHold(el){
+   if(!el) return;
++  if(el._holdCleanup){ el._holdCleanup(); el._holdCleanup = null; }
+   el.onpointerdown = el.onpointerup = el.onpointercancel = el.onlostpointercapture = null;
+   el.onmousedown = el.onmouseup = el.onmouseleave = null;
+   el.ontouchstart = el.ontouchend = el.ontouchcancel = null;
+@@ -299,42 +299,93 @@ function canvasPos(e){
+   };
+ }
+ 
+-// Single-pointer drag binding for the play surface. Pointer events cover
+-// mouse, touch and stylus in one path, and pointer capture keeps a drag alive
+-// when the finger slides off the canvas — without it the ship freezes the
+-// moment you overshoot the edge, which is exactly when you're dodging.
++// Drag binding for the play surface.
++//
++// This deliberately does NOT use Pointer Events. Pointer capture on a canvas
++// is fragile on real phones: mobile Safari and Android Chrome fire
++// pointercancel the moment they suspect the gesture might be a scroll, an
++// edge swipe or a browser gesture, which kills the drag a few frames in — the
++// game looks frozen even though its loop is running fine. Desktop Chromium
++// never reproduces it, which is exactly why it shipped.
++//
++// Touch Events with a non-passive preventDefault hold the gesture properly,
++// and mouse events are bound alongside them so hybrid touch laptops work with
++// either input. preventDefault on touchstart also suppresses the synthesised
++// mouse events, so a tap can't fire both paths.
++const _drag = { touch: [], mouse: [] };
+ function bindCanvasDrag(handlers){
+   clearCanvasDrag();
+   if(!aCanvas) return;
+-  let id = null;
+-  aCanvas.onpointerdown = e => {
+-    if(id !== null) return;             // ignore extra fingers
+-    e.preventDefault();
+-    id = e.pointerId;
+-    try{ aCanvas.setPointerCapture(id); }catch(_){}
+-    handlers.onDown && handlers.onDown(canvasPos(e), e);
+-  };
+-  aCanvas.onpointermove = e => {
+-    if(id === null){
+-      // No active drag — still useful for mouse hover aiming.
+-      handlers.onHover && handlers.onHover(canvasPos(e), e);
+-      return;
+-    }
+-    if(e.pointerId !== id) return;
+-    e.preventDefault();
+-    handlers.onMove && handlers.onMove(canvasPos(e), e);
++
++  const pos = t => {
++    const rect = aCanvas.getBoundingClientRect();
++    return {
++      x: (t.clientX - rect.left) * (aCanvas.width  / (rect.width  || 1)),
++      y: (t.clientY - rect.top ) * (aCanvas.height / (rect.height || 1))
++    };
+   };
+-  const end = e => {
+-    if(id === null || e.pointerId !== id) return;
+-    id = null;
+-    handlers.onUp && handlers.onUp(canvasPos(e), e);
++  const on = (target, type, fn, bucket) => {
++    target.addEventListener(type, fn, { passive: false });
++    _drag[bucket].push([target, type, fn]);
+   };
+-  aCanvas.onpointerup = end;
+-  aCanvas.onpointercancel = end;
+-  aCanvas.onlostpointercapture = end;
++
++  // ── TOUCH ──
++  if('ontouchstart' in window){
++    let id = null;
++    const mine = list => { for(let i=0;i<list.length;i++) if(list[i].identifier === id) return list[i]; return null; };
++    on(aCanvas, 'touchstart', e => {
++      if(id !== null) return;                    // one finger drives; ignore extras
++      const t = e.changedTouches[0];
++      if(!t) return;
++      e.preventDefault();
++      id = t.identifier;
++      handlers.onDown && handlers.onDown(pos(t), e);
++    }, 'touch');
++    on(aCanvas, 'touchmove', e => {
++      const t = mine(e.changedTouches);
++      if(!t) return;
++      e.preventDefault();
++      handlers.onMove && handlers.onMove(pos(t), e);
++    }, 'touch');
++    const endTouch = e => {
++      const t = mine(e.changedTouches);
++      if(!t) return;
++      e.preventDefault();
++      id = null;
++      handlers.onUp && handlers.onUp(pos(t), e);
++    };
++    on(aCanvas, 'touchend', endTouch, 'touch');
++    on(aCanvas, 'touchcancel', endTouch, 'touch');
++  }
++
++  // ── MOUSE ──
++  // move/up live on window so a drag survives the cursor leaving the canvas,
++  // which is what pointer capture used to buy us.
++  let down = false;
++  on(aCanvas, 'mousedown', e => {
++    e.preventDefault();
++    down = true;
++    handlers.onDown && handlers.onDown(pos(e), e);
++  }, 'mouse');
++  on(aCanvas, 'mousemove', e => {
++    if(!down) handlers.onHover && handlers.onHover(pos(e), e);
++  }, 'mouse');
++  on(window, 'mousemove', e => {
++    if(down) handlers.onMove && handlers.onMove(pos(e), e);
++  }, 'mouse');
++  on(window, 'mouseup', e => {
++    if(!down) return;
++    down = false;
++    handlers.onUp && handlers.onUp(pos(e), e);
++  }, 'mouse');
+ }
+ function clearCanvasDrag(){
++  ['touch','mouse'].forEach(k => {
++    _drag[k].forEach(([target, type, fn]) => target.removeEventListener(type, fn));
++    _drag[k] = [];
++  });
+   if(!aCanvas) return;
++  // Legacy inline handlers from the pre-gesture code, in case anything set them.
+   aCanvas.onpointerdown = aCanvas.onpointermove = null;
+   aCanvas.onpointerup = aCanvas.onpointercancel = aCanvas.onlostpointercapture = null;
+ }
+@@ -397,10 +448,16 @@ function setControls(cfg){
+       if(label == null){ el.style.display = 'none'; return; }
+       el.style.display = '';
+       el.textContent = label;
++      // A bare glyph (◀, ↑, ⟳) reads tiny at the label font size — scale those
++      // up without stretching worded buttons like "⬇⬇ DROP".
++      el.classList.toggle('glyph', [...label].length <= 2);
+       shown++;
+     });
+   if(shown >= 4) bar.classList.add('four-up');
+   if(shown === 1) bar.classList.add('solo-action');
++  // The purple treatment marks a committing action (Tetris's hard drop), so
++  // it's opt-in — Snake's ↓ is just another arrow and shouldn't stand out.
++  document.getElementById('ctrl-drop')?.classList.toggle('accent', !!(cfg && cfg.accentDrop));
+ }
+ 
+ // ── TOUCH TUTORIAL ──
+@@ -1027,11 +1084,10 @@ function startClick(){
+ // ════════════════════════════════════════════
+ function startNebula(){
+   document.getElementById('g-canvas-holder').style.display='block';
+-  // Touch flies by dragging, so the D-pad collapses to a single ability key.
+-  // Mouse and keyboard keep the full pad.
+-  setControls(isTouchDevice ? { action:'⚡ SHOOT / ABILITY' }
+-                            : { left:'◀', action:'SHOOT / ABILITY', right:'▶' });
+-  setControlHint('HOLD TO FIRE · DRAG TO FLY · TAP ⚡ FOR ABILITY',
++  // Drag-to-fly is the good way to play, but the D-pad stays put so the game
++  // is never dead if a browser refuses the gesture.
++  setControls({ left:'◀', action: isTouchDevice ? '⚡ FIRE / ABILITY' : 'SHOOT / ABILITY', right:'▶' });
++  setControlHint('HOLD TO FIRE · DRAG TO FLY · OR USE ◀ ▶',
+                  '← → / A D = MOVE · SPACE = FIRE · Q/E = ABILITY');
+   showTouchHint('HOLD ANYWHERE TO FIRE · DRAG TO FLY');
+   fitCanvas();
+@@ -1086,8 +1142,14 @@ function startNebula(){
+   };
+   window.onkeyup = e => { if(['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS'].includes(e.code)) e.preventDefault(); keys[e.code] = false; };
+ 
+-  bindHold(document.getElementById('ctrl-left'),  ()=>moveLeft=true,  ()=>moveLeft=false);
+-  bindHold(document.getElementById('ctrl-right'), ()=>moveRight=true, ()=>moveRight=false);
++  // Pressing a direction also drops any stale drag claim, so a gesture the
++  // browser cut off mid-flight can't leave the buttons inert.
++  // The impulse gives a tap a visible shove; holding still accelerates as before.
++  const KICK = 4;
++  bindHold(document.getElementById('ctrl-left'),
++           ()=>{ touchFlying=false; touchFiring=false; player.vx -= KICK; moveLeft=true; },  ()=>moveLeft=false);
++  bindHold(document.getElementById('ctrl-right'),
++           ()=>{ touchFlying=false; touchFiring=false; player.vx += KICK; moveRight=true; }, ()=>moveRight=false);
+   // ACTION button: shoot if no special ready, else deploy special
+   document.getElementById('ctrl-action').onclick = () => {
+     if (specialAbilities.length > 0 && !activeAbility) deployAbility();
+@@ -1832,7 +1894,7 @@ function startTetris(){
+   document.getElementById('g-canvas-holder').style.display='block';
+   document.getElementById('tetris-next-wrap').style.display='block';
+   document.getElementById('tetris-lvl-pill').style.display='block';
+-  setControls({ left:'◀', action:'⟳', drop:'⬇⬇ DROP', right:'▶' });
++  setControls({ left:'◀', action:'⟳', drop:'⬇⬇ DROP', right:'▶', accentDrop:true });
+   setControlHint('DRAG = SLIDE · TAP = ROTATE · ⬇⬇ = SLAM IT DOWN',
+                  '← → = MOVE · ↑ = ROTATE · ↓ = SOFT DROP · SPACE = HARD DROP');
+   showTouchHint('DRAG TO SLIDE · TAP TO ROTATE · ⬇⬇ TO SLAM');
+@@ -2315,10 +2377,10 @@ const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
+ // ════════════════════════════════════════════
+ function startPong(){
+   document.getElementById('g-canvas-holder').style.display='block';
+-  // Dragging the paddle covers everything a finger needs; the buttons are the
+-  // keyboard-less fallback on desktop.
+-  setControls(isTouchDevice ? null : { left:'▲ UP', right:'▼ DOWN' });
+-  setControlHint('DRAG UP AND DOWN TO RALLY', '↑ ↓ OR MOUSE TO MOVE YOUR PADDLE');
++  // Drag is the natural way to rally, but the buttons stay so the game still
++  // plays if a browser refuses the gesture.
++  setControls({ left:'▲ UP', right:'▼ DOWN' });
++  setControlHint('DRAG TO RALLY · OR USE ▲ ▼', '↑ ↓ OR MOUSE TO MOVE YOUR PADDLE');
+   showTouchHint('DRAG UP AND DOWN TO MOVE YOUR PADDLE');
+   fitCanvas();
+ 
+@@ -2349,10 +2411,15 @@ function startPong(){
+     onMove: trackPaddle
+   });
+ 
+-  // Mobile buttons
++  // Mobile buttons. Each press nudges immediately as well as starting the
++  // glide — hold-to-move alone meant a quick tap moved the paddle by a couple
++  // of pixels and read as a dead button.
+   let moveUp=false,moveDown=false;
+-  bindHold(document.getElementById('ctrl-left'),  ()=>moveUp=true,   ()=>moveUp=false);
+-  bindHold(document.getElementById('ctrl-right'), ()=>moveDown=true, ()=>moveDown=false);
++  const NUDGE=34;
++  bindHold(document.getElementById('ctrl-left'),
++           ()=>{ playerY=Math.max(0,playerY-NUDGE); moveUp=true; },   ()=>moveUp=false);
++  bindHold(document.getElementById('ctrl-right'),
++           ()=>{ playerY=Math.min(H-PAD_H,playerY+NUDGE); moveDown=true; }, ()=>moveDown=false);
+ 
+   // Keyboard
+   let keys={};
+@@ -2476,8 +2543,11 @@ function startPong(){
+ // ════════════════════════════════════════════
+ function startSnake(){
+   document.getElementById('g-canvas-holder').style.display='block';
+-  setControls({ left:'↰ LEFT', action:'⟳ DIR', right:'↱ RIGHT' });
+-  setControlHint('SWIPE TO STEER · OR USE THE TURN KEYS', 'ARROW KEYS TO STEER');
++  // Four absolute arrows. The old pad was two relative turns plus a cycle
++  // button, which meant working out "which way is left of me right now" while
++  // the snake was already moving — arrows say where you're going outright.
++  setControls({ left:'←', action:'↑', drop:'↓', right:'→' });
++  setControlHint('SWIPE OR TAP AN ARROW TO STEER', 'ARROW KEYS TO STEER');
+   showTouchHint('SWIPE ANY DIRECTION TO STEER');
+   fitCanvas();
+ 
+@@ -2490,7 +2560,6 @@ function startSnake(){
+   let dir={x:1,y:0},nextDir={x:1,y:0};
+   let snake=[{x:10,y:12},{x:9,y:12},{x:8,y:12}];
+   let food=spawnFood(),speed=160 / diffMod,lastMoveTime=0,particles=[];
+-  let dirs=[{x:1,y:0},{x:0,y:1},{x:-1,y:0},{x:0,y:-1}],dirIdx=0; // for action button cycling
+ 
+   document.getElementById('g-time').textContent=Math.ceil(time);
+   document.getElementById('prog-fill').style.background='linear-gradient(90deg,var(--lime),var(--cyan))';
+@@ -2511,25 +2580,18 @@ function startSnake(){
+     if(e.code==='ArrowDown'&&dir.y!==-1){nextDir={x:0,y:1};e.preventDefault();}
+   };
+ 
+-  // Mobile buttons — left/right to steer, action to cycle direction
+-  document.getElementById('ctrl-left').onclick=()=>{
+-    const left={x:dir.y,y:-dir.x};nextDir=left;
+-  };
+-  document.getElementById('ctrl-right').onclick=()=>{
+-    const right={x:-dir.y,y:dir.x};nextDir=right;
+-  };
+-  document.getElementById('ctrl-action').onclick=()=>{
+-    // cycle through cardinal directions
+-    dirIdx=(dirIdx+1)%4;
+-    const nd=dirs[dirIdx];
+-    if(nd.x!==-dir.x||nd.y!==-dir.y)nextDir=nd;
+-  };
++  // Turning onto your own neck is a no-op, exactly as pressing the opposite
++  // arrow key already was.
++  const steer=(x,y)=>{ if(x!==-dir.x||y!==-dir.y) nextDir={x,y}; };
++
++  // Four absolute arrows, matching the arrow keys one for one.
++  document.getElementById('ctrl-left').onclick  = ()=>steer(-1, 0);
++  document.getElementById('ctrl-action').onclick= ()=>steer( 0,-1);
++  document.getElementById('ctrl-drop').onclick  = ()=>steer( 0, 1);
++  document.getElementById('ctrl-right').onclick = ()=>steer( 1, 0);
+ 
+   // ── SWIPE STEERING ──
+-  // Relative-turn buttons are hard to think in at speed. A swipe names the
+-  // direction outright: flick the way you want to go. Reversing onto your own
+-  // neck is ignored, same as pressing the opposite arrow.
+-  const steer=(x,y)=>{ if(x!==-dir.x||y!==-dir.y) nextDir={x,y}; };
++  // Flick the way you want to go — the same four directions as the arrows.
+   let swStartX=0, swStartY=0, swDone=false;
+   bindCanvasDrag({
+     onDown(p){ hideTouchHint(); swStartX=p.x; swStartY=p.y; swDone=false; },
+@@ -2826,9 +2888,10 @@ function startFlappy(){
+ // ════════════════════════════════════════════
+ function startArena() {
+   document.getElementById('g-canvas-holder').style.display = 'block';
+-  // On touch the board itself is the controller — drag to move, tap to slash —
+-  // so the pad only carries the two things a gesture can't express.
+-  setControls(isTouchDevice ? { left:'⚡ DASH', action:'✦ ABILITY' }
++  // The board is the controller on touch — drag to move, tap to slash — but
++  // the original pad stays underneath it so the game is never unplayable, with
++  // the spare slot carrying the ability that used to be keyboard-only.
++  setControls(isTouchDevice ? { left:'◀', action:'⚔ SLASH', drop:'✦ ABIL', right:'▶' }
+                             : { left:'◀', action:'⚔ SLASH', right:'▶' });
+   // Hint text has to land before fitCanvas() measures — it's a header row, and
+   // adding it afterwards pushes the board it just sized off the bottom.
+@@ -3480,16 +3543,16 @@ function startArena() {
+   };
+   window.onkeyup = e => { keys[e.code] = false; };
+ 
+-  // Pad controls. On touch these are DASH and ABILITY (movement and slashing
+-  // are gestures); on desktop they stay the original ◀ / SLASH / ▶.
+-  if (isTouchDevice) {
+-    document.getElementById('ctrl-left').onclick  = () => doDash();
+-    document.getElementById('ctrl-action').onclick = () => deployAbility();
+-  } else {
+-    bindHold(document.getElementById('ctrl-left'),  ()=>moveLeft=true,  ()=>moveLeft=false);
+-    bindHold(document.getElementById('ctrl-right'), ()=>moveRight=true, ()=>moveRight=false);
+-    document.getElementById('ctrl-action').onclick = () => doSlash();
+-  }
++  // Pad controls. Same on both: hold to strafe, tap to slash. Touch gets the
++  // extra ABILITY key, which was E-only before. Pressing a direction clears any
++  // stale stick claim so a gesture the browser cut off can't jam the buttons.
++  bindHold(document.getElementById('ctrl-left'),
++           ()=>{ stickActive=false; stickX=stickY=0; moveLeft=true; },  ()=>moveLeft=false);
++  bindHold(document.getElementById('ctrl-right'),
++           ()=>{ stickActive=false; stickX=stickY=0; moveRight=true; }, ()=>moveRight=false);
++  document.getElementById('ctrl-action').onclick = () => doSlash();
++  const abilBtn = document.getElementById('ctrl-drop');
++  if (abilBtn) abilBtn.onclick = () => deployAbility();
+ 
+   // ── BOARD GESTURES ──
+   // Drag = move (and face where you're heading). Tap = slash toward the point
+diff --git a/index.html b/index.html
+index b199e5f..75d72e3 100644
+--- a/index.html
++++ b/index.html
+@@ -238,7 +238,8 @@
+       <div id="arcade-controls">
+         <button class="ctrl-btn" id="ctrl-left">◀</button>
+         <button class="ctrl-btn" id="ctrl-action">ACTION</button>
+-        <button class="ctrl-btn ctrl-drop" id="ctrl-drop" style="display:none">⬇⬇ DROP</button>
++        <!-- Fourth slot: Tetris hard drop, Snake's ↓, Arena's ability. -->
++        <button class="ctrl-btn" id="ctrl-drop" style="display:none">⬇⬇ DROP</button>
+         <button class="ctrl-btn" id="ctrl-right">▶</button>
+       </div>
+     </div>
+diff --git a/style.css b/style.css
+index a08b5ff..e413d0f 100644
+--- a/style.css
++++ b/style.css
+@@ -347,10 +347,14 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
+ #arcade-controls{display:flex;width:100%;max-width:400px;gap:10px;margin-top:14px}
+ .ctrl-btn{flex:1;background:var(--s2);border:1px solid var(--border);color:#fff;padding:14px;font-family:var(--fd);border-radius:8px;cursor:pointer}
+ 
+-/* Hard drop — the one control that permanently commits a piece, so it reads
+-   as its own thing rather than another grey sibling of ◀ / ROTATE / ▶. */
+-.ctrl-drop{background:rgba(168,85,247,.16);border-color:rgba(168,85,247,.55);color:#d8b4fe;font-weight:700;letter-spacing:.04em}
+-.ctrl-drop:active{background:rgba(168,85,247,.34);transform:scale(.96)}
++/* Marks a control that permanently commits something (Tetris's hard drop), so
++   it reads as its own thing rather than another grey sibling of ◀ / ⟳ / ▶.
++   Opt-in via setControls({accentDrop:true}) — Snake's ↓ is just an arrow. */
++.ctrl-btn.accent{background:rgba(168,85,247,.16);border-color:rgba(168,85,247,.55);color:#d8b4fe;font-weight:700;letter-spacing:.04em}
++.ctrl-btn.accent:active{background:rgba(168,85,247,.34);transform:scale(.96)}
++/* Bare-glyph buttons (◀ ↑ ⟳) get a size of their own — at label size a lone
++   arrow is a speck, while worded buttons still need the smaller type. */
++.ctrl-btn.glyph{font-size:1.3rem;line-height:1}
+ 
+ /* Shrink-wraps the canvas so #tetris-next-wrap and #touch-hint position
+    against the play field, not against the holder that also owns the pad. */
+@@ -587,6 +591,7 @@ body { overscroll-behavior: none; }
+      sizing overflows there, so the 4-up layout gets its own scale. */
+   #arcade-controls.four-up { gap: 7px; }
+   #arcade-controls.four-up .ctrl-btn { font-size: .7rem; padding: 12px 2px; min-width: 0; }
++  #arcade-controls.four-up .ctrl-btn.glyph { font-size: 1.15rem; }
+ 
+   /* Games driven by finger-on-canvas keep one wide button instead of a pad. */
+   #arcade-controls.solo-action .ctrl-btn { font-size: .82rem; }
+@@ -673,6 +678,7 @@ body { overscroll-behavior: none; }
+     margin-top: 0; gap: 8px;
+   }
+   #arcade-controls .ctrl-btn { min-height: 46px; font-size: .68rem; padding: 8px 6px; }
++  #arcade-controls .ctrl-btn.glyph { font-size: 1.05rem; }
+   #arcade-controls.four-up .ctrl-btn { min-height: 38px; }
+ }
+ 
 -- 
 2.43.0
 
