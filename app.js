@@ -71,6 +71,7 @@ const META = {
   pong: { name: 'CYBER PONG', emoji: '🏓', maxPts: 900 },
   snake: { name: 'GRID SNAKE', emoji: '🐍', maxPts: 1200 },
   flappy: { name: 'FLAPPY DRONE', emoji: '🚁', maxPts: 1000 },
+  breaker:{ name: 'ICE BREAKER',  emoji: '🧊', maxPts: 1100 },
   arena:  { name: 'CYBER ARENA',  emoji: '⚔️', maxPts: 99999 }
 };
 
@@ -708,7 +709,7 @@ function prepGame(gid){
   document.getElementById('tetris-lvl-pill').style.display='none';
   setControls(null);                 // every game re-declares its own pad
   document.getElementById('g-controls').textContent='';   // and its own hint
-  const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','arena'].includes(gid);
+  const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','breaker','arena'].includes(gid);
   document.getElementById('game-screen').classList.toggle('canvas-game', canvasGame);
 
   document.getElementById('g-pts').textContent='0';
@@ -728,6 +729,7 @@ function prepGame(gid){
   else if(gid==='pong') countdown(()=>startPong());
   else if(gid==='snake') countdown(()=>startSnake());
   else if(gid==='flappy') countdown(()=>startFlappy());
+  else if(gid==='breaker')countdown(()=>startBreaker());
   else if(gid==='arena')  countdown(()=>startArena());
 }
 
@@ -2884,7 +2886,372 @@ function startFlappy(){
 }
 
 // ════════════════════════════════════════════
-//  ⚔️ GAME 11: CYBER ARENA (AVATAR SIMULATOR)
+//  🧊 GAME 11: ICE BREAKER
+// ════════════════════════════════════════════
+function startBreaker(){
+  document.getElementById('g-canvas-holder').style.display='block';
+  // Drag is the fast way to slide the deflector; the arrows stay so the game
+  // still plays if a browser refuses the gesture — same deal as Pong.
+  setControls({ left:'◀', action:'🚀 LAUNCH', right:'▶' });
+  setControlHint('DRAG TO SLIDE · TAP TO LAUNCH', '← → OR MOUSE TO SLIDE · SPACE TO LAUNCH');
+  showTouchHint('DRAG TO SLIDE · TAP TO LAUNCH');
+  fitCanvas();
+
+  const diffMod = getDifficultyModifier();
+  const W=400, H=500;
+  const COLS=8, ROWS=5, B_W=44, B_H=18, B_GAP=6, B_TOP=64;
+  const B_LEFT=(W-(COLS*B_W+(COLS-1)*B_GAP))/2;
+  const PAD_H=11, PAD_Y=H-34, BALL_R=6;
+
+  // A straight ×2 on ball speed at Meltdown crosses the board in under a
+  // second — past reacting, into guessing. Damped, so the tier still bites
+  // without turning the run into a coin flip. The deflector shrinks instead,
+  // which punishes sloppy positioning rather than human reflex limits.
+  const BASE_SPEED = 5.0 * (1 + (diffMod-1)*0.45);
+  const BASE_PAD_W = Math.round(84 - (diffMod-1)*22);
+
+  const baseTime = 90;
+  const adjustedTime = Math.round(baseTime * getTimeModifier());
+
+  // Top rows are worth more, so the greedy line — digging a tunnel up the side
+  // and letting the ball loose behind the wall — is also the high-scoring one.
+  const ROW_COLORS = ['#ff0090','#a855f7','#00f5ff','#39ff14','#ffd700'];
+  const ROW_PTS    = [22,19,16,13,10];
+
+  const CHIPS = [
+    { key:'wide',  glyph:'⬌', color:'#39ff14', label:'WIDE DEFLECTOR' },
+    { key:'slow',  glyph:'⏱', color:'#00f5ff', label:'TIME DILATION' },
+    { key:'bonus', glyph:'★', color:'#ffd700', label:'+50 DATA' }
+  ];
+
+  let score=0, time=adjustedTime, isOver=false;
+  let shields=3, combo=0, bestCombo=0, broken=0, shake=0;
+  let padX=W/2-BASE_PAD_W/2, padW=BASE_PAD_W, speed=BASE_SPEED;
+  let moveL=false, moveR=false, keys={};
+  let stuck=true, ball={x:0,y:0,vx:0,vy:0};
+  let trail=[], chips=[], particles=[], floats=[];
+  let wideUntil=0, slowUntil=0, nowMs=performance.now();
+
+  document.getElementById('g-time').textContent=time;
+  document.getElementById('prog-fill').style.width='100%';
+  document.getElementById('prog-fill').style.background='linear-gradient(90deg,var(--purple),var(--cyan))';
+
+  const bricks=[];
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    // Armoured ICE only appears once the core is unstable: the top row at
+    // Overclock, the top two at Meltdown.
+    const armour = (diffMod>=2 && r<2) || (diffMod>1 && r<1) ? 2 : 1;
+    bricks.push({
+      x:B_LEFT+c*(B_W+B_GAP), y:B_TOP+r*(B_H+B_GAP),
+      hp:armour, maxHp:armour, color:ROW_COLORS[r], pts:ROW_PTS[r]
+    });
+  }
+
+  const slide = x => { padX = Math.max(0, Math.min(W-padW, x)); };
+
+  function burst(x,y,color,n){
+    for(let i=0;i<n;i++){
+      const a=Math.random()*Math.PI*2, v=Math.random()*3+1;
+      particles.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,alpha:1,color});
+    }
+  }
+
+  function launch(){
+    if(isOver||!stuck) return;
+    stuck=false;
+    const ang=(Math.random()*0.5-0.25)+(Math.random()<0.5?-0.35:0.35);
+    ball.vx=Math.sin(ang)*speed; ball.vy=-Math.cos(ang)*speed;
+  }
+
+  // ── STEERING ──
+  // Mouse steers absolutely — the cursor is the deflector. Touch steers
+  // *relatively* from wherever you grab, so tapping to launch doesn't yank the
+  // deflector out from under the rally, and your hand never has to sit on the
+  // board to move it.
+  let lastX=null;
+  bindCanvasDrag({
+    onHover(p){ if(!isTouchDevice) slide(p.x-padW/2); },
+    onDown(p){ hideTouchHint(); lastX=p.x; if(!isTouchDevice) slide(p.x-padW/2); launch(); },
+    onMove(p){
+      if(isTouchDevice && lastX!==null) slide(padX+(p.x-lastX));
+      else slide(p.x-padW/2);
+      lastX=p.x;
+    },
+    onUp(){ lastX=null; }
+  });
+
+  // Each press shifts the deflector immediately as well as starting the glide —
+  // hold-to-move alone makes a quick tap travel a couple of pixels and read as
+  // a dead button, the same trap Pong's pad fell into.
+  const NUDGE=26;
+  bindHold(document.getElementById('ctrl-left'),
+           ()=>{ slide(padX-NUDGE); moveL=true; },  ()=>moveL=false);
+  bindHold(document.getElementById('ctrl-right'),
+           ()=>{ slide(padX+NUDGE); moveR=true; },  ()=>moveR=false);
+  document.getElementById('ctrl-action').onclick = launch;
+
+  window.onkeydown=e=>{
+    if(['Space','ArrowLeft','ArrowRight','KeyA','KeyD'].includes(e.code)) e.preventDefault();
+    keys[e.code]=true;
+    if(e.code==='Space') launch();
+  };
+  window.onkeyup=e=>{ keys[e.code]=false; };
+
+  gTimer=setInterval(()=>{
+    if(isOver)return;
+    time--; document.getElementById('g-time').textContent=time;
+    document.getElementById('prog-fill').style.width=`${time/adjustedTime*100}%`;
+    if(time<=0) end('timeout');
+  },1000);
+
+  function applyChip(ch){
+    if(ch.type.key==='wide') wideUntil=nowMs+8000;
+    else if(ch.type.key==='slow') slowUntil=nowMs+6000;
+    else { score+=50; setLive(score); }
+    floats.push({x:padX+padW/2, y:PAD_Y-22, text:ch.type.label, color:ch.type.color, life:1});
+    burst(ch.x, ch.y, ch.type.color, 8);
+  }
+
+  function hitBrick(b){
+    b.hp--;
+    if(b.hp>0){ burst(b.x+B_W/2, b.y+B_H/2, b.color, 4); return; }
+    broken++;
+    combo++; if(combo>bestCombo) bestCombo=combo;
+    // Every brick cleared before the ball comes home is worth more than the
+    // last, so a well-aimed tunnel pays for itself — capped, because a ball
+    // loose behind the wall can chain thirty bricks on its own and would
+    // otherwise max the run without the player touching the deflector.
+    const gain=b.pts+Math.min(combo-1,6)*2;
+    score+=gain; setLive(score);
+    burst(b.x+B_W/2, b.y+B_H/2, b.color, 10);
+    floats.push({x:b.x+B_W/2, y:b.y+B_H/2, text:'+'+gain, color:b.color, life:1});
+    if(Math.random()<0.12) chips.push({x:b.x+B_W/2, y:b.y+B_H/2, type:CHIPS[Math.floor(Math.random()*CHIPS.length)]});
+    if(bricks.every(k=>k.hp<=0)){ score+=150; setLive(score); end('cleared'); }
+  }
+
+  function loseShield(){
+    shields--; combo=0; shake=14;
+    burst(ball.x, H-8, '#ff2442', 14);
+    if(shields<=0){ end('breached'); return; }
+    stuck=true; trail=[];
+  }
+
+  // Sub-stepped so a fast ball can't tunnel straight through a brick row
+  // between frames — at Meltdown it travels most of a brick's height per tick.
+  function step(f){
+    ball.x+=ball.vx*f; ball.y+=ball.vy*f;
+
+    if(ball.x-BALL_R<0){ ball.x=BALL_R; ball.vx=Math.abs(ball.vx); }
+    if(ball.x+BALL_R>W){ ball.x=W-BALL_R; ball.vx=-Math.abs(ball.vx); }
+    if(ball.y-BALL_R<0){ ball.y=BALL_R; ball.vy=Math.abs(ball.vy); }
+
+    // Deflector — the bounce angle comes off where you hit, not off the
+    // incoming vector, so aiming is a real skill and the speed stays constant.
+    if(ball.vy>0 && ball.y+BALL_R>=PAD_Y && ball.y-BALL_R<=PAD_Y+PAD_H &&
+       ball.x>=padX-BALL_R && ball.x<=padX+padW+BALL_R){
+      const rel=Math.max(-1,Math.min(1,(ball.x-(padX+padW/2))/(padW/2)));
+      const ang=rel*1.05;                        // ±60° off vertical at the edges
+      ball.vx=Math.sin(ang)*speed; ball.vy=-Math.cos(ang)*speed;
+      ball.y=PAD_Y-BALL_R-0.5;
+      combo=0;
+      burst(ball.x, PAD_Y, getEquippedColorHex(), 3);
+    }
+
+    for(const b of bricks){
+      if(b.hp<=0) continue;
+      if(ball.x+BALL_R<b.x || ball.x-BALL_R>b.x+B_W || ball.y+BALL_R<b.y || ball.y-BALL_R>b.y+B_H) continue;
+      // Leave along the shallower overlap, i.e. back the way it came in —
+      // flipping the wrong axis makes corner hits look like the ball
+      // teleported through the wall.
+      const oX=Math.min(ball.x+BALL_R-b.x, b.x+B_W-(ball.x-BALL_R));
+      const oY=Math.min(ball.y+BALL_R-b.y, b.y+B_H-(ball.y-BALL_R));
+      // Flipping the component isn't enough on its own — the ball is still
+      // sitting inside the brick it just hit, so the next step finds another
+      // overlap and flips again. Left alone it random-walks through the wall
+      // eating it from the inside, and the run plays itself. Push it back out
+      // along the axis it bounced on.
+      if(oX<oY){ ball.vx=-ball.vx; ball.x += ball.x<b.x+B_W/2 ? -oX : oX; }
+      else     { ball.vy=-ball.vy; ball.y += ball.y<b.y+B_H/2 ? -oY : oY; }
+      hitBrick(b);
+      break;                                     // one brick per step reads cleanly
+    }
+
+    if(ball.y-BALL_R>H) loseShield();
+  }
+
+  function end(reason){
+    if(isOver)return; isOver=true;
+    // Shields are worth points on the way out, so playing the last one
+    // carefully beats throwing it away for one more brick.
+    const survive=shields*40;
+    const final=Math.min(1100,score+survive);
+    showResults('breaker',final,{
+      '📡 Run Terminated': reason==='cleared'?'ICE WALL CLEARED':reason==='timeout'?'CLOCK EXPIRED':'SHIELDS BREACHED',
+      '🧊 ICE Shattered': `${broken}/${bricks.length}`,
+      '🔥 Longest Chain': `${bestCombo}×`,
+      '🛡️ Shields Intact': `${shields} (+${survive})`,
+      '🏆 Score Accumulation': `${final} PTS`
+    });
+  }
+
+  function draw(now){
+    aCtx.clearRect(0,0,W,H);
+    aCtx.save();
+    if(shake>0){
+      aCtx.translate((Math.random()-0.5)*shake,(Math.random()-0.5)*shake);
+      shake*=0.86; if(shake<0.4) shake=0;
+    }
+
+    aCtx.strokeStyle='rgba(168,85,247,0.06)'; aCtx.lineWidth=1;
+    for(let x=0;x<=W;x+=40){aCtx.beginPath();aCtx.moveTo(x,0);aCtx.lineTo(x,H);aCtx.stroke();}
+    for(let y=0;y<=H;y+=40){aCtx.beginPath();aCtx.moveTo(0,y);aCtx.lineTo(W,y);aCtx.stroke();}
+
+    bricks.forEach(b=>{
+      if(b.hp<=0) return;
+      const cracked=b.hp<b.maxHp;
+      aCtx.save();
+      aCtx.shadowBlur=cracked?6:12; aCtx.shadowColor=b.color;
+      aCtx.globalAlpha=cracked?0.5:1;
+      aCtx.fillStyle=b.color;
+      aCtx.beginPath(); aCtx.roundRect(b.x,b.y,B_W,B_H,4); aCtx.fill();
+      aCtx.shadowBlur=0;
+      aCtx.fillStyle='rgba(255,255,255,0.28)';
+      aCtx.fillRect(b.x+3,b.y+3,B_W-6,2);        // bevel — slabs, not flat rectangles
+      if(cracked){
+        aCtx.globalAlpha=1; aCtx.strokeStyle='rgba(0,0,0,0.55)'; aCtx.lineWidth=1.5;
+        aCtx.beginPath();
+        aCtx.moveTo(b.x+8,b.y+2);            aCtx.lineTo(b.x+B_W*0.42,b.y+B_H-3);
+        aCtx.moveTo(b.x+B_W*0.42,b.y+B_H*0.5); aCtx.lineTo(b.x+B_W-7,b.y+3);
+        aCtx.stroke();
+      }
+      aCtx.restore();
+    });
+
+    chips.forEach(ch=>{
+      aCtx.save();
+      aCtx.shadowBlur=14; aCtx.shadowColor=ch.type.color;
+      aCtx.fillStyle=hexToRgba(ch.type.color,0.18);
+      aCtx.strokeStyle=ch.type.color; aCtx.lineWidth=1.5;
+      aCtx.beginPath(); aCtx.roundRect(ch.x-11,ch.y-9,22,18,5); aCtx.fill(); aCtx.stroke();
+      aCtx.shadowBlur=0; aCtx.fillStyle=ch.type.color;
+      aCtx.font='bold 11px Orbitron,monospace'; aCtx.textAlign='center'; aCtx.textBaseline='middle';
+      aCtx.fillText(ch.type.glyph, ch.x, ch.y+1);
+      aCtx.restore();
+    });
+
+    trail.forEach((t,i)=>{
+      const a=(i+1)/trail.length*0.35;
+      aCtx.save(); aCtx.globalAlpha=a; aCtx.fillStyle='#fff';
+      aCtx.beginPath(); aCtx.arc(t.x,t.y,BALL_R*(0.35+a),0,Math.PI*2); aCtx.fill(); aCtx.restore();
+    });
+
+    const dilated=nowMs<slowUntil;
+    aCtx.save();
+    aCtx.shadowBlur=dilated?26:18; aCtx.shadowColor=dilated?'#00f5ff':'#fff';
+    aCtx.fillStyle='#fff';
+    aCtx.beginPath(); aCtx.arc(ball.x,ball.y,BALL_R,0,Math.PI*2); aCtx.fill();
+    aCtx.restore();
+
+    const padColor=getEquippedColorHex();
+    aCtx.save(); aCtx.shadowBlur=20; aCtx.shadowColor=padColor; aCtx.fillStyle=padColor;
+    aCtx.beginPath(); aCtx.roundRect(padX,PAD_Y,padW,PAD_H,5); aCtx.fill();
+    aCtx.shadowBlur=0; aCtx.fillStyle='rgba(255,255,255,0.55)';
+    aCtx.fillRect(padX+padW/2-8,PAD_Y+3,16,2);   // centre mark — hit here to send it straight up
+    aCtx.restore();
+    drawSkinBadge(padX+padW/2, PAD_Y-16, 12);
+
+    for(let i=particles.length-1;i>=0;i--){
+      const p=particles[i];
+      p.x+=p.vx; p.y+=p.vy; p.alpha-=0.045;
+      if(p.alpha<=0){ particles.splice(i,1); continue; }
+      aCtx.save(); aCtx.globalAlpha=p.alpha; aCtx.fillStyle=p.color;
+      aCtx.fillRect(p.x,p.y,3,3); aCtx.restore();
+    }
+
+    for(let i=floats.length-1;i>=0;i--){
+      const f=floats[i];
+      f.y-=0.6; f.life-=0.02;
+      if(f.life<=0){ floats.splice(i,1); continue; }
+      aCtx.save(); aCtx.globalAlpha=Math.max(0,f.life);
+      aCtx.fillStyle=f.color; aCtx.font='bold 0.6rem Orbitron,monospace'; aCtx.textAlign='center';
+      aCtx.fillText(f.text,f.x,f.y); aCtx.restore();
+    }
+
+    // ── HUD ──
+    for(let i=0;i<3;i++){
+      const on=i<shields;
+      aCtx.save();
+      aCtx.globalAlpha=on?1:0.16; aCtx.fillStyle=on?'#00f5ff':'#fff';
+      if(on){ aCtx.shadowBlur=10; aCtx.shadowColor='#00f5ff'; }
+      aCtx.beginPath(); aCtx.roundRect(12+i*16,14,11,7,2); aCtx.fill();
+      aCtx.restore();
+    }
+    if(combo>1){
+      aCtx.save(); aCtx.shadowBlur=12; aCtx.shadowColor='#ffd700';
+      aCtx.fillStyle='rgba(255,215,0,0.9)'; aCtx.font='bold 0.75rem Orbitron,monospace'; aCtx.textAlign='right';
+      aCtx.fillText(`CHAIN ×${combo}`,W-12,22); aCtx.restore();
+    }
+    if(stuck){
+      aCtx.save(); aCtx.globalAlpha=0.55+0.45*Math.sin(now*0.006);
+      aCtx.fillStyle='#fff'; aCtx.font='bold 0.7rem Orbitron,monospace'; aCtx.textAlign='center';
+      aCtx.fillText(isTouchDevice?'TAP TO LAUNCH':'SPACE TO LAUNCH',W/2,PAD_Y-42);
+      aCtx.restore();
+    }
+
+    aCtx.restore();
+  }
+
+  function loop(now){
+    if(isOver)return;
+    gameLoopId=requestAnimationFrame(loop);
+    nowMs=now;
+
+    padW=Math.round(BASE_PAD_W*(now<wideUntil?1.45:1));
+    // The wall creeps faster the emptier it gets, so a long run doesn't coast.
+    speed=BASE_SPEED*(now<slowUntil?0.72:1)*(1+Math.min(0.25,broken*0.006));
+    slide(padX);   // re-clamp: a WIDE chip can push the deflector past the edge
+
+    const PAD_SPEED=7;
+    if(keys['ArrowLeft'] ||keys['KeyA']||moveL) slide(padX-PAD_SPEED);
+    if(keys['ArrowRight']||keys['KeyD']||moveR) slide(padX+PAD_SPEED);
+
+    if(stuck){
+      ball.x=padX+padW/2; ball.y=PAD_Y-BALL_R-2; ball.vx=0; ball.vy=0;
+      trail=[];
+    }else{
+      const steps=Math.max(1,Math.ceil(speed/3));
+      for(let s=0;s<steps;s++){ step(1/steps); if(isOver) return; if(stuck) break; }
+
+      if(!stuck){
+        // Brick bounces only flip components, so rounding would slowly drift the
+        // rally off its intended speed — renormalise every frame instead.
+        const sp=Math.hypot(ball.vx,ball.vy)||1;
+        ball.vx=ball.vx/sp*speed; ball.vy=ball.vy/sp*speed;
+        // And never let it settle into a near-horizontal groove it can't escape.
+        if(Math.abs(ball.vy)<speed*0.30){
+          ball.vy=(ball.vy<0?-1:1)*speed*0.30;
+          ball.vx=(ball.vx<0?-1:1)*Math.sqrt(Math.max(0,speed*speed-ball.vy*ball.vy));
+        }
+        trail.push({x:ball.x,y:ball.y}); if(trail.length>10) trail.shift();
+      }
+    }
+
+    for(let i=chips.length-1;i>=0;i--){
+      const ch=chips[i];
+      ch.y+=2.1;
+      if(ch.y>H+12){ chips.splice(i,1); continue; }
+      if(ch.y>PAD_Y-10 && ch.y<PAD_Y+PAD_H+10 && ch.x>padX-10 && ch.x<padX+padW+10){
+        applyChip(ch); chips.splice(i,1);
+      }
+    }
+
+    draw(now);
+  }
+  requestAnimationFrame(loop);
+}
+
+// ════════════════════════════════════════════
+//  ⚔️ GAME 12: CYBER ARENA (AVATAR SIMULATOR)
 // ════════════════════════════════════════════
 function startArena() {
   document.getElementById('g-canvas-holder').style.display = 'block';
