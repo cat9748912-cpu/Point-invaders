@@ -564,7 +564,7 @@ document.getElementById('btn-login').onclick=async()=>{
   const pass=document.getElementById('l-pass').value;
   if(!email||!pass){setErr('Fields cannot remain unassigned.');return}
   try{const c=await auth.signInWithEmailAndPassword(email,pass);await loadUser(c.user.uid)}
-  catch(e){console.error('Sign-in failed:',e);setErr(fErr(e.code,'email'))}
+  catch(e){console.error('Sign-in failed:',e);setErrCode(e,'email')}
 };
 
 document.getElementById('btn-signup').onclick=async()=>{
@@ -579,22 +579,57 @@ document.getElementById('btn-signup').onclick=async()=>{
     const c=await auth.createUserWithEmailAndPassword(email,pass);
     await db.ref('players/' + c.user.uid).set({ username: name, totalPoints: 0, gamesPlayed: 0 });
     await loadUser(c.user.uid);
-  }catch(e){console.error('Sign-up failed:',e);setErr(fErr(e.code,'email'))}
+  }catch(e){console.error('Sign-up failed:',e);setErrCode(e,'email')}
   finally{authPending=false}
 };
 
 const fErrMap={'auth/email-already-in-use':'Target email node already claimed.','auth/wrong-password':'Input encryption key mismatch.','auth/user-not-found':'Identity node missing.','auth/weak-password':'Minimum signature length unfulfilled.','auth/invalid-email':'Malformed structural routing email.','auth/credential-already-in-use':'That email is already bound to another identity node.','auth/provider-already-linked':'This session already holds a permanent identity.','auth/requires-recent-login':'Session too old to re-key. Exit and sign in again.','auth/email-already-exists':'Target email node already claimed.'};
 
-// 'operation-not-allowed' / 'admin-restricted-operation' only ever mean "the
+// 'operation-not-allowed' / 'admin-restricted-operation' usually mean "the
 // provider this call needs is switched off" — WHICH provider depends on the
-// call, so every site passes its own context. Linking a guest to an email is an
-// Email/Password operation, not an Anonymous one; naming the wrong toggle sends
-// people back to the Console to re-enable something already enabled.
+// call, so every site passes its own context.
 const fErrProviderOff={
   guest:'Guest protocol offline — enable Anonymous sign-in in the Firebase Console.',
   email:'Email protocol offline — enable Email/Password sign-in in the Firebase Console.'
 };
-const fErr=(c,ctx)=>((c==='auth/operation-not-allowed'||c==='auth/admin-restricted-operation')?(fErrProviderOff[ctx]||fErrProviderOff.email):(fErrMap[c]||'Matrix validation anomaly.'));
+
+// …except Identity Platform also reuses OPERATION_NOT_ALLOWED for something
+// unrelated: with email enumeration protection ON, an address cannot be attached
+// to an account until it has been verified, and linking a guest counts as
+// "changing email". Same code, completely different fix — the server's own text
+// is the only thing that separates them, so read it before deciding.
+const fErrRaw=e=>{
+  const sr=e&&e.customData&&e.customData.serverResponse;
+  return String((sr&&sr.error&&sr.error.message)||(e&&e.message)||'');
+};
+const fErrVerifyFirst='Identity re-key blocked — turn OFF “Email enumeration protection” '+
+                      '(Firebase Console → Authentication → Settings → User actions).';
+
+const fErr=(e,ctx)=>{
+  const c=e&&e.code;
+  if(c==='auth/operation-not-allowed'||c==='auth/admin-restricted-operation'){
+    if(/verify.*email|email.*verif/i.test(fErrRaw(e))) return fErrVerifyFirst;
+    return fErrProviderOff[ctx]||fErrProviderOff.email;
+  }
+  return fErrMap[c]||'Matrix validation anomaly.';
+};
+
+// Prints the raw Firebase code under the friendly line. The code is the only
+// thing that actually identifies the failure, and several distinct causes share
+// one message — on a phone there is no console to read it out of, so it goes
+// on screen.
+function showAuthErr(el, e, ctx){
+  if(!el) return;
+  el.textContent = fErr(e, ctx);
+  if(e && e.code){
+    const tag = document.createElement('div');
+    tag.textContent = e.code;
+    tag.style.cssText = 'margin-top:6px;font-family:var(--fd),monospace;font-size:.52rem;' +
+                        'letter-spacing:.1em;color:var(--dimmer);text-transform:none';
+    el.appendChild(tag);
+  }
+}
+const setErrCode = (e, ctx) => showAuthErr(document.getElementById('auth-err'), e, ctx);
 
 // ── 🎮 GUEST ACCESS — FIREBASE ANONYMOUS AUTH ──
 // Derives a stable display handle from the anonymous UID, e.g. "Guest_A1B2C".
@@ -625,7 +660,7 @@ async function signInAsGuest(){
     toast('🎮 Guest access granted — progress lives in this browser only.',4000);
   }catch(e){
     console.error('Guest sign-in failed:',e);
-    setErr(fErr(e.code,'guest'));
+    setErrCode(e,'guest');
   }finally{
     authPending=false;
     btn.disabled=false;btn.textContent=label;
@@ -4998,7 +5033,7 @@ async function sendFeedback(payload){
       loadLeaderboard();
     }catch(e){
       console.error('Account upgrade failed:', e);
-      errEl.textContent = fErr(e.code, 'email');
+      showAuthErr(errEl, e, 'email');
       saving = false;
     }finally{
       submitEl.disabled = false;
