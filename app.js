@@ -190,6 +190,18 @@ document.getElementById('diff-selector')?.classList.add(`tier-${currentDifficult
 const aCanvas = document.getElementById('arcade-canvas');
 const aCtx = aCanvas?.getContext('2d');
 
+// The play field is a fixed coordinate space and every game draws in those
+// units. How big the canvas actually is on screen is a separate concern
+// handled by fitCanvas(), which installs a base transform to convert — so the
+// board can fill a desktop without a single game knowing about it.
+//
+// The field was 400×500. Widening it to 560 is a real change to the play
+// space, not a stretch: cells and sprites keep their proportions and the games
+// get 160 more units of room, which is why each one re-lays-out around it
+// (Tetris runs a 14-column well instead of 10, Breaker a wider brick wall,
+// Nebula wider invader formations, and so on).
+const BOARD_W = 560, BOARD_H = 500;
+
 const showScreen=id=>{
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   setTimeout(()=>document.getElementById(id)?.classList.add('active'),40);
@@ -295,8 +307,8 @@ const isTouchDevice = (window.matchMedia && matchMedia('(pointer: coarse)').matc
 function canvasPos(e){
   const rect = aCanvas.getBoundingClientRect();
   return {
-    x: (e.clientX - rect.left) * (aCanvas.width  / (rect.width  || 1)),
-    y: (e.clientY - rect.top ) * (aCanvas.height / (rect.height || 1))
+    x: (e.clientX - rect.left) * (BOARD_W / (rect.width  || 1)),
+    y: (e.clientY - rect.top ) * (BOARD_H / (rect.height || 1))
   };
 }
 
@@ -321,8 +333,8 @@ function bindCanvasDrag(handlers){
   const pos = t => {
     const rect = aCanvas.getBoundingClientRect();
     return {
-      x: (t.clientX - rect.left) * (aCanvas.width  / (rect.width  || 1)),
-      y: (t.clientY - rect.top ) * (aCanvas.height / (rect.height || 1))
+      x: (t.clientX - rect.left) * (BOARD_W / (rect.width  || 1)),
+      y: (t.clientY - rect.top ) * (BOARD_H / (rect.height || 1))
     };
   };
   const on = (target, type, fn, bucket) => {
@@ -395,7 +407,13 @@ function clearCanvasDrag(){
 // 400×500 is taller than most phone viewports once the header, progress bar
 // and control pad have taken their cut, so the bottom of the play field ended
 // up below the fold. Measure what's actually left and scale the canvas to it,
-// preserving aspect ratio. Capped at 1× so desktop stays pixel-exact.
+// preserving aspect ratio.
+//
+// The scale runs both ways: it used to be capped at 1×, which kept the board
+// at a postage-stamp 400×500 on a desktop with most of the window sitting
+// empty around it. It now grows into whatever space the layout leaves over,
+// and the canvas's backing store grows with it, so a bigger board is drawn at
+// full resolution rather than being a stretched-up 400×500 bitmap.
 function fitCanvas(){
   const holder = document.getElementById('g-canvas-holder');
   if(!holder || holder.style.display === 'none' || !aCanvas) return;
@@ -408,20 +426,44 @@ function fitCanvas(){
   // width there and height everywhere else.
   const beside = ctrlVisible && getComputedStyle(holder).display === 'flex';
   const ctrlBox = ctrlVisible ? controls.getBoundingClientRect() : null;
-  const ctrlH = (ctrlVisible && !beside) ? ctrlBox.height + 14 : 0;
+  const ctrlH = (ctrlVisible && !beside) ? ctrlBox.height + 10 : 0;   // + #arcade-controls margin-top
   const ctrlW = beside ? ctrlBox.width + 12 : 0;
 
   const availW = area.clientWidth - ctrlW;
+  // The header is measured, never assumed, so its exact height (title line,
+  // stat pills, hint caption) costs the board only what it actually uses.
   // holder.top is independent of the canvas's own height, so measuring it
   // before resizing doesn't feed back on itself. The 24px covers the screen's
   // bottom padding and the home-indicator safe area.
   const availH = window.innerHeight - holder.getBoundingClientRect().top - ctrlH - 24;
 
   // Floor is deliberately low: on a landscape phone there genuinely isn't much
-  // height, and a small board beats one whose bottom half is off-screen.
-  const scale = Math.min(availW / aCanvas.width, Math.max(130, availH) / aCanvas.height, 1);
-  aCanvas.style.width  = Math.round(aCanvas.width  * scale) + 'px';
-  aCanvas.style.height = Math.round(aCanvas.height * scale) + 'px';
+  // height, and a small board beats one whose bottom half is off-screen. In
+  // practice .g-area's 700px cap binds first (1.75×), keeping the board no
+  // wider than the header and progress bar above it; the 1.9× ceiling is a
+  // backstop for if that ever widens.
+  const scale = Math.min(availW / BOARD_W, Math.max(130, availH) / BOARD_H, 1.9);
+  const cssW = Math.round(BOARD_W * scale), cssH = Math.round(BOARD_H * scale);
+  aCanvas.style.width  = cssW + 'px';
+  aCanvas.style.height = cssH + 'px';
+
+  // Let the header and progress bar track the board's width, so the three read
+  // as one unit rather than a narrow field under a full-width bar. The CSS
+  // floors it, so a small board can't squeeze the header into wrapping (which
+  // would change its height and feed back into the measurement above).
+  area.closest('.screen')?.style.setProperty('--board-w', cssW + 'px');
+
+  // Match the backing store to the on-screen size (retina included) and let a
+  // base transform map the 400×500 game units onto it. Assigning width/height
+  // wipes the canvas and resets context state, so only touch it when the size
+  // genuinely changed — every game redraws on its next animation frame.
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const pxW = Math.round(cssW * dpr), pxH = Math.round(cssH * dpr);
+  if(aCanvas.width !== pxW || aCanvas.height !== pxH){
+    aCanvas.width  = pxW;
+    aCanvas.height = pxH;
+  }
+  aCtx?.setTransform(pxW / BOARD_W, 0, 0, pxH / BOARD_H, 0, 0);
 }
 let _fitRaf = 0;
 function scheduleFit(){ cancelAnimationFrame(_fitRaf); _fitRaf = requestAnimationFrame(fitCanvas); }
@@ -522,7 +564,7 @@ document.getElementById('btn-login').onclick=async()=>{
   const pass=document.getElementById('l-pass').value;
   if(!email||!pass){setErr('Fields cannot remain unassigned.');return}
   try{const c=await auth.signInWithEmailAndPassword(email,pass);await loadUser(c.user.uid)}
-  catch(e){setErr(fErr(e.code))}
+  catch(e){console.error('Sign-in failed:',e);setErr(fErr(e.code,'email'))}
 };
 
 document.getElementById('btn-signup').onclick=async()=>{
@@ -537,11 +579,22 @@ document.getElementById('btn-signup').onclick=async()=>{
     const c=await auth.createUserWithEmailAndPassword(email,pass);
     await db.ref('players/' + c.user.uid).set({ username: name, totalPoints: 0, gamesPlayed: 0 });
     await loadUser(c.user.uid);
-  }catch(e){setErr(fErr(e.code))}
+  }catch(e){console.error('Sign-up failed:',e);setErr(fErr(e.code,'email'))}
   finally{authPending=false}
 };
 
-const fErr=c=>({'auth/email-already-in-use':'Target email node already claimed.','auth/wrong-password':'Input encryption key mismatch.','auth/user-not-found':'Identity node missing.','auth/weak-password':'Minimum signature length unfulfilled.','auth/invalid-email':'Malformed structural routing email.','auth/operation-not-allowed':'Guest protocol offline — enable Anonymous sign-in in the Firebase Console.','auth/admin-restricted-operation':'Guest protocol offline — enable Anonymous sign-in in the Firebase Console.','auth/credential-already-in-use':'That email is already bound to another identity node.','auth/provider-already-linked':'This session already holds a permanent identity.','auth/requires-recent-login':'Session too old to re-key. Exit and sign in again.','auth/email-already-exists':'Target email node already claimed.'}[c]||'Matrix validation anomaly.');
+const fErrMap={'auth/email-already-in-use':'Target email node already claimed.','auth/wrong-password':'Input encryption key mismatch.','auth/user-not-found':'Identity node missing.','auth/weak-password':'Minimum signature length unfulfilled.','auth/invalid-email':'Malformed structural routing email.','auth/credential-already-in-use':'That email is already bound to another identity node.','auth/provider-already-linked':'This session already holds a permanent identity.','auth/requires-recent-login':'Session too old to re-key. Exit and sign in again.','auth/email-already-exists':'Target email node already claimed.'};
+
+// 'operation-not-allowed' / 'admin-restricted-operation' only ever mean "the
+// provider this call needs is switched off" — WHICH provider depends on the
+// call, so every site passes its own context. Linking a guest to an email is an
+// Email/Password operation, not an Anonymous one; naming the wrong toggle sends
+// people back to the Console to re-enable something already enabled.
+const fErrProviderOff={
+  guest:'Guest protocol offline — enable Anonymous sign-in in the Firebase Console.',
+  email:'Email protocol offline — enable Email/Password sign-in in the Firebase Console.'
+};
+const fErr=(c,ctx)=>((c==='auth/operation-not-allowed'||c==='auth/admin-restricted-operation')?(fErrProviderOff[ctx]||fErrProviderOff.email):(fErrMap[c]||'Matrix validation anomaly.'));
 
 // ── 🎮 GUEST ACCESS — FIREBASE ANONYMOUS AUTH ──
 // Derives a stable display handle from the anonymous UID, e.g. "Guest_A1B2C".
@@ -572,7 +625,7 @@ async function signInAsGuest(){
     toast('🎮 Guest access granted — progress lives in this browser only.',4000);
   }catch(e){
     console.error('Guest sign-in failed:',e);
-    setErr(fErr(e.code));
+    setErr(fErr(e.code,'guest'));
   }finally{
     authPending=false;
     btn.disabled=false;btn.textContent=label;
@@ -1111,8 +1164,8 @@ function startNebula(){
   document.getElementById('prog-fill').style.width = '100%';
   document.getElementById('prog-fill').style.background = 'linear-gradient(90deg, #ff0844, #ff4e50)';
 
-  for (let i = 0; i < 30; i++) backgroundStars.push({ x: Math.random() * 400, y: Math.random() * 500, size: 1, speed: 0.5, alpha: 0.4 });
-  for (let i = 0; i < 15; i++) backgroundStars.push({ x: Math.random() * 400, y: Math.random() * 500, size: 1.6, speed: 1.4, alpha: 0.8 });
+  for (let i = 0; i < 30; i++) backgroundStars.push({ x: Math.random() * BOARD_W, y: Math.random() * BOARD_H, size: 1, speed: 0.5, alpha: 0.4 });
+  for (let i = 0; i < 15; i++) backgroundStars.push({ x: Math.random() * BOARD_W, y: Math.random() * BOARD_H, size: 1.6, speed: 1.4, alpha: 0.8 });
 
   let keys = {}, moveLeft = false, moveRight = false;
   // ── TOUCH FLIGHT STATE ──
@@ -1174,7 +1227,7 @@ function startNebula(){
       const prevX = player.x;
       player.x = p.x + grabDX - player.w / 2;
       player.y = p.y + grabDY - player.h / 2;
-      player.x = Math.max(5, Math.min(400 - player.w - 5, player.x));
+      player.x = Math.max(5, Math.min(BOARD_W - player.w - 5, player.x));
       player.y = Math.max(FLY_Y_MIN, Math.min(FLY_Y_MAX, player.y));
       player.vx = (player.x - prevX) * 0.55;   // feeds the hull's banking tilt
     },
@@ -1202,7 +1255,7 @@ function startNebula(){
 
     if (abil.id === 'SMART_MISSILE') {
       // Fire 3 homing missiles that launch FROM the ship nose and track nearest enemies
-      popText(200, player.y - 24, '🎯 SMART MISSILES!', '#00f5ff');
+      popText(BOARD_W / 2, player.y - 24, '🎯 SMART MISSILES!', '#00f5ff');
       screenShake = 6;
       const shipNoseX = player.x + player.w/2;
       const shipNoseY = player.y;
@@ -1241,7 +1294,7 @@ function startNebula(){
         const ang = (i/40)*Math.PI*2, v = Math.random()*5+2;
         particles.push({ x: player.x+player.w/2, y: player.y+player.h/2, vx: Math.cos(ang)*v, vy: Math.sin(ang)*v, alpha: 1, decay: 0.025, color: '#a855f7', size: Math.random()*3+1 });
       }
-      popText(200, player.y - 24, '🛡️ SHIELD RESTORED!', '#a855f7');
+      popText(BOARD_W / 2, player.y - 24, '🛡️ SHIELD RESTORED!', '#a855f7');
       setTimeout(() => {
         shieldBubbleActive = false;
         activeAbility = null;
@@ -1252,12 +1305,12 @@ function startNebula(){
       timeWarpActive = true;
       timeWarpTimer = 180; // 3 seconds at 60fps
       screenShake = 8;
-      popText(200, 200, '⏳ TIME WARP!', '#ffd700');
+      popText(BOARD_W / 2, 200, '⏳ TIME WARP!', '#ffd700');
       // Radial particle ring
       for (let i = 0; i < 36; i++) {
         const ang = (i/36)*Math.PI*2;
         particles.push({
-          x: 200 + Math.cos(ang)*120, y: 250 + Math.sin(ang)*100,
+          x: BOARD_W / 2 + Math.cos(ang)*120, y: 250 + Math.sin(ang)*100,
           vx: -Math.cos(ang)*0.8, vy: -Math.sin(ang)*0.8,
           alpha: 0.9, decay: 0.008, color: '#ffd700', size: 2.5
         });
@@ -1267,7 +1320,7 @@ function startNebula(){
     } else if (abil.id === 'NOVA_BOMB') {
       // Destroy ALL enemies on screen with massive expanding shockwave
       screenShake = 30;
-      popText(200, 200, '💥 NOVA BOMB!', '#ff0090');
+      popText(BOARD_W / 2, 200, '💥 NOVA BOMB!', '#ff0090');
       // Award points for all enemies destroyed
       const enemyCount = enemies.length;
       enemies.forEach(e => {
@@ -1284,7 +1337,7 @@ function startNebula(){
           for (let i = 0; i < 60; i++) {
             const ang = (i/60)*Math.PI*2, v = (Math.random()*3+2)*(ring+1)*0.6;
             particles.push({
-              x: 200, y: 250,
+              x: BOARD_W / 2, y: 250,
               vx: Math.cos(ang)*v, vy: Math.sin(ang)*v,
               alpha: 1, decay: 0.018,
               color: ['#ff0090','#ff6600','#ffd700','#fff','#a855f7'][i%5],
@@ -1328,7 +1381,7 @@ function startNebula(){
       if (specialAbilities.length > 1) {
         aCtx.fillStyle = 'rgba(255,255,255,0.55)';
         aCtx.font = 'bold 9px Orbitron';
-        aCtx.fillText('(+' + (specialAbilities.length - 1) + ' more queued)', 200, 487);
+        aCtx.fillText('(+' + (specialAbilities.length - 1) + ' more queued)', BOARD_W / 2, 487);
       }
     } else if (activeAbility) {
       aCtx.fillStyle = 'rgba(0,0,0,0.65)';
@@ -1339,7 +1392,7 @@ function startNebula(){
       aCtx.font = 'bold 10px Orbitron';
       aCtx.shadowBlur = 12; aCtx.shadowColor = activeAbility.color;
       aCtx.textAlign = 'center';
-      aCtx.fillText('ACTIVE: ' + activeAbility.desc, 200, 475);
+      aCtx.fillText('ACTIVE: ' + activeAbility.desc, BOARD_W / 2, 475);
       aCtx.textAlign = 'left';
     }
 
@@ -1366,7 +1419,7 @@ function startNebula(){
   }
 
   const player = {
-    x: 183, y: 430, w: 34, h: 26, vx: 0, vy: 0, friction: 0.85, accel: 1.2, cooldown: 0, angle: 0,
+    x: (BOARD_W - 34) / 2, y: 430, w: 34, h: 26, vx: 0, vy: 0, friction: 0.85, accel: 1.2, cooldown: 0, angle: 0,
     get weaponLevel() { return Math.min(3, plasmaOrbs + 1); },
     update(dt) {
       if (touchFlying) {
@@ -1385,7 +1438,7 @@ function startNebula(){
         this.angle = this.vx * 0.05;
       }
       if (this.x < 5) { this.x = 5; this.vx = 0; }
-      if (this.x > 400 - this.w - 5) { this.x = 400 - this.w - 5; this.vx = 0; }
+      if (this.x > BOARD_W - this.w - 5) { this.x = BOARD_W - this.w - 5; this.vx = 0; }
       if (this.y < FLY_Y_MIN) { this.y = FLY_Y_MIN; this.vy = 0; }
       if (this.y > FLY_Y_MAX) { this.y = FLY_Y_MAX; this.vy = 0; }
       if (this.cooldown > 0) this.cooldown -= dt;
@@ -1438,7 +1491,7 @@ function startNebula(){
   // ── ENEMY CLASS (with attack behaviours) ──
   class Enemy {
     constructor(type) {
-      this.type = type; this.x = Math.random() * 340 + 10; this.y = -30; this.offset = Math.random() * 100;
+      this.type = type; this.x = Math.random() * (BOARD_W - 60) + 10; this.y = -30; this.offset = Math.random() * 100;
       this.attackTimer = 0;
       if (type === 'SCOUT') {
         // PINK — dives straight down fast, accelerates over time
@@ -1657,7 +1710,7 @@ function startNebula(){
     if (isOver) return;
     let dt = now - lastTime; lastTime = now;
     frame++;
-    aCtx.clearRect(0, 0, 400, 500);
+    aCtx.clearRect(0, 0, BOARD_W, BOARD_H);
 
     aCtx.save();
     if (screenShake > 0.5) { aCtx.translate((Math.random()-0.5)*screenShake, (Math.random()-0.5)*screenShake); screenShake *= 0.88; }
@@ -1666,7 +1719,7 @@ function startNebula(){
     if (shieldFlashTimer > 0) {
       shieldFlashTimer--;
       aCtx.fillStyle = `rgba(255,0,0,${shieldFlashTimer/15*0.25})`;
-      aCtx.fillRect(0, 0, 400, 500);
+      aCtx.fillRect(0, 0, BOARD_W, BOARD_H);
     }
 
     // Time warp visual (blue tint + slowdown label)
@@ -1679,16 +1732,16 @@ function startNebula(){
         activeAbility = null;
       }
       aCtx.fillStyle = 'rgba(255,215,0,0.04)';
-      aCtx.fillRect(0, 0, 400, 500);
+      aCtx.fillRect(0, 0, BOARD_W, BOARD_H);
       // Pulsing border
       aCtx.strokeStyle = `rgba(255,215,0,${0.3 + Math.sin(frame*0.2)*0.2})`;
       aCtx.lineWidth = 3;
-      aCtx.strokeRect(2, 2, 396, 496);
+      aCtx.strokeRect(2, 2, BOARD_W - 4, BOARD_H - 4);
     }
 
     backgroundStars.forEach(s => {
       s.y += s.speed * (timeWarpActive ? 0.35 : 1);
-      if (s.y > 500) s.y = 0;
+      if (s.y > BOARD_H) s.y = 0;
       aCtx.fillStyle = `rgba(255,255,255,${s.alpha})`; aCtx.fillRect(s.x, s.y, s.size, s.size);
     });
 
@@ -1908,7 +1961,8 @@ function startTetris(){
 
   let tetrisOver=false;
   let score=0, level=1, linesCleared=0, time=60 / diffMod;
-  let arena=createMatrix(10,20), player={pos:{x:0,y:0}, matrix:null}, nextPiece=null;
+  const TET_COLS = Math.floor(BOARD_W / 40);   // 40 = cell width, so cells keep their shape
+  let arena=createMatrix(TET_COLS,20), player={pos:{x:0,y:0}, matrix:null}, nextPiece=null;
   let dropCounter=0, dropInterval=600 * diffMod, lastTime=performance.now(), screenShake=0;
   let particles = [];
   
@@ -2091,7 +2145,7 @@ function startTetris(){
   function loop(now){
     if(tetrisOver)return;
     const dt = now - lastTime; lastTime = now;
-    aCtx.clearRect(0,0,400,500); nCtx.clearRect(0,0,80,80);
+    aCtx.clearRect(0,0,BOARD_W,BOARD_H); nCtx.clearRect(0,0,80,80);
     
     dropCounter += dt; if(dropCounter > dropInterval) playerDrop();
     
@@ -2105,8 +2159,8 @@ function startTetris(){
     
     // Draw Environment
     aCtx.strokeStyle='rgba(255,255,255,0.05)';
-    for(let i=0; i<10; i++) { aCtx.beginPath(); aCtx.moveTo(i*40,0); aCtx.lineTo(i*40,500); aCtx.stroke(); }
-    for(let i=0; i<20; i++) { aCtx.beginPath(); aCtx.moveTo(0,i*25); aCtx.lineTo(400,i*25); aCtx.stroke(); }
+    for(let i=0; i<=TET_COLS; i++) { aCtx.beginPath(); aCtx.moveTo(i*40,0); aCtx.lineTo(i*40,BOARD_H); aCtx.stroke(); }
+    for(let i=0; i<20; i++) { aCtx.beginPath(); aCtx.moveTo(0,i*25); aCtx.lineTo(BOARD_W,i*25); aCtx.stroke(); }
     
     drawMatrix(ghost.matrix, ghost.pos, aCtx, true);
     drawMatrix(arena, {x:0, y:0}, aCtx);
@@ -2147,12 +2201,12 @@ function startDodge(){
   setControlHint('DRAG ANYWHERE TO STEER YOUR CORE', 'MOVE THE MOUSE TO STEER YOUR CORE');
   showTouchHint('DRAG ANYWHERE TO STEER');
   fitCanvas();
-  let score=0, time=30, isGameOver=false, player={x:200,y:250,r:8}, obstacles=[];
+  let score=0, time=30, isGameOver=false, player={x:BOARD_W/2,y:BOARD_H/2,r:8}, obstacles=[];
   document.getElementById('g-time').textContent=time;
 
   const place = (x, y) => {
-    player.x = Math.max(player.r, Math.min(400 - player.r, x));
-    player.y = Math.max(player.r, Math.min(500 - player.r, y));
+    player.x = Math.max(player.r, Math.min(BOARD_W - player.r, x));
+    player.y = Math.max(player.r, Math.min(BOARD_H - player.r, y));
   };
 
   // ── STEERING ──
@@ -2193,13 +2247,13 @@ function startDodge(){
 
     // Solid dark background so nothing blends into page
     aCtx.fillStyle = '#0a0a1a';
-    aCtx.fillRect(0,0,400,500);
+    aCtx.fillRect(0,0,BOARD_W,BOARD_H);
 
     // Subtle grid lines for depth
     aCtx.strokeStyle = 'rgba(255,255,255,0.04)';
     aCtx.lineWidth = 1;
-    for(let gx=0;gx<=400;gx+=40){ aCtx.beginPath();aCtx.moveTo(gx,0);aCtx.lineTo(gx,500);aCtx.stroke(); }
-    for(let gy=0;gy<=500;gy+=40){ aCtx.beginPath();aCtx.moveTo(0,gy);aCtx.lineTo(400,gy);aCtx.stroke(); }
+    for(let gx=0;gx<=BOARD_W;gx+=40){ aCtx.beginPath();aCtx.moveTo(gx,0);aCtx.lineTo(gx,BOARD_H);aCtx.stroke(); }
+    for(let gy=0;gy<=BOARD_H;gy+=40){ aCtx.beginPath();aCtx.moveTo(0,gy);aCtx.lineTo(BOARD_W,gy);aCtx.stroke(); }
 
     // Player dot — equipped color with glow
     aCtx.save();
@@ -2213,10 +2267,10 @@ function startDodge(){
     drawSkinBadge(player.x, player.y - player.r - 10);
 
     // Spawn obstacles
-    if(Math.random() < .08) {
+    if(Math.random() < .08 * (BOARD_W / 400)) {
       const col = obstacleColors[Math.floor(Math.random()*obstacleColors.length)];
       obstacles.push({
-        x: Math.random()*380+10, y: -10,
+        x: Math.random()*(BOARD_W-20)+10, y: -10,
         vx: (Math.random()-0.5)*4, vy: Math.random()*3+3,
         r: Math.random()*6+8,
         color: col
@@ -2241,7 +2295,7 @@ function startDodge(){
 
       const dx = o.x - player.x, dy = o.y - player.y;
       if(Math.sqrt(dx*dx + dy*dy) < o.r + player.r){ isGameOver=true; end(); return; }
-      if(o.y > 520) obstacles.splice(i,1);
+      if(o.y > BOARD_H + 20) obstacles.splice(i,1);
     }
 
     gameLoopId = requestAnimationFrame(loop);
@@ -2364,8 +2418,11 @@ async function loadLeaderboard(){
       const players=[];snapshot.forEach(c=>{players.push({uid:c.key,...c.val()})});players.reverse();
       const medals=['🥇','🥈','🥉'];panel.innerHTML='<div class="lb-title">🏆 TOP PLAYERS</div>';
       players.forEach((d,i)=>{
-        const isMe=user&&d.uid===user.uid;const cls=isMe?'me':i===0?'r1':'';
-        const row=document.createElement('div');row.className=`lb-row ${cls}`;
+        // Podium place and "this is you" are independent: a logged-in player
+        // sitting 2nd keeps the silver row and gets the blue marker too.
+        const isMe=user&&d.uid===user.uid;
+        const cls=[i<3?`r${i+1}`:'', isMe?'me':''].filter(Boolean).join(' ');
+        const row=document.createElement('div');row.className=`lb-row ${cls}`.trim();
         row.innerHTML=`<div class="lb-rank">${medals[i]||'#'+(i+1)}</div><div class="lb-name">${esc(d.username)}${isMe?' ← You':''}</div><div class="lb-score">${(parseInt(d.totalPoints)||0).toLocaleString()} PTS</div>`;
         panel.appendChild(row);
       });
@@ -2386,10 +2443,11 @@ function startPong(){
   showTouchHint('DRAG UP AND DOWN TO MOVE YOUR PADDLE');
   fitCanvas();
 
-  const W=400, H=500, PAD_W=10, PAD_H=70, BALL_R=7;
+  const W=BOARD_W, H=BOARD_H, PAD_W=10, PAD_H=70, BALL_R=7;
+  const X_SCALE = W / 400;   // keeps a rally the same length in seconds
   let userScore=0, cpuScore=0, time=45, isOver=false;
   let playerY=H/2-PAD_H/2, aiY=H/2-PAD_H/2;
-  let ballX=W/2, ballY=H/2, ballVX=4*(Math.random()<0.5?1:-1), ballVY=3*(Math.random()<0.5?1:-1);
+  let ballX=W/2, ballY=H/2, ballVX=4*X_SCALE*(Math.random()<0.5?1:-1), ballVY=3*(Math.random()<0.5?1:-1);
   let aiSpeed=2.8;
   let rallyCount = 0; // Track current rally length
   const updateScore = () => {
@@ -2557,7 +2615,7 @@ function startSnake(){
   const baseTime = 60;
   const adjustedTime = baseTime / diffMod;
 
-  const W=400,H=500,CELL=20,COLS=W/CELL,ROWS=H/CELL;
+  const W=BOARD_W,H=BOARD_H,CELL=20,COLS=W/CELL,ROWS=H/CELL;
   let score=0,time=adjustedTime,isOver=false;
   let dir={x:1,y:0},nextDir={x:1,y:0};
   let snake=[{x:10,y:12},{x:9,y:12},{x:8,y:12}];
@@ -2718,7 +2776,7 @@ function startFlappy(){
 
   const diffMod = getDifficultyModifier();
 
-  const W=400,H=500,GAP=140,PIPE_W=46,GRAVITY=0.42*diffMod,FLAP=-7.5/diffMod,PIPE_SPEED=2.4*diffMod;
+  const W=BOARD_W,H=BOARD_H,GAP=140,PIPE_W=46,GRAVITY=0.42*diffMod,FLAP=-7.5/diffMod,PIPE_SPEED=2.4*diffMod*(BOARD_W/400);
   let score=0,time=0,isOver=false,frame=0;
   let droneY=H/2,droneVY=0;
   let pipes=[],particles=[];
@@ -2898,8 +2956,9 @@ function startBreaker(){
   fitCanvas();
 
   const diffMod = getDifficultyModifier();
-  const W=400, H=500;
-  const COLS=8, ROWS=5, B_W=44, B_H=18, B_GAP=6, B_TOP=64;
+  const W=BOARD_W, H=BOARD_H;
+  const ROWS=5, B_W=44, B_H=18, B_GAP=6, B_TOP=64;
+  const COLS=Math.floor((W+B_GAP)/(B_W+B_GAP));   // 8 at 400 wide, 11 at 560
   const B_LEFT=(W-(COLS*B_W+(COLS-1)*B_GAP))/2;
   const PAD_H=11, PAD_Y=H-34, BALL_R=6;
 
@@ -3268,7 +3327,7 @@ function startArena() {
   fitCanvas();
 
   // ── CONSTANTS ──
-  const W = 400, H = 500;
+  const W = BOARD_W, H = BOARD_H;
   const ARENA_W = 800, ARENA_H = 900; // scrollable world larger than canvas
   const TILE = 40;
 
@@ -4939,7 +4998,7 @@ async function sendFeedback(payload){
       loadLeaderboard();
     }catch(e){
       console.error('Account upgrade failed:', e);
-      errEl.textContent = fErr(e.code);
+      errEl.textContent = fErr(e.code, 'email');
       saving = false;
     }finally{
       submitEl.disabled = false;

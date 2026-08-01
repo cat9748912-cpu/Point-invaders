@@ -4,6 +4,8 @@
   --border:rgba(255,255,255,0.1);--border2:rgba(255,255,255,0.22);
   --cyan:#00f5ff;--pink:#ff0090;--lime:#39ff14;--gold:#ffd700;
   --purple:#a855f7;--orange:#ff6600;--red:#ff2442;
+  /* Leaderboard: podium metals + the "that's you" blue */
+  --silver:#c9d4e0;--bronze:#cd7f32;--blue:#3b82f6;
   --text:#fff;--dim:rgba(255,255,255,0.55);--dimmer:rgba(255,255,255,0.28);
   --fd:'Orbitron',monospace;--fb:'Rajdhani',sans-serif;--r:12px;--rl:18px
 }
@@ -16,8 +18,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 
 /* ── TYPE ── */
 .logo{font-family:var(--fd);font-weight:900;font-size:clamp(1.8rem,5vw,3.5rem);background:linear-gradient(90deg,var(--cyan),var(--pink));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;letter-spacing:.05em;line-height:1;text-align:center}
-.tagline{font-family:var(--fd);font-size:.55rem;letter-spacing:.3em;color:var(--dim);text-transform:uppercase;margin-top:8px;text-align:center}
-.sec-label{font-family:var(--fd);font-size:.6rem;font-weight:700;color:var(--cyan);letter-spacing:.2em;text-transform:uppercase;margin-bottom:14px}
+.tagline{font-family:var(--fd);font-size:.55rem;letter-spacing:.3em;color:var(--dim);text-transform:uppercase;margin-top:14px;text-align:center}
+.sec-label{font-family:var(--fd);font-size:.6rem;font-weight:700;color:var(--cyan);letter-spacing:.2em;text-transform:uppercase;margin-bottom:20px}
 
 /* ── BUTTONS ── */
 .btn{font-family:var(--fd);font-size:.7rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:11px 26px;border:none;border-radius:8px;cursor:pointer;transition:all .2s ease;white-space:nowrap}
@@ -33,8 +35,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .input{width:100%;background:var(--s2);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-family:var(--fb);font-size:1rem;font-weight:600;padding:11px 16px;outline:none;transition:border-color .2s,box-shadow .2s}
 .input::placeholder{color:var(--dimmer)}
 .input:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(0,245,255,.1)}
-.input-label{display:block;font-size:.7rem;font-weight:600;color:var(--dim);letter-spacing:.12em;text-transform:uppercase;margin-bottom:6px;font-family:var(--fd)}
-.field{margin-bottom:14px}
+.input-label{display:block;font-size:.7rem;font-weight:600;color:var(--dim);letter-spacing:.12em;text-transform:uppercase;margin-bottom:9px;font-family:var(--fd)}
+.field{margin-bottom:18px}
 
 /* ── AUTH SCREEN ── */
 #auth-screen .wrap{width:100%;max-width:400px;text-align:center}
@@ -77,14 +79,14 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .market-panel.active{display:block}
 .convert-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px}
 .convert-card{text-align:center}
-.convert-rate{font-family:var(--fd);font-size:.6rem;color:var(--gold);letter-spacing:.1em;margin:6px 0 14px}
-.convert-preview{font-family:var(--fd);font-size:1rem;color:var(--cyan);margin:12px 0;font-weight:700}
+.convert-rate{font-family:var(--fd);font-size:.6rem;color:var(--gold);letter-spacing:.1em;margin:12px 0 20px}
+.convert-preview{font-family:var(--fd);font-size:1rem;color:var(--cyan);margin:16px 0;font-weight:700}
 .shop-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:18px 14px}
 .shop-card{position:relative;background:var(--s1);border:1px solid var(--border);border-radius:var(--rl);padding:20px 14px;text-align:center;transition:all .2s ease}
 .shop-card.equipped{border-color:var(--gold);box-shadow:0 8px 24px rgba(255,215,0,.15)}
 .shop-swatch{width:56px;height:56px;border-radius:50%;margin:0 auto 12px;border:2px solid rgba(255,255,255,.2)}
 .shop-emoji{font-size:2.4rem;margin-bottom:10px}
-.shop-name{font-family:var(--fd);font-size:.62rem;font-weight:700;margin-bottom:8px;letter-spacing:.04em}
+.shop-name{font-family:var(--fd);font-size:.62rem;font-weight:700;margin-bottom:11px;letter-spacing:.04em}
 .shop-tag{display:inline-block;font-family:var(--fd);font-size:.5rem;color:var(--gold);border:1px solid var(--gold);border-radius:20px;padding:2px 10px;margin-bottom:10px;letter-spacing:.1em}
 .shop-btn{width:100%}
 
@@ -124,7 +126,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 @keyframes ccur-code-flicker{0%,100%{opacity:1;transform:translateY(0)}50%{opacity:.75;transform:translateY(-3px)}}
 
 /* ── HUB BODY (Leaderboard & Games) ── */
-.hub-body{display:grid;grid-template-columns:1fr 300px;gap:20px;width:100%;max-width:1060px}
+.hub-body{display:grid;grid-template-columns:1fr 300px;gap:26px;width:100%;max-width:1060px}
 .games-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px;align-content:start}
 .game-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--rl);padding:22px 16px;text-align:center;cursor:pointer;transition:transform .25s ease,border-color .25s ease,box-shadow .25s ease;position:relative;overflow:hidden}
 .game-card:hover{transform:translateY(-5px) scale(1.02)}
@@ -135,8 +137,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .game-card[data-c="purple"]:hover{border-color:var(--purple);box-shadow:0 8px 30px rgba(168,85,247,.2)}
 .game-card[data-c="orange"]:hover{border-color:var(--orange);box-shadow:0 8px 30px rgba(255,102,0,.2)}
 .game-card[data-c="red"]:hover   {border-color:var(--red);   box-shadow:0 8px 30px rgba(255,36,66,.2)}
-.gc-icon{font-size:2.8rem;display:block;margin-bottom:10px}
-.gc-name{font-family:var(--fd);font-size:.6rem;font-weight:700;letter-spacing:.08em;margin-bottom:8px}
+.gc-icon{font-size:2.8rem;display:block;margin-bottom:12px}
+.gc-name{font-family:var(--fd);font-size:.6rem;font-weight:700;letter-spacing:.08em;margin-bottom:11px}
 .gc-name[data-c="cyan"]  {color:var(--cyan)}
 .gc-name[data-c="pink"]  {color:var(--pink)}
 .gc-name[data-c="lime"]  {color:var(--lime)}
@@ -144,7 +146,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .gc-name[data-c="purple"]{color:var(--purple)}
 .gc-name[data-c="orange"]{color:var(--orange)}
 .gc-name[data-c="red"]   {color:var(--red)}
-.gc-desc{font-size:.75rem;color:var(--dim);line-height:1.45;margin-bottom:12px}
+.gc-desc{font-size:.75rem;color:var(--dim);line-height:1.45;margin-bottom:15px}
 .gc-pts{display:inline-block;padding:3px 12px;border-radius:20px;font-family:var(--fd);font-size:.5rem;font-weight:700;border:1px solid}
 .gc-pts[data-c="cyan"]  {color:var(--cyan);  border-color:var(--cyan);  background:rgba(0,245,255,.06)}
 .gc-pts[data-c="pink"]  {color:var(--pink);  border-color:var(--pink);  background:rgba(255,0,144,.06)}
@@ -157,10 +159,27 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 /* ── LEADERBOARD ── */
 .lb-panel{background:var(--s1);border:1px solid var(--border);border-radius:var(--rl);padding:18px;overflow-y:auto;max-height:520px}
 .lb-title{font-family:var(--fd);font-size:.65rem;font-weight:700;color:var(--gold);letter-spacing:.15em;text-transform:uppercase;margin-bottom:14px;text-align:center}
-.lb-row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--s2);margin-bottom:7px}
-.lb-row.me   {border-color:var(--cyan);background:rgba(0,245,255,.05)}
-.lb-row.r1   {border-color:rgba(255,215,0,.5);background:rgba(255,215,0,.06)}
-.lb-rank{font-family:var(--fd);font-size:.9rem;font-weight:900;width:26px;text-align:center;color:var(--dimer)}
+.lb-row{position:relative;display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--s2);margin-bottom:7px}
+
+/* "You" is declared before the podium tints on purpose: a logged-in player
+   who is also on the podium keeps their medal colour on the row, and the blue
+   shows as the edge marker, name and glow instead of overwriting it. */
+.lb-row.me{border-color:var(--blue);background:rgba(59,130,246,.07)}
+.lb-row.me .lb-name{color:var(--blue)}
+/* The glow would swamp a medal tint, so only a player outside the top three
+   gets it — on the podium the edge marker and blue name carry the signal. */
+.lb-row.me:not(.r1):not(.r2):not(.r3){box-shadow:0 0 14px rgba(59,130,246,.18)}
+.lb-row.me::before{content:'';position:absolute;left:0;top:7px;bottom:7px;width:3px;border-radius:0 3px 3px 0;background:var(--blue);box-shadow:0 0 8px var(--blue)}
+
+/* Podium: gold, silver, bronze. */
+.lb-row.r1{border-color:rgba(255,215,0,.55);background:rgba(255,215,0,.07)}
+.lb-row.r2{border-color:rgba(201,212,224,.7);background:rgba(201,212,224,.09)}
+.lb-row.r3{border-color:rgba(205,127,50,.6);background:rgba(205,127,50,.08)}
+.lb-row.r1 .lb-score{color:var(--gold)}
+.lb-row.r2 .lb-score{color:var(--silver)}
+.lb-row.r3 .lb-score{color:var(--bronze)}
+
+.lb-rank{font-family:var(--fd);font-size:.9rem;font-weight:900;width:26px;text-align:center;color:var(--dimmer)}
 .lb-name{flex:1;font-weight:700;font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lb-score{font-family:var(--fd);font-size:.65rem;color:var(--gold)}
 .lb-empty{color:var(--dim);font-size:.82rem;text-align:center;padding:30px 0}
@@ -241,7 +260,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .diff-selector{
   display:flex;
   align-items:center;
-  gap:8px;
+  gap:12px;
   margin-bottom:20px;
   flex-direction:column;
   position:relative;
@@ -319,32 +338,50 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   font-family:var(--fd);
   font-size:.65rem;
   color:var(--gold);
-  margin-top:4px;
+  margin-top:6px;
 }
 
 /* ── GAME LAYOUT ENGINE ── */
-#game-screen{justify-content:flex-start;padding-top:18px}
-.g-hdr{display:flex;align-items:center;justify-content:space-between;width:100%;max-width:700px;margin-bottom:12px}
-.g-title{font-family:var(--fd);font-size:.95rem;font-weight:700;letter-spacing:.05em}
-.g-stats{display:flex;gap:8px}
-.stat-pill{background:var(--s2);border:1px solid var(--border);border-radius:20px;padding:5px 14px;font-family:var(--fd);font-size:.6rem;font-weight:700}
+/* Every pixel of chrome above the board comes straight off the play field,
+   which is aspect-locked and therefore sized by the height left over. */
+#game-screen{justify-content:flex-start;padding-top:10px}
+/* The header used to be one space-between row: Quit · title · hint · pills.
+   Every minigame supplies a different hint length, and Tetris adds a LEVEL
+   pill, so the title landed in a different spot in each game — and in the
+   crowded ones it ended up pressed against the Quit button. Between them
+   those four items nearly fill the 700px row, so there is no width left to
+   centre the title reliably. It gets its own line instead: dead-centre,
+   identical in every game, with Quit and the pills on the row beneath. */
+.g-hdr{display:grid;grid-template-columns:auto 1fr;align-items:center;column-gap:16px;row-gap:12px;width:100%;max-width:max(var(--board-w,560px),560px);margin-bottom:12px}
+.g-title{grid-column:1/-1;grid-row:1;text-align:center;font-family:var(--fd);font-size:.95rem;font-weight:700;letter-spacing:.05em}
+.g-hdr > #btn-quit{grid-column:1;grid-row:2;justify-self:start}
+.g-stats{grid-column:2;grid-row:2;justify-self:end;display:flex;align-items:center;gap:8px}
+.stat-pill{background:var(--s2);border:1px solid var(--border);border-radius:20px;padding:5px 14px;font-family:var(--fd);font-size:.6rem;font-weight:700;white-space:nowrap}
 .stat-pill em{font-style:normal;color:var(--cyan)}
-.prog-bar{width:100%;max-width:700px;height:5px;background:var(--s2);border-radius:3px;margin-bottom:20px;overflow:hidden;flex-shrink:0}
+.prog-bar{width:100%;max-width:max(var(--board-w,560px),560px);height:5px;background:var(--s2);border-radius:3px;margin-bottom:12px;overflow:hidden;flex-shrink:0}
 .prog-fill{height:100%;border-radius:3px;transition:width .2s ease-out;background:linear-gradient(90deg,var(--cyan),var(--purple))}
-.g-area{width:100%;max-width:700px;display:flex;flex-direction:column;align-items:center}
+.g-area{width:100%;max-width:1060px;display:flex;flex-direction:column;align-items:center}
 
-/* Game Controls Hint */
+/* Game Controls Hint — a full-width caption on its own row, so a long hint
+   ("DRAG = MOVE · TAP = SLASH · DOUBLE-TAP = ABILITY · ⚡ = DASH") can never
+   squeeze the title or the Quit button. */
 .g-controls{
+  grid-column:1/-1;
+  grid-row:3;
+  text-align:center;
   font-family:var(--fd);
   font-size:.65rem;
   color:var(--dim);
-  margin-top:4px;
   letter-spacing:.02em;
 }
+/* Games with no hint (Click Frenzy, Memory, Math) skip the row entirely. */
+.g-controls:empty{display:none}
 
 /* Canvas & Controls */
 #arcade-canvas{background:#0d0d11;border:2px solid var(--border);border-radius:8px;display:block}
-#arcade-controls{display:flex;width:100%;max-width:400px;gap:10px;margin-top:14px}
+/* The pad spans the board rather than a fixed 400px, so it stays flush with
+   the play field's edges now that the board grows to fill the screen. */
+#arcade-controls{display:flex;width:100%;max-width:100%;gap:10px;margin-top:10px}
 .ctrl-btn{flex:1;background:var(--s2);border:1px solid var(--border);color:#fff;padding:14px;font-family:var(--fd);border-radius:8px;cursor:pointer}
 
 /* Marks a control that permanently commits something (Tetris's hard drop), so
@@ -406,14 +443,14 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 
 /* ── RESULTS SCREEN ── */
 #results-screen .res-card{max-width:440px;width:100%;text-align:center}
-.res-emoji{font-size:4.5rem;display:block;margin-bottom:14px}
-.res-gname{font-family:var(--fd);font-size:.6rem;color:var(--dim);letter-spacing:.15em;text-transform:uppercase;margin-bottom:6px}
+.res-emoji{font-size:4.5rem;display:block;margin-bottom:18px}
+.res-gname{font-family:var(--fd);font-size:.6rem;color:var(--dim);letter-spacing:.15em;text-transform:uppercase;margin-bottom:12px}
 .res-bonus{display:inline-block;font-family:var(--fd);font-size:.62rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:5px 14px;border-radius:20px;margin:0 0 14px;border:1px solid var(--border);background:var(--s2);color:var(--dim)}
 .res-bonus.res-bonus-stable{border-color:#00ff66;color:#00ff66;background:rgba(0,255,102,.08);box-shadow:0 0 10px rgba(0,255,102,.35)}
 .res-bonus.res-bonus-overclocked{border-color:#ffcc00;color:#ffcc00;background:rgba(255,204,0,.08);box-shadow:0 0 10px rgba(255,204,0,.35)}
 .res-bonus.res-bonus-meltdown{border-color:#ff0033;color:#ff0033;background:rgba(255,0,51,.08);box-shadow:0 0 10px rgba(255,0,51,.35);animation:pulse 1.5s infinite}
-.res-pts{font-family:var(--fd);font-size:4.5rem;font-weight:900;line-height:1;background:linear-gradient(135deg,var(--gold),var(--orange));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:4px}
-.res-pts-lbl{color:var(--dim);font-weight:600;font-size:.8rem;margin-bottom:20px}
+.res-pts{font-family:var(--fd);font-size:4.5rem;font-weight:900;line-height:1;background:linear-gradient(135deg,var(--gold),var(--orange));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:10px}
+.res-pts-lbl{color:var(--dim);font-weight:600;font-size:.8rem;margin-bottom:24px}
 .res-bd{background:var(--s2);border-radius:10px;padding:14px;margin-bottom:20px;text-align:left}
 .res-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:.85rem}
 .res-row:last-child{border:none}
@@ -454,9 +491,9 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .fb-close{position:absolute;top:14px;right:14px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--dim);font-size:.8rem;cursor:pointer;transition:all .2s}
 .fb-close:hover{color:var(--pink);border-color:var(--pink);background:rgba(255,0,144,.1)}
 
-.fb-head{text-align:center;margin-bottom:22px}
+.fb-head{text-align:center;margin-bottom:28px}
 .fb-title{font-family:var(--fd);font-size:.95rem;font-weight:900;letter-spacing:.1em;background:linear-gradient(90deg,var(--lime),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.fb-sub{font-family:var(--fd);font-size:.5rem;letter-spacing:.26em;text-transform:uppercase;color:var(--dimmer);margin-top:8px}
+.fb-sub{font-family:var(--fd);font-size:.5rem;letter-spacing:.26em;text-transform:uppercase;color:var(--dimmer);margin-top:13px}
 
 .fb-opt{font-size:.85em;color:var(--dimmer);letter-spacing:.08em;text-transform:none}
 .fb-select{appearance:none;cursor:pointer;background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);background-position:calc(100% - 18px) 50%,calc(100% - 13px) 50%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:40px}
@@ -606,29 +643,29 @@ body { overscroll-behavior: none; }
   }
   .hub-right { justify-content: center; gap: 8px; }
   .hub-logo-sm, .market-title { text-align: center; }
-  .hub-body { grid-template-columns: 1fr; }
+  /* Stacked, the leaderboard's label lands right under the last game card —
+     widen the gap so the two section headings stay clearly separated. */
+  .hub-body { grid-template-columns: 1fr; gap: 30px; }
 
   /* One full-bleed card per row meant scrolling past eleven screen-tall tiles
      to reach the last game. Two compact tiles per row makes the roster
      scannable; the blurb is clamped so every card is the same height. */
   .games-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .game-card { padding: 15px 10px; }
-  .gc-icon { font-size: 1.9rem; margin-bottom: 6px; }
-  .gc-name { font-size: .52rem; margin-bottom: 6px; }
+  .gc-icon { font-size: 1.9rem; margin-bottom: 8px; }
+  .gc-name { font-size: .52rem; margin-bottom: 8px; }
   .gc-desc {
-    font-size: .68rem; line-height: 1.35; margin-bottom: 9px;
+    font-size: .68rem; line-height: 1.35; margin-bottom: 11px;
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
     overflow: hidden;
   }
   .gc-pts { font-size: .44rem; padding: 2px 8px; }
   .lb-panel { max-height: 320px; }
 
-  .g-hdr { flex-wrap: wrap; gap: 8px; justify-content: center; }
-  .g-title { order: -1; width: 100%; text-align: center; font-size: .8rem; }
-  /* Control hints are a full-width caption under the title, not a squeezed
-     column fighting the Quit button and stat pills for the same row. */
-  .g-controls { order: 99; width: 100%; text-align: center; margin-top: 0; font-size: .52rem; line-height: 1.6; }
-  .g-controls:empty { display: none; }
+  /* Same three-row header, just tighter — the phone needs the height. */
+  .g-hdr { column-gap: 12px; row-gap: 8px; }
+  .g-title { font-size: .8rem; }
+  .g-controls { font-size: .52rem; line-height: 1.6; }
   .stat-pill { padding: 5px 10px; font-size: .55rem; }
   .prog-bar { margin-bottom: 10px; }
   #game-screen { padding-top: 10px; }
@@ -664,15 +701,22 @@ body { overscroll-behavior: none; }
      title is in the card you just tapped — drop both and give the space back. */
   #game-screen { padding-top: 6px; }
   .g-controls { display: none; }
-  .g-title { order: 0; width: auto; font-size: .7rem; }
-  .g-hdr { flex-wrap: nowrap; gap: 6px; }
+  /* Back to a single row — height is the scarce thing here, and with the hint
+     gone the title is the only flexible item. It sits in the middle track so
+     it stays clear of Quit and the pills without ever overflowing the row. */
+  .g-hdr { grid-template-columns: auto 1fr auto; column-gap: 12px; row-gap: 0; }
+  .g-hdr > #btn-quit { grid-column: 1; grid-row: 1; }
+  .g-title { grid-column: 2; grid-row: 1; font-size: .7rem; }
+  .g-stats { grid-column: 3; grid-row: 1; }
   .prog-bar { margin-bottom: 6px; height: 4px; }
 
   /* Landscape has width to spare and no height at all, so the pad moves to the
      side of the board instead of underneath it — the board then gets the full
      column height. !important is needed because each game sets the holder's
-     display inline when it mounts. */
-  #g-canvas-holder { display: flex !important; align-items: center; gap: 12px; }
+     display inline when it mounts — which is also why this is scoped to
+     .canvas-game: unscoped, it re-showed the holder (and a stale board) on
+     top of Memory Match, Math Blitz and Reaction Time, which hide it. */
+  #game-screen.canvas-game #g-canvas-holder { display: flex !important; align-items: center; gap: 12px; }
   #arcade-controls {
     flex-direction: column; width: auto; min-width: 96px; max-width: 130px;
     margin-top: 0; gap: 8px;
