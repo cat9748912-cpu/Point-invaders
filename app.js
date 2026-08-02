@@ -41,9 +41,22 @@ try {
 let user=null, curGame=null, gTimer=null, gameLoopId=null;
 let onQuitGame=null; // optional per-game quit handler
 
+// Deferred callbacks belonging to the running game. Every game paints into the
+// same shared DOM, so a timeout that outlives its round lands on the round you
+// started next — Reaction Time's re-arm would repaint #g-reaction green under a
+// fresh round that hadn't armed its own timer. Anything a game schedules goes
+// through gLater() and dies with the game in stopGame().
+const gTimeouts = new Set();
+function gLater(fn, ms){
+  const id = setTimeout(() => { gTimeouts.delete(id); fn(); }, ms);
+  gTimeouts.add(id);
+  return id;
+}
+
 function stopGame(){
   clearInterval(gTimer); gTimer=null;
   cancelAnimationFrame(gameLoopId); gameLoopId=null;
+  gTimeouts.forEach(clearTimeout); gTimeouts.clear();
   window.onkeydown=window.onkeyup=null;
   if(aCanvas){
     aCanvas.onmousemove=null; aCanvas.onclick=null;
@@ -299,16 +312,27 @@ function clearHold(el){
 // to fire, tap to strike); anything with a mouse keeps keyboard + pointer.
 const isTouchDevice = (window.matchMedia && matchMedia('(pointer: coarse)').matches) || ('ontouchstart' in window);
 
-// The 400×500 canvas is CSS-scaled down on a phone, so a raw
-// `clientX - rect.left` reads short by the scale factor — a finger on the far
-// right of a 340px-wide board reported x≈340 into a 400-wide play field, and
-// every game silently lost the last 15% of its width. Everything that turns a
-// pointer into game coordinates goes through here.
-function canvasPos(e){
+// The board is CSS-scaled to fit the screen, so a raw `clientX - rect.left`
+// reads short by the scale factor — a finger on the far right of a 340px-wide
+// board reported x≈340 into a 560-wide play field, and every game silently lost
+// the last chunk of its width. Everything that turns a pointer into game
+// coordinates goes through here.
+//
+// It measures the CONTENT box, not getBoundingClientRect(). The rect spans the
+// border box, but the bitmap only fills the content box — and under the global
+// `box-sizing:border-box` the canvas's 2px border eats INTO the width fitCanvas
+// assigned rather than adding to it. Measuring the rect therefore reports a
+// board 4px wider than the one being drawn and offset 2px left of it, which
+// pulled every tap ~3 board units toward the centre at either edge: worst
+// exactly where you're threading a gap. clientLeft/clientWidth are the content
+// box exactly.
+function boardPos(clientX, clientY){
   const rect = aCanvas.getBoundingClientRect();
+  const w = aCanvas.clientWidth  || rect.width  || 1;
+  const h = aCanvas.clientHeight || rect.height || 1;
   return {
-    x: (e.clientX - rect.left) * (BOARD_W / (rect.width  || 1)),
-    y: (e.clientY - rect.top ) * (BOARD_H / (rect.height || 1))
+    x: (clientX - rect.left - aCanvas.clientLeft) * (BOARD_W / w),
+    y: (clientY - rect.top  - aCanvas.clientTop ) * (BOARD_H / h)
   };
 }
 
@@ -330,13 +354,7 @@ function bindCanvasDrag(handlers){
   clearCanvasDrag();
   if(!aCanvas) return;
 
-  const pos = t => {
-    const rect = aCanvas.getBoundingClientRect();
-    return {
-      x: (t.clientX - rect.left) * (BOARD_W / (rect.width  || 1)),
-      y: (t.clientY - rect.top ) * (BOARD_H / (rect.height || 1))
-    };
-  };
+  const pos = t => boardPos(t.clientX, t.clientY);
   const on = (target, type, fn, bucket) => {
     target.addEventListener(type, fn, { passive: false });
     _drag[bucket].push([target, type, fn]);
@@ -454,11 +472,18 @@ function fitCanvas(){
   area.closest('.screen')?.style.setProperty('--board-w', cssW + 'px');
 
   // Match the backing store to the on-screen size (retina included) and let a
-  // base transform map the 400×500 game units onto it. Assigning width/height
+  // base transform map the 560×500 game units onto it. Assigning width/height
   // wipes the canvas and resets context state, so only touch it when the size
   // genuinely changed — every game redraws on its next animation frame.
+  //
+  // The content box is read back rather than reusing cssW/cssH: the 2px border
+  // sits inside them under box-sizing:border-box, so the bitmap has to match
+  // what the element actually paints. Trusting cssW squeezed the board by
+  // 4/cssW horizontally and 4/cssH vertically — a different factor on each
+  // axis, since the board isn't square — which skewed it very slightly.
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const pxW = Math.round(cssW * dpr), pxH = Math.round(cssH * dpr);
+  const dispW = aCanvas.clientWidth || cssW, dispH = aCanvas.clientHeight || cssH;
+  const pxW = Math.round(dispW * dpr), pxH = Math.round(dispH * dpr);
   if(aCanvas.width !== pxW || aCanvas.height !== pxH){
     aCanvas.width  = pxW;
     aCanvas.height = pxH;
@@ -1404,11 +1429,14 @@ function startNebula(){
       aCtx.strokeStyle = next.color;
       aCtx.lineWidth = 2;
       aCtx.shadowBlur = 12 * pulse; aCtx.shadowColor = next.color;
-      aCtx.beginPath(); aCtx.roundRect(6, 448, 388, 46, 8); aCtx.fill(); aCtx.stroke();
+      aCtx.beginPath(); aCtx.roundRect(6, 448, BOARD_W - 12, 46, 8); aCtx.fill(); aCtx.stroke();
       aCtx.shadowBlur = 8 * pulse; aCtx.shadowColor = next.color;
       aCtx.fillStyle = next.color;
-      aCtx.font = 'bold 8.5px Orbitron';
-      aCtx.fillText('PRESS [ACTION] BUTTON  OR  [Q]/[E] KEY TO DEPLOY:', 14, 462);
+      // A phone has no Q/E key, and 8.5px Orbitron on a board scaled to ~0.6×
+      // renders around 5px — unreadable. Say what the player can actually press.
+      aCtx.font = 'bold 10px Orbitron';
+      aCtx.fillText(isTouchDevice ? 'TAP  ⚡ FIRE / ABILITY  TO DEPLOY:'
+                                  : 'PRESS [ACTION] BUTTON  OR  [Q]/[E] KEY TO DEPLOY:', 14, 462);
       aCtx.fillStyle = '#fff';
       aCtx.font = 'bold 12px Orbitron';
       aCtx.shadowBlur = 10; aCtx.shadowColor = next.color;
@@ -1422,7 +1450,7 @@ function startNebula(){
       aCtx.fillStyle = 'rgba(0,0,0,0.65)';
       aCtx.strokeStyle = activeAbility.color;
       aCtx.lineWidth = 1.5;
-      aCtx.beginPath(); aCtx.roundRect(6, 448, 388, 46, 8); aCtx.fill(); aCtx.stroke();
+      aCtx.beginPath(); aCtx.roundRect(6, 448, BOARD_W - 12, 46, 8); aCtx.fill(); aCtx.stroke();
       aCtx.fillStyle = activeAbility.color;
       aCtx.font = 'bold 10px Orbitron';
       aCtx.shadowBlur = 12; aCtx.shadowColor = activeAbility.color;
@@ -1697,7 +1725,7 @@ function startNebula(){
           document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
           enemyProjectiles.splice(i,1); if (shield <= 0) end(); continue;
         }
-        if (ep.y > 520) { enemyProjectiles.splice(i,1); continue; }
+        if (ep.y > BOARD_H + 20) { enemyProjectiles.splice(i,1); continue; }
 
       } else if (ep.type === 'LASER') {
         // Draw laser bolt
@@ -1723,7 +1751,9 @@ function startNebula(){
           document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
           enemyProjectiles.splice(i,1); if (shield <= 0) end(); continue;
         }
-        if (ep.y > 520 || ep.y < -20 || ep.x < -20 || ep.x > 420) { enemyProjectiles.splice(i,1); continue; }
+        // Same stale bound as the player's bullets: enemy lasers evaporated
+        // over the right quarter of the board instead of reaching you.
+        if (ep.y > BOARD_H + 20 || ep.y < -20 || ep.x < -20 || ep.x > BOARD_W + 20) { enemyProjectiles.splice(i,1); continue; }
       }
     }
   }
@@ -1846,7 +1876,12 @@ function startNebula(){
         aCtx.fillRect(p.x - 1.5, p.y, 3, 10);
       }
       aCtx.restore();
-      if (p.y < -20 || p.y > 520 || p.x < -20 || p.x > 420) { projectiles.splice(pi, 1); }
+      // Off-board cull. These bounds are BOARD-relative on purpose: hardcoded
+      // to the old 400-wide field, the x>420 test deleted every shot fired from
+      // the right quarter of the 560-wide board on the same frame it spawned —
+      // the ship's own muzzle sits past 420 once it's right of x≈403, so the
+      // gun was simply dead over there.
+      if (p.y < -20 || p.y > BOARD_H + 20 || p.x < -20 || p.x > BOARD_W + 20) { projectiles.splice(pi, 1); }
     }
 
     // ── Power-ups (plasma orbs) ──
@@ -1884,7 +1919,7 @@ function startNebula(){
             setTimeout(()=>explode(pu.x + (Math.random()-0.5)*40, pu.y + (Math.random()-0.5)*30, abil.color, 12), k*80);
           }
         }
-      } else if (pu.y > 520) powerups.splice(pui, 1);
+      } else if (pu.y > BOARD_H + 20) powerups.splice(pui, 1);
     }
 
     // ── Enemies ──
@@ -1950,8 +1985,9 @@ function startNebula(){
       aCtx.shadowBlur = isAbility ? 14 : 8; aCtx.shadowColor = ft.color;
       aCtx.font = `bold ${fontSize}px Orbitron`; aCtx.fillStyle = ft.color;
       aCtx.textAlign = 'center';
-      // Clamp x so text stays within canvas
-      const clampedX = Math.max(60, Math.min(340, ft.x));
+      // Clamp x so text stays within canvas — board-relative, or every popup
+      // from the right half snapped back to 340 and read as the wrong kill.
+      const clampedX = Math.max(60, Math.min(BOARD_W - 60, ft.x));
       aCtx.fillText(ft.txt, clampedX, ft.y); aCtx.restore();
     }
 
@@ -1995,7 +2031,11 @@ function startTetris(){
   const nCtx = nCanvas.getContext('2d');
 
   let tetrisOver=false;
-  let score=0, level=1, linesCleared=0, time=60 / diffMod;
+  // The clock is shortened by the tier, so the bar has to be measured against
+  // the clock this run actually started with — against a hardcoded 60 it opened
+  // two-thirds full on Overclock and half full on Meltdown.
+  const startTime = 60 / diffMod;
+  let score=0, level=1, linesCleared=0, time=startTime;
   const TET_COLS = Math.floor(BOARD_W / 40);   // 40 = cell width, so cells keep their shape
   let arena=createMatrix(TET_COLS,20), player={pos:{x:0,y:0}, matrix:null}, nextPiece=null;
   let dropCounter=0, dropInterval=600 * diffMod, lastTime=performance.now(), screenShake=0;
@@ -2171,7 +2211,7 @@ function startTetris(){
 
   gTimer=setInterval(()=>{
     time--; document.getElementById('g-time').textContent=time;
-    document.getElementById('prog-fill').style.width=`${time/60*100}%`;
+    document.getElementById('prog-fill').style.width=`${Math.max(0,time/startTime)*100}%`;
     if(time<=0) end();
   },1000);
 
@@ -2208,11 +2248,15 @@ function startTetris(){
       drawMatrix(nextPiece, {x: offsetX, y: offsetY}, nCtx);
     }
     
-    // Process Particles
-    particles.forEach((p, pi) => {
-      p.x += p.vx; p.y += p.vy; p.alpha -= 0.03; if (p.alpha <= 0) { particles.splice(pi, 1); return; }
+    // Process Particles. Walked backwards, not with forEach: splicing during a
+    // forEach shifts the tail down and skips the next entry, so roughly half
+    // the line-clear debris was never faded out and sat on the board.
+    for (let pi = particles.length - 1; pi >= 0; pi--) {
+      const p = particles[pi];
+      p.x += p.vx; p.y += p.vy; p.alpha -= 0.03;
+      if (p.alpha <= 0) { particles.splice(pi, 1); continue; }
       aCtx.save(); aCtx.globalAlpha = p.alpha; aCtx.fillStyle = p.color; aCtx.fillRect(p.x, p.y, 4, 4); aCtx.restore();
-    });
+    }
 
     aCtx.restore();
     gameLoopId=requestAnimationFrame(loop);
@@ -2415,6 +2459,13 @@ function startReaction(){
   let state='wait', startT=0, time=15, score=0, reactionEnded=false;
   document.getElementById('g-time').textContent=time;
 
+  // Re-arms go through the shared registry so stopGame() kills them on a quit,
+  // plus a local guard for the clock-expiry path. Left running, one of these
+  // repainted the box green under the NEXT round without arming that round's
+  // startT — the replay showed GO while its own state still said WAIT, so the
+  // tap scored "TOO FAST" and the round never became playable.
+  const later=(fn,ms)=>gLater(()=>{ if(!reactionEnded) fn(); },ms);
+
   gTimer=setInterval(()=>{
     time--;document.getElementById('g-time').textContent=time;
     document.getElementById('prog-fill').style.width=`${time/15*100}%`;
@@ -2424,19 +2475,19 @@ function startReaction(){
   setControlHint('TAP THE INSTANT IT TURNS GREEN','CLICK THE INSTANT IT TURNS GREEN');
   const goLabel = isTouchDevice ? 'TAP NOW!' : 'CLICK NOW!';
 
-  let trigger=setTimeout(()=>{if(state==='wait'){state='go';box.style.background='var(--lime)';txt.textContent=goLabel;startT=performance.now()}},Math.random()*2500+1500);
+  let trigger=later(()=>{if(state==='wait'){state='go';box.style.background='var(--lime)';txt.textContent=goLabel;startT=performance.now()}},Math.random()*2500+1500);
 
   // Timed on pointerdown, not click. A synthesised click doesn't land until
   // the finger lifts, which was quietly adding its own latency to every
   // reading — this game's whole score is that number.
   box.onpointerdown=e=>{
     e.preventDefault();
-    if(state==='wait'){clearTimeout(trigger);txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--orange)';state='hold';setTimeout(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=setTimeout(()=>{state='go';box.style.background='var(--lime)';txt.textContent=goLabel;startT=performance.now()},Math.random()*2000+1000)}},1200)}
+    if(state==='wait'){clearTimeout(trigger);txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--orange)';state='hold';later(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--lime)';txt.textContent=goLabel;startT=performance.now()},Math.random()*2000+1000)}},1200)}
     else if(state==='go'){
       let diff=Math.round(performance.now()-startT);
       let earned=Math.max(10,400-diff);score+=earned;setLive(score);
       txt.textContent=`${diff}ms! REBOOTING...`;box.style.background='var(--cyan)';state='hold';
-      setTimeout(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=setTimeout(()=>{state='go';box.style.background='var(--lime)';txt.textContent=goLabel;startT=performance.now()},Math.random()*2000+1000)}},1500);
+      later(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--lime)';txt.textContent=goLabel;startT=performance.now()},Math.random()*2000+1000)}},1500);
     }
   };
   function end(){if(reactionEnded)return;reactionEnded=true;clearTimeout(trigger);box.onpointerdown=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
@@ -2553,14 +2604,23 @@ function startPong(){
     aiY=Math.max(0,Math.min(H-PAD_H,aiY));
 
     // Ball movement
+    const prevX=ballX;
     ballX+=ballVX; ballY+=ballVY;
 
     // Top/bottom wall bounce
     if(ballY-BALL_R<0){ballY=BALL_R;ballVY=Math.abs(ballVY);}
     if(ballY+BALL_R>H){ballY=H-BALL_R;ballVY=-Math.abs(ballVY);}
 
+    // Paddle hits are SWEPT — they ask whether the ball crossed the paddle's
+    // face this frame, not whether it happens to be sitting inside the 10-unit
+    // slab right now. The rally speeds the ball up 4% per hit from an opening
+    // 5.6, so past ~10 units/frame it stepped clean over the slab and scored
+    // against you through a paddle that was in exactly the right place.
+    const pFace=20+PAD_W;                       // player paddle's inner face
+    const aFace=W-20-PAD_W;                     // AI paddle's inner face
+
     // Player paddle (left, x=20..20+PAD_W)
-    if(ballX-BALL_R<20+PAD_W && ballX-BALL_R>20 && ballY>playerY && ballY<playerY+PAD_H){
+    if(ballVX<0 && prevX-BALL_R>=pFace && ballX-BALL_R<=pFace && ballY>playerY && ballY<playerY+PAD_H){
       // Player hit the ball - increase rally count
       rallyCount++;
       ballVX=Math.abs(ballVX)*1.04;
@@ -2569,7 +2629,7 @@ function startPong(){
     }
 
     // AI paddle (right, x=W-20-PAD_W..W-20)
-    if(ballX+BALL_R>W-20-PAD_W && ballX+BALL_R<W-20 && ballY>aiY && ballY<aiY+PAD_H){
+    if(ballVX>0 && prevX+BALL_R<=aFace && ballX+BALL_R>=aFace && ballY>aiY && ballY<aiY+PAD_H){
       // AI hit the ball - rally continues
       rallyCount++;
       ballVX=-Math.abs(ballVX)*1.02;
@@ -2589,12 +2649,13 @@ function startPong(){
         updateScore();
       }
 
-      // Reset for next point — always send ball toward whoever just scored
+      // Reset for next point — random side, at the same pace as the opening
+      // serve. X_SCALE has to be here too: without it every rally after the
+      // first crossed the wider board at the old 400-wide speed, so the game
+      // got conspicuously sluggish the moment anyone scored.
       rallyCount = 0;
       ballX=W/2; ballY=H/2;
-      // Send toward the scorer's side to make it fair
-      ballVX=4*(ballX>W?-1:1); // toward the winner
-      ballVX=4*(Math.random()<0.5?1:-1); // random direction after point
+      ballVX=4*X_SCALE*(Math.random()<0.5?1:-1);
       ballVY=3*(Math.random()<0.5?1:-1);
       aiSpeed=Math.min(5,2.8+userScore*0.002);
     }

@@ -668,9 +668,24 @@ body { overscroll-behavior: none; }
   .g-controls { font-size: .52rem; line-height: 1.6; }
   .stat-pill { padding: 5px 10px; font-size: .55rem; }
   .prog-bar { margin-bottom: 10px; }
-  #game-screen { padding-top: 10px; }
   .g-area { max-width: 100%; }
   #arcade-controls { max-width: 100%; }
+
+  /* The 560×500 board is width-bound in portrait — it fits the width and then
+     leaves a third of the screen empty below the pad. So every pixel of side
+     padding comes straight off the play field and buys nothing: at 20px a side
+     the board landed at 335px on a 375px phone. The header carried its own
+     20px on top of that, indenting Quit and the stat pills from the board edge
+     they're supposed to line up with; both shrink to the notch inset here. */
+  #game-screen {
+    padding-top: 10px;
+    padding-left: max(6px, env(safe-area-inset-left));
+    padding-right: max(6px, env(safe-area-inset-right));
+  }
+  .g-hdr {
+    padding-left: max(2px, env(safe-area-inset-left));
+    padding-right: max(2px, env(safe-area-inset-right));
+  }
 
   /* The NEXT box is a fixed 80px block sitting on top of a play field that is
      now only ~220–340px wide — it swallowed three of Tetris's ten columns.
