@@ -174,9 +174,13 @@ function initGameCardBasePoints() {
 function updateGameCardMaxPoints() {
   const diff = gameDifficultyMultiplier;
   document.querySelectorAll('.gc-pts').forEach(el => {
-    const base = parseInt(el.dataset.basePts,10);
-    const displayed = Math.floor(base * diff);
-    el.textContent = `UP TO ${displayed} PTS`;
+    // Cyber Arena is uncapped, so its label never matched the "UP TO n PTS"
+    // pattern and initGameCardBasePoints() recorded no base for it. Rewriting
+    // it anyway printed "UP TO NaN PTS"; cards without a numeric cap keep
+    // whatever label they shipped with.
+    const base = parseInt(el.dataset.basePts, 10);
+    if (!Number.isFinite(base)) return;
+    el.textContent = `UP TO ${Math.floor(base * diff)} PTS`;
   });
 }
 function updateHubDiffDisplay() {
@@ -4993,12 +4997,14 @@ function startRunner(){
     items.forEach(drawItem);
     drawRider();
 
+    // No shadowBlur on particles: a blurred shadow is per-pixel work on a board
+    // that can be 2× retina, and there can be dozens of these in a frame. The
+    // other games draw sparks as flat fills for the same reason.
     for(let i=particles.length-1;i>=0;i--){
       const p=particles[i];
       p.x+=p.vx; p.y+=p.vy+speed*0.35; p.alpha-=0.035;
       if(p.alpha<=0){ particles.splice(i,1); continue; }
       aCtx.save(); aCtx.globalAlpha=p.alpha; aCtx.fillStyle=p.color;
-      aCtx.shadowBlur=8; aCtx.shadowColor=p.color;
       aCtx.beginPath(); aCtx.arc(p.x,p.y,p.r,0,Math.PI*2); aCtx.fill(); aCtx.restore();
     }
     for(let i=floats.length-1;i>=0;i--){
@@ -5219,17 +5225,22 @@ function startMeteor(){
   function startWave(){ toSpawn=5+wave*2; spawnT=0; banner=120; }
   startWave();
 
-  function spawnFrag(x,y,speedMul,targetX){
+  // allowSplit is strictly one generation deep. A child is born BELOW the
+  // altitude band splitY is drawn from, so if it were allowed to roll its own
+  // split it would fire on the very next frame — and so would its children.
+  // That is a branching process, not a weapon: it grows without bound and
+  // takes the frame rate with it.
+  function spawnFrag(x, y, targetX, allowSplit){
     const alive=bases.filter(b=>b.alive);
     const tx = targetX!=null ? targetX
              : (alive.length ? alive[Math.floor(Math.random()*alive.length)].x : W/2);
-    const sp=(1.05+wave*0.11)*diffMod*(speedMul||1);
+    const sp=(1.05+wave*0.11)*diffMod;
     const dx=tx-x, dy=GROUND-y, d=Math.hypot(dx,dy)||1;
     frags.push({
       x, y, ox:x, oy:y, vx:dx/d*sp, vy:dy/d*sp,
       glyph:GLYPHS[Math.floor(Math.random()*GLYPHS.length)],
       // MIRV fragments only show up once the run has warmed up.
-      split: wave>=3 && Math.random()<0.26,
+      split: !!allowSplit && wave>=3 && Math.random()<0.26,
       splitY: 130+Math.random()*120
     });
   }
@@ -5383,7 +5394,7 @@ function startMeteor(){
     const interval=Math.max(360, 1150-wave*70)/diffMod;
     if(toSpawn>0 && spawnT>=interval && banner<=0){
       spawnT=0; toSpawn--;
-      spawnFrag(Math.random()*(W-40)+20, -16);
+      spawnFrag(Math.random()*(W-40)+20, -16, null, true);
     }
     if(toSpawn===0 && !frags.length && !missiles.length){
       const bonus=40+wave*20;
@@ -5411,7 +5422,7 @@ function startMeteor(){
         const alive=bases.filter(b=>b.alive);
         for(let k=0;k<2;k++){
           const t=alive.length?alive[Math.floor(Math.random()*alive.length)].x:W/2;
-          spawnFrag(f.x, f.y, 1, t);
+          spawnFrag(f.x, f.y, t, false);
         }
         burst(f.x,f.y,'#a855f7',10);
       }
@@ -5523,12 +5534,13 @@ function startMeteor(){
     aCtx.stroke();
     aCtx.restore();
 
+    // Flat fills, no per-particle shadowBlur — see the note in Cyber Runner.
+    // A dense wave here can put a hundred sparks on screen at once.
     for(let i=particles.length-1;i>=0;i--){
       const p=particles[i];
       p.x+=p.vx; p.y+=p.vy; p.vy+=0.05; p.alpha-=0.03;
       if(p.alpha<=0){ particles.splice(i,1); continue; }
       aCtx.save(); aCtx.globalAlpha=p.alpha; aCtx.fillStyle=p.color;
-      aCtx.shadowBlur=8; aCtx.shadowColor=p.color;
       aCtx.beginPath(); aCtx.arc(p.x,p.y,p.r,0,Math.PI*2); aCtx.fill(); aCtx.restore();
     }
     for(let i=floats.length-1;i>=0;i--){
