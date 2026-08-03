@@ -441,6 +441,59 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .reaction-box{width:100%;max-width:400px;height:300px;border-radius:12px;border:2px solid var(--border);display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;transition:background 0.1s}
 #reaction-text{font-family:var(--fd);font-weight:700;font-size:1.5rem}
 
+/* ── Node Hacker Layout ─ */
+/* The keypad is aspect-locked to a square and sized by whichever runs out
+   first — the column, 380px, or the viewport height. Same reasoning as
+   fitCanvas(): a board whose bottom row is under the fold is unplayable. */
+.hack-wrap{display:flex;flex-direction:column;align-items:center;gap:14px;width:100%;max-width:400px}
+.hack-readout{width:100%;text-align:center;background:var(--s1);border:1px solid rgba(57,255,20,.28);border-radius:var(--r);padding:12px 14px}
+.hack-status{font-family:var(--fd);font-size:.7rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--lime);text-shadow:0 0 10px rgba(57,255,20,.55);min-height:17px;line-height:1.4}
+.hack-status.warn{color:var(--gold);text-shadow:0 0 10px rgba(255,215,0,.55)}
+.hack-status.fail{color:var(--red);text-shadow:0 0 10px rgba(255,36,66,.6)}
+
+/* One pip per node in the current sequence — fills left-to-right as you
+   replicate it, so progress through a 9-long chain is readable at a glance. */
+.hack-seq{display:flex;justify-content:center;flex-wrap:wrap;gap:5px;margin-top:10px;min-height:7px}
+.hack-pip{width:16px;height:5px;border-radius:3px;background:var(--s2);border:1px solid var(--border);transition:background .18s,box-shadow .18s}
+.hack-pip.done{background:var(--lime);border-color:var(--lime);box-shadow:0 0 8px rgba(57,255,20,.7)}
+
+.hack-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;width:min(100%,380px,54vh);aspect-ratio:1/1}
+/* --nc is the node's own neon, assigned per row in startHacker(). */
+.hack-node{
+  position:relative;display:flex;align-items:center;justify-content:center;
+  background:var(--s2);border:1.5px solid var(--border);border-radius:10px;
+  cursor:pointer;overflow:hidden;
+  transition:background .12s ease,border-color .12s ease,box-shadow .12s ease,transform .12s ease
+}
+.hack-node::before{
+  content:'';position:absolute;inset:0;border-radius:inherit;
+  background:radial-gradient(circle at 50% 50%,var(--nc),transparent 70%);
+  opacity:.07;transition:opacity .12s ease
+}
+.hack-node .hack-key{
+  font-family:var(--fd);font-size:.62rem;font-weight:700;letter-spacing:.06em;
+  color:var(--dimmer);position:relative;transition:color .12s ease,text-shadow .12s ease
+}
+/* Scoped to real pointers — on a phone :hover latches after a tap and would
+   leave half the keypad glowing as if it were part of the sequence. */
+@media (hover: hover){
+  .hack-node:not(.lit):hover{border-color:var(--nc);transform:translateY(-2px)}
+  .hack-node:not(.lit):hover .hack-key{color:var(--dim)}
+}
+/* Lit = the mainframe is broadcasting this node, or you just pressed it. */
+/* --nc-soft/--nc-glow are pre-mixed rgba by startHacker() via hexToRgba(),
+   rather than color-mix() — same result, no dependency on a newer colour
+   function than the rest of the sheet assumes. */
+.hack-node.lit{background:var(--nc-soft);border-color:var(--nc);box-shadow:0 0 22px var(--nc),inset 0 0 18px var(--nc-glow);transform:scale(1.05)}
+.hack-node.lit::before{opacity:.5}
+.hack-node.lit .hack-key{color:#fff;text-shadow:0 0 10px var(--nc)}
+.hack-node.err{background:rgba(255,36,66,.24);border-color:var(--red);box-shadow:0 0 24px rgba(255,36,66,.75);animation:hackShake .4s ease}
+.hack-node.err .hack-key{color:#fff;text-shadow:0 0 10px var(--red)}
+@keyframes hackShake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+/* Locked out while the sequence is playing back, so you can't queue taps. */
+.hack-grid.locked .hack-node{cursor:default}
+.hack-grid.locked{opacity:.94}
+
 /* ── RESULTS SCREEN ── */
 #results-screen .res-card{max-width:440px;width:100%;text-align:center}
 .res-emoji{font-size:4.5rem;display:block;margin-bottom:18px}
@@ -557,7 +610,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
    ~300ms click delay) while LEAVING pinch-to-zoom intact, so the page
    stays accessible to anyone who needs to magnify it. */
 button, .btn, .auth-tab, .market-tab, .diff-btn, .game-card, .shop-card,
-.memory-card, .fb-node, .fb-close, select, #click-btn, #math-submit {
+.memory-card, .hack-node, .fb-node, .fb-close, select, #click-btn, #math-submit {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
@@ -565,7 +618,7 @@ button, .btn, .auth-tab, .market-tab, .diff-btn, .game-card, .shop-card,
 /* Stop long-press selecting label text or raising the iOS callout menu
    mid-game. Inputs and the feedback textarea stay selectable. */
 button, .btn, .auth-tab, .market-tab, .diff-btn, .game-card, .shop-card,
-.memory-card, .fb-node, .ctrl-btn, .hub-bar, .g-hdr, .market-bar {
+.memory-card, .hack-node, .fb-node, .ctrl-btn, .hub-bar, .g-hdr, .market-bar {
   -webkit-user-select: none; user-select: none;
   -webkit-touch-callout: none;
 }
@@ -612,6 +665,8 @@ body { overscroll-behavior: none; }
   .game-card[data-c]:hover { border-color: var(--border); }
   .game-card:active { transform: scale(.97); border-color: var(--border2); }
   .shop-card:active, .btn:active { transform: scale(.97); }
+  /* .lit is applied by the game itself, so it must survive the press state. */
+  .hack-node:not(.lit):active { border-color: var(--nc); transform: scale(.96); }
   .btn-primary { box-shadow: 0 0 20px rgba(0,245,255,.25); }
 }
 

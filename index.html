@@ -155,6 +155,24 @@
           <div class="gc-desc">Control your avatar, collect data nodes, and eliminate enemy bots for glory!</div>
           <span class="gc-pts" data-c="red">UNLIMITED PTS</span>
         </div>
+        <div class="game-card" data-game="runner" data-c="pink">
+          <span class="gc-icon">🌌</span>
+          <div class="gc-name" data-c="pink">CYBER RUNNER</div>
+          <div class="gc-desc">Outrun the firewall on a neon hover-bike and hoover up loose data cubes!</div>
+          <span class="gc-pts" data-c="pink">UP TO 1200 PTS</span>
+        </div>
+        <div class="game-card" data-game="hacker" data-c="lime">
+          <span class="gc-icon">🔓</span>
+          <div class="gc-name" data-c="lime">NODE HACKER</div>
+          <div class="gc-desc">Memorize the mainframe's node pulse and replay it to decrypt the core!</div>
+          <span class="gc-pts" data-c="lime">UP TO 800 PTS</span>
+        </div>
+        <div class="game-card" data-game="meteor" data-c="orange">
+          <span class="gc-icon">☄️</span>
+          <div class="gc-name" data-c="orange">METEOR SHIELD</div>
+          <div class="gc-desc">Detonate anti-malware blasts to shield three mainframe servers from rogue code!</div>
+          <span class="gc-pts" data-c="orange">UP TO 1100 PTS</span>
+        </div>
       </div>
     </div>
     <div>
@@ -262,6 +280,16 @@
 
     <div id="g-reaction" class="reaction-box" style="display:none">
       <div id="reaction-text">WAIT FOR GREEN...</div>
+    </div>
+
+    <!-- 🔓 NODE HACKER — the 4×4 keypad is built by startHacker() so the nodes,
+         their colours and their keyboard glyphs all come from one place. -->
+    <div id="g-hacker" class="hack-wrap" style="display:none">
+      <div class="hack-readout">
+        <div class="hack-status" id="hack-status">INITIALIZING…</div>
+        <div class="hack-seq" id="hack-seq"></div>
+      </div>
+      <div class="hack-grid" id="hack-grid"></div>
     </div>
 
   </div>
