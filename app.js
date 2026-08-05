@@ -222,9 +222,23 @@ const aCtx = aCanvas?.getContext('2d');
 // Nebula wider invader formations, and so on).
 const BOARD_W = 560, BOARD_H = 500;
 
+// A screen is hidden with opacity + pointer-events, never display:none, so the
+// buttons on the screen you just LEFT stay in the keyboard focus order. Clicking
+// "Play Again" therefore left #btn-again focused for the whole of the next round,
+// and the first Space or Enter of that round re-fired it and restarted the game —
+// which only ever bit the games you can play without touching the mouse, because
+// everywhere else the first click moved focus off the button.
+// `inert` takes the outgoing screen out of the focus order and drops focus along
+// with it; the explicit blur is the fallback where inert isn't supported.
 const showScreen=id=>{
-  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
-  setTimeout(()=>document.getElementById(id)?.classList.add('active'),40);
+  const next=document.getElementById(id);
+  document.querySelectorAll('.screen').forEach(s=>{
+    s.classList.remove('active');
+    s.inert = s!==next;
+  });
+  const a=document.activeElement;
+  if(a?.closest && a.closest('.screen') && a.closest('.screen')!==next) a.blur?.();
+  setTimeout(()=>next?.classList.add('active'),40);
 };
 
 let _tt;
@@ -967,6 +981,32 @@ function hexToRgba(hex, alpha){
   const full = h.length===3 ? h.split('').map(c=>c+c).join('') : h;
   const n = parseInt(full,16);
   return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${alpha})`;
+}
+
+// Rotates a hex colour's hue, keeping its saturation and lightness. Lets a game
+// build a multi-colour palette out of the one equipped colour without any of the
+// derived shades coming out duller than the colour the player actually bought.
+function shiftHue(hex, deg){
+  const h = hex.replace('#','');
+  const full = h.length===3 ? h.split('').map(c=>c+c).join('') : h;
+  const n = parseInt(full,16);
+  const r=((n>>16)&255)/255, g=((n>>8)&255)/255, b=(n&255)/255;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b), d=max-min;
+  const l=(max+min)/2;
+  let hue=0, s=0;
+  if(d){
+    s = d/(1-Math.abs(2*l-1));
+    if(max===r)      hue=((g-b)/d)%6;
+    else if(max===g) hue=(b-r)/d+2;
+    else             hue=(r-g)/d+4;
+    hue=(hue*60+360)%360;
+  }
+  hue=(hue+deg%360+360)%360;
+  const c=(1-Math.abs(2*l-1))*s, x=c*(1-Math.abs((hue/60)%2-1)), m=l-c/2;
+  const seg = hue<60?[c,x,0] : hue<120?[x,c,0] : hue<180?[0,c,x]
+            : hue<240?[0,x,c] : hue<300?[x,0,c] : [c,0,x];
+  const hx = v => Math.round((v+m)*255).toString(16).padStart(2,'0');
+  return `#${hx(seg[0])}${hx(seg[1])}${hx(seg[2])}`;
 }
 
 function getEquippedColorHex(){
@@ -2883,7 +2923,22 @@ function startFlappy(){
 
   const diffMod = getDifficultyModifier();
 
-  const W=BOARD_W,H=BOARD_H,GAP=140,PIPE_W=46,GRAVITY=0.42*diffMod,FLAP=-7.5/diffMod,PIPE_SPEED=2.4*diffMod*(BOARD_W/400);
+  const W=BOARD_W,H=BOARD_H,GAP=140,PIPE_W=46,PIPE_SPEED=2.4*diffMod*(BOARD_W/400);
+
+  // ── VERTICAL FEEL ──
+  // A tier's bite belongs in the horizontal pressure — PIPE_SPEED and the spawn
+  // rate — not in how fast you have to tap. The old curve scaled gravity UP by
+  // diffMod and the flap impulse DOWN by the same factor, a double penalty: one
+  // tap bought ~63px of climb on Stable but only ~7px on Meltdown, against a
+  // 140px gap — holding altitude there needed roughly five times the tapping
+  // rate Stable does. Now gravity ramps at half the tier rate and the flap ramps
+  // a little faster than the square root of gravity — sqrt being the exponent
+  // that holds climb-per-tap flat — so the drone lifts at least as far per tap
+  // on every tier as it does on Stable, and the fall never outruns it. Harder
+  // tiers ask for tighter timing, never for faster fingers. Stable is untouched.
+  const gravMod=1+(diffMod-1)*0.5;        // 1.00 / 1.25 / 1.50
+  const GRAVITY=0.42*gravMod;
+  const FLAP=-7.5*Math.pow(gravMod,0.65); // climb per tap: 63px / 67px / 71px
   let score=0,time=0,isOver=false,frame=0;
   let droneY=H/2,droneVY=0;
   let pipes=[],particles=[];
@@ -4790,7 +4845,9 @@ function startRunner(){
   document.getElementById('ctrl-action').onclick= jump;
 
   window.onkeydown = e => {
-    if(['ArrowLeft','ArrowRight','ArrowUp','Space','KeyA','KeyD','KeyW'].includes(e.code)) e.preventDefault();
+    // Enter does nothing here, but it still activates whatever button holds
+    // focus — swallow it alongside the keys the game actually uses.
+    if(['ArrowLeft','ArrowRight','ArrowUp','Space','Enter','KeyA','KeyD','KeyW'].includes(e.code)) e.preventDefault();
     if(e.repeat) return;                       // one shift per keypress
     if(e.code==='ArrowLeft' ||e.code==='KeyA') shift(-1);
     if(e.code==='ArrowRight'||e.code==='KeyD') shift(1);
@@ -4856,7 +4913,10 @@ function startRunner(){
     aCtx.fillStyle=g; aCtx.fillRect(0,0,W,150);
   }
 
-  function drawItem(it){
+  // eq is the equipped Black Market colour, resolved once per frame by loop().
+  // Only the cube — the thing you WANT to hit — takes it; the firewall and the
+  // spikes keep their fixed red/orange so no cosmetic can disguise a hazard.
+  function drawItem(it, eq){
     const x=laneX(it.lane), y=it.y;
     aCtx.save();
     if(it.kind==='wall'){
@@ -4881,10 +4941,10 @@ function startRunner(){
       // Data cube — a slowly tumbling wireframe box
       it.spin+=0.06;
       aCtx.translate(x,y); aCtx.rotate(it.spin);
-      aCtx.shadowBlur=18; aCtx.shadowColor='#00f5ff';
-      aCtx.strokeStyle='#00f5ff'; aCtx.lineWidth=2;
+      aCtx.shadowBlur=18; aCtx.shadowColor=eq;
+      aCtx.strokeStyle=eq; aCtx.lineWidth=2;
       aCtx.strokeRect(-11,-11,22,22);
-      aCtx.fillStyle='rgba(0,245,255,0.28)'; aCtx.fillRect(-11,-11,22,22);
+      aCtx.fillStyle=hexToRgba(eq,0.28); aCtx.fillRect(-11,-11,22,22);
       aCtx.strokeStyle='rgba(255,255,255,0.85)'; aCtx.lineWidth=1.5;
       aCtx.strokeRect(-5,-5,10,10);
     }
@@ -4933,7 +4993,8 @@ function startRunner(){
     aCtx.fillStyle='#ff0090'; aCtx.font='bold 9px Orbitron,monospace';
     aCtx.shadowBlur=6; aCtx.shadowColor='#ff0090';
     aCtx.fillText(`${Math.floor(dist/10)}M`, 15, 27);
-    aCtx.fillStyle='#00f5ff'; aCtx.shadowColor='#00f5ff';
+    const eq=getEquippedColorHex();
+    aCtx.fillStyle=eq; aCtx.shadowColor=eq;
     aCtx.fillText(`◇${cubes}`, 62, 27);
     aCtx.fillStyle='#ffd700'; aCtx.shadowColor='#ffd700';
     aCtx.fillText(`${(speed/BASE_SPEED).toFixed(1)}×`, 110, 27);
@@ -4971,8 +5032,9 @@ function startRunner(){
 
       if(it.kind==='cube'){
         cubes++; setLive(score());
-        pop(laneX(it.lane), it.y-14, '+30', '#00f5ff');
-        burst(laneX(it.lane), it.y, '#00f5ff', 9);
+        const eq=getEquippedColorHex();
+        pop(laneX(it.lane), it.y-14, '+30', eq);
+        burst(laneX(it.lane), it.y, eq, 9);
         items.splice(i,1);
       } else if(it.kind==='spike' && jumpT>0){
         continue;                                  // cleared it on the hop
@@ -4994,7 +5056,8 @@ function startRunner(){
     }
 
     drawTrack();
-    items.forEach(drawItem);
+    const eq=getEquippedColorHex();
+    items.forEach(it=>drawItem(it,eq));
     drawRider();
 
     // No shadowBlur on particles: a blurred shadow is per-pixel work on a board
@@ -5043,7 +5106,12 @@ function startHacker(){
 
   const diffMod=getDifficultyModifier();
   const KEYS=['1','2','3','4','Q','W','E','R','A','S','D','F','Z','X','C','V'];
-  const ROW_COLORS=['#00f5ff','#ff0090','#39ff14','#ffd700'];
+  // Each row gets its own neon, so a long key is memorable by colour as well as
+  // position. The four are hue-rotations of the equipped Black Market colour —
+  // the keypad re-themes on equip while the rows stay distinct from each other.
+  // The offsets are the original cyan/pink/lime/gold spacing, which is why the
+  // default cyan still reproduces the palette this game shipped with.
+  const ROW_COLORS=[0,144,-72,-132].map(d=>shiftHue(getEquippedColorHex(),d));
   const START_LEN=3;
   // Same sequence, less time to burn it in — the honest way to make a memory
   // game harder without making it unfair.
@@ -5150,6 +5218,9 @@ function startHacker(){
 
   window.onkeydown=e=>{
     if(e.ctrlKey||e.metaKey||e.altKey) return;   // don't eat browser shortcuts
+    // Neither key is on the keypad, but both fire a focused button, so they get
+    // swallowed before the early return rather than leaking out to the UI.
+    if(e.code==='Space'||e.code==='Enter') e.preventDefault();
     const idx=KEYS.indexOf(String(e.key).toUpperCase());
     if(idx<0) return;
     e.preventDefault();
@@ -5187,8 +5258,8 @@ function startHacker(){
 function startMeteor(){
   document.getElementById('g-canvas-holder').style.display='block';
   setControls(null);   // the board itself is the control — no pad to steal height
-  setControlHint('TAP ANYWHERE TO DETONATE AN ANTI-MALWARE BLAST',
-                 'CLICK TO FIRE · ARROWS / WASD AIM · SPACE FIRES');
+  setControlHint('TAP TO BLAST · TAP THE PAD BELOW TO DEPLOY AN ABILITY',
+                 'CLICK TO FIRE · ARROWS / WASD AIM · SPACE FIRES · Q/E ABILITY');
   showTouchHint('TAP ANYWHERE TO DETONATE A BLAST');
   fitCanvas();
 
@@ -5202,13 +5273,35 @@ function startMeteor(){
   const time0=Math.round(80*getTimeModifier());
   const GLYPHS=['0','1','#','$','%','&','@','?','//','<>','01','ERR'];
 
+  // ── TURRET GEOMETRY ──
+  // The barrel pivots on top of the rack. Aim is measured from straight up,
+  // positive to the right, and clamped short of horizontal so a battery can
+  // never swing far enough to point into its own server stack.
+  const PIVOT_Y=GROUND-30, BARREL_L=19, RECOIL_PX=6, AIM_LIMIT=1.32;
+
   let score=0, time=time0, wave=1, isOver=false, frame=0, shake=0;
   let ammo=AMMO_MAX, reloadT=0, killed=0, bestChain=1;
   let frags=[], missiles=[], blasts=[], particles=[], floats=[];
   let toSpawn=0, spawnT=0, banner=120;
   let retX=W/2, retY=H*0.45, keys={}, lastT=performance.now();
 
-  const bases=[0.18,0.5,0.82].map(f=>({x:W*f, hp:2, alive:true, flash:0}));
+  // aim/recoil/muzzle drive the animation; flash is the existing damage blink.
+  const bases=[0.18,0.5,0.82].map(f=>({x:W*f, hp:2, alive:true, flash:0, aim:0, recoil:0, muzzle:0}));
+
+  // ── BATTERY ABILITIES ──
+  // One charge per wave purged, cycling the list. Deployed with Q/E or the pad
+  // on the ground strip. Effect timers are in frames; the queue caps at three.
+  const ABILITIES=[
+    { id:'SALVO',  label:'🔥 RAPID SALVO', color:'#ff6600', desc:'AUTO-SALVO FIRING' },
+    { id:'AEGIS',  label:'🛡️ AEGIS DOME',  color:'#39ff14', desc:'DOME ABSORBING HITS' },
+    { id:'OVER',   label:'⚡ OVERCHARGE',  color:'#ffd700', desc:'WIDE BLASTS · FAST RELOAD' },
+    { id:'REPAIR', label:'🔧 NANO-REPAIR', color:'#00f5ff', desc:'SERVER RESTORED' }
+  ];
+  const ABIL_MAX=3, OVER_FRAMES=420, DOME_FRAMES=420, SALVO_SHOTS=6;
+  const DOME_RX=W*0.5, DOME_RY=96;
+  const AB_PAD={x:10, y:GROUND+6, w:108, h:22};
+  let abilQueue=[], abilEarned=0, activeAbil=null, abilT=0;
+  let salvoLeft=0, salvoT=0, domeT=0, overT=0;
 
   document.getElementById('g-time').textContent=time;
   document.getElementById('prog-fill').style.width='100%';
@@ -5245,28 +5338,116 @@ function startMeteor(){
     });
   }
 
-  function fire(tx,ty){
-    if(isOver) return;
-    if(ammo<=0){ pop(tx,ty,'RELOADING','#ff2442'); return; }
+  // Launches come from whichever server is nearest the target, so losing a
+  // server costs you reach as well as a life.
+  function nearestBase(tx){
     const alive=bases.filter(b=>b.alive);
-    if(!alive.length) return;
-    // Launches from whichever server is nearest the target, so losing a server
-    // costs you reach as well as a life.
+    if(!alive.length) return null;
     let from=alive[0];
     alive.forEach(b=>{ if(Math.abs(b.x-tx)<Math.abs(from.x-tx)) from=b; });
-    ammo--;
-    const sx=from.x, sy=GROUND-18, d=Math.hypot(tx-sx,ty-sy)||1;
+    return from;
+  }
+
+  function aimAt(b,tx,ty){
+    const a=Math.atan2(tx-b.x, PIVOT_Y-ty);
+    return Math.max(-AIM_LIMIT, Math.min(AIM_LIMIT, a));
+  }
+  // recoil is passed rather than read, so a launch can ask for the tip at full
+  // extension while the drawing asks for wherever the barrel currently sits.
+  function barrelTip(b, recoil){
+    const len=BARREL_L-recoil*RECOIL_PX;
+    return { x:b.x+Math.sin(b.aim)*len, y:PIVOT_Y-Math.cos(b.aim)*len };
+  }
+
+  // Overcharge widens every blast and cuts the reload; both are read through
+  // these so the buff can't drift out of sync with the HUD that reports it.
+  const blastR  = () => overT>0 ? BLAST_R*1.7 : BLAST_R;
+  const reloadMs= () => overT>0 ? RELOAD*0.35 : RELOAD;
+
+  function inDome(x,y){
+    if(y>GROUND) return false;
+    const nx=(x-W/2)/DOME_RX, ny=(y-GROUND)/DOME_RY;
+    return nx*nx+ny*ny<=1;
+  }
+
+  // free shots come from RAPID SALVO and skip the ammo bank.
+  function fire(tx,ty,free){
+    if(isOver) return;
+    if(!free && ammo<=0){ pop(tx,ty,'RELOADING','#ff2442'); return; }
+    const from=nearestBase(tx);
+    if(!from) return;
+    if(!free) ammo--;
+    // Snap the firing battery onto the shot before measuring the muzzle. A tap
+    // can beat the idle tracking to a target, and a missile leaving the side of
+    // a barrel is the one thing that would give the animation away.
+    from.aim=aimAt(from,tx,ty);
+    const tip=barrelTip(from, 0);
+    from.recoil=1; from.muzzle=1;
+    shake=Math.max(shake,3);
+    const sx=tip.x, sy=tip.y, d=Math.hypot(tx-sx,ty-sy)||1;
     missiles.push({x:sx,y:sy,sx,sy,tx,ty,vx:(tx-sx)/d*MISSILE_V,vy:(ty-sy)/d*MISSILE_V});
+    burst(sx,sy,'#ffd700',4);
   }
 
   function detonate(x,y,r,chain){
     blasts.push({x,y,r:2,max:r,grow:true,chain:chain||0});
     shake=Math.max(shake,6);
-    burst(x,y,'#00f5ff',8);
+    burst(x,y,getEquippedColorHex(),8);
   }
 
+  function grantAbility(){
+    // A full bank loses the wave's charge, but the rotation does NOT advance —
+    // otherwise hoarding could skip you past NANO-REPAIR entirely, which is the
+    // one charge you most want available when a rack is already down.
+    if(abilQueue.length>=ABIL_MAX) return;
+    const a=ABILITIES[abilEarned % ABILITIES.length];
+    abilEarned++;
+    abilQueue.push(a);
+    pop(W/2, H*0.47, `${a.label} READY`, a.color);
+  }
+
+  function deployAbility(){
+    if(isOver || !abilQueue.length) return;
+    const a=abilQueue.shift();
+    activeAbil=a; abilT=170;
+    shake=Math.max(shake,7);
+    pop(W/2, H*0.34, a.label, a.color);
+
+    if(a.id==='SALVO'){ salvoLeft=SALVO_SHOTS; salvoT=0; }
+    else if(a.id==='AEGIS'){ domeT=DOME_FRAMES; }
+    else if(a.id==='OVER'){ overT=OVER_FRAMES; ammo=AMMO_MAX; reloadT=0; }
+    else if(a.id==='REPAIR'){
+      // Revive a downed rack first, else patch the most damaged one. If every
+      // rack is already full the charge refills the ammo bank rather than
+      // silently doing nothing.
+      const dead=bases.find(b=>!b.alive);
+      const hurt=bases.filter(b=>b.alive && b.hp<2).sort((p,q)=>p.hp-q.hp)[0];
+      if(dead){
+        dead.alive=true; dead.hp=1; dead.flash=24; dead.aim=0; dead.recoil=0; dead.muzzle=0;
+        pop(dead.x, GROUND-46, 'SERVER ONLINE', '#39ff14');
+        burst(dead.x, GROUND-14, '#39ff14', 20);
+      } else if(hurt){
+        hurt.hp=2; hurt.flash=24;
+        pop(hurt.x, GROUND-46, 'SHIELD RESTORED', '#39ff14');
+        burst(hurt.x, GROUND-14, '#39ff14', 16);
+      } else {
+        ammo=AMMO_MAX; reloadT=0;
+        pop(W/2, H*0.4, 'AMMO BANK REFILLED', '#39ff14');
+      }
+    }
+  }
+
+  const inAbilPad=(px,py)=>px>=AB_PAD.x && px<=AB_PAD.x+AB_PAD.w
+                        && py>=AB_PAD.y && py<=AB_PAD.y+AB_PAD.h;
+
   bindCanvasDrag({
-    onDown(p){ hideTouchHint(); retX=p.x; retY=p.y; fire(p.x,p.y); },
+    onDown(p){
+      hideTouchHint();
+      // The pad sits in the ground strip — terrain, not airspace. A blast down
+      // there is worthless anyway, so claiming those taps costs no shots.
+      if(inAbilPad(p.x,p.y)){ if(abilQueue.length) deployAbility(); return; }
+      retX=p.x; retY=p.y; fire(p.x,p.y);
+    },
     onHover(p){ if(!isTouchDevice){ retX=p.x; retY=p.y; } }
   });
 
@@ -5274,6 +5455,7 @@ function startMeteor(){
     if(['Space','Enter','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyW','KeyA','KeyS','KeyD'].includes(e.code)) e.preventDefault();
     keys[e.code]=true;
     if(e.code==='Space'||e.code==='Enter') fire(retX,retY);
+    if(!e.repeat && (e.code==='KeyQ'||e.code==='KeyE')) deployAbility();
   };
   window.onkeyup=e=>{ keys[e.code]=false; };
 
@@ -5335,11 +5517,47 @@ function startMeteor(){
       aCtx.fillStyle = on ? col : 'rgba(255,255,255,0.1)';
       aCtx.fillRect(x-16, GROUND-25+r*8, 32, 4);
     }
-    // Battery muzzle
-    aCtx.fillStyle=col;
-    aCtx.beginPath(); aCtx.moveTo(x-6,GROUND-30); aCtx.lineTo(x,GROUND-40); aCtx.lineTo(x+6,GROUND-30);
-    aCtx.closePath(); aCtx.fill();
     aCtx.restore();
+
+    // ── TURRET ──
+    // Everything below rides in the barrel's own rotated frame, so the recoil
+    // slide and the muzzle flare stay true to the aim at any angle.
+    const kick=b.recoil*RECOIL_PX;
+    const tipY=-BARREL_L+kick;
+    aCtx.save();
+    aCtx.translate(x, PIVOT_Y);
+    aCtx.rotate(b.aim);
+
+    // Barrel — dark body, lit edge, muzzle collar at the tip
+    aCtx.shadowBlur=hurt?14:9; aCtx.shadowColor=col;
+    aCtx.fillStyle='rgba(10,14,26,0.95)';
+    aCtx.beginPath(); aCtx.roundRect(-3.5, tipY, 7, BARREL_L, 2); aCtx.fill();
+    aCtx.strokeStyle=col; aCtx.lineWidth=1.5; aCtx.stroke();
+    aCtx.fillStyle=col;
+    aCtx.fillRect(-4.5, tipY, 9, 3);
+
+    // Muzzle flare — a bright cone that collapses back into the barrel
+    if(b.muzzle>0.02){
+      aCtx.globalAlpha=b.muzzle;
+      aCtx.shadowBlur=20; aCtx.shadowColor='#ffd700';
+      aCtx.fillStyle='#fff';
+      aCtx.beginPath();
+      aCtx.moveTo(0, tipY-14*b.muzzle);
+      aCtx.lineTo(7*b.muzzle, tipY+3);
+      aCtx.lineTo(-7*b.muzzle, tipY+3);
+      aCtx.closePath(); aCtx.fill();
+      aCtx.globalAlpha=1;
+    }
+    aCtx.restore();
+
+    // Yoke sits outside the rotation so the pivot itself never appears to spin
+    aCtx.save();
+    aCtx.shadowBlur=hurt?12:8; aCtx.shadowColor=col;
+    aCtx.fillStyle='rgba(10,14,26,0.95)';
+    aCtx.beginPath(); aCtx.arc(x, PIVOT_Y, 6, 0, Math.PI*2); aCtx.fill();
+    aCtx.strokeStyle=col; aCtx.lineWidth=1.5; aCtx.stroke();
+    aCtx.restore();
+
     if(b.flash>0) b.flash--;
   }
 
@@ -5354,17 +5572,66 @@ function startMeteor(){
     aCtx.fillText(`☄ ${killed}`, 78, 27);
 
     // Ammo pips — the whole tactical constraint in one row
+    const eq=getEquippedColorHex();
     for(let i=0;i<AMMO_MAX;i++){
       const on=i<ammo;
-      aCtx.fillStyle=on?'#00f5ff':'rgba(255,255,255,0.13)';
-      aCtx.shadowBlur=on?8:0; aCtx.shadowColor='#00f5ff';
+      aCtx.fillStyle=on?eq:'rgba(255,255,255,0.13)';
+      aCtx.shadowBlur=on?8:0; aCtx.shadowColor=eq;
       aCtx.beginPath(); aCtx.roundRect(W-16-i*15, 14, 9, 16, 2); aCtx.fill();
     }
     // Partial recharge on the next empty slot
     if(ammo<AMMO_MAX){
-      aCtx.fillStyle='rgba(0,245,255,0.45)'; aCtx.shadowBlur=0;
-      const h=16*(reloadT/RELOAD);
+      aCtx.fillStyle=hexToRgba(eq,0.45); aCtx.shadowBlur=0;
+      const h=16*Math.min(1, reloadT/reloadMs());
       aCtx.fillRect(W-16-ammo*15, 30-h, 9, h);
+    }
+
+    // Active-effect chips, stacked under the wave box
+    let cy=44;
+    const chip=(txt,frac,color)=>{
+      aCtx.shadowBlur=0;
+      aCtx.fillStyle='rgba(0,0,0,0.45)';
+      aCtx.beginPath(); aCtx.roundRect(8,cy,104,13,4); aCtx.fill();
+      aCtx.fillStyle=hexToRgba(color,0.30);
+      aCtx.beginPath(); aCtx.roundRect(8,cy,104*Math.max(0,Math.min(1,frac)),13,4); aCtx.fill();
+      aCtx.fillStyle=color; aCtx.font='bold 7px Orbitron,monospace';
+      aCtx.fillText(txt, 13, cy+9);
+      cy+=16;
+    };
+    if(overT>0)     chip('⚡ OVERCHARGE', overT/OVER_FRAMES, '#ffd700');
+    if(domeT>0)     chip('🛡 AEGIS DOME', domeT/DOME_FRAMES, '#39ff14');
+    if(salvoLeft>0) chip(`🔥 SALVO ×${salvoLeft}`, salvoLeft/SALVO_SHOTS, '#ff6600');
+    aCtx.restore();
+  }
+
+  // ── ABILITY PAD ──
+  // Lives in the ground strip so it costs the playfield no height, and reads as
+  // part of the installation rather than an overlay.
+  function drawAbilityPad(){
+    const next=abilQueue[0] || null;
+    const col=next ? next.color : 'rgba(255,255,255,0.20)';
+    const pulse=next ? 0.55+Math.sin(frame*0.13)*0.45 : 0;
+    aCtx.save();
+    aCtx.fillStyle='rgba(0,0,0,0.55)';
+    aCtx.strokeStyle=col; aCtx.lineWidth=1.5;
+    if(next){ aCtx.shadowBlur=14*pulse; aCtx.shadowColor=next.color; }
+    aCtx.beginPath(); aCtx.roundRect(AB_PAD.x,AB_PAD.y,AB_PAD.w,AB_PAD.h,6);
+    aCtx.fill(); aCtx.stroke();
+    aCtx.shadowBlur=0;
+
+    aCtx.textAlign='center'; aCtx.textBaseline='middle';
+    aCtx.fillStyle=col; aCtx.font='bold 8px Orbitron,monospace';
+    aCtx.fillText(next ? next.label : 'NO CHARGE', AB_PAD.x+AB_PAD.w/2, AB_PAD.y+8);
+    aCtx.fillStyle=next ? 'rgba(255,255,255,0.75)' : 'rgba(255,255,255,0.22)';
+    aCtx.font='bold 6px Orbitron,monospace';
+    aCtx.fillText(next ? (isTouchDevice?'TAP TO DEPLOY':'CLICK OR [Q]') : 'CLEAR A WAVE',
+                  AB_PAD.x+AB_PAD.w/2, AB_PAD.y+16);
+
+    // Queued charges beyond the one on deck
+    for(let i=1;i<abilQueue.length;i++){
+      aCtx.fillStyle=abilQueue[i].color;
+      aCtx.beginPath(); aCtx.arc(AB_PAD.x+AB_PAD.w+7+(i-1)*9, AB_PAD.y+AB_PAD.h/2, 3, 0, Math.PI*2);
+      aCtx.fill();
     }
     aCtx.restore();
   }
@@ -5374,6 +5641,11 @@ function startMeteor(){
     gameLoopId=requestAnimationFrame(loop);
     const dt=Math.min(50, now-lastT); lastT=now;
     frame++;
+    // Everything the player owns — reticle, missiles, blast core, kill sparks —
+    // is drawn in the equipped Black Market colour. Incoming fragments keep their
+    // fixed red and the servers their green, so a loud cosmetic can never make a
+    // threat or a dying base harder to read.
+    const eq=getEquippedColorHex();
 
     // Reticle steering for keyboard players
     const RS=7;
@@ -5385,9 +5657,43 @@ function startMeteor(){
 
     if(ammo<AMMO_MAX){
       reloadT+=dt;
-      if(reloadT>=RELOAD){ ammo++; reloadT=0; }
+      if(reloadT>=reloadMs()){ ammo++; reloadT=0; }
     }
     if(banner>0) banner--;
+
+    // ── TURRETS ──
+    // Idle batteries ease onto the reticle so the guns are always looking where
+    // you are; recoil and muzzle flare decay on their own clocks.
+    bases.forEach(b=>{
+      if(!b.alive) return;
+      b.aim += (aimAt(b,retX,retY)-b.aim)*0.18;
+      b.recoil*=0.82; if(b.recoil<0.01) b.recoil=0;
+      b.muzzle*=0.74; if(b.muzzle<0.02) b.muzzle=0;
+    });
+
+    // ── ABILITY TIMERS ──
+    if(abilT>0){ abilT--; if(!abilT) activeAbil=null; }
+    if(overT>0) overT--;
+    if(domeT>0) domeT--;
+    if(salvoLeft>0){
+      salvoT+=dt;
+      // Shots stay banked while the sky is empty rather than firing into
+      // nothing, so a salvo deployed on the last fragment isn't wasted.
+      if(salvoT>=130 && frags.length){
+        salvoT=0;
+        let target=frags[0];
+        frags.forEach(f=>{ if(f.y>target.y) target=f; });   // lowest = closest to landing
+        const src=nearestBase(target.x);
+        if(src){
+          // Lead the shot, or an auto-salvo mostly detonates behind its marks.
+          const t=Math.hypot(target.x-src.x, target.y-PIVOT_Y)/MISSILE_V;
+          const lx=Math.max(10, Math.min(W-10, target.x+target.vx*t));
+          const ly=Math.max(14, Math.min(GROUND-8, target.y+target.vy*t));
+          fire(lx,ly,true);
+          salvoLeft--;
+        }
+      }
+    }
 
     // ── SPAWNING ──
     spawnT+=dt;
@@ -5400,6 +5706,7 @@ function startMeteor(){
       const bonus=40+wave*20;
       score+=bonus; setLive(score);
       pop(W/2,H*0.4,`WAVE ${wave} PURGED +${bonus}`,'#39ff14');
+      grantAbility();
       wave++; startWave();
     }
 
@@ -5408,7 +5715,7 @@ function startMeteor(){
       const m=missiles[i];
       m.x+=m.vx; m.y+=m.vy;
       if(Math.hypot(m.tx-m.x, m.ty-m.y)<=MISSILE_V){
-        detonate(m.tx,m.ty,BLAST_R,0);
+        detonate(m.tx,m.ty,blastR(),0);
         missiles.splice(i,1);
       }
     }
@@ -5425,6 +5732,16 @@ function startMeteor(){
           spawnFrag(f.x, f.y, t, false);
         }
         burst(f.x,f.y,'#a855f7',10);
+      }
+      // Aegis burns anything that reaches the dome. The test is the same
+      // ellipse the dome is drawn from, so the barrier stops exactly where it
+      // looks like it stops.
+      if(domeT>0 && inDome(f.x,f.y)){
+        burst(f.x,f.y,'#39ff14',12);
+        score+=10; killed++; setLive(score);
+        pop(f.x,f.y-12,'+10','#39ff14');
+        frags.splice(i,1);
+        continue;
       }
       if(f.y>=GROUND){
         burst(f.x,GROUND,'#ff6600',14);
@@ -5450,11 +5767,11 @@ function startMeteor(){
         // waiting for a cluster beats swatting fragments one at a time.
         const pts=20*b.chain;
         score+=pts; killed++; setLive(score);
-        pop(f.x,f.y,`+${pts}`, b.chain>1?'#ffd700':'#00f5ff');
-        burst(f.x,f.y,'#00f5ff',10);
+        pop(f.x,f.y,`+${pts}`, b.chain>1?'#ffd700':eq);
+        burst(f.x,f.y,eq,10);
         frags.splice(j,1);
         // Secondary detonation keeps the chain rolling outward, Missile-Command style
-        detonate(f.x,f.y,BLAST_R*0.62,b.chain);
+        detonate(f.x,f.y,blastR()*0.62,b.chain);
       }
     }
 
@@ -5479,6 +5796,20 @@ function startMeteor(){
 
     bases.forEach(drawBase);
 
+    // Aegis dome — drawn from the same ellipse inDome() tests against
+    if(domeT>0){
+      const fade=Math.min(1, domeT/50);
+      const pulse=0.45+Math.sin(frame*0.16)*0.13;
+      aCtx.save();
+      aCtx.beginPath(); aCtx.ellipse(W/2,GROUND,DOME_RX,DOME_RY,0,Math.PI,Math.PI*2);
+      aCtx.closePath();
+      aCtx.fillStyle=`rgba(57,255,20,${fade*0.07})`; aCtx.fill();
+      aCtx.strokeStyle=`rgba(57,255,20,${fade*pulse})`; aCtx.lineWidth=2.5;
+      aCtx.shadowBlur=20; aCtx.shadowColor='#39ff14';
+      aCtx.stroke();
+      aCtx.restore();
+    }
+
     // Fragment trails + heads
     frags.forEach(f=>{
       aCtx.save();
@@ -5496,13 +5827,13 @@ function startMeteor(){
     // Missiles
     missiles.forEach(m=>{
       aCtx.save();
-      aCtx.strokeStyle='rgba(0,245,255,0.5)'; aCtx.lineWidth=2;
-      aCtx.shadowBlur=10; aCtx.shadowColor='#00f5ff';
+      aCtx.strokeStyle=hexToRgba(eq,0.5); aCtx.lineWidth=2;
+      aCtx.shadowBlur=10; aCtx.shadowColor=eq;
       aCtx.beginPath(); aCtx.moveTo(m.sx,m.sy); aCtx.lineTo(m.x,m.y); aCtx.stroke();
       aCtx.fillStyle='#fff';
       aCtx.beginPath(); aCtx.arc(m.x,m.y,3,0,Math.PI*2); aCtx.fill();
       // Target marker
-      aCtx.strokeStyle='rgba(0,245,255,0.35)'; aCtx.lineWidth=1;
+      aCtx.strokeStyle=hexToRgba(eq,0.35); aCtx.lineWidth=1;
       aCtx.beginPath(); aCtx.arc(m.tx,m.ty,5,0,Math.PI*2); aCtx.stroke();
       aCtx.restore();
     });
@@ -5512,8 +5843,8 @@ function startMeteor(){
       aCtx.save();
       const g=aCtx.createRadialGradient(b.x,b.y,0,b.x,b.y,Math.max(1,b.r));
       g.addColorStop(0,'rgba(255,255,255,0.95)');
-      g.addColorStop(0.45,'rgba(0,245,255,0.55)');
-      g.addColorStop(1,'rgba(168,85,247,0)');
+      g.addColorStop(0.45,hexToRgba(eq,0.55));
+      g.addColorStop(1,hexToRgba(eq,0));
       aCtx.fillStyle=g;
       aCtx.beginPath(); aCtx.arc(b.x,b.y,Math.max(1,b.r),0,Math.PI*2); aCtx.fill();
       aCtx.strokeStyle='rgba(255,255,255,0.7)'; aCtx.lineWidth=1.5;
@@ -5523,8 +5854,8 @@ function startMeteor(){
 
     // Reticle
     aCtx.save();
-    aCtx.strokeStyle='rgba(0,245,255,0.75)'; aCtx.lineWidth=1.5;
-    aCtx.shadowBlur=10; aCtx.shadowColor='#00f5ff';
+    aCtx.strokeStyle=hexToRgba(eq,0.75); aCtx.lineWidth=1.5;
+    aCtx.shadowBlur=10; aCtx.shadowColor=eq;
     aCtx.beginPath(); aCtx.arc(retX,retY,11,0,Math.PI*2); aCtx.stroke();
     aCtx.beginPath();
     aCtx.moveTo(retX-17,retY); aCtx.lineTo(retX-5,retY);
@@ -5555,6 +5886,16 @@ function startMeteor(){
 
     aCtx.restore();
     drawHUD();
+    drawAbilityPad();
+
+    if(activeAbil){
+      aCtx.save();
+      aCtx.globalAlpha=Math.min(1, abilT/30);
+      aCtx.fillStyle=activeAbil.color; aCtx.font='bold 10px Orbitron,monospace';
+      aCtx.textAlign='center'; aCtx.shadowBlur=12; aCtx.shadowColor=activeAbil.color;
+      aCtx.fillText(`ACTIVE: ${activeAbil.desc}`, W/2, 56);
+      aCtx.restore();
+    }
 
     if(banner>0){
       aCtx.save();
