@@ -158,6 +158,8 @@ document.querySelectorAll('.diff-btn').forEach(btn=>{
     const tierKey = btn.dataset.tier;
     setDifficultyTier(tierKey);
     const tier = DIFFICULTY_TIERS[tierKey];
+    // The tier's own pitch: Stable settles, Overclock lifts, Meltdown alarms.
+    snd(tierKey==='meltdown' ? 'alarm' : 'score', { semi: tierKey==='stable' ? -5 : 2 });
     toast(`${tier.icon} SYSTEM STABILITY: ${tier.label} (×${tier.pointMult.toFixed(1)} PTS)`, 2500, `toast-${tierKey}`);
   });
 });
@@ -243,6 +245,51 @@ const showScreen=id=>{
 
 let _tt;
 const toast=(msg,ms=2500,tintClass=null)=>{const el=document.getElementById('toast');el.textContent=msg;el.classList.remove('toast-stable','toast-overclocked','toast-meltdown');if(tintClass)el.classList.add(tintClass);el.classList.add('show');clearTimeout(_tt);_tt=setTimeout(()=>el.classList.remove('show'),ms)};
+
+// ══════════════════════════════════════════════════════════════════════
+//  🔊 AUDIO — hookup to the synth engine in sound.js
+// ══════════════════════════════════════════════════════════════════════
+// Everything routes through these two shims rather than touching SFX directly,
+// so a missing/blocked sound.js degrades to a silent arcade instead of a
+// ReferenceError inside a game loop. They're called from hot paths (per shot,
+// per brick), so they stay as cheap as a property lookup — the rate limiting
+// and the "is audio even unlocked yet" question live inside the engine.
+const snd   = (name, opts) => { if(window.SFX) SFX.play(name, opts); };
+const music = track        => { if(window.SFX) SFX.music(track); };
+
+// The 🔊 button appears in both the hub bar and the game header; they're two
+// views of one setting, so the engine keeps both labelled in sync.
+if(window.SFX){
+  SFX.bindToggle(document.getElementById('btn-sound-hub'));
+  SFX.bindToggle(document.getElementById('btn-sound-game'));
+  ['btn-sound-hub','btn-sound-game'].forEach(id=>{
+    document.getElementById(id)?.addEventListener('click',()=>toast(SFX.modeToast(),2000));
+  });
+}
+
+// Generic interface feedback, delegated once at the document instead of bolted
+// onto ~40 individual handlers. Anything that navigates BACKWARDS gets the
+// descending blip, so the hub always sounds like the place you return to.
+// Only `.btn`-classed controls are caught here. The game pad, Click Frenzy's
+// button, the difficulty tiers, the mission cards and Memory Match's tiles
+// deliberately sit outside it — each of those has a sound of its own that says
+// something the generic blip can't.
+const BACK_BTNS = new Set(['btn-quit','btn-hub','btn-market-back','btn-logout']);
+document.addEventListener('click', e=>{
+  const el = e.target.closest?.('.btn, .market-tab, .auth-tab, .fb-close');
+  if(!el || el.disabled) return;
+  // The audio toggle demos the mode it just switched to, and the shop answers
+  // with a purchase/equip cue — neither wants a blip on top.
+  if(el.classList.contains('btn-sound') || el.classList.contains('shop-btn')) return;
+  if(el.classList.contains('market-tab') || el.classList.contains('auth-tab')) { snd('tab'); return; }
+  snd(BACK_BTNS.has(el.id) || el.classList.contains('fb-close') ? 'uiBack' : 'ui');
+}, true);
+
+// Browsers keep audio suspended until the page has been interacted with, so
+// the sign-in screen can't have a soundtrack on arrival — it gets one on the
+// first touch instead. music() is a no-op when the track is already playing,
+// so signing in and walking into the hub never restarts the loop.
+window.addEventListener('pointerdown', ()=>music('hub'), { once:true });
 
 // ── FULLSCREEN TOGGLE ──
 // iOS Safari exposes NO Fullscreen API on ordinary elements, and older
@@ -576,14 +623,16 @@ function setControlHint(touchText, keyText){
 const countdown=cb=>{
   const ov=document.getElementById('cd-ov'),nm=document.getElementById('cd-num');
   ov.classList.add('show');let n=3;
-  const tick=()=>{nm.className='';nm.textContent=n>0?n:'GO!';void nm.offsetWidth;nm.className='cd-pop';if(n<=0)setTimeout(()=>{ov.classList.remove('show');cb()},700);else{n--;setTimeout(tick,1000)}};
+  const tick=()=>{nm.className='';nm.textContent=n>0?n:'GO!';void nm.offsetWidth;nm.className='cd-pop';snd(n>0?'countdown':'go');if(n<=0)setTimeout(()=>{ov.classList.remove('show');cb()},700);else{n--;setTimeout(tick,1000)}};
   tick();
 };
 
 // ════════════════════════════════════════════
 //  🔐 GATEWAY VALIDATION INTERFACE KEYS
 // ════════════════════════════════════════════
-const setErr=msg=>document.getElementById('auth-err').textContent=msg;
+// Only the failures make a noise — setErr('') is also how every screen CLEARS
+// the line, and that must stay silent.
+const setErr=msg=>{if(msg)snd('error');document.getElementById('auth-err').textContent=msg};
 
 // True while an explicit sign-in flow is still seeding its player node.
 // Keeps onAuthStateChanged from racing ahead and loading a half-written profile.
@@ -666,6 +715,7 @@ const fErr=(e,ctx)=>{
 // on screen.
 function showAuthErr(el, e, ctx){
   if(!el) return;
+  snd('error');
   el.textContent = fErr(e, ctx);
   if(e && e.code){
     const tag = document.createElement('div');
@@ -742,6 +792,7 @@ async function loadUser(uid){
   user.isGuest = !!(auth && auth.currentUser && auth.currentUser.isAnonymous);
   if(user.isGuest && !snapshot.exists()) user.username = guestTag(uid);
   applyEquippedCosmetics();
+  snd('login');
   enterHub();
 }
 
@@ -775,10 +826,12 @@ document.getElementById('btn-logout').onclick=async()=>{
       : 'Exiting deletes this guest profile permanently. Exit anyway?';
     if(!confirm(warn)) return;
     await purgeGuestAccount();
+    snd('logout');
     user=null;showScreen('auth-screen');setErr('');toast('🗑️ Guest profile wiped from the grid.');
     return;
   }
   if(auth)auth.signOut();
+  snd('logout');
   user=null;showScreen('auth-screen');setErr('');toast('👋 Terminal connection closed.');
 };
 
@@ -802,6 +855,7 @@ function enterHub(){
   document.getElementById('h-pts').textContent=`🏆 ${(user.totalPoints||0).toLocaleString()} PTS`;
   document.getElementById('h-credits').textContent=`💎 ${(user.credits||0).toLocaleString()} CR`;
   showScreen('hub-screen');
+  music('hub');
   loadLeaderboard();
   unlockDifficultySelector();
 }
@@ -810,9 +864,13 @@ document.getElementById('btn-market').onclick=()=>openMarket();
 document.getElementById('btn-market-back').onclick=()=>enterHub();
 
 document.querySelectorAll('.game-card').forEach(card=>{
+  // Desktop only: on a phone every "hover" is really the start of a tap, so
+  // the card would blip twice for one press.
+  if(!isTouchDevice) card.addEventListener('mouseenter',()=>snd('hover'));
   card.addEventListener('click',()=>{
     const gid=card.dataset.game;
     curGame=gid;
+    snd('success');
     document.getElementById('g-title').textContent=META[gid].name;
     showScreen('game-screen');
     prepGame(gid);
@@ -833,6 +891,7 @@ document.getElementById('btn-quit').onclick=()=>{
 function prepGame(gid){
   stopGame();
   onQuitGame=null;
+  music('game');
   lockDifficultySelector();
   document.getElementById('g-click').style.display='none';
   document.getElementById('g-canvas-holder').style.display='none';
@@ -875,9 +934,17 @@ const setLive=n=>document.getElementById('g-pts').textContent=n;
 
 function showResults(gid,pts,bd){
   stopGame();
+  music('hub');
   const tier = DIFFICULTY_TIERS[currentDifficultyTier];
   const finalPts = Math.round(pts * gameDifficultyMultiplier);
   const m=META[gid],pct=finalPts/m.maxPts;
+  // A three-quarter run earns the fanfare; anything less gets the neutral
+  // readout chime, so the sound is honest about how the round actually went.
+  // Held back a beat: the screen itself cross-fades over ~340ms, and the games
+  // that end in a crash are still playing their death sting right now — this
+  // lands the flourish on the card appearing rather than under the explosion.
+  // A plain timeout, not gLater(), because stopGame() has already run.
+  setTimeout(()=>snd(pct>.75 ? 'victory' : 'results'), 300);
   document.getElementById('res-emoji').textContent=pct>.75?'🎉':'💪';
   document.getElementById('res-gname').textContent=m.name;
 
@@ -923,6 +990,7 @@ async function saveScore(gid,pts){
         loadLeaderboard();
       });
     });
+    snd('coin');
     toast(`✅ Matrix Sync: +${pts} PTS`);
   } catch (e) { console.error("Score pipeline error:", e) }
 }
@@ -1138,28 +1206,30 @@ document.getElementById('btn-conv-to-credits').onclick = async ()=>{
   if(!user || !db){ toast('⚠️ Connection state unconfigured'); return }
   const v = Math.max(0, parseInt(convPtsInput.value)||0);
   const credits = Math.floor(v/CONV_RATE);
-  if(credits<=0){ toast(`⚠️ Enter at least ${CONV_RATE} points.`); return }
-  if(v>(user.totalPoints||0)){ toast('⚠️ Insufficient points.'); return }
+  if(credits<=0){ snd('deny'); toast(`⚠️ Enter at least ${CONV_RATE} points.`); return }
+  if(v>(user.totalPoints||0)){ snd('deny'); toast('⚠️ Insufficient points.'); return }
   const spentPts = credits*CONV_RATE;
   user.totalPoints -= spentPts;
   user.credits = (user.credits||0) + credits;
   await db.ref('players/'+user.uid).update({ totalPoints:user.totalPoints, credits:user.credits });
   convPtsInput.value=''; document.getElementById('conv-pts-preview').textContent='= 0 CR';
   refreshMarketBalances(); loadLeaderboard();
+  snd('convert');
   toast(`✅ Converted ${spentPts} PTS → ${credits} CR`);
 };
 
 document.getElementById('btn-conv-to-points').onclick = async ()=>{
   if(!user || !db){ toast('⚠️ Connection state unconfigured'); return }
   const v = Math.max(0, parseInt(convCreditsInput.value)||0);
-  if(v<=0){ toast('⚠️ Enter at least 1 credit.'); return }
-  if(v>(user.credits||0)){ toast('⚠️ Insufficient credits.'); return }
+  if(v<=0){ snd('deny'); toast('⚠️ Enter at least 1 credit.'); return }
+  if(v>(user.credits||0)){ snd('deny'); toast('⚠️ Insufficient credits.'); return }
   const gainedPts = v*CONV_RATE;
   user.credits -= v;
   user.totalPoints = (user.totalPoints||0) + gainedPts;
   await db.ref('players/'+user.uid).update({ totalPoints:user.totalPoints, credits:user.credits });
   convCreditsInput.value=''; document.getElementById('conv-credits-preview').textContent='= 0 PTS';
   refreshMarketBalances(); loadLeaderboard();
+  snd('convert');
   toast(`✅ Converted ${v} CR → ${gainedPts} PTS`);
 };
 
@@ -1202,20 +1272,23 @@ async function handleShopAction(act, cat, id){
   if(!item) return;
 
   if(act==='buy'){
-    if((user.credits||0) < item.price){ toast('⚠️ Insufficient credits.'); return }
+    if((user.credits||0) < item.price){ snd('deny'); toast('⚠️ Insufficient credits.'); return }
     user.credits -= item.price;
     user.owned[cat] = [...(user.owned[cat]||[]), id];
     await db.ref('players/'+user.uid).update({ credits:user.credits, ['owned/'+cat]: user.owned[cat] });
+    snd('purchase');
     toast(`✅ Purchased ${item.name}`);
   } else if(act==='equip'){
     user.equipped[cat] = id;
     await db.ref('players/'+user.uid).update({ ['equipped/'+cat]: id });
+    snd('equip');
     toast(`⚡ Equipped ${item.name}`);
     applyEquippedCosmetics();
   } else if(act==='unequip'){
     const defItem = SHOP_ITEMS[cat].find(i=>i.default);
     user.equipped[cat] = defItem.id;
     await db.ref('players/'+user.uid).update({ ['equipped/'+cat]: defItem.id });
+    snd('uiBack');
     toast(`Unequipped ${item.name}`);
     applyEquippedCosmetics();
   }
@@ -1233,10 +1306,13 @@ function startClick(){
   document.getElementById('g-time').textContent='10';
   const btn=document.getElementById('click-btn');
   btn.disabled=false;
-  btn.onclick=()=>{if(!ended){clicks++;document.getElementById('click-count').textContent=clicks;setLive(Math.min(500,clicks*8))}};
+  // The blip climbs an octave over eight clicks and wraps, so a fast streak
+  // sounds like it's accelerating even though the button is doing one thing.
+  btn.onclick=()=>{if(!ended){clicks++;snd('bounce',{semi:(clicks%8)*2});document.getElementById('click-count').textContent=clicks;setLive(Math.min(500,clicks*8))}};
   gTimer=setInterval(()=>{
     t--;document.getElementById('g-time').textContent=t;
     document.getElementById('prog-fill').style.width=`${t/10*100}%`;
+    if(t<=3&&t>0) snd('tick');
     if(t<=0){
       clearInterval(gTimer);ended=true;btn.disabled=true;btn.onclick=null;
       const pts=Math.min(500,clicks*8);
@@ -1364,6 +1440,8 @@ function startNebula(){
     updateAbilityHUD();
     activeAbility = abil;
 
+    snd('ability');
+
     if (abil.id === 'SMART_MISSILE') {
       // Fire 3 homing missiles that launch FROM the ship nose and track nearest enemies
       popText(BOARD_W / 2, player.y - 24, '🎯 SMART MISSILES!', '#00f5ff');
@@ -1388,12 +1466,14 @@ function startNebula(){
           });
           // launch flash
           explode(shipNoseX, shipNoseY, '#00f5ff', 5);
+          snd('missile');
         }, i * 120);
       });
       setTimeout(() => { activeAbility = null; }, 2500);
 
     } else if (abil.id === 'SHIELD_BURST') {
       // Restore shield to 100% — pure healing, no damage component
+      snd('shield');
       shield = 100;
       document.getElementById('prog-fill').style.width = '100%';
       shieldBubbleActive = true;
@@ -1430,6 +1510,7 @@ function startNebula(){
 
     } else if (abil.id === 'NOVA_BOMB') {
       // Destroy ALL enemies on screen with massive expanding shockwave
+      snd('bigExplode');
       screenShake = 30;
       popText(BOARD_W / 2, 200, '💥 NOVA BOMB!', '#ff0090');
       // Award points for all enemies destroyed
@@ -1562,6 +1643,10 @@ function startNebula(){
     },
     shoot() {
       const wl = this.weaponLevel;
+      // The gun drops a semitone per weapon level and switches to the fatter
+      // plasma sample once the spread bolts unlock — the upgrade is audible
+      // before you've had time to notice the extra bullets on screen.
+      snd(plasmaOrbs >= 3 ? 'plasma' : 'shoot', { semi: -(wl - 1) * 2 });
       if (wl === 1) {
         projectiles.push({ x: this.x + this.w/2, y: this.y, vx: 0, vy: -10 });
       } else if (wl === 2) {
@@ -1646,6 +1731,7 @@ function startNebula(){
         this.attackTimer++;
         if (this.attackTimer >= this.attackCooldown / warpMult) {
           this.attackTimer = 0;
+          snd('enemyShot', { semi: -5 });
           // Drop a bomb straight down from the enemy center
           enemyProjectiles.push({
             type: 'BOMB', x: this.x + this.w/2, y: this.y + this.h,
@@ -1662,6 +1748,7 @@ function startNebula(){
         if (this.laserFlash > 0) this.laserFlash--;
         if (this.attackTimer >= this.attackCooldown / warpMult) {
           this.attackTimer = 0; this.laserFlash = 8;
+          snd('enemyShot');
           // Shoot laser aimed at player
           const dx = player.x + player.w/2 - (this.x + this.w/2);
           const dy = player.y + player.h/2 - (this.y + this.h/2);
@@ -1772,6 +1859,7 @@ function startNebula(){
         if (!shieldBubbleActive &&
             Math.hypot(ep.x - (player.x+player.w/2), ep.y - (player.y+player.h/2)) < ep.r + 14) {
           explode(ep.x, ep.y, '#ff6600', 18);
+          snd('hurt');
           shield -= 20; screenShake = 16; shieldFlashTimer = 15;
           document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
           enemyProjectiles.splice(i,1); if (shield <= 0) end(); continue;
@@ -1798,6 +1886,7 @@ function startNebula(){
         if (!shieldBubbleActive &&
             collide({ x: ep.x - 4, y: ep.y - 4, w: 8, h: 8 }, { x: player.x, y: player.y, w: player.w, h: player.h })) {
           explode(ep.x, ep.y, '#a855f7', 8);
+          snd('shieldHit');
           shield -= 12; screenShake = 10; shieldFlashTimer = 10;
           document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
           enemyProjectiles.splice(i,1); if (shield <= 0) end(); continue;
@@ -1959,11 +2048,13 @@ function startNebula(){
         powerups.splice(pui, 1);
         explode(pu.x, pu.y, orbColor, 18);
         if (plasmaOrbs <= 3) {
+          snd('powerup');
           popText(player.x, player.y - 10, `PLASMA LV${plasmaOrbs}!`, '#39ff14');
         } else {
           const abilIndex = plasmaOrbs - 3;
           const abil = getAbilityForOrb(abilIndex);
           specialAbilities.push(abil);
+          snd('charge');
           popText(player.x, player.y - 10, abil.label + ' CHARGED!', abil.color);
           // Big particle burst for bonus orbs
           for (let k=0;k<6;k++) {
@@ -1979,12 +2070,14 @@ function startNebula(){
       e.update(frame); e.draw();
 
       if (e.y > 510) {
+        snd('shieldHit');
         enemies.splice(ei, 1); shield -= 15 * diffMod; screenShake = 10; shieldFlashTimer = 12;
         document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
         if (shield <= 0) end(); continue;
       }
       if (!shieldBubbleActive && collide({ x: player.x, y: player.y, w: player.w, h: player.h }, { x: e.x, y: e.y, w: e.w, h: e.h })) {
         explode(e.x + e.w/2, e.y + e.h/2, e.color, 20);
+        snd('hurt');
         enemies.splice(ei, 1); shield -= 25 * diffMod; screenShake = 18; shieldFlashTimer = 18;
         document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
         if (shield <= 0) end(); continue;
@@ -2000,8 +2093,10 @@ function startNebula(){
           projectiles.splice(pi, 1);
           e.hp -= p.plasma ? 2 : 1; // plasma bolts do double damage
           explode(p.x, p.y, p.plasma ? '#a855f7' : '#00f5ff', p.plasma ? 6 : 3);
+          snd('hit');
           if (e.hp <= 0) {
             explode(e.x + e.w/2, e.y + e.h/2, e.color, 15);
+            snd('explode');
             popText(e.x, e.y, `+${e.pts}`, e.color);
             if (Math.random() < 0.18 / diffMod) powerups.push({ x: e.x + e.w/2, y: e.y + e.h/2, pulse: 0 });
             score += e.pts; setLive(score); enemies.splice(ei, 1); destroyed = true; break;
@@ -2052,6 +2147,7 @@ function startNebula(){
   let isOver = false;
   function end() {
     if (isOver) return; isOver = true;
+    snd('gameOver');
     const finalPts = Math.min(1000, score);
     showResults('nebula', finalPts, {
       '👾 Alien Matrices Purged': Math.floor(score / 20),
@@ -2136,8 +2232,9 @@ function startTetris(){
     if(dir>0) m.forEach(row=>row.reverse()); else m.reverse();
   }
 
-  function playerMove(dir){ player.pos.x+=dir; if(collide(arena,player)) player.pos.x-=dir; }
+  function playerMove(dir){ player.pos.x+=dir; if(collide(arena,player)) player.pos.x-=dir; else snd('move'); }
   function playerRotate(dir){
+    snd('rotate');
     const pos=player.pos.x; let offset=1; rotate(player.matrix, dir);
     while(collide(arena,player)){ player.pos.x+=offset; offset=-(offset+(offset>0?1:-1)); if(offset>player.matrix[0].length) { rotate(player.matrix, -dir); player.pos.x=pos; return; } }
   }
@@ -2145,14 +2242,14 @@ function startTetris(){
   function playerDrop(){
     player.pos.y++;
     if(collide(arena,player)){
-      player.pos.y--; merge(arena,player); resetPlayer(); arenaSweep();
+      player.pos.y--; merge(arena,player); snd('land'); resetPlayer(); arenaSweep();
     } dropCounter=0;
   }
-  
+
   // Included Hard Drop standard logic
   function playerHardDrop(){
     while(!collide(arena, player)) player.pos.y++;
-    player.pos.y--; merge(arena, player); screenShake=8; resetPlayer(); arenaSweep();
+    player.pos.y--; merge(arena, player); snd('hardDrop'); screenShake=8; resetPlayer(); arenaSweep();
     dropCounter=0;
   }
 
@@ -2167,19 +2264,26 @@ function startTetris(){
 
   function arenaSweep(){
     let rowCount=1;
+    // How many rows went in ONE sweep, which is not what rowCount tracks —
+    // that doubles per row as a score multiplier. The clear chime gets longer
+    // and higher with the size of the clear, so a quad is unmistakable.
+    let sweptRows=0, leveled=false;
     outer: for(let y=arena.length-1; y>0; --y){
       for(let x=0; x<arena[y].length; ++x) if(arena[y][x]===0) continue outer;
       const row = arena.splice(y,1)[0].fill(0); arena.unshift(row);
       explodeLine(y, arena[0].length);
-      ++y; score += rowCount*10; linesCleared++; rowCount*=2;
+      ++y; score += rowCount*10; linesCleared++; rowCount*=2; sweptRows++;
       setLive(score); screenShake=12;
-      
+
       // Included progressive drop speed calculation logic
       if(linesCleared%10===0 && level<50) {
         level++; document.getElementById('tetris-lvl').textContent=level;
         dropInterval = Math.max(50, (600 * Math.pow(0.85, level - 1)) / diffMod);
+        leveled=true;
       }
     }
+    if(sweptRows) snd('lineClear',{semi:sweptRows});
+    if(leveled) snd('levelUp');
   }
 
   function drawMatrix(matrix, offset, ctx, isGhost=false){
@@ -2263,6 +2367,7 @@ function startTetris(){
   gTimer=setInterval(()=>{
     time--; document.getElementById('g-time').textContent=time;
     document.getElementById('prog-fill').style.width=`${Math.max(0,time/startTime)*100}%`;
+    if(time<=5&&time>0) snd('tick');
     if(time<=0) end();
   },1000);
 
@@ -2315,6 +2420,8 @@ function startTetris(){
   
   function end(){
     if(tetrisOver)return;tetrisOver=true;
+    // Only a top-out is a death; running the clock out is a finished round.
+    snd(time<=0 ? 'results' : 'gameOver');
     repeatStoppers.forEach(stop=>stop());   // don't leave a held arrow ticking
     showResults('tetris',Math.min(1500,score),{'🧱 Base Core Lines Resolved':linesCleared, '🏆 Final Output Score':`${score} PTS`});
   }
@@ -2365,6 +2472,8 @@ function startDodge(){
     time--;document.getElementById('g-time').textContent=time;
     document.getElementById('prog-fill').style.width=`${time/30*100}%`;
     score+=25;setLive(score);
+    // Surviving another second IS the scoring event here, so it gets a beat.
+    snd(time<=5&&time>0 ? 'tick' : 'score', {semi:-7});
     if(time<=0) end();
   },1000);
 
@@ -2424,7 +2533,7 @@ function startDodge(){
       aCtx.restore();
 
       const dx = o.x - player.x, dy = o.y - player.y;
-      if(Math.sqrt(dx*dx + dy*dy) < o.r + player.r){ isGameOver=true; end(); return; }
+      if(Math.sqrt(dx*dx + dy*dy) < o.r + player.r){ isGameOver=true; snd('bigExplode'); end(); return; }
       if(o.y > BOARD_H + 20) obstacles.splice(i,1);
     }
 
@@ -2450,6 +2559,7 @@ function startMemory(){
   gTimer=setInterval(()=>{
     time--;document.getElementById('g-time').textContent=time;
     document.getElementById('prog-fill').style.width=`${time/25*100}%`;
+    if(time<=5&&time>0) snd('tick');
     if(time<=0) end();
   },1000);
 
@@ -2457,10 +2567,12 @@ function startMemory(){
     const card=document.createElement('div');card.className='mem-card';card.dataset.val=icon;card.textContent='?';
     card.onclick=()=>{
       if(flipped.length<2&&!card.classList.contains('flipped')){
-        card.classList.add('flipped');card.textContent=icon;flipped.push(card);
+        card.classList.add('flipped');card.textContent=icon;flipped.push(card);snd('flip');
         if(flipped.length===2){
-          if(flipped[0].dataset.val===flipped[1].dataset.val){score+=75;setLive(score);matched++;flipped=[];if(matched===8)end()}
-          else{setTimeout(()=>{flipped[0].classList.remove('flipped');flipped[0].textContent='?';flipped[1].classList.remove('flipped');flipped[1].textContent='?';flipped=[]},700)}
+          // Each pair rings a step higher than the last, so the board sings its
+          // way up as it empties.
+          if(flipped[0].dataset.val===flipped[1].dataset.val){score+=75;setLive(score);matched++;snd('match',{semi:matched*2});flipped=[];if(matched===8)end()}
+          else{snd('wrong');setTimeout(()=>{flipped[0].classList.remove('flipped');flipped[0].textContent='?';flipped[1].classList.remove('flipped');flipped[1].textContent='?';flipped=[]},700)}
         }
       }
     };
@@ -2488,7 +2600,7 @@ function startMath(){
 
   const check=()=>{
     let input=parseInt(document.getElementById('math-answer').value);
-    if(input===curAns){score+=50;setLive(score)}gen();
+    if(input===curAns){score+=50;setLive(score);snd('correct')}else{snd('wrong')}gen();
   };
   document.getElementById('math-submit').onclick=check;
   document.getElementById('math-answer').onkeydown=e=>{if(e.code==='Enter')check()};
@@ -2497,6 +2609,7 @@ function startMath(){
   gTimer=setInterval(()=>{
     time--;document.getElementById('g-time').textContent=time;
     document.getElementById('prog-fill').style.width=`${time/20*100}%`;
+    if(time<=5&&time>0) snd('tick');
     if(time<=0&&!mathEnded){mathEnded=true;document.getElementById('math-answer').onkeydown=null;document.getElementById('math-submit').onclick=null;showResults('math',Math.min(750,score),{'🔢 Nodes Resolved':score/50,'🏆 Score Accumulation':`${score} PTS`})}
   },1000);
 }
@@ -2526,19 +2639,21 @@ function startReaction(){
   setControlHint('TAP THE INSTANT IT TURNS GREEN','CLICK THE INSTANT IT TURNS GREEN');
   const goLabel = isTouchDevice ? 'TAP NOW!' : 'CLICK NOW!';
 
-  let trigger=later(()=>{if(state==='wait'){state='go';box.style.background='var(--lime)';txt.textContent=goLabel;startT=performance.now()}},Math.random()*2500+1500);
+  let trigger=later(()=>{if(state==='wait'){state='go';box.style.background='var(--lime)';txt.textContent=goLabel;snd('go');startT=performance.now()}},Math.random()*2500+1500);
 
   // Timed on pointerdown, not click. A synthesised click doesn't land until
   // the finger lifts, which was quietly adding its own latency to every
   // reading — this game's whole score is that number.
   box.onpointerdown=e=>{
     e.preventDefault();
-    if(state==='wait'){clearTimeout(trigger);txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--orange)';state='hold';later(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--lime)';txt.textContent=goLabel;startT=performance.now()},Math.random()*2000+1000)}},1200)}
+    if(state==='wait'){clearTimeout(trigger);snd('wrong');txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--orange)';state='hold';later(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--lime)';txt.textContent=goLabel;snd('go');startT=performance.now()},Math.random()*2000+1000)}},1200)}
     else if(state==='go'){
       let diff=Math.round(performance.now()-startT);
       let earned=Math.max(10,400-diff);score+=earned;setLive(score);
+      // Faster reflex, higher chime — a 150ms tap is audibly better than 320ms.
+      snd('score',{semi:Math.max(0,Math.round((400-diff)/40))});
       txt.textContent=`${diff}ms! REBOOTING...`;box.style.background='var(--cyan)';state='hold';
-      later(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--lime)';txt.textContent=goLabel;startT=performance.now()},Math.random()*2000+1000)}},1500);
+      later(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--lime)';txt.textContent=goLabel;snd('go');startT=performance.now()},Math.random()*2000+1000)}},1500);
     }
   };
   function end(){if(reactionEnded)return;reactionEnded=true;clearTimeout(trigger);box.onpointerdown=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
@@ -2627,6 +2742,7 @@ function startPong(){
     if(isOver)return;
     time--;document.getElementById('g-time').textContent=Math.ceil(time);
     document.getElementById('prog-fill').style.width=`${time/45*100}%`;
+    if(time<=5&&time>0) snd('tick');
     if(time<=0)end();
   },1000);
 
@@ -2659,8 +2775,8 @@ function startPong(){
     ballX+=ballVX; ballY+=ballVY;
 
     // Top/bottom wall bounce
-    if(ballY-BALL_R<0){ballY=BALL_R;ballVY=Math.abs(ballVY);}
-    if(ballY+BALL_R>H){ballY=H-BALL_R;ballVY=-Math.abs(ballVY);}
+    if(ballY-BALL_R<0){ballY=BALL_R;ballVY=Math.abs(ballVY);snd('bounceWall');}
+    if(ballY+BALL_R>H){ballY=H-BALL_R;ballVY=-Math.abs(ballVY);snd('bounceWall');}
 
     // Paddle hits are SWEPT — they ask whether the ball crossed the paddle's
     // face this frame, not whether it happens to be sitting inside the 10-unit
@@ -2674,6 +2790,9 @@ function startPong(){
     if(ballVX<0 && prevX-BALL_R>=pFace && ballX-BALL_R<=pFace && ballY>playerY && ballY<playerY+PAD_H){
       // Player hit the ball - increase rally count
       rallyCount++;
+      // The rally climbs in pitch as the ball speeds up — you can hear a long
+      // rally getting dangerous without taking your eyes off the paddle.
+      snd('bounce',{semi:Math.min(14,rallyCount)});
       ballVX=Math.abs(ballVX)*1.04;
       ballVY=((ballY-(playerY+PAD_H/2))/(PAD_H/2))*6;
       ballX=20+PAD_W+BALL_R;
@@ -2683,6 +2802,7 @@ function startPong(){
     if(ballVX>0 && prevX+BALL_R<=aFace && ballX+BALL_R>=aFace && ballY>aiY && ballY<aiY+PAD_H){
       // AI hit the ball - rally continues
       rallyCount++;
+      snd('bounce',{semi:Math.min(14,rallyCount)-12});
       ballVX=-Math.abs(ballVX)*1.02;
       ballVY=((ballY-(aiY+PAD_H/2))/(PAD_H/2))*5;
       ballX=W-20-PAD_W-BALL_R;
@@ -2693,10 +2813,12 @@ function startPong(){
       if(ballX < 0) {
         // Ball passed LEFT wall — player missed — CPU scores
         cpuScore++;
+        snd('hurt');
         updateScore();
       } else {
         // Ball passed RIGHT wall — CPU missed — player scores
         userScore++;
+        snd('score');
         updateScore();
       }
 
@@ -2818,11 +2940,13 @@ function startSnake(){
     if(isOver)return;
     time--;document.getElementById('g-time').textContent=Math.ceil(time);
     document.getElementById('prog-fill').style.width=`${time/adjustedTime*100}%`;
+    if(time<=5&&time>0) snd('tick');
     if(time<=0)end('timeout');
   },1000);
 
   function end(reason){
     if(isOver)return;isOver=true;
+    if(reason!=='timeout') snd('gameOver');
     showResults('snake',Math.min(1200,score),{
       '🐍 Nodes Consumed':Math.floor(score/30),
       '📏 Max Length':snake.length,
@@ -2841,14 +2965,16 @@ function startSnake(){
       const head={x:snake[0].x+dir.x,y:snake[0].y+dir.y};
 
       // Wall collision
-      if(head.x<0||head.x>=COLS||head.y<0||head.y>=ROWS){end('wall');return;}
+      if(head.x<0||head.x>=COLS||head.y<0||head.y>=ROWS){snd('bigExplode');end('wall');return;}
       // Self collision
-      if(snake.some(s=>s.x===head.x&&s.y===head.y)){end('self');return;}
+      if(snake.some(s=>s.x===head.x&&s.y===head.y)){snd('bigExplode');end('self');return;}
 
       snake.unshift(head);
 
       if(head.x===food.x&&head.y===food.y){
         score+=30;setLive(score);
+        // Pitch tracks length, so the chain you've built is something you hear.
+        snd('eat',{semi:Math.min(19,snake.length-3)});
         // Particle burst on food eat
         for(let i=0;i<8;i++){
           const ang=Math.random()*Math.PI*2,v=Math.random()*3+1;
@@ -2948,7 +3074,7 @@ function startFlappy(){
   document.getElementById('prog-fill').style.width='100%';
   document.getElementById('prog-fill').style.background='linear-gradient(90deg,var(--gold),var(--orange))';
 
-  function flap(){if(!isOver){droneVY=FLAP;}}
+  function flap(){if(!isOver){droneVY=FLAP;snd('flap');}}
 
   document.getElementById('ctrl-action').onclick=flap;
   window.onkeydown=e=>{if(e.code==='Space'){flap();e.preventDefault();}};
@@ -3034,6 +3160,7 @@ function startFlappy(){
       p.x-=PIPE_SPEED;
       if(!p.scored&&p.x+PIPE_W<DRONE_X-DRONE_W/2){
         score++;setLive(score);p.scored=true;
+        snd('score',{semi:Math.min(12,score-1)});
         // particle burst on clear
         for(let k=0;k<6;k++){
           const ang=Math.random()*Math.PI*2,v=Math.random()*3+1;
@@ -3045,13 +3172,13 @@ function startFlappy(){
       // Collision: top pipe
       if(DRONE_X+DRONE_W/2>p.x&&DRONE_X-DRONE_W/2<p.x+PIPE_W){
         if(droneY-DRONE_H/2<p.topH||droneY+DRONE_H/2>p.topH+GAP){
-          drawDrone(droneY,true);end();return;
+          drawDrone(droneY,true);snd('bigExplode');end();return;
         }
       }
     }
 
     // Floor / ceiling
-    if(droneY+DRONE_H/2>H||droneY-DRONE_H/2<0){drawDrone(droneY,true);end();return;}
+    if(droneY+DRONE_H/2>H||droneY-DRONE_H/2<0){drawDrone(droneY,true);snd('bigExplode');end();return;}
 
     // ── DRAW ──
     aCtx.clearRect(0,0,W,H);
@@ -3222,10 +3349,12 @@ function startBreaker(){
     if(isOver)return;
     time--; document.getElementById('g-time').textContent=time;
     document.getElementById('prog-fill').style.width=`${time/adjustedTime*100}%`;
+    if(time<=5&&time>0) snd('tick');
     if(time<=0) end('timeout');
   },1000);
 
   function applyChip(ch){
+    snd('powerup');
     if(ch.type.key==='wide') wideUntil=nowMs+8000;
     else if(ch.type.key==='slow') slowUntil=nowMs+6000;
     else { score+=50; setLive(score); }
@@ -3235,9 +3364,12 @@ function startBreaker(){
 
   function hitBrick(b){
     b.hp--;
-    if(b.hp>0){ burst(b.x+B_W/2, b.y+B_H/2, b.color, 4); return; }
+    if(b.hp>0){ burst(b.x+B_W/2, b.y+B_H/2, b.color, 4); snd('hit'); return; }
     broken++;
     combo++; if(combo>bestCombo) bestCombo=combo;
+    // Chain climb: the shatter note rises with the combo the same way the score
+    // does, so a tunnel run behind the wall sounds like the run it is.
+    snd('brick',{semi:Math.min(14,combo-1)});
     // Every brick cleared before the ball comes home is worth more than the
     // last, so a well-aimed tunnel pays for itself — capped, because a ball
     // loose behind the wall can chain thirty bricks on its own and would
@@ -3253,6 +3385,7 @@ function startBreaker(){
   function loseShield(){
     shields--; combo=0; shake=14;
     burst(ball.x, H-8, '#ff2442', 14);
+    snd(shields<=0 ? 'gameOver' : 'hurt');
     if(shields<=0){ end('breached'); return; }
     stuck=true; trail=[];
   }
@@ -3262,9 +3395,9 @@ function startBreaker(){
   function step(f){
     ball.x+=ball.vx*f; ball.y+=ball.vy*f;
 
-    if(ball.x-BALL_R<0){ ball.x=BALL_R; ball.vx=Math.abs(ball.vx); }
-    if(ball.x+BALL_R>W){ ball.x=W-BALL_R; ball.vx=-Math.abs(ball.vx); }
-    if(ball.y-BALL_R<0){ ball.y=BALL_R; ball.vy=Math.abs(ball.vy); }
+    if(ball.x-BALL_R<0){ ball.x=BALL_R; ball.vx=Math.abs(ball.vx); snd('bounceWall'); }
+    if(ball.x+BALL_R>W){ ball.x=W-BALL_R; ball.vx=-Math.abs(ball.vx); snd('bounceWall'); }
+    if(ball.y-BALL_R<0){ ball.y=BALL_R; ball.vy=Math.abs(ball.vy); snd('bounceWall'); }
 
     // Deflector — the bounce angle comes off where you hit, not off the
     // incoming vector, so aiming is a real skill and the speed stays constant.
@@ -3275,6 +3408,7 @@ function startBreaker(){
       ball.vx=Math.sin(ang)*speed; ball.vy=-Math.cos(ang)*speed;
       ball.y=PAD_Y-BALL_R-0.5;
       combo=0;
+      snd('bounce');
       burst(ball.x, PAD_Y, getEquippedColorHex(), 3);
     }
 
@@ -3528,6 +3662,7 @@ function startArena() {
     if (specialAbilities.length === 0) return;
     const abil = specialAbilities.shift();
     screenShake = 10;
+    snd(abil.id === 'NOVA' ? 'bigExplode' : abil.id === 'HEAL' ? 'heal' : 'ability');
     popText(player.x, player.y - 34, abil.label + '!', abil.color);
     if (abil.id === 'NOVA') {
       enemyBots.forEach(bot => {
@@ -3977,6 +4112,7 @@ function startArena() {
     player.hp = Math.max(0, player.hp - dmg);
     invincibleTimer = 30;
     screenShake = 8;
+    snd('hurt');
     // Flash particles
     for (let i = 0; i < 6; i++) {
       const a = Math.random() * Math.PI * 2, v = Math.random() * 3 + 1;
@@ -4015,6 +4151,7 @@ function startArena() {
     slashAngle = player.angle;
     player.slashCooldown = 28;
     screenShake = 3;
+    snd('slash');
     // Check hit on bots
     let hitAny = false;
     enemyBots.forEach(bot => {
@@ -4042,6 +4179,7 @@ function startArena() {
           bot.stunTimer = 12;
           hitAny = true;
           explode(bot.x, bot.y, blocked ? '#00f5ff' : bot.color, blocked ? 3 : 6);
+          snd(blocked ? 'bounceWall' : 'hit');
           popText(bot.x, bot.y - 14, blocked ? `-${dmg} (BLOCKED)` : `-${dmg}`, blocked ? '#00f5ff' : '#ff2442');
           // Combo
           comboCount++;
@@ -4049,6 +4187,7 @@ function startArena() {
           if (comboCount >= 3) {
             const bonus = comboCount * 5;
             score += bonus;
+            snd('combo', { semi: Math.min(12, comboCount - 3) });
             popText(bot.x, bot.y - 28, `${comboCount}x COMBO! +${bonus}`, '#ffd700');
           }
           if (bot.hp <= 0 && !bot.dead) {
@@ -4057,6 +4196,7 @@ function startArena() {
             score += Math.round(earned);
             setLive(score);
             explode(bot.x, bot.y, bot.color, 18);
+            snd('explode');
             popText(bot.x, bot.y, `+${Math.round(earned)}`, '#ffd700');
             // Drop XP orbs
             for (let i = 0; i < 3; i++) {
@@ -4086,6 +4226,7 @@ function startArena() {
     // Dash in facing direction
     player.vx = Math.cos(player.angle) * 12;
     player.vy = Math.sin(player.angle) * 12;
+    snd('dash');
     explode(player.x, player.y, '#00f5ff', 8);
   }
 
@@ -4101,6 +4242,7 @@ function startArena() {
       player.attackPower += 8;
       player.speed = Math.min(5, player.speed + 0.15);
       screenShake = 15;
+      snd('levelUp');
       popText(player.x, player.y - 30, `⬆ LEVEL ${playerLevel}!`, '#ffd700');
       explode(player.x, player.y, '#ffd700', 30);
       document.getElementById('prog-fill').style.width = `${(player.hp / player.maxHp) * 100}%`;
@@ -4113,6 +4255,7 @@ function startArena() {
   function endArena() {
     if (isOver) return;
     isOver = true;
+    snd('gameOver');
     showResults('arena', score, {
       '⚔️ Bots Eliminated': enemyBots.filter(b => b.dead).length,
       '📡 Data Nodes Collected': Math.floor(score / 20),
@@ -4669,32 +4812,39 @@ function startArena() {
           node.collected = true;
           if (node.type === 'MEGA') {
             score += 50; setLive(score); gainXP(30);
+            snd('pickup', { semi: 7 });
             explode(node.x, node.y, '#ffd700', 8);
             popText(node.x, node.y - 12, '+50', '#ffd700');
           } else if (node.type === 'DATA') {
             score += 20; setLive(score); gainXP(10);
+            snd('pickup');
             explode(node.x, node.y, '#39ff14', 8);
             popText(node.x, node.y - 12, '+20', '#39ff14');
           } else if (node.type === 'HEAL') {
             player.hp = Math.min(player.maxHp, player.hp + player.maxHp * 0.25);
             document.getElementById('prog-fill').style.width = `${(player.hp / player.maxHp) * 100}%`;
+            snd('heal');
             explode(node.x, node.y, '#ff4d6d', 10);
             popText(node.x, node.y - 12, '+HP', '#ff4d6d');
           } else if (node.type === 'HASTE') {
             buffHasteTimer = 300;
+            snd('powerup');
             explode(node.x, node.y, '#00f5ff', 10);
             popText(node.x, node.y - 12, 'HASTE!', '#00f5ff');
           } else if (node.type === 'OVERCHARGE') {
             buffOverchargeTimer = 300;
+            snd('powerup');
             explode(node.x, node.y, '#ff2442', 10);
             popText(node.x, node.y - 12, 'OVERCHARGE!', '#ff2442');
           } else if (node.type === 'SHIELD') {
             buffShieldTimer = 180;
+            snd('shield');
             explode(node.x, node.y, '#a855f7', 10);
             popText(node.x, node.y - 12, 'SHIELDED!', '#a855f7');
           } else if (node.type === 'CORE') {
             const abil = ABILITY_TYPES[Math.floor(Math.random() * ABILITY_TYPES.length)];
             specialAbilities.push(abil);
+            snd('charge');
             if (specialAbilities.length > 3) specialAbilities.shift();
             explode(node.x, node.y, abil.color, 14);
             popText(node.x, node.y - 12, `${abil.label} READY`, abil.color);
@@ -4817,11 +4967,13 @@ function startRunner(){
     const nl=Math.max(0,Math.min(LANES-1,lane+dir));
     if(nl===lane) return;
     lane=nl;
+    snd('move');
     burst(visX, RIDE_Y+12, getEquippedColorHex(), 5);
   }
   function jump(){
     if(isOver||jumpT>0) return;
     jumpT=JUMP_FRAMES;
+    snd('jump');
     burst(visX, RIDE_Y+14, '#ff0090', 8);
   }
 
@@ -4874,6 +5026,7 @@ function startRunner(){
 
   function takeHit(){
     hull--; invuln=64; shake=16;
+    snd(hull<=0 ? 'bigExplode' : 'hurt');
     burst(visX, RIDE_Y, '#ff2442', 18);
     pop(visX, RIDE_Y-30, 'HULL BREACH', '#ff2442');
     document.getElementById('prog-fill').style.width=`${Math.max(0,hull)/3*100}%`;
@@ -5032,6 +5185,9 @@ function startRunner(){
 
       if(it.kind==='cube'){
         cubes++; setLive(score());
+        // Cubes walk a repeating four-note figure rather than one flat blip, so
+        // a clean run of them sounds like a phrase instead of a stutter.
+        snd('pickup',{semi:[0,4,7,12][cubes%4]});
         const eq=getEquippedColorHex();
         pop(laneX(it.lane), it.y-14, '+30', eq);
         burst(laneX(it.lane), it.y, eq, 9);
@@ -5153,8 +5309,12 @@ function startHacker(){
   }
   // Every deferred step goes through gLater(), so quitting mid-playback can't
   // leave a stray flash landing on the next round's keypad.
+  // Each node carries its own pitch — the mainframe's broadcast is a melody,
+  // and replaying it correctly plays that melody back. Getting one wrong is
+  // audible before you've read the status line.
   function flash(i,ms){
     nodes[i].classList.add('lit');
+    snd('node',{semi:i});
     gLater(()=>nodes[i].classList.remove('lit'), ms);
   }
 
@@ -5197,6 +5357,7 @@ function startHacker(){
         cleared++;
         const bonus=40+level*12;
         score+=bonus; setLive(score);
+        snd('success');
         setStatus(`✅ NODE DECRYPTED · +${bonus} PTS`);
         level++;
         gLater(nextLevel,950);
@@ -5210,6 +5371,7 @@ function startHacker(){
     phase='lock';
     grid.classList.add('locked');
     nodes[i].classList.add('err');
+    snd('error');
     setStatus('⛔ SYSTEM LOCK — INTRUSION TRACED','fail');
     // Show the node it should have been: a lockout you can learn something from.
     gLater(()=>{ if(!ended) flash(seq[inputIdx],700); }, 430);
@@ -5232,7 +5394,7 @@ function startHacker(){
     time--;
     document.getElementById('g-time').textContent=time;
     document.getElementById('prog-fill').style.width=`${time/time0*100}%`;
-    if(time<=8 && time>0 && phase==='input') setStatus('⚠️ TRACE INCOMING — HURRY','warn');
+    if(time<=8 && time>0 && phase==='input'){ setStatus('⚠️ TRACE INCOMING — HURRY','warn'); if(time<=5) snd('tick'); }
     if(time<=0) end('timeout');
   },1000);
 
@@ -5373,10 +5535,11 @@ function startMeteor(){
   // free shots come from RAPID SALVO and skip the ammo bank.
   function fire(tx,ty,free){
     if(isOver) return;
-    if(!free && ammo<=0){ pop(tx,ty,'RELOADING','#ff2442'); return; }
+    if(!free && ammo<=0){ snd('deny'); pop(tx,ty,'RELOADING','#ff2442'); return; }
     const from=nearestBase(tx);
     if(!from) return;
     if(!free) ammo--;
+    snd('missile');
     // Snap the firing battery onto the shot before measuring the muzzle. A tap
     // can beat the idle tracking to a target, and a missile leaving the side of
     // a barrel is the one thing that would give the animation away.
@@ -5392,6 +5555,9 @@ function startMeteor(){
   function detonate(x,y,r,chain){
     blasts.push({x,y,r:2,max:r,grow:true,chain:chain||0});
     shake=Math.max(shake,6);
+    // Secondary detonations in a chain are quieter and higher than the shot
+    // that started them, so a big cluster reads as one rolling blast.
+    snd(chain ? 'explode' : 'bigExplode');
     burst(x,y,getEquippedColorHex(),8);
   }
 
@@ -5411,6 +5577,7 @@ function startMeteor(){
     const a=abilQueue.shift();
     activeAbil=a; abilT=170;
     shake=Math.max(shake,7);
+    snd(a.id==='REPAIR' ? 'heal' : a.id==='AEGIS' ? 'shield' : 'ability');
     pop(W/2, H*0.34, a.label, a.color);
 
     if(a.id==='SALVO'){ salvoLeft=SALVO_SHOTS; salvoT=0; }
@@ -5464,6 +5631,7 @@ function startMeteor(){
     time--;
     document.getElementById('g-time').textContent=time;
     document.getElementById('prog-fill').style.width=`${time/time0*100}%`;
+    if(time<=5&&time>0) snd('tick');
     if(time<=0) end('timeout');
   },1000);
 
@@ -5487,9 +5655,11 @@ function startMeteor(){
     burst(b.x,GROUND-10,'#ff2442',22);
     if(b.hp<=0){
       b.alive=false;
+      snd('gameOver');
       pop(b.x,GROUND-40,'SERVER LOST','#ff2442');
       if(!bases.some(s=>s.alive)) end('overrun');
     } else {
+      snd('hurt');
       pop(b.x,GROUND-40,'SHIELD DOWN','#ff6600');
     }
   }
@@ -5705,6 +5875,7 @@ function startMeteor(){
     if(toSpawn===0 && !frags.length && !missiles.length){
       const bonus=40+wave*20;
       score+=bonus; setLive(score);
+      snd('wave');
       pop(W/2,H*0.4,`WAVE ${wave} PURGED +${bonus}`,'#39ff14');
       grantAbility();
       wave++; startWave();
@@ -5738,6 +5909,7 @@ function startMeteor(){
       // looks like it stops.
       if(domeT>0 && inDome(f.x,f.y)){
         burst(f.x,f.y,'#39ff14',12);
+        snd('hit');
         score+=10; killed++; setLive(score);
         pop(f.x,f.y-12,'+10','#39ff14');
         frags.splice(i,1);
@@ -5763,6 +5935,7 @@ function startMeteor(){
         if(Math.hypot(f.x-b.x, f.y-b.y)>b.r) continue;
         b.chain++;
         bestChain=Math.max(bestChain,b.chain);
+        snd('combo',{semi:Math.min(12,b.chain-1)});
         // Each extra kill inside one blast is worth more than the last, so
         // waiting for a cluster beats swatting fragments one at a time.
         const pts=20*b.chain;
@@ -6044,6 +6217,7 @@ async function sendFeedback(payload){
   rateWrap.addEventListener('click', e=>{
     const n = e.target.closest('.fb-node'); if(!n) return;
     rating = Number(n.dataset.v); paintRating(rating);
+    snd('node',{semi:rating-1});      // the five nodes ring up the scale
   });
   rateWrap.addEventListener('mouseover', e=>{
     const n = e.target.closest('.fb-node'); if(n) paintRating(Number(n.dataset.v));
@@ -6128,6 +6302,7 @@ async function sendFeedback(payload){
     if(sending) return;
     const message = msgEl.value.trim();
     if(message.length < MIN_CHARS){
+      snd('error');
       errEl.textContent = `Transmission too short — ${MIN_CHARS} characters minimum.`;
       msgEl.focus(); return;
     }
@@ -6158,6 +6333,7 @@ async function sendFeedback(payload){
       sending = false;                                 // readout is dismissible
       body.style.display='none';
       success.classList.add('show');
+      snd('success');
       typeTerminal([
         { text:'> establishing uplink…' },
         { text:'> encrypting payload…' },
@@ -6170,6 +6346,7 @@ async function sendFeedback(payload){
       rating=0; paintRating(0);
     }catch(err){
       console.error('[FEEDBACK] transmission failed:', err);
+      snd('error');
       errEl.textContent = 'Uplink failed — mainframe unreachable. Try again.';
       sending = false;
     }finally{
@@ -6265,11 +6442,11 @@ async function sendFeedback(payload){
     const email = emailEl.value.trim();
     const pass  = passEl.value;
 
-    if(!name || !email || !pass){ errEl.textContent='Fields cannot remain unassigned.'; return; }
-    if(!/^[a-zA-Z0-9_-]{2,20}$/.test(name)){ errEl.textContent='Format error inside username syntax.'; return; }
-    if(pass.length < 6){ errEl.textContent='Minimum signature length unfulfilled.'; return; }
+    if(!name || !email || !pass){ snd('error'); errEl.textContent='Fields cannot remain unassigned.'; return; }
+    if(!/^[a-zA-Z0-9_-]{2,20}$/.test(name)){ snd('error'); errEl.textContent='Format error inside username syntax.'; return; }
+    if(pass.length < 6){ snd('error'); errEl.textContent='Minimum signature length unfulfilled.'; return; }
     if(!auth || !auth.currentUser || !auth.currentUser.isAnonymous){
-      errEl.textContent='No guest session to upgrade.'; return;
+      snd('error'); errEl.textContent='No guest session to upgrade.'; return;
     }
 
     saving = true;
@@ -6296,6 +6473,7 @@ async function sendFeedback(payload){
       saving = false;
       body.style.display='none';
       success.classList.add('show');
+      snd('victory');
       typeTerm([
         { text:'> binding credentials to node…' },
         { text:`> handle registered: ${name}` },

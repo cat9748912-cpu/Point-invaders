@@ -66,6 +66,7 @@
       <button class="btn btn-save-acct btn-sm" id="btn-save-acct" style="display:none">💾 Save Account</button>
       <button class="btn btn-secondary btn-sm" id="btn-market">🛒 Black Market</button>
       <button class="btn btn-secondary btn-sm btn-feedback" id="btn-feedback">💬 Feedback</button>
+      <button class="btn btn-secondary btn-sm btn-sound" id="btn-sound-hub" title="Audio">🔊</button>
       <button class="btn btn-secondary btn-sm" id="btn-fs-hub" title="Toggle Fullscreen">⛶</button>
       <button class="btn btn-secondary btn-sm" id="btn-logout">Exit</button>
     </div>
@@ -233,6 +234,7 @@
       <div class="stat-pill" id="tetris-lvl-pill" style="display:none;">LEVEL <em id="tetris-lvl">1</em></div>
       <div class="stat-pill">⏱️ <em id="g-time">—</em></div>
       <div class="stat-pill">⭐ <em id="g-pts">0</em></div>
+      <button class="btn btn-secondary btn-sm btn-sound" id="btn-sound-game" title="Audio">🔊</button>
       <button class="btn btn-secondary btn-sm" id="btn-fs-game" title="Toggle Fullscreen">⛶</button>
     </div>
   </div>
@@ -409,6 +411,8 @@
   </div>
 </div>
 
+<!-- Audio engine first: app.js calls SFX.play() from module scope onwards. -->
+<script src="sound.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

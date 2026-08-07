@@ -533,6 +533,17 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .btn-feedback{color:var(--lime);border-color:rgba(57,255,20,.35)}
 .btn-feedback:hover{background:rgba(57,255,20,.14);border-color:var(--lime);box-shadow:0 0 18px rgba(57,255,20,.22)}
 
+/* ── 🔊 AUDIO TOGGLE ──
+   One button, three states: effects+music → effects only → silent. The icon
+   carries the state, the colour makes "you have muted something" readable at a
+   glance without reading the glyph. Square-ish so it sits next to ⛶ evenly. */
+.btn-sound{padding:7px 12px;color:var(--cyan);border-color:rgba(0,245,255,.35);font-size:.85rem;line-height:1}
+.btn-sound:hover{background:rgba(0,245,255,.14);border-color:var(--cyan);box-shadow:0 0 18px rgba(0,245,255,.22)}
+.btn-sound.snd-partial{color:var(--gold);border-color:rgba(255,215,0,.35)}
+.btn-sound.snd-partial:hover{background:rgba(255,215,0,.14);border-color:var(--gold);box-shadow:0 0 18px rgba(255,215,0,.22)}
+.btn-sound.snd-off{color:var(--dim);border-color:var(--border);opacity:.72}
+.btn-sound.snd-off:hover{background:rgba(255,255,255,.1);border-color:var(--border2);box-shadow:none}
+
 .fb-overlay{position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(2,2,10,.82);backdrop-filter:blur(7px);opacity:0;pointer-events:none;transition:opacity .22s ease}
 .fb-overlay.show{opacity:1;pointer-events:auto}
 
