@@ -82,6 +82,17 @@
   </div>
   <div class="hub-body">
     <div>
+      <!-- 🌐 NETWORK ARENA — the door to live head-to-head play. Sits above the
+           mission grid because it's a different KIND of thing from the solo
+           cards: a lobby, not a round you can start on the spot. -->
+      <div class="mp-banner" id="mp-banner">
+        <span class="mp-banner-icon">🌐</span>
+        <div class="mp-banner-txt">
+          <div class="mp-banner-title">NETWORK ARENA</div>
+          <div class="mp-banner-sub">Duel a real operative over the grid — quick match or share a room code.</div>
+        </div>
+        <button class="btn btn-primary" id="btn-mp-open">ENTER →</button>
+      </div>
       <div class="sec-label">⚡ SELECT MISSION</div>
       <div class="games-grid">
         <div class="game-card" data-game="click" data-c="cyan">
@@ -191,6 +202,84 @@
   </div>
 </div>
 
+<!-- ══════════════════════════════════════════════════════════════
+     🌐 NETWORK ARENA — the multiplayer lobby.
+     Two stages in one screen: pick-a-duel/connect, then the room.
+     Only one .mp-stage carries .active at a time.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="screen" id="mp-screen">
+  <div class="mp-bar">
+    <button class="btn btn-secondary btn-sm" id="btn-mp-back">← Hub</button>
+    <div class="mp-title">🌐 NETWORK ARENA</div>
+    <div class="mp-link" id="mp-link">◈ LINK IDLE</div>
+  </div>
+
+  <div class="mp-body">
+
+    <!-- ── STAGE 1 · pick a duel, then connect ── -->
+    <div class="mp-stage active" id="mp-stage-pick">
+      <div class="sec-label">⚔️ SELECT DUEL</div>
+      <!-- Cards are built by renderMpModes() so the mode table stays the one
+           source of truth for names, rules and point caps. -->
+      <div class="mp-modes" id="mp-modes"></div>
+
+      <div class="sec-label mp-sec-2">📡 ESTABLISH LINK</div>
+      <div class="mp-connect">
+        <div class="card mp-conn-card">
+          <div class="mp-conn-icon">⚡</div>
+          <div class="mp-conn-name">QUICK MATCH</div>
+          <div class="mp-conn-desc">Drop into the first open room for this duel — or open one and wait.</div>
+          <button class="btn btn-primary btn-full" id="btn-mp-quick">Find Opponent</button>
+        </div>
+        <div class="card mp-conn-card">
+          <div class="mp-conn-icon">➕</div>
+          <div class="mp-conn-name">CREATE ROOM</div>
+          <div class="mp-conn-desc">Get a private code and send it to whoever you want to beat.</div>
+          <button class="btn btn-secondary btn-full" id="btn-mp-create">Open a Room</button>
+        </div>
+        <div class="card mp-conn-card">
+          <div class="mp-conn-icon">🔑</div>
+          <div class="mp-conn-name">JOIN BY CODE</div>
+          <div class="mp-conn-desc">Type the four characters your opponent sent you.</div>
+          <input class="input mp-code-input" id="mp-code-input" maxlength="4" placeholder="ABCD"
+                 autocomplete="off" autocapitalize="characters" spellcheck="false">
+          <button class="btn btn-secondary btn-full" id="btn-mp-join">Join Room</button>
+        </div>
+      </div>
+      <div class="mp-err" id="mp-err"></div>
+    </div>
+
+    <!-- ── STAGE 2 · the room ── -->
+    <div class="mp-stage" id="mp-stage-room">
+      <div class="card mp-room">
+        <div class="mp-room-head">
+          <div>
+            <div class="mp-room-lbl">ROOM CODE</div>
+            <div class="mp-room-code" id="mp-room-code">····</div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="btn-mp-copy">⧉ Copy</button>
+        </div>
+        <div class="mp-room-game" id="mp-room-game">—</div>
+
+        <div class="mp-seats">
+          <div class="mp-seat" id="mp-seat-me"></div>
+          <div class="mp-vs">VS</div>
+          <div class="mp-seat" id="mp-seat-opp"></div>
+        </div>
+
+        <div class="mp-room-status" id="mp-room-status">Waiting for an opponent to link in…</div>
+        <div class="mp-room-btns">
+          <button class="btn btn-primary" id="btn-mp-ready">✔ READY UP</button>
+          <button class="btn btn-primary" id="btn-mp-start">🚀 START DUEL</button>
+          <button class="btn btn-secondary" id="btn-mp-leave">Leave Room</button>
+        </div>
+        <div class="mp-err" id="mp-room-err"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
 <div class="screen" id="market-screen">
   <div class="market-bar">
     <button class="btn btn-secondary btn-sm" id="btn-market-back">← Hub</button>
@@ -239,6 +328,7 @@
     <div class="g-stats">
       <div class="stat-pill" id="tetris-lvl-pill" style="display:none;">LEVEL <em id="tetris-lvl">1</em></div>
       <div class="stat-pill" id="bb-ram-pill" style="display:none;">🧠 <em id="bb-ram">0</em> RAM</div>
+      <div class="stat-pill" id="mp-ping-pill" style="display:none;">📶 <em id="mp-ping">—</em></div>
       <div class="stat-pill">⏱️ <em id="g-time">—</em></div>
       <div class="stat-pill">⭐ <em id="g-pts">0</em></div>
       <button class="btn btn-secondary btn-sm btn-sound" id="btn-sound-game" title="Audio">🔊</button>
@@ -246,6 +336,22 @@
     </div>
   </div>
   <div class="prog-bar"><div class="prog-fill" id="prog-fill" style="width:100%"></div></div>
+
+  <!-- 🌐 VERSUS STRIP — shown only in Network Arena rounds. One shared readout
+       for all three duels; what the numbers MEAN is the mode's business
+       (goals, seconds survived, clicks). -->
+  <div id="mp-hud" style="display:none">
+    <div class="mp-hud-side">
+      <span class="mp-hud-name" id="mp-hud-me-name">YOU</span>
+      <span class="mp-hud-score" id="mp-hud-me-score">0</span>
+    </div>
+    <div class="mp-hud-bar"><div class="mp-hud-fill" id="mp-hud-fill"></div></div>
+    <div class="mp-hud-side mp-hud-right">
+      <span class="mp-hud-score" id="mp-hud-opp-score">0</span>
+      <span class="mp-hud-name" id="mp-hud-opp-name">RIVAL</span>
+    </div>
+  </div>
+
   <div class="g-area">
 
     <div id="g-click" class="click-wrap" style="display:none">
@@ -269,6 +375,9 @@
         <!-- Touch tutorial: fades in over the board for a few seconds when a
              game starts on a touch device, then gets out of the way. -->
         <div id="touch-hint" aria-hidden="true"></div>
+        <!-- Network notices that must cover the board: waiting on the other
+             side, a dropped link, the shared start countdown. -->
+        <div id="mp-overlay" aria-hidden="true"><div id="mp-overlay-txt"></div></div>
       </div>
       <div id="arcade-controls">
         <button class="ctrl-btn" id="ctrl-left">◀</button>

@@ -859,3 +859,211 @@ body { overscroll-behavior: none; }
   }
   #toast.show { top: max(12px, env(safe-area-inset-top)); bottom: auto; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   🌐 NETWORK ARENA — multiplayer banner, lobby, room and in-round HUD
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── HUB BANNER ── */
+.mp-banner{
+  position:relative;overflow:hidden;display:flex;align-items:center;gap:16px;
+  background:linear-gradient(120deg,rgba(0,245,255,.09),rgba(168,85,247,.09));
+  border:1px solid rgba(0,245,255,.35);border-radius:var(--rl);
+  padding:16px 20px;margin-bottom:20px;
+  box-shadow:0 0 26px rgba(0,245,255,.1)
+}
+/* A slow light sweep marks it as the live thing on the page without animating
+   anything the eye has to track while reading the mission grid. */
+.mp-banner::after{
+  content:'';position:absolute;top:0;left:-150%;width:55%;height:100%;
+  background:linear-gradient(100deg,transparent,rgba(255,255,255,.10),transparent);
+  animation:mp-sweep 5.5s ease-in-out infinite;pointer-events:none
+}
+@keyframes mp-sweep{0%{left:-150%}55%,100%{left:160%}}
+.mp-banner-icon{font-size:2.3rem;flex-shrink:0;animation:float 3.4s ease-in-out infinite}
+.mp-banner-txt{flex:1;min-width:0}
+.mp-banner-title{
+  font-family:var(--fd);font-size:.72rem;font-weight:900;letter-spacing:.14em;
+  background:linear-gradient(90deg,var(--cyan),var(--purple));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+  margin-bottom:5px
+}
+.mp-banner-sub{font-size:.75rem;color:var(--dim);line-height:1.4}
+.mp-banner .btn{flex-shrink:0;position:relative;z-index:1}
+
+/* ── LOBBY SHELL ── */
+#mp-screen{justify-content:flex-start;padding-top:20px}
+.mp-bar{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  width:100%;max-width:1060px;background:var(--s1);border:1px solid var(--border);
+  border-radius:var(--r);padding:12px 20px;margin-bottom:18px;flex-shrink:0
+}
+.mp-title{
+  font-family:var(--fd);font-size:.9rem;font-weight:900;letter-spacing:.08em;
+  background:linear-gradient(90deg,var(--cyan),var(--purple));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text
+}
+.mp-link{
+  font-family:var(--fd);font-size:.55rem;font-weight:700;letter-spacing:.14em;
+  color:var(--dimmer);background:var(--s2);border:1px solid var(--border);
+  border-radius:20px;padding:5px 14px;white-space:nowrap
+}
+.mp-link.live{color:var(--lime);border-color:rgba(57,255,20,.45);background:rgba(57,255,20,.08)}
+.mp-link.busy{color:var(--gold);border-color:rgba(255,215,0,.45);background:rgba(255,215,0,.08)}
+.mp-link.down{color:var(--red);border-color:rgba(255,36,66,.45);background:rgba(255,36,66,.08)}
+
+.mp-body{width:100%;max-width:1060px;flex:1;overflow-y:auto;padding-bottom:24px}
+.mp-stage{display:none}
+.mp-stage.active{display:block}
+.mp-sec-2{margin-top:26px}
+
+/* ── MODE PICKER ── */
+.mp-modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+.mp-mode{
+  position:relative;background:var(--s1);border:1px solid var(--border);
+  border-radius:var(--rl);padding:20px 16px;text-align:center;cursor:pointer;
+  transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease
+}
+.mp-mode:hover{transform:translateY(-4px);border-color:var(--border2)}
+.mp-mode.sel{border-color:var(--cyan);background:rgba(0,245,255,.07);box-shadow:0 8px 30px rgba(0,245,255,.18)}
+.mp-mode.sel::before{
+  content:'\2714 SELECTED';position:absolute;top:10px;right:10px;
+  font-family:var(--fd);font-size:.44rem;font-weight:700;letter-spacing:.12em;
+  color:var(--cyan)
+}
+.mp-mode-icon{font-size:2.5rem;display:block;margin-bottom:10px}
+.mp-mode-name{font-family:var(--fd);font-size:.6rem;font-weight:700;letter-spacing:.08em;color:var(--cyan);margin-bottom:9px}
+.mp-mode-desc{font-size:.74rem;color:var(--dim);line-height:1.45;margin-bottom:12px}
+.mp-mode-meta{
+  display:inline-block;font-family:var(--fd);font-size:.46rem;font-weight:700;
+  letter-spacing:.1em;padding:3px 11px;border-radius:20px;
+  color:var(--gold);border:1px solid var(--gold);background:rgba(255,215,0,.06)
+}
+
+/* ── CONNECT CARDS ── */
+.mp-connect{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.mp-conn-card{display:flex;flex-direction:column;text-align:center;padding:22px 18px}
+.mp-conn-icon{font-size:2rem;margin-bottom:10px}
+.mp-conn-name{font-family:var(--fd);font-size:.62rem;font-weight:700;letter-spacing:.1em;margin-bottom:10px}
+.mp-conn-desc{font-size:.74rem;color:var(--dim);line-height:1.45;margin-bottom:16px;flex:1}
+/* The tracking pads the right edge only, so the text-indent pulls the glyphs
+   back level and the four characters sit centred in the field. */
+.mp-code-input{
+  text-align:center;font-family:var(--fd);font-weight:900;
+  letter-spacing:.42em;text-indent:.42em;
+  text-transform:uppercase;margin-bottom:10px
+}
+.mp-err{min-height:22px;margin-top:16px;text-align:center;font-size:.82rem;font-weight:600;color:var(--pink)}
+
+/* ── ROOM ── */
+.mp-room{max-width:560px;margin:0 auto}
+.mp-room-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:6px}
+.mp-room-lbl{font-family:var(--fd);font-size:.5rem;letter-spacing:.2em;color:var(--dim);margin-bottom:6px}
+.mp-room-code{
+  font-family:var(--fd);font-size:2.6rem;font-weight:900;letter-spacing:.22em;
+  line-height:1;color:var(--cyan);text-shadow:0 0 24px rgba(0,245,255,.45)
+}
+.mp-room-game{
+  font-family:var(--fd);font-size:.58rem;letter-spacing:.14em;color:var(--dim);
+  padding-bottom:18px;border-bottom:1px solid var(--border);margin-bottom:18px
+}
+/* stretch, not center: a name that wraps to two lines would otherwise leave the
+   two seats at different heights with a ragged gap between them */
+.mp-seats{display:flex;align-items:stretch;gap:12px;margin-bottom:18px}
+.mp-seat{
+  flex:1;min-width:0;background:var(--s2);border:1px solid var(--border);
+  border-radius:var(--r);padding:16px 12px;text-align:center;transition:all .25s ease
+}
+.mp-seat.filled{border-color:rgba(0,245,255,.4);background:rgba(0,245,255,.05)}
+.mp-seat.ready{border-color:var(--lime);background:rgba(57,255,20,.07);box-shadow:0 0 18px rgba(57,255,20,.15)}
+.mp-seat.empty{border-style:dashed;color:var(--dimmer)}
+.mp-seat-avatar{font-size:1.9rem;display:block;margin-bottom:8px}
+.mp-seat-name{
+  font-family:var(--fd);font-size:.6rem;font-weight:700;margin-bottom:7px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap
+}
+.mp-seat-tag{font-family:var(--fd);font-size:.46rem;letter-spacing:.12em;color:var(--dim)}
+.mp-seat.ready .mp-seat-tag{color:var(--lime)}
+.mp-vs{
+  font-family:var(--fd);font-size:.8rem;font-weight:900;color:var(--pink);
+  text-shadow:0 0 14px rgba(255,0,144,.5);flex-shrink:0;align-self:center
+}
+.mp-room-status{
+  text-align:center;font-size:.8rem;color:var(--dim);font-weight:600;
+  min-height:22px;margin-bottom:18px
+}
+.mp-room-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.mp-room-btns .btn[disabled]{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none}
+.btn-mp-unready{background:rgba(57,255,20,.12);color:var(--lime);border:1px solid rgba(57,255,20,.5)}
+
+/* ── IN-ROUND VERSUS STRIP ── */
+#mp-hud{
+  display:flex;align-items:center;gap:12px;width:100%;
+  max-width:max(var(--board-w,560px),560px);margin-bottom:12px;flex-shrink:0
+}
+.mp-hud-side{display:flex;align-items:baseline;gap:8px;min-width:0;flex:0 0 auto}
+.mp-hud-right{justify-content:flex-end}
+.mp-hud-name{
+  font-family:var(--fd);font-size:.52rem;letter-spacing:.1em;color:var(--dim);
+  max-width:11ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap
+}
+.mp-hud-score{font-family:var(--fd);font-size:1.05rem;font-weight:900;line-height:1;color:var(--cyan)}
+.mp-hud-right .mp-hud-score{color:var(--pink)}
+.mp-hud-bar{
+  flex:1;height:7px;border-radius:4px;overflow:hidden;background:rgba(255,0,144,.35)
+}
+/* The fill is "your share" of the bar, so the cyan/pink boundary IS the score
+   difference — readable at a glance while your eyes are on the ball. */
+.mp-hud-fill{
+  height:100%;width:50%;border-radius:4px;
+  background:linear-gradient(90deg,var(--cyan),var(--purple));
+  box-shadow:0 0 12px rgba(0,245,255,.5);transition:width .28s ease-out
+}
+
+/* ── BOARD OVERLAY (waiting / dropped link / shared countdown) ── */
+#mp-overlay{
+  position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+  padding:24px;border-radius:8px;background:rgba(4,4,14,.78);backdrop-filter:blur(3px);
+  z-index:5;pointer-events:none;text-align:center
+}
+#mp-overlay.show{display:flex}
+#mp-overlay-txt{
+  font-family:var(--fd);font-size:.85rem;font-weight:700;letter-spacing:.1em;
+  line-height:1.7;color:var(--cyan);text-shadow:0 0 18px rgba(0,245,255,.5)
+}
+#mp-overlay.warn #mp-overlay-txt{color:var(--red);text-shadow:0 0 18px rgba(255,36,66,.5)}
+#mp-overlay .mp-ov-sub{
+  display:block;margin-top:10px;font-size:.6rem;letter-spacing:.14em;
+  color:var(--dim);text-shadow:none
+}
+
+/* ── RESULT BADGES ── */
+.res-bonus.res-bonus-net{border-color:var(--cyan);color:var(--cyan);background:rgba(0,245,255,.08);box-shadow:0 0 10px rgba(0,245,255,.35)}
+.res-bonus.res-bonus-win{border-color:var(--lime);color:var(--lime);background:rgba(57,255,20,.08);box-shadow:0 0 10px rgba(57,255,20,.35)}
+.res-bonus.res-bonus-loss{border-color:var(--red);color:var(--red);background:rgba(255,36,66,.08);box-shadow:0 0 10px rgba(255,36,66,.35)}
+
+/* ── NARROW SCREENS ── */
+@media (max-width: 700px){
+  .mp-bar{flex-direction:column;align-items:stretch;gap:10px;padding:12px 14px}
+  .mp-title{text-align:center}
+  .mp-link{text-align:center}
+  .mp-banner{flex-direction:column;text-align:center;gap:10px;padding:16px 14px}
+  .mp-banner .btn{width:100%}
+  .mp-modes{grid-template-columns:1fr}
+  .mp-mode{padding:16px 14px}
+  .mp-mode-icon{font-size:2rem}
+  .mp-room-code{font-size:2rem}
+  .mp-seats{gap:8px}
+  .mp-seat{padding:12px 8px}
+  .mp-hud-score{font-size:.9rem}
+  .mp-hud-name{font-size:.46rem;max-width:8ch}
+  #mp-overlay-txt{font-size:.7rem}
+}
+
+/* Landscape phones: the versus strip costs the board height it can't spare,
+   so it flattens to the bar and the two scores. */
+@media (max-height: 500px) and (orientation: landscape){
+  #mp-hud{margin-bottom:6px;gap:8px}
+  .mp-hud-name{display:none}
+  .mp-hud-score{font-size:.8rem}
+}

@@ -580,6 +580,10 @@ try {
 // ════════════════════════════════════════════
 let user=null, curGame=null, gTimer=null, gameLoopId=null;
 let onQuitGame=null; // optional per-game quit handler
+// Optional per-round teardown. A Network Arena round owns things stopGame()
+// can't see — database listeners, send throttles, the versus HUD — and they
+// have to come down whichever way the round ends (quit, timeout, dropped link).
+let onStopGame=null;
 
 // Deferred callbacks belonging to the running game. Every game paints into the
 // same shared DOM, so a timeout that outlives its round lands on the round you
@@ -594,6 +598,12 @@ function gLater(fn, ms){
 }
 
 function stopGame(){
+  // Cleared BEFORE the handler runs, so a teardown that ends up calling
+  // stopGame() again (a network round finishing as it's quit) can't recurse.
+  if(onStopGame){
+    const fn=onStopGame; onStopGame=null;
+    try{ fn(); }catch(e){ console.warn('Round teardown failed:', e); }
+  }
   clearInterval(gTimer); gTimer=null;
   cancelAnimationFrame(gameLoopId); gameLoopId=null;
   gTimeouts.forEach(clearTimeout); gTimeouts.clear();
@@ -615,6 +625,14 @@ function stopGame(){
   if(deck){ deck.innerHTML=''; deck.style.display='none'; }
   const ramPill=document.getElementById('bb-ram-pill');
   if(ramPill) ramPill.style.display='none';
+  // The versus strip and link-quality pill belong to a Network Arena round and
+  // must never survive into the solo game that mounts next.
+  const mpHudEl=document.getElementById('mp-hud');
+  if(mpHudEl) mpHudEl.style.display='none';
+  const mpPing=document.getElementById('mp-ping-pill');
+  if(mpPing) mpPing.style.display='none';
+  const mpOv=document.getElementById('mp-overlay');
+  if(mpOv){ mpOv.classList.remove('show','warn'); }
   const cl=document.getElementById('ctrl-left');
   const cr=document.getElementById('ctrl-right');
   const ca=document.getElementById('ctrl-action');
@@ -967,12 +985,22 @@ function boardPos(clientX, clientY){
 // and mouse events are bound alongside them so hybrid touch laptops work with
 // either input. preventDefault on touchstart also suppresses the synthesised
 // mouse events, so a tap can't fire both paths.
+// Every position handed to a game carries `.touch`, saying which input actually
+// produced it — NOT what the device is capable of. `isTouchDevice` is true on
+// any machine that merely HAS a touchscreen, so a Windows laptop with both was
+// handed the finger scheme for its mouse too: absolute cursor-following was
+// switched off and steering degraded to a relative hold-and-drag. Deciding per
+// event lets one machine run both schemes, whichever hand you reach with.
 const _drag = { touch: [], mouse: [] };
 function bindCanvasDrag(handlers){
   clearCanvasDrag();
   if(!aCanvas) return;
 
-  const pos = t => boardPos(t.clientX, t.clientY);
+  const pos = (t, touch) => {
+    const p = boardPos(t.clientX, t.clientY);
+    p.touch = !!touch;
+    return p;
+  };
   const on = (target, type, fn, bucket) => {
     target.addEventListener(type, fn, { passive: false });
     _drag[bucket].push([target, type, fn]);
@@ -988,20 +1016,20 @@ function bindCanvasDrag(handlers){
       if(!t) return;
       e.preventDefault();
       id = t.identifier;
-      handlers.onDown && handlers.onDown(pos(t), e);
+      handlers.onDown && handlers.onDown(pos(t, true), e);
     }, 'touch');
     on(aCanvas, 'touchmove', e => {
       const t = mine(e.changedTouches);
       if(!t) return;
       e.preventDefault();
-      handlers.onMove && handlers.onMove(pos(t), e);
+      handlers.onMove && handlers.onMove(pos(t, true), e);
     }, 'touch');
     const endTouch = e => {
       const t = mine(e.changedTouches);
       if(!t) return;
       e.preventDefault();
       id = null;
-      handlers.onUp && handlers.onUp(pos(t), e);
+      handlers.onUp && handlers.onUp(pos(t, true), e);
     };
     on(aCanvas, 'touchend', endTouch, 'touch');
     on(aCanvas, 'touchcancel', endTouch, 'touch');
@@ -1014,18 +1042,18 @@ function bindCanvasDrag(handlers){
   on(aCanvas, 'mousedown', e => {
     e.preventDefault();
     down = true;
-    handlers.onDown && handlers.onDown(pos(e), e);
+    handlers.onDown && handlers.onDown(pos(e, false), e);
   }, 'mouse');
   on(aCanvas, 'mousemove', e => {
-    if(!down) handlers.onHover && handlers.onHover(pos(e), e);
+    if(!down) handlers.onHover && handlers.onHover(pos(e, false), e);
   }, 'mouse');
   on(window, 'mousemove', e => {
-    if(down) handlers.onMove && handlers.onMove(pos(e), e);
+    if(down) handlers.onMove && handlers.onMove(pos(e, false), e);
   }, 'mouse');
   on(window, 'mouseup', e => {
     if(!down) return;
     down = false;
-    handlers.onUp && handlers.onUp(pos(e), e);
+    handlers.onUp && handlers.onUp(pos(e, false), e);
   }, 'mouse');
 }
 function clearCanvasDrag(){
@@ -1172,9 +1200,18 @@ function hideTouchHint(){
 }
 
 // Header hint line: touch players need the gesture, mouse players the keys.
+// A machine with BOTH (a touchscreen laptop, a tablet with a trackpad) can play
+// either way now that the control scheme is chosen per event, so it's told
+// both rather than being guessed at. The hint has a full-width row of its own,
+// so the longer line costs the header nothing.
+const hasFinePointer = !!(window.matchMedia && matchMedia('(any-pointer: fine)').matches);
 function setControlHint(touchText, keyText){
   const el = document.getElementById('g-controls');
-  if(el) el.textContent = (isTouchDevice ? touchText : keyText) || '';
+  if(!el) return;
+  const parts = [];
+  if(isTouchDevice && touchText) parts.push(touchText);
+  if((!isTouchDevice || hasFinePointer) && keyText) parts.push(keyText);
+  el.textContent = parts.join('  ·  ');
 }
 
 const countdown=cb=>{
@@ -1376,6 +1413,9 @@ async function purgeGuestAccount(){
 }
 
 document.getElementById('btn-logout').onclick=async()=>{
+  // Signing out while holding a room would leave it on the grid until the tab
+  // closed, so the seat goes back first whatever the player decides below.
+  await mpLeaveRoom();
   if(user && user.isGuest){
     const pts = (user.totalPoints||0).toLocaleString();
     const warn = (user.totalPoints>0)
@@ -1396,6 +1436,11 @@ document.getElementById('btn-logout').onclick=async()=>{
 //  🏠 CENTRAL HUB CONTROLLER
 // ════════════════════════════════════════════
 function enterHub(){
+  // Standing in the hub means you are not in a Network Arena room — this is the
+  // one place every "I'm done with multiplayer" path passes through, so the
+  // room is released here rather than in each of them. A no-op when there is
+  // no room, which is the common case.
+  if(typeof mpLeaveRoom === 'function') mpLeaveRoom();
   document.getElementById('h-uname').textContent=user.username;
   let guestTagEl=document.getElementById('h-guest-tag');
   if(user.isGuest){
@@ -1445,7 +1490,11 @@ document.getElementById('btn-quit').onclick=()=>{
 // ════════════════════════════════════════════
 //  🎮 ROUTING & SCHEDULING INTERFACE
 // ════════════════════════════════════════════
-function prepGame(gid){
+// Wipes the shared game screen back to a known state and shows whichever panel
+// `gid` plays in. Split out of prepGame() because a Network Arena round needs
+// exactly this reset but drives its own start (a shared countdown off the
+// server clock, not a local one).
+function resetGameStage(gid){
   stopGame();
   onQuitGame=null;
   music('game');
@@ -1471,6 +1520,10 @@ function prepGame(gid){
   document.getElementById('prog-fill').style.background='var(--cyan)';
   window.onkeydown = window.onkeyup = null;
   if(aCanvas) { aCanvas.onmousemove = null; }
+}
+
+function prepGame(gid){
+  resetGameStage(gid);
 
   if(gid==='click') countdown(()=>startClick());
   else if(gid==='nebula') countdown(()=>startNebula());
@@ -1492,11 +1545,19 @@ function prepGame(gid){
 
 const setLive=n=>document.getElementById('g-pts').textContent=n;
 
-function showResults(gid,pts,bd){
+// `opts` is how a Network Arena round borrows this card without the solo
+// assumptions baked into it:
+//   noBonus   — skip the difficulty multiplier (the two players may be sitting
+//               on different tiers, so a shared duel can't honour either)
+//   badge     — {text, cls} replacing the tier bonus badge
+//   emoji / name — override the headline
+//   again     — {label, fn} for the left button; hub — {label, fn} for the right
+function showResults(gid,pts,bd,opts){
+  opts = opts || {};
   stopGame();
   music('hub');
   const tier = DIFFICULTY_TIERS[currentDifficultyTier];
-  const finalPts = Math.round(pts * gameDifficultyMultiplier);
+  const finalPts = Math.round(pts * (opts.noBonus ? 1 : gameDifficultyMultiplier));
   const m=META[gid],pct=finalPts/m.maxPts;
   // A three-quarter run earns the fanfare; anything less gets the neutral
   // readout chime, so the sound is honest about how the round actually went.
@@ -1504,9 +1565,9 @@ function showResults(gid,pts,bd){
   // that end in a crash are still playing their death sting right now — this
   // lands the flourish on the card appearing rather than under the explosion.
   // A plain timeout, not gLater(), because stopGame() has already run.
-  setTimeout(()=>snd(pct>.75 ? 'victory' : 'results'), 300);
-  document.getElementById('res-emoji').textContent=pct>.75?'🎉':'💪';
-  document.getElementById('res-gname').textContent=m.name;
+  setTimeout(()=>snd(opts.sound || (pct>.75 ? 'victory' : 'results')), 300);
+  document.getElementById('res-emoji').textContent=opts.emoji||(pct>.75?'🎉':'💪');
+  document.getElementById('res-gname').textContent=opts.name||m.name;
 
   // Bonus badge — shows the active tier's point multiplier (×1.0 / ×1.5 / ×2.0), colored to match
   const gnameEl = document.getElementById('res-gname');
@@ -1516,15 +1577,26 @@ function showResults(gid,pts,bd){
     bonusEl.id = 'res-bonus';
     gnameEl.parentNode.insertBefore(bonusEl, gnameEl.nextSibling);
   }
-  bonusEl.className = `res-bonus res-bonus-${tier.key}`;
-  bonusEl.textContent = `${tier.icon} ${tier.label} · ×${tier.pointMult.toFixed(1)} BONUS`;
+  bonusEl.className = `res-bonus ${opts.badge ? opts.badge.cls : 'res-bonus-'+tier.key}`;
+  bonusEl.textContent = opts.badge ? opts.badge.text
+                                   : `${tier.icon} ${tier.label} · ×${tier.pointMult.toFixed(1)} BONUS`;
 
   document.getElementById('res-pts').textContent=finalPts;
   document.getElementById('res-bd').innerHTML=Object.entries(bd).map(([k,v])=>`<div class="res-row"><span>${k}</span><span class="rv">${v}</span></div>`).join('');
   showScreen('results-screen');
   saveScore(gid,finalPts);
-  document.getElementById('btn-again').onclick=()=>{showScreen('game-screen');prepGame(gid)};
-  document.getElementById('btn-hub').onclick=()=>{document.getElementById('h-pts').textContent=`🏆 ${(user?.totalPoints||0).toLocaleString()} PTS`;document.getElementById('h-credits').textContent=`💎 ${(user?.credits||0).toLocaleString()} CR`;enterHub()};
+
+  const againBtn=document.getElementById('btn-again');
+  const hubBtn=document.getElementById('btn-hub');
+  againBtn.textContent = opts.again ? opts.again.label : 'Play Again';
+  hubBtn.textContent   = opts.hub   ? opts.hub.label   : 'Hub';
+  againBtn.onclick = opts.again ? opts.again.fn
+                                : ()=>{showScreen('game-screen');prepGame(gid)};
+  hubBtn.onclick = opts.hub ? opts.hub.fn : ()=>{
+    document.getElementById('h-pts').textContent=`🏆 ${(user?.totalPoints||0).toLocaleString()} PTS`;
+    document.getElementById('h-credits').textContent=`💎 ${(user?.credits||0).toLocaleString()} CR`;
+    enterHub();
+  };
 }
 
 async function saveScore(gid,pts){
@@ -3007,20 +3079,25 @@ function startDodge(){
   };
 
   // ── STEERING ──
-  // Mouse keeps the cursor-is-the-dot feel. Touch uses a *relative* drag: the
-  // dot tracks how far the finger travels rather than snapping under it, so
-  // your thumb never covers the one pixel you're trying to thread between
-  // cores. Grab anywhere on the board and steer from there.
+  // Mouse keeps the cursor-is-the-dot feel: the dot follows the pointer the
+  // moment it's over the board, with no button held. Touch uses a *relative*
+  // drag: the dot tracks how far the finger travels rather than snapping under
+  // it, so your thumb never covers the one pixel you're trying to thread
+  // between cores. Grab anywhere on the board and steer from there.
+  //
+  // The choice is per event (p.touch), not per device — a laptop with a
+  // touchscreen gets cursor-following from its mouse AND relative drag from its
+  // screen, instead of one scheme forced on both.
   let lastP = null;
   bindCanvasDrag({
-    onHover(p){ if(!isTouchDevice) place(p.x, p.y); },
+    onHover(p){ if(!p.touch) place(p.x, p.y); },
     onDown(p){
       hideTouchHint();
       lastP = p;
-      if(!isTouchDevice) place(p.x, p.y);
+      if(!p.touch) place(p.x, p.y);
     },
     onMove(p){
-      if(isTouchDevice && lastP) place(player.x + (p.x - lastP.x), player.y + (p.y - lastP.y));
+      if(p.touch && lastP) place(player.x + (p.x - lastP.x), player.y + (p.y - lastP.y));
       else place(p.x, p.y);
       lastP = p;
     },
@@ -3271,14 +3348,15 @@ function startPong(){
   document.getElementById('g-time').textContent=Math.ceil(time);
   document.getElementById('prog-fill').style.background='linear-gradient(90deg,var(--cyan),var(--purple))';
 
-  // Mouse / touch control. Pointer capture matters here: a rally pulls your
-  // finger past the top and bottom edges constantly, and without it the
-  // paddle used to stall the instant the touch left the canvas.
+  // Mouse / touch control. The mouse steers on hover — no button held, the
+  // paddle simply is where the cursor is. Touch needs contact by definition,
+  // and a rally pulls your finger past the top and bottom edges constantly, so
+  // the drag is bound on the window rather than the canvas to keep it alive.
   const trackPaddle = p => {
     playerY = Math.max(0, Math.min(H-PAD_H, p.y - PAD_H/2));
   };
   bindCanvasDrag({
-    onHover(p){ if(!isTouchDevice) trackPaddle(p); },
+    onHover: trackPaddle,
     onDown(p){ hideTouchHint(); trackPaddle(p); },
     onMove: trackPaddle
   });
@@ -3872,16 +3950,17 @@ function startBreaker(){
   }
 
   // ── STEERING ──
-  // Mouse steers absolutely — the cursor is the deflector. Touch steers
-  // *relatively* from wherever you grab, so tapping to launch doesn't yank the
-  // deflector out from under the rally, and your hand never has to sit on the
-  // board to move it.
+  // Mouse steers absolutely — the cursor IS the deflector, held button or not.
+  // Touch steers *relatively* from wherever you grab, so tapping to launch
+  // doesn't yank the deflector out from under the rally, and your hand never
+  // has to sit on the board to move it. Decided per event, so a touchscreen
+  // laptop gets both schemes rather than the finger one for its mouse.
   let lastX=null;
   bindCanvasDrag({
-    onHover(p){ if(!isTouchDevice) slide(p.x-padW/2); },
-    onDown(p){ hideTouchHint(); lastX=p.x; if(!isTouchDevice) slide(p.x-padW/2); launch(); },
+    onHover(p){ if(!p.touch) slide(p.x-padW/2); },
+    onDown(p){ hideTouchHint(); lastX=p.x; if(!p.touch) slide(p.x-padW/2); launch(); },
     onMove(p){
-      if(isTouchDevice && lastX!==null) slide(padX+(p.x-lastX));
+      if(p.touch && lastX!==null) slide(padX+(p.x-lastX));
       else slide(p.x-padW/2);
       lastX=p.x;
     },
@@ -6175,7 +6254,7 @@ function startMeteor(){
       if(inAbilPad(p.x,p.y)){ if(abilQueue.length) deployAbility(); return; }
       retX=p.x; retY=p.y; fire(p.x,p.y);
     },
-    onHover(p){ if(!isTouchDevice){ retX=p.x; retY=p.y; } }
+    onHover(p){ if(!p.touch){ retX=p.x; retY=p.y; } }
   });
 
   window.onkeydown=e=>{
@@ -7769,3 +7848,1506 @@ async function sendFeedback(payload){
   submitEl.onclick = upgrade;
   window.openSaveAccount = openUpgrade;
 })();
+
+
+// ══════════════════════════════════════════════════════════════════════
+//  🌐 NETWORK ARENA — live head-to-head play over the Realtime Database
+// ══════════════════════════════════════════════════════════════════════
+//
+// There is no game server here — the page is static — so one player IS the
+// server. Whoever opens the room ("host") runs the only simulation that counts
+// and publishes snapshots of it; the other player ("guest") sends nothing but
+// their own input and renders what it's told, predicting their own paddle/dot
+// locally so it never feels the round trip.
+//
+// The database is split in two on purpose:
+//
+//   rooms/<CODE>   slow — who's here, ready flags, status, the round result.
+//                  Small and rarely written, so a plain 'value' listener on the
+//                  whole node is cheap.
+//   live/<CODE>    fast — host snapshots, guest input, spawned hazards. Twenty
+//                  writes a second land here, and keeping them OUT of the room
+//                  node is what stops every snapshot from re-firing the lobby
+//                  listener (and re-rendering the seats sixty times a round).
+//
+// Both nodes are registered with onDisconnect() so a closed tab, a dead battery
+// or a tunnel cleans the room up on its own — nothing here relies on a player
+// politely pressing Leave.
+//
+// ── DATABASE RULES ────────────────────────────────────────────────────
+// If your Realtime Database rules name specific top-level nodes, "rooms" and
+// "live" have to be among them or every call below fails with PERMISSION_DENIED
+// (the lobby says so out loud when that happens). A workable pair:
+//
+//   "rooms": { ".read": "auth != null", ".write": "auth != null",
+//              ".indexOn": ["open"] },
+//   "live":  { ".read": "auth != null", ".write": "auth != null" }
+//
+// The .indexOn is what keeps Quick Match from downloading every open room to
+// sort it client-side; without it Firebase still answers, just noisily.
+
+// ── SHARED CLOCK ──
+// Two browsers disagree about the time by seconds, which is fatal when both
+// sides extrapolate a ball's position from a timestamp. Firebase publishes the
+// offset between this device and its servers, so every duel is timed off one
+// authority instead of two wrong ones.
+let netOffset = 0, netConnected = false;
+if(db){
+  db.ref('.info/serverTimeOffset').on('value', s => { netOffset = s.val() || 0; });
+  db.ref('.info/connected').on('value', s => { netConnected = !!s.val(); mpPaintLink(); });
+}
+const netNow = () => Date.now() + netOffset;
+
+// ── MODE TABLE ──
+// `gid` points at the solo game each duel borrows its identity from, so points
+// land on the same leaderboard entry and META still knows the name and cap.
+// `seconds` is the round length the host puts on the clock; Core Survival uses
+// it as a hard ceiling rather than a finish line.
+const MP_MODES = {
+  pongduel: {
+    gid:'pong', icon:'🏓', name:'CYBER PONG DUEL', seconds:60,
+    desc:'Sixty seconds, one ball, two real paddles. No AI pattern to read — just whoever reacts faster.',
+    meta:'UP TO 900 PTS · 60s',
+    start:()=>startPongDuel()
+  },
+  dodgeduel: {
+    gid:'dodge', icon:'💥', name:'CORE SURVIVAL', seconds:75,
+    desc:'The same firewall cores rain on both of you, from one shared spawn feed. Outlive your rival.',
+    meta:'UP TO 800 PTS · LAST ONE ALIVE',
+    start:()=>startDodgeDuel()
+  },
+  clickduel: {
+    gid:'click', icon:'🖱️', name:'FRENZY DUEL', seconds:12,
+    desc:'Twelve seconds of pure input war. Barely touches the network — plays clean on any link.',
+    meta:'UP TO 500 PTS · 12s',
+    start:()=>startClickDuel()
+  }
+};
+let mpMode = 'pongduel';
+
+// Ambiguous glyphs are left out: nobody reads a room code back correctly when
+// it can contain O/0 or I/1.
+const MP_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const mpMakeCode = () => Array.from({length:4}, () =>
+  MP_CODE_CHARS[Math.floor(Math.random()*MP_CODE_CHARS.length)]).join('');
+
+const MP_ERR = {
+  BAD_CODE:   'A room code is four letters or digits.',
+  NO_ROOM:    'No room on the grid answers to that code.',
+  FULL:       'That room just filled up — try another.',
+  IN_PROGRESS:'That duel is already underway.',
+  // Almost always a second tab rather than a genuine mistake: an anonymous
+  // session lives in browser storage, so both tabs are signed in as the SAME
+  // player and the join is refused. Say so, or it reads as a broken join.
+  OWN_ROOM:   'That room is already yours — a second tab of the same browser is the same account. Use a different browser, or a private window, for the second player.',
+  CODE_BUSY:  'The grid is congested — try again in a moment.',
+  OFFLINE:    'Network link is down — check your connection.',
+  NO_DB:      'Realtime Database unavailable — multiplayer is offline.',
+  DENIED:     'Database rules are blocking /rooms and /live — see the DATABASE RULES note in the Network Arena section of app.js.'
+};
+
+// Firebase reports a rules rejection as PERMISSION_DENIED, and that one failure
+// has a fix the player can actually act on, so it never gets folded into a
+// generic "something went wrong".
+function mpErrText(e){
+  const code = String((e && (e.code || e.message)) || '');
+  if(/permission[_ ]denied/i.test(code)) return MP_ERR.DENIED;
+  return MP_ERR[e && e.message] || 'Link failed — try again.';
+}
+
+// ── SESSION ──
+// null whenever this player isn't in a room. Everything below treats a missing
+// `mp` as "we already left", which is what makes the teardown paths safe to
+// run twice.
+let mp = null;
+
+function mpOn(ref, evt, cb, bucket){
+  if(!mp) return;
+  ref.on(evt, cb);
+  (bucket === 'round' ? mp.roundUnsub : mp.unsub).push([ref, evt, cb]);
+}
+function mpOff(bucket){
+  if(!mp) return;
+  const list = bucket === 'round' ? mp.roundUnsub : mp.unsub;
+  list.forEach(([r,e,c]) => { try{ r.off(e,c); }catch(err){} });
+  if(bucket === 'round') mp.roundUnsub = []; else mp.unsub = [];
+}
+
+// The card this player publishes about themselves. Cosmetics travel with it so
+// the other side can draw you in your own equipped colour and skin.
+//
+// Both seats start READY. Typing someone's room code IS the act of saying
+// you're here to play, and requiring a second confirmation only created a
+// deadlock: the host sat on a greyed-out START waiting for a button the guest
+// had no reason to think was mandatory. The toggle stays, as a way to hold the
+// host off for a moment — it just isn't the default state any more.
+function mpCard(role){
+  return {
+    name:  (user && user.username) || 'Operative',
+    color: getEquippedColorHex(),
+    skin:  getEquippedSkinEmoji() || '',
+    role,
+    ready: true,
+    joinedAt: Date.now()
+  };
+}
+
+// A colour arriving over the wire is another player's data, so it never reaches
+// a style attribute or a fillStyle unchecked.
+const MP_HEX = /^#[0-9a-fA-F]{6}$/;
+const mpColor = (p, fallback) => (p && MP_HEX.test(p.color||'')) ? p.color : (fallback || '#ff0090');
+
+// ══════════════════════════════════════════════════════════════════════
+//  ROOM LIFECYCLE
+// ══════════════════════════════════════════════════════════════════════
+
+function mpAttach(code, isHost){
+  mp = {
+    code, isHost,
+    myId: user.uid, oppId: null,
+    roomRef: db.ref('rooms/' + code),
+    live:    db.ref('live/'  + code),
+    room: null, status: 'waiting',
+    startAt: 0, endsAt: 0,
+    me: null, opp: null, oppName: 'RIVAL',
+    unsub: [], roundUnsub: [],
+    inRound: false, cdRaf: 0,
+    round: null                  // the active duel's callbacks, set by its start()
+  };
+  mpOn(mp.roomRef, 'value', mpOnRoom);
+  mpPaintLink();
+}
+
+async function mpCreateRoom(modeKey){
+  const code = await mpFreeCode();
+  const ref = db.ref('rooms/' + code);
+  await ref.set({
+    mode: modeKey,
+    game: MP_MODES[modeKey].gid,
+    host: user.uid,
+    hostName: (user && user.username) || 'Operative',
+    status: 'waiting',
+    open: true,
+    createdAt: firebase.database.ServerValue.TIMESTAMP,
+    players: { [user.uid]: mpCard('host') }
+  });
+  // The host owns the room: if their connection dies the room and its live
+  // channel go with it, rather than sitting in Quick Match forever as a trap.
+  ref.onDisconnect().remove();
+  db.ref('live/' + code).onDisconnect().remove();
+  mpAttach(code, true);
+  return code;
+}
+
+async function mpFreeCode(){
+  for(let i=0;i<8;i++){
+    const c = mpMakeCode();
+    const s = await db.ref('rooms/' + c).once('value');
+    if(!s.exists()) return c;
+  }
+  throw new Error('CODE_BUSY');
+}
+
+async function mpJoinRoom(rawCode){
+  const code = String(rawCode || '').trim().toUpperCase();
+  if(!/^[A-Z0-9]{4}$/.test(code)) throw new Error('BAD_CODE');
+
+  const ref = db.ref('rooms/' + code);
+  const snap = await ref.once('value');
+  if(!snap.exists()) throw new Error('NO_ROOM');
+  const r = snap.val() || {};
+  if(r.host === user.uid) throw new Error('OWN_ROOM');
+  if((r.status || 'waiting') !== 'waiting') throw new Error('IN_PROGRESS');
+
+  // A seat marker whose player node is gone is a ghost: onDisconnect can't fire
+  // for a tab that was suspended rather than closed, and without this the room
+  // would refuse every future joiner while visibly holding one empty seat.
+  if(r.guest && !(r.players || {})[r.guest]) await ref.child('guest').remove();
+
+  // Two people racing the same code must not both believe they got the seat, so
+  // the claim is a transaction rather than a read-then-write.
+  //
+  // It claims a single LEAF (`guest`) rather than rewriting the players map.
+  // Firebase runs a transaction optimistically against the local cache first,
+  // and that cache is cold here — the room was fetched with once(), which keeps
+  // nothing. Against the players map a cold pass sees null, which is
+  // indistinguishable from "empty room", so the only safe guess was to write a
+  // map containing just us — briefly proposing the host's own seat be deleted.
+  // The server rejects it and the re-run fixes it, but on a leaf the question
+  // is simply "is this seat taken?", where null is the honest answer and the
+  // optimistic guess is already right.
+  const res = await ref.child('guest').transaction(cur => {
+    if(cur && cur !== user.uid) return;      // abort — someone else holds the seat
+    return user.uid;
+  });
+  if(!res.committed) throw new Error('FULL');
+
+  await ref.update({
+    open: false,
+    ['players/' + user.uid]: mpCard('guest')
+  });
+  ref.child('players/' + user.uid).onDisconnect().remove();
+  ref.child('guest').onDisconnect().remove();
+  mpAttach(code, false);
+  return code;
+}
+
+// Take the first open room for this mode; open one if there isn't one. Rooms
+// older than ten minutes are skipped — an onDisconnect can't fire for a tab
+// that was suspended rather than closed, so a few ghosts are inevitable.
+async function mpQuickMatch(modeKey){
+  let snap = null;
+  try{
+    snap = await db.ref('rooms').orderByChild('open').equalTo(true).limitToLast(30).once('value');
+  }catch(e){
+    console.warn('Quick match lookup failed — opening a room instead:', e);
+    return await mpCreateRoom(modeKey);
+  }
+
+  const candidates = [];
+  snap.forEach(c => {
+    const r = c.val() || {};
+    if(r.mode !== modeKey) return;
+    if((r.status || 'waiting') !== 'waiting') return;
+    if(r.host === user.uid) return;
+    if(Object.keys(r.players || {}).length !== 1) return;
+    if(netNow() - (r.createdAt || 0) > 10*60*1000) return;
+    candidates.push(c.key);
+  });
+
+  for(const code of candidates){
+    try{ return await mpJoinRoom(code); }
+    catch(e){ /* someone beat us to that seat — try the next one */ }
+  }
+  return await mpCreateRoom(modeKey);
+}
+
+async function mpLeaveRoom(){
+  if(!mp) return;
+  const session = mp;
+  mp = null;                                  // everything else now no-ops
+  session.roundUnsub.concat(session.unsub).forEach(([r,e,c]) => { try{ r.off(e,c); }catch(err){} });
+  cancelAnimationFrame(session.cdRaf);
+
+  try{
+    const seat = session.roomRef.child('players/' + session.myId);
+    seat.onDisconnect().cancel();
+    if(session.isHost){
+      session.roomRef.onDisconnect().cancel();
+      session.live.onDisconnect().cancel();
+      await session.roomRef.remove();
+      await session.live.remove();
+    }else{
+      session.roomRef.child('guest').onDisconnect().cancel();
+      await seat.remove();
+      await session.roomRef.child('guest').remove();   // hand the seat back
+      // Only re-open a room that's still sitting in its lobby — a duel that was
+      // abandoned mid-round is the host's to reset, not ours.
+      if(session.status === 'waiting') await session.roomRef.update({ open: true });
+    }
+  }catch(e){ console.warn('Room teardown failed:', e); }
+  mpPaintLink();
+}
+
+// Host only: hand the room back to its lobby, ready for a rematch.
+function mpResetRoom(){
+  if(!mp || !mp.isHost) return;
+  const upd = { status:'waiting', open:true, startAt:null, endsAt:null };
+  upd['players/' + mp.myId + '/ready'] = true;
+  if(mp.oppId) upd['players/' + mp.oppId + '/ready'] = false;
+  mp.roomRef.update(upd).catch(e => console.warn('Room reset failed:', e));
+  mp.live.remove().catch(()=>{});
+}
+
+// The room record changed: presence, ready flags, the start signal, the result.
+function mpOnRoom(s){
+  if(!mp) return;
+  const r = s.val();
+  if(!r){ mpRoomGone(); return; }
+
+  mp.room = r;
+  const players = r.players || {};
+  const ids = Object.keys(players);
+  mp.oppId   = ids.find(id => id !== mp.myId) || null;
+  mp.me      = players[mp.myId] || null;
+  mp.opp     = mp.oppId ? players[mp.oppId] : null;
+  mp.oppName = (mp.opp && mp.opp.name) || 'RIVAL';
+  mp.startAt = r.startAt || 0;
+  mp.endsAt  = r.endsAt  || 0;
+
+  // Our own seat disappearing means we were removed — same outcome as the room
+  // vanishing, and worth handling before anything downstream reads mp.me.
+  if(!mp.me){ mpRoomGone(); return; }
+
+  const prev = mp.status;
+  mp.status = r.status || 'waiting';
+
+  if(mp.status === 'playing' && prev !== 'playing' && !mp.inRound){ mpBeginRound(); return; }
+  if(mp.status === 'done' && mp.inRound){ mpRoundResult(r.result || null); return; }
+
+  if(mp.inRound){
+    // Mid-duel, the only room change that matters is the other seat emptying.
+    if(!mp.oppId && mp.round && mp.round.onOppLeft) mp.round.onOppLeft();
+  }else{
+    mpPaintRoom();
+  }
+}
+
+// The host closed the room, or the whole thing was swept. If a duel was running
+// the survivor takes it by walkover; otherwise it's just a trip back to the
+// lobby with an explanation.
+function mpRoomGone(){
+  if(!mp) return;
+  const wasInRound = mp.inRound;
+  const round = mp.round;
+  const session = mp;
+  mp = null;
+  session.roundUnsub.concat(session.unsub).forEach(([r,e,c]) => { try{ r.off(e,c); }catch(err){} });
+  cancelAnimationFrame(session.cdRaf);
+  mpPaintLink();
+
+  // A duel that had already handed out its own callbacks can report the
+  // walkover properly. One that died during the countdown has no scoreline to
+  // show, so it just backs out to the lobby.
+  if(wasInRound && round && !round.placeholder && round.onOppLeft){ round.onOppLeft(); return; }
+  if(wasInRound){
+    stopGame();
+    setControls(null);
+    document.getElementById('game-screen').classList.remove('canvas-game');
+  }
+  toast('🔌 The room closed — your rival left the grid.', 3200);
+  mpShowStage('pick');
+  renderMpModes();
+  showScreen('mp-screen');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  LOBBY UI
+// ══════════════════════════════════════════════════════════════════════
+
+function mpShowStage(name){
+  document.querySelectorAll('.mp-stage').forEach(el => el.classList.remove('active'));
+  document.getElementById('mp-stage-' + name)?.classList.add('active');
+  const e1 = document.getElementById('mp-err'), e2 = document.getElementById('mp-room-err');
+  if(e1) e1.textContent = '';
+  if(e2) e2.textContent = '';
+}
+
+function mpErr(msg, roomStage){
+  const el = document.getElementById(roomStage ? 'mp-room-err' : 'mp-err');
+  if(!el) return;
+  if(msg) snd('error');
+  el.textContent = msg || '';
+}
+
+function mpPaintLink(){
+  const el = document.getElementById('mp-link');
+  if(!el) return;
+  el.classList.remove('live','busy','down');
+  if(!db){ el.textContent = '◈ NO DATABASE'; el.classList.add('down'); return; }
+  if(!netConnected){ el.textContent = '◈ RECONNECTING…'; el.classList.add('busy'); return; }
+  if(mp){ el.textContent = '◈ ROOM ' + mp.code; el.classList.add('live'); return; }
+  el.textContent = '◈ LINK READY';
+  el.classList.add('live');
+}
+
+function renderMpModes(){
+  const wrap = document.getElementById('mp-modes');
+  if(!wrap) return;
+  wrap.innerHTML = '';
+  Object.entries(MP_MODES).forEach(([key, m]) => {
+    const card = document.createElement('div');
+    card.className = 'mp-mode' + (key === mpMode ? ' sel' : '');
+    card.dataset.mode = key;
+    card.innerHTML =
+      `<span class="mp-mode-icon">${m.icon}</span>` +
+      `<div class="mp-mode-name">${m.name}</div>` +
+      `<div class="mp-mode-desc">${m.desc}</div>` +
+      `<span class="mp-mode-meta">${m.meta}</span>`;
+    card.onclick = () => { mpMode = key; snd('tab'); renderMpModes(); };
+    wrap.appendChild(card);
+  });
+}
+
+function mpSeat(el, p, isMe){
+  if(!el) return;
+  if(!p){
+    el.className = 'mp-seat empty';
+    el.innerHTML =
+      '<span class="mp-seat-avatar">⋯</span>' +
+      '<div class="mp-seat-name">EMPTY SEAT</div>' +
+      '<div class="mp-seat-tag">AWAITING LINK</div>';
+    return;
+  }
+  el.className = 'mp-seat filled' + (p.ready ? ' ready' : '');
+  const avatar = esc(p.skin) || (p.role === 'host' ? '🛰️' : '🎮');
+  el.innerHTML =
+    `<span class="mp-seat-avatar">${avatar}</span>` +
+    `<div class="mp-seat-name" style="color:${mpColor(p, '#ffffff')}">${esc(p.name)}${isMe ? ' · YOU' : ''}</div>` +
+    `<div class="mp-seat-tag">${p.role === 'host' ? 'HOST' : 'CHALLENGER'} · ${p.ready ? 'READY' : 'STANDBY'}</div>`;
+}
+
+function mpPaintRoom(){
+  if(!mp) return;
+  const mode = MP_MODES[mp.room && mp.room.mode];
+  document.getElementById('mp-room-code').textContent = mp.code;
+  document.getElementById('mp-room-game').textContent = mode ? `${mode.icon} ${mode.name} · ${mode.meta}` : '—';
+
+  mpSeat(document.getElementById('mp-seat-me'),  mp.me,  true);
+  mpSeat(document.getElementById('mp-seat-opp'), mp.opp, false);
+
+  const readyBtn = document.getElementById('btn-mp-ready');
+  const startBtn = document.getElementById('btn-mp-start');
+  const statusEl = document.getElementById('mp-room-status');
+  const here = !!mp.opp;
+  const guestReady = mp.isHost ? !!(mp.opp && mp.opp.ready) : !!(mp.me && mp.me.ready);
+
+  readyBtn.style.display = mp.isHost ? 'none' : '';
+  startBtn.style.display = mp.isHost ? '' : 'none';
+
+  if(!mp.isHost){
+    readyBtn.textContent = guestReady ? '✔ READY — STAND DOWN' : '✔ READY UP';
+    readyBtn.classList.toggle('btn-mp-unready', guestReady);
+  }
+  startBtn.disabled = !(here && guestReady && mp.status === 'waiting');
+
+  if(!here)                        statusEl.textContent = `Send code ${mp.code} to whoever you want to beat.`;
+  else if(!guestReady)             statusEl.textContent = mp.isHost ? `Waiting for ${mp.oppName} to ready up…`
+                                                                    : 'Press READY UP when you are set.';
+  else if(mp.status !== 'waiting') statusEl.textContent = 'Round in progress…';
+  else                             statusEl.textContent = mp.isHost ? 'Both operatives locked in — start the duel.'
+                                                                    : `Locked in. Waiting for ${mp.oppName} to start…`;
+}
+
+function mpOpenLobby(){
+  if(!db){ toast('⚠️ ' + MP_ERR.NO_DB, 3200); return; }
+  if(!user){ toast('⚠️ Sign in to use the Network Arena.', 3200); return; }
+  mpShowStage('pick');
+  renderMpModes();
+  mpPaintLink();
+  showScreen('mp-screen');
+  music('hub');
+}
+
+// Every connect button funnels through here so the "working…" state, the error
+// line and the hop to the room stage are written once.
+async function mpConnect(btn, work){
+  if(!db || !user){ mpErr(MP_ERR.NO_DB); return; }
+  if(!netConnected){ mpErr(MP_ERR.OFFLINE); return; }
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Linking…';
+  mpErr('');
+  try{
+    await work();
+    mpShowStage('room');
+    mpPaintRoom();
+    snd('success');
+  }catch(e){
+    console.warn('Network Arena link failed:', e);
+    mpErr(mpErrText(e));
+    if(mp) await mpLeaveRoom();
+  }finally{
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  ROUND PLUMBING
+// ══════════════════════════════════════════════════════════════════════
+
+// The shared start. Both clients count down to the SAME server timestamp, so
+// they begin within a frame or two of each other however far apart they are.
+function mpCountdown(startAt, go){
+  const ov = document.getElementById('cd-ov'), nm = document.getElementById('cd-num');
+  ov.classList.add('show');
+  let shown = null;
+  const tick = () => {
+    if(!mp || !mp.inRound){ ov.classList.remove('show'); return; }
+    const left = startAt - netNow();
+    if(left <= 0){ ov.classList.remove('show'); go(); return; }
+    const label = left <= 350 ? 'GO!' : String(Math.max(1, Math.min(3, Math.ceil((left-350)/1000))));
+    if(label !== shown){
+      shown = label;
+      nm.className = ''; nm.textContent = label;
+      void nm.offsetWidth; nm.className = 'cd-pop';
+      snd(label === 'GO!' ? 'go' : 'countdown');
+    }
+    mp.cdRaf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function mpHudNames(mine, theirs){
+  document.getElementById('mp-hud-me-name').textContent  = mine   || 'YOU';
+  document.getElementById('mp-hud-opp-name').textContent = theirs || 'RIVAL';
+}
+// `share` is your slice of the bar, so the cyan/pink boundary is the score gap.
+function mpHudScores(mine, theirs, share){
+  document.getElementById('mp-hud-me-score').textContent  = mine;
+  document.getElementById('mp-hud-opp-score').textContent = theirs;
+  const f = document.getElementById('mp-hud-fill');
+  if(f) f.style.width = (Math.max(0, Math.min(1, share == null ? 0.5 : share)) * 100).toFixed(1) + '%';
+}
+function mpPing(ms){
+  const el = document.getElementById('mp-ping');
+  if(el) el.textContent = (ms == null ? '—' : Math.round(ms) + 'ms');
+}
+// Returns a gate that answers true at most once per `ms` — for the handful of
+// things a 60fps loop wants to do a couple of times a second (repaint the ping
+// pill, tick the clock) without a timer of their own.
+function mpThrottle(ms){
+  let at = -Infinity;
+  return () => {
+    const t = performance.now();
+    if(t - at < ms) return false;
+    at = t;
+    return true;
+  };
+}
+function mpOverlay(text, sub, warn){
+  const ov = document.getElementById('mp-overlay');
+  const tx = document.getElementById('mp-overlay-txt');
+  if(!ov || !tx) return;
+  tx.innerHTML = esc(text) + (sub ? `<span class="mp-ov-sub">${esc(sub)}</span>` : '');
+  ov.classList.toggle('warn', !!warn);
+  ov.classList.add('show');
+}
+function mpHideOverlay(){
+  document.getElementById('mp-overlay')?.classList.remove('show','warn');
+  // Blanked as well as hidden: a stale "YOUR CORE IS DOWN" sitting in the DOM
+  // would flash for a frame the next time anything shows the overlay.
+  const tx = document.getElementById('mp-overlay-txt');
+  if(tx) tx.textContent = '';
+}
+
+function mpBeginRound(){
+  if(!mp) return;
+  const mode = MP_MODES[mp.room && mp.room.mode];
+  if(!mode){ console.warn('Unknown duel mode:', mp.room && mp.room.mode); return; }
+
+  mp.inRound = true;
+  // A stand-in until the duel installs its own callbacks. It exists so a rival
+  // who bails DURING the countdown is remembered rather than dropped on the
+  // floor — the duel checks this flag the moment it starts.
+  mp.round = {
+    placeholder: true,
+    droppedEarly: false,
+    onOppLeft(){ this.droppedEarly = true; },
+    onResult(){}
+  };
+
+  curGame = mode.gid;
+  document.getElementById('g-title').textContent = mode.name;
+  showScreen('game-screen');
+  // resetGameStage() runs stopGame(), which is why the round's own hooks are
+  // installed after it rather than before.
+  resetGameStage(mode.gid);
+  onQuitGame = mpQuitRound;
+  onStopGame = mpRoundCleanup;
+
+  document.getElementById('mp-hud').style.display = 'flex';
+  document.getElementById('mp-ping-pill').style.display = '';
+  mpHudNames((user && user.username) || 'YOU', mp.oppName);
+  mpHudScores(0, 0, 0.5);
+  mpPing(null);
+  mpHideOverlay();
+
+  mpCountdown(mp.startAt, () => { if(mp && mp.inRound) mode.start(); });
+}
+
+// Installed by each duel as it starts. Returns whether the rival already left
+// during the countdown, which the caller turns straight into a walkover.
+function mpInstallRound(cbs){
+  if(!mp) return false;
+  const early = !!(mp.round && mp.round.droppedEarly);
+  mp.round = Object.assign({ placeholder:false, droppedEarly:early }, cbs);
+  return early;
+}
+
+// Runs on every exit from a round — timeout, quit, dropped link — because it is
+// wired to stopGame() rather than to any one ending.
+function mpRoundCleanup(){
+  if(!mp) return;
+  mpOff('round');
+  cancelAnimationFrame(mp.cdRaf);
+  mp.inRound = false;
+  mp.round = null;
+  clearCanvasDrag();
+}
+
+// Host only: publish the outcome, then hand the room back to its lobby so a
+// rematch needs no extra plumbing.
+async function mpFinishRound(payload){
+  if(!mp || !mp.isHost) return;
+  const session = mp;
+  try{
+    await session.roomRef.update({ status:'done', result: { ...payload, at: netNow() } });
+  }catch(e){ console.warn('Result write failed:', e); }
+  setTimeout(() => { if(mp && mp === session) mpResetRoom(); }, 1600);
+}
+
+function mpRoundResult(result){
+  if(!mp || !mp.round || !mp.round.onResult) return;
+  mp.round.onResult(result);
+}
+
+// Quitting a duel forfeits it: the seat is vacated, which is exactly what the
+// other player's "rival dropped" path is built to handle.
+async function mpQuitRound(){
+  stopGame();
+  setControls(null);
+  document.getElementById('game-screen').classList.remove('canvas-game');
+  toast('🏳️ Duel forfeited.', 2400);
+  await mpLeaveRoom();
+  mpShowStage('pick');
+  renderMpModes();
+  showScreen('mp-screen');
+}
+
+// The results card, in duel dress. `outcome` is 'win' | 'loss' | 'draw'.
+function mpShowDuelResult(gid, pts, outcome, bd){
+  const badge = {
+    win:  { text:'🌐 NETWORK ARENA · VICTORY', cls:'res-bonus-win'  },
+    loss: { text:'🌐 NETWORK ARENA · DEFEAT',  cls:'res-bonus-loss' },
+    draw: { text:'🌐 NETWORK ARENA · DRAW',    cls:'res-bonus-net'  }
+  }[outcome] || { text:'🌐 NETWORK ARENA', cls:'res-bonus-net' };
+
+  const inRoom = !!mp;
+  showResults(gid, pts, bd, {
+    noBonus: true,                         // the two players may be on different tiers
+    badge,
+    emoji: outcome === 'win' ? '🏆' : (outcome === 'draw' ? '🤝' : '💀'),
+    sound: outcome === 'win' ? 'victory' : (outcome === 'draw' ? 'results' : 'gameOver'),
+    again: {
+      label: inRoom ? 'Back to Room' : 'Network Arena',
+      fn: () => {
+        if(mp){ mpShowStage('room'); mpPaintRoom(); }
+        else  { mpShowStage('pick'); renderMpModes(); }
+        showScreen('mp-screen');
+      }
+    },
+    hub: {
+      label: 'Hub',
+      fn: async () => {
+        await mpLeaveRoom();
+        document.getElementById('h-pts').textContent = `🏆 ${(user?.totalPoints||0).toLocaleString()} PTS`;
+        document.getElementById('h-credits').textContent = `💎 ${(user?.credits||0).toLocaleString()} CR`;
+        enterHub();
+      }
+    }
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  LOBBY WIRING
+// ══════════════════════════════════════════════════════════════════════
+document.getElementById('btn-mp-open').onclick = mpOpenLobby;
+
+document.getElementById('btn-mp-back').onclick = async () => {
+  await mpLeaveRoom();
+  enterHub();
+};
+
+document.getElementById('btn-mp-quick').onclick = function(){
+  mpConnect(this, () => mpQuickMatch(mpMode));
+};
+document.getElementById('btn-mp-create').onclick = function(){
+  mpConnect(this, () => mpCreateRoom(mpMode));
+};
+document.getElementById('btn-mp-join').onclick = function(){
+  const input = document.getElementById('mp-code-input');
+  mpConnect(this, () => mpJoinRoom(input.value));
+};
+
+const mpCodeInput = document.getElementById('mp-code-input');
+mpCodeInput.addEventListener('input', () => {
+  mpCodeInput.value = mpCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0,4);
+  mpErr('');
+});
+mpCodeInput.addEventListener('keydown', e => {
+  if(e.key === 'Enter') document.getElementById('btn-mp-join').click();
+});
+
+document.getElementById('btn-mp-copy').onclick = async () => {
+  if(!mp) return;
+  const btn = document.getElementById('btn-mp-copy');
+  try{
+    await navigator.clipboard.writeText(mp.code);
+    btn.textContent = '✔ Copied';
+    snd('coin');
+  }catch(e){
+    // Clipboard access is blocked over plain http and inside some in-app
+    // browsers — the code is on screen in 2.6rem type either way.
+    btn.textContent = '⚠ Copy manually';
+  }
+  setTimeout(() => { btn.textContent = '⧉ Copy'; }, 1600);
+};
+
+document.getElementById('btn-mp-ready').onclick = async () => {
+  if(!mp || mp.isHost) return;
+  const next = !(mp.me && mp.me.ready);
+  try{
+    await mp.roomRef.child('players/' + mp.myId + '/ready').set(next);
+    snd(next ? 'equip' : 'uiBack');
+  }catch(e){ mpErr(mpErrText(e), true); }
+};
+
+document.getElementById('btn-mp-start').onclick = async () => {
+  if(!mp || !mp.isHost) return;
+  if(!mp.opp || !mp.opp.ready) return;
+  const btn = document.getElementById('btn-mp-start');
+  btn.disabled = true;
+  const mode = MP_MODES[mp.room && mp.room.mode];
+  const startAt = netNow() + 3800;          // long enough for both to see 3-2-1
+  try{
+    await mp.live.remove();                 // no stale snapshots from last round
+    await mp.roomRef.update({
+      status: 'playing', open: false,
+      startAt,
+      endsAt: startAt + ((mode && mode.seconds) || 60) * 1000,
+      result: null
+    });
+  }catch(e){
+    btn.disabled = false;
+    mpErr(mpErrText(e), true);
+  }
+};
+
+document.getElementById('btn-mp-leave').onclick = async () => {
+  await mpLeaveRoom();
+  mpShowStage('pick');
+  renderMpModes();
+};
+
+
+// ══════════════════════════════════════════════════════════════════════
+//  🏓 DUEL 1: CYBER PONG — host-authoritative ball, mirrored views
+// ══════════════════════════════════════════════════════════════════════
+// Canonical space always puts the HOST on the left, and that is the only
+// orientation the wire ever carries. The guest flips it on X at draw time, so
+// BOTH players steer the paddle nearest them and neither has to think about
+// whose side is whose.
+function startPongDuel(){
+  if(!mp) return;
+  document.getElementById('g-canvas-holder').style.display = 'block';
+  setControls({ left:'▲ UP', right:'▼ DOWN' });
+  setControlHint('DRAG TO RALLY · OR USE ▲ ▼', '↑ ↓ OR JUST MOVE THE MOUSE — NO CLICKING');
+  showTouchHint('DRAG UP AND DOWN TO MOVE YOUR PADDLE');
+  fitCanvas();
+
+  const W = BOARD_W, H = BOARD_H, PAD_W = 10, PAD_H = 76, BALL_R = 7;
+  const XS = W/400;                                  // a rally takes the same seconds on any board
+  const SPEED0 = 265*XS, SPEED_MAX = 660*XS;
+  const DUR = 60;
+
+  const isHost = mp.isHost, myId = mp.myId, oppId = mp.oppId;
+  const oppLabel = mp.oppName.toUpperCase().slice(0, 12);
+
+  const myCol = mpColor(mp.me, getEquippedColorHex());
+  let oppCol  = mpColor(mp.opp, '#ff0090');
+  if(oppCol.toLowerCase() === myCol.toLowerCase()) oppCol = '#ff0090';
+  const hostCol  = isHost ? myCol  : oppCol;
+  const guestCol = isHost ? oppCol : myCol;
+
+  // Canonical → view. Everything is drawn through these, so no canvas transform
+  // is involved and the labels never come out mirrored.
+  const vx     = x     => isHost ? x : W - x;
+  const vxRect = (x,w) => isHost ? x : W - x - w;
+
+  let hostY = H/2-PAD_H/2, guestY = H/2-PAD_H/2;
+  let hostTarget = hostY, guestTarget = guestY;      // smoothed toward, off the wire
+  let myY = H/2-PAD_H/2;
+  let bx = W/2, by = H/2, bvx = 0, bvy = 0;          // canonical, units per SECOND
+  let hs = 0, gs = 0, rally = 0;
+  let snap = null, lag = null, lastSend = 0, lastT = 0;
+  // Two flags, not one. `ending` stops the loop the moment the host asks for a
+  // result; `over` means a result has actually been REPORTED. Folding them
+  // together let the host set over=true on the way out and then reject its own
+  // result when it came back down the listener — the round simply never ended.
+  let over = false, ending = false;
+  let keys = {}, moveUp = false, moveDown = false;
+  const pingTick = mpThrottle(500);
+
+  const myGoals  = () => isHost ? hs : gs;
+  const oppGoals = () => isHost ? gs : hs;
+
+  // ── INPUT ──
+  // The mouse steers on hover: the paddle simply IS where the cursor is, with
+  // no button held. Touch drags, the arrow keys and the on-screen pad all feed
+  // the same myY, so every scheme is live at once.
+  const track = p => { myY = Math.max(0, Math.min(H-PAD_H, p.y - PAD_H/2)); };
+  bindCanvasDrag({
+    onHover: track,
+    onDown(p){ hideTouchHint(); track(p); },
+    onMove: track
+  });
+  const NUDGE = 34;
+  bindHold(document.getElementById('ctrl-left'),
+           ()=>{ myY = Math.max(0, myY-NUDGE); moveUp = true; },         ()=>moveUp = false);
+  bindHold(document.getElementById('ctrl-right'),
+           ()=>{ myY = Math.min(H-PAD_H, myY+NUDGE); moveDown = true; }, ()=>moveDown = false);
+  window.onkeydown = e => { keys[e.code] = true;  if(['ArrowUp','ArrowDown'].includes(e.code)) e.preventDefault(); };
+  window.onkeyup   = e => { keys[e.code] = false; };
+
+  // ── HOST PHYSICS ──
+  function serve(dir){
+    bx = W/2; by = H/2; rally = 0;
+    const ang = Math.random()*0.7 - 0.35;
+    bvx = Math.cos(ang)*SPEED0*dir;
+    bvy = Math.sin(ang)*SPEED0;
+  }
+  // Sub-stepped by the caller, so a ball at full speed can never step clean
+  // over a 10-unit paddle between frames.
+  function stepBall(dt){
+    const px = bx;
+    bx += bvx*dt; by += bvy*dt;
+
+    if(by-BALL_R < 0){ by = BALL_R;   bvy = Math.abs(bvy);  snd('bounceWall'); }
+    if(by+BALL_R > H){ by = H-BALL_R; bvy = -Math.abs(bvy); snd('bounceWall'); }
+
+    const lFace = 20+PAD_W, rFace = W-20-PAD_W;
+    const speed = Math.min(SPEED_MAX, Math.sqrt(bvx*bvx + bvy*bvy)*1.035);
+
+    // The bounce angle comes off WHERE you hit, not off the incoming vector, so
+    // placement is a real skill and the pace stays predictable.
+    if(bvx < 0 && px-BALL_R >= lFace && bx-BALL_R <= lFace && by > hostY && by < hostY+PAD_H){
+      const ang = Math.max(-1, Math.min(1, (by-(hostY+PAD_H/2))/(PAD_H/2)))*0.95;
+      bvx = Math.cos(ang)*speed; bvy = Math.sin(ang)*speed;
+      bx = lFace+BALL_R+0.5; rally++;
+      snd('bounce', { semi: Math.min(14, rally) });
+    }else if(bvx > 0 && px+BALL_R <= rFace && bx+BALL_R >= rFace && by > guestY && by < guestY+PAD_H){
+      const ang = Math.max(-1, Math.min(1, (by-(guestY+PAD_H/2))/(PAD_H/2)))*0.95;
+      bvx = -Math.cos(ang)*speed; bvy = Math.sin(ang)*speed;
+      bx = rFace-BALL_R-0.5; rally++;
+      snd('bounce', { semi: Math.min(14, rally) });
+    }
+
+    // Only the host runs this, so left = "I conceded" and right = "I scored".
+    if(bx < -14){ gs++; snd('hurt');  serve(1); }
+    else if(bx > W+14){ hs++; snd('score'); serve(-1); }
+  }
+
+  // ── WIRE ──
+  if(isHost){
+    serve(Math.random() < 0.5 ? 1 : -1);
+    mpOn(mp.live.child('in/' + oppId), 'value', s => {
+      const v = s.val();
+      if(!v || !mp) return;
+      guestTarget = Math.max(0, Math.min(H-PAD_H, +v.y || 0));
+      lag = Math.max(0, netNow() - (+v.t || netNow()));
+    }, 'round');
+  }else{
+    mpOn(mp.live.child('state'), 'value', s => {
+      const v = s.val();
+      if(!v || !mp) return;
+      // The guest simulates nothing, so its audio is driven off what CHANGED
+      // between snapshots: a goal, or the ball reversing direction. A goal
+      // re-serves from the centre, which also flips bvx — hence the else.
+      if(snap){
+        const scored = (v.hs|0) > (snap.hs|0) || (v.gs|0) > (snap.gs|0);
+        if((v.hs|0) > (snap.hs|0)) snd('hurt');
+        if((v.gs|0) > (snap.gs|0)) snd('score');
+        if(!scored && Math.sign(v.bvx || 0) !== Math.sign(snap.bvx || 0)) snd('bounce');
+      }
+      snap = v;
+      hs = v.hs|0; gs = v.gs|0;
+      hostTarget = Math.max(0, Math.min(H-PAD_H, +v.hy || 0));
+      lag = Math.max(0, netNow() - (+v.t || netNow()));
+    }, 'round');
+  }
+
+  const r1 = n => Math.round(n*10)/10;
+  function send(now){
+    if(!mp || now - lastSend < 55) return;
+    lastSend = now;
+    if(isHost){
+      mp.live.child('state').set({
+        t: now,
+        bx: r1(bx), by: r1(by), bvx: r1(bvx), bvy: r1(bvy),
+        hy: r1(hostY), gy: r1(guestY), hs, gs
+      }).catch(()=>{});
+    }else{
+      mp.live.child('in/' + myId).set({ y: r1(myY), t: now }).catch(()=>{});
+    }
+  }
+
+  // Where the guest believes the ball is right now: the last snapshot carried
+  // forward, with the top and bottom walls folded in so a long extrapolation
+  // bounces instead of flying off the board.
+  function ballNow(){
+    if(isHost) return { x: bx, y: by };
+    if(!snap)  return { x: W/2, y: H/2 };
+    const dt = Math.min(0.3, (netNow() - (snap.t || 0))/1000);
+    const x = (+snap.bx || 0) + (+snap.bvx || 0)*dt;
+    let   y = (+snap.by || 0) + (+snap.bvy || 0)*dt;
+    const span = H - 2*BALL_R;
+    if(span > 0){
+      let k = (y - BALL_R) % (2*span);
+      if(k < 0) k += 2*span;
+      y = BALL_R + (k <= span ? k : 2*span - k);
+    }
+    return { x: Math.max(-18, Math.min(W+18, x)), y };
+  }
+
+  // ── DRAW ──
+  function pad(x, y, color){
+    aCtx.save();
+    aCtx.shadowBlur = 20; aCtx.shadowColor = color;
+    aCtx.fillStyle = color;
+    aCtx.beginPath(); aCtx.roundRect(x, y, PAD_W, PAD_H, 4); aCtx.fill();
+    aCtx.restore();
+  }
+  function draw(){
+    const b = ballNow();
+    aCtx.clearRect(0, 0, W, H);
+
+    aCtx.setLineDash([8,12]); aCtx.strokeStyle = 'rgba(255,255,255,0.08)'; aCtx.lineWidth = 2;
+    aCtx.beginPath(); aCtx.moveTo(W/2, 0); aCtx.lineTo(W/2, H); aCtx.stroke();
+    aCtx.setLineDash([]);
+
+    pad(vxRect(20, PAD_W),         hostY,  hostCol);
+    pad(vxRect(W-20-PAD_W, PAD_W), guestY, guestCol);
+
+    aCtx.save();
+    aCtx.shadowBlur = 22; aCtx.shadowColor = '#fff';
+    aCtx.fillStyle = '#ffffff';
+    aCtx.beginPath(); aCtx.arc(vx(b.x), b.y, BALL_R, 0, Math.PI*2); aCtx.fill();
+    aCtx.restore();
+
+    // My paddle is always the left one in view space, so the badge is too.
+    drawSkinBadge(20 + PAD_W/2, myY - 12);
+
+    aCtx.font = 'bold 0.65rem Orbitron,monospace';
+    aCtx.textAlign = 'center';
+    aCtx.fillStyle = 'rgba(255,255,255,0.30)';
+    aCtx.fillText('YOU', W/4, 22);
+    aCtx.fillText(oppLabel, 3*W/4, 22);
+  }
+
+  // ── ENDINGS ──
+  // `forced` exists for the walkover: the scoreline stays honest (it reports
+  // what was actually on the board) while the outcome is a win regardless.
+  // Idempotent: whichever ending gets here first is the one that counts, so the
+  // callers below don't each have to police it.
+  function report(mine, theirs, note, forced){
+    if(over) return;
+    over = true;
+    const outcome = forced || (mine > theirs ? 'win' : (mine < theirs ? 'loss' : 'draw'));
+    const pts = Math.min(900, mine*70 + (outcome === 'win' ? 260 : 0));
+    const bd = {
+      '🏓 Your Goals': mine,
+      ['🎯 ' + oppLabel + ' Goals']: theirs,
+      '📶 Link Lag': lag == null ? '—' : Math.round(lag) + ' ms',
+      '🏆 Awarded': pts + ' PTS'
+    };
+    if(note) bd['🔌 Note'] = note;
+    mpShowDuelResult('pong', pts, outcome, bd);
+  }
+
+  const droppedEarly = mpInstallRound({
+    onOppLeft(){
+      mpResetRoom();
+      report(myGoals(), oppGoals(), 'Rival dropped the link — walkover', 'win');
+    },
+    onResult(result){
+      const rhs = result && result.hs != null ? result.hs|0 : hs;
+      const rgs = result && result.gs != null ? result.gs|0 : gs;
+      report(isHost ? rhs : rgs, isHost ? rgs : rhs);
+    }
+  });
+
+  // ── LOOP ──
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--cyan),var(--purple))';
+  lastT = performance.now();
+
+  function loop(){
+    if(over || ending || !mp) return;
+    const wall = performance.now();
+    const dt = Math.min(0.1, (wall - lastT)/1000);
+    lastT = wall;
+    const now = netNow();
+
+    // Keys and the on-screen pad glide; the pointer sets myY outright.
+    const SPEED = 380;
+    if(keys['ArrowUp']   || moveUp)   myY = Math.max(0, myY - SPEED*dt);
+    if(keys['ArrowDown'] || moveDown) myY = Math.min(H-PAD_H, myY + SPEED*dt);
+
+    // Smoothing the remote paddle BEFORE the physics uses it keeps the picture
+    // and the simulation in agreement — the ball bounces off the bar you see.
+    const k = Math.min(1, dt*18);
+    if(isHost){
+      hostY = myY;
+      guestY += (guestTarget - guestY)*k;
+      let rem = dt;
+      while(rem > 0){ const h = Math.min(rem, 1/240); stepBall(h); rem -= h; }
+    }else{
+      guestY = myY;
+      hostY += (hostTarget - hostY)*k;
+    }
+
+    send(now);
+    draw();
+
+    const left = Math.max(0, (mp.endsAt - now)/1000);
+    const mine = myGoals(), theirs = oppGoals();
+    document.getElementById('g-time').textContent = Math.ceil(left);
+    document.getElementById('prog-fill').style.width = (left/DUR*100) + '%';
+    mpHudScores(mine, theirs, (mine + theirs) ? mine/(mine + theirs) : 0.5);
+    setLive(Math.min(900, mine*70));
+    if(pingTick()) mpPing(lag);
+
+    if(isHost && left <= 0){
+      ending = true;
+      mpFinishRound({ hs, gs });
+      // If that write never comes back round as a status change, settle it here
+      // rather than leaving the host staring at a frozen board.
+      gLater(() => report(hs, gs, 'Result write did not land — settled locally'), 4000);
+      return;
+    }
+    // The guest's safety net: if the host's result never lands, don't hang on a
+    // finished round — settle it on the last scores we were sent.
+    if(!isHost && now > mp.endsAt + 5000){
+      report(gs, hs, 'Host went quiet — settled on the last synced score');
+      return;
+    }
+
+    gameLoopId = requestAnimationFrame(loop);
+  }
+
+  if(droppedEarly){ mp.round.onOppLeft(); return; }
+  gameLoopId = requestAnimationFrame(loop);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  💥 DUEL 2: CORE SURVIVAL — one shared hazard feed, two dots
+// ══════════════════════════════════════════════════════════════════════
+// The cores travel in straight lines, so their entire future is implied by
+// (position, velocity, spawn time). The host broadcasts each spawn ONCE and
+// both clients replay it off the shared server clock — identical hazards on
+// both screens for a few bytes per core instead of a stream of positions.
+function startDodgeDuel(){
+  if(!mp) return;
+  document.getElementById('g-canvas-holder').style.display = 'block';
+  setControls(null);                                  // pure steering — no pad to steal board height
+  setControlHint('DRAG ANYWHERE TO STEER YOUR CORE', 'MOVE THE MOUSE TO STEER — NO CLICKING');
+  showTouchHint('DRAG ANYWHERE TO STEER');
+  fitCanvas();
+
+  const W = BOARD_W, H = BOARD_H, RAD = 9;
+  const CAP = 75;                                     // hard ceiling on a round
+  const CORE_COLORS = ['#ff6600','#ff2442','#ffd700','#ff0090','#a855f7'];
+
+  const isHost = mp.isHost, myId = mp.myId, oppId = mp.oppId;
+  const startAt = mp.startAt;
+  const oppLabel = mp.oppName.toUpperCase().slice(0, 12);
+  const myCol = mpColor(mp.me, getEquippedColorHex());
+  let oppCol  = mpColor(mp.opp, '#ff0090');
+  if(oppCol.toLowerCase() === myCol.toLowerCase()) oppCol = '#ff0090';
+  const oppSkin = (mp.opp && typeof mp.opp.skin === 'string') ? mp.opp.skin : '';
+
+  // Opposite corners, so neither player opens the round sitting on the other.
+  const me  = { x: W*0.30, y: H*0.70 };
+  const opp = { x: W*0.70, y: H*0.30, tx: W*0.70, ty: H*0.30 };
+
+  let alive = true, oppAlive = true, mySec = null, oppSec = null;
+  let cores = [], lastSend = 0, lag = null, nextSpawn = 0, lastT = 0;
+  // `ending` = the host has asked for a result; `over` = a result has been
+  // reported. Separate, so the host doesn't reject the very result it wrote —
+  // and so the finish is requested once rather than on every frame until the
+  // status change comes back round.
+  let over = false, ending = false;
+  const pingTick = mpThrottle(500);
+
+  const place = (x, y) => {
+    me.x = Math.max(RAD, Math.min(W-RAD, x));
+    me.y = Math.max(RAD, Math.min(H-RAD, y));
+  };
+  const corePos = (c, now) => ({
+    x: c.x + c.vx*(now - c.t0)/1000,
+    y: c.y + c.vy*(now - c.t0)/1000
+  });
+  // startAt is captured rather than read off mp, so the walkover path still
+  // works after the room has already been torn down.
+  const elapsed = () => Math.min(CAP, Math.max(0, (netNow() - startAt)/1000));
+  const round1 = n => Math.round(n*10)/10;
+
+  // ── INPUT ── same per-event scheme as the solo game: the mouse follows the
+  // cursor outright, a finger drags relatively so your thumb never covers the
+  // gap you are threading.
+  let lastP = null;
+  bindCanvasDrag({
+    onHover(p){ if(!p.touch && alive) place(p.x, p.y); },
+    onDown(p){ hideTouchHint(); lastP = p; if(!p.touch && alive) place(p.x, p.y); },
+    onMove(p){
+      if(!alive) return;
+      if(p.touch && lastP) place(me.x + (p.x - lastP.x), me.y + (p.y - lastP.y));
+      else place(p.x, p.y);
+      lastP = p;
+    },
+    onUp(){ lastP = null; }
+  });
+
+  // ── WIRE ──
+  mpOn(mp.live.child('cores'), 'child_added', s => {
+    const v = s.val();
+    if(!v || !mp) return;
+    cores.push({
+      id: s.key,
+      x: +v.x || 0, y: +v.y || 0,
+      vx: +v.vx || 0, vy: +v.vy || 0,
+      r: Math.max(4, +v.r || 8),
+      c: MP_HEX.test(String(v.c || '')) ? v.c : '#ff6600',
+      t0: +v.t0 || netNow()
+    });
+  }, 'round');
+  mpOn(mp.live.child('cores'), 'child_removed', s => {
+    const i = cores.findIndex(c => c.id === s.key);
+    if(i >= 0) cores.splice(i, 1);
+  }, 'round');
+
+  mpOn(mp.live.child('in/' + oppId), 'value', s => {
+    const v = s.val();
+    if(!v || !mp) return;
+    opp.tx = +v.x || 0; opp.ty = +v.y || 0;
+    lag = Math.max(0, netNow() - (+v.t || netNow()));
+  }, 'round');
+
+  mpOn(mp.live.child('dead'), 'value', s => {
+    const v = s.val() || {};
+    if(!mp) return;
+    if(v[oppId] && oppAlive){
+      oppAlive = false;
+      oppSec = +v[oppId].sec || 0;
+      snd('explode');
+      if(!alive) mpOverlay('BOTH CORES DOWN', 'Tallying the round…', true);
+    }
+    if(isHost && v[myId] && v[oppId]) hostFinish();
+  }, 'round');
+
+  function send(now){
+    if(!mp || now - lastSend < 50) return;
+    lastSend = now;
+    mp.live.child('in/' + myId).set({
+      x: Math.round(me.x*10)/10, y: Math.round(me.y*10)/10, t: now
+    }).catch(()=>{});
+  }
+
+  // Only ever your OWN hitbox. A death decided locally can't be handed to you
+  // by a stale remote frame, and each side simply trusts the other's report.
+  function die(){
+    if(!alive || !mp) return;
+    alive = false;
+    mySec = round1(elapsed());
+    snd('bigExplode');
+    mp.live.child('dead/' + myId).set({ sec: mySec, t: netNow() }).catch(()=>{});
+    mpOverlay('YOUR CORE IS DOWN',
+              oppAlive ? 'Survived ' + mySec.toFixed(1) + 's — waiting for your rival to fall'
+                       : 'Tallying the round…', true);
+  }
+
+  function hostFinish(){
+    if(!mp || !mp.isHost || over || ending) return;
+    ending = true;
+    const el = elapsed();
+    const secs = {};
+    secs[myId]  = round1(alive    ? el : (mySec  == null ? el : mySec));
+    secs[oppId] = round1(oppAlive ? el : (oppSec == null ? el : oppSec));
+    mpFinishRound({ secs });
+    // If that write never comes back round as a status change, settle it here
+    // rather than leaving the host on a frozen board.
+    gLater(() => report(secs[myId], secs[oppId], 'Result write did not land — settled locally'), 4000);
+  }
+
+  // ── DRAW ──
+  function dot(x, y, color, mine){
+    aCtx.save();
+    aCtx.shadowBlur = 24; aCtx.shadowColor = color;
+    aCtx.beginPath(); aCtx.arc(x, y, RAD, 0, Math.PI*2);
+    aCtx.fillStyle = color; aCtx.fill();
+    aCtx.shadowBlur = 6; aCtx.shadowColor = '#fff';
+    aCtx.strokeStyle = mine ? '#fff' : 'rgba(255,255,255,0.55)';
+    aCtx.lineWidth = 2; aCtx.stroke();
+    aCtx.restore();
+  }
+  function nameTag(x, y, text, color){
+    aCtx.save();
+    aCtx.font = 'bold 0.5rem Orbitron,monospace';
+    aCtx.textAlign = 'center';
+    aCtx.fillStyle = color;
+    aCtx.globalAlpha = 0.85;
+    aCtx.fillText(text, x, Math.min(H-4, y));
+    aCtx.restore();
+  }
+  function draw(now){
+    aCtx.fillStyle = '#0a0a1a';
+    aCtx.fillRect(0, 0, W, H);
+    aCtx.strokeStyle = 'rgba(255,255,255,0.04)';
+    aCtx.lineWidth = 1;
+    for(let gx=0; gx<=W; gx+=40){ aCtx.beginPath(); aCtx.moveTo(gx,0); aCtx.lineTo(gx,H); aCtx.stroke(); }
+    for(let gy=0; gy<=H; gy+=40){ aCtx.beginPath(); aCtx.moveTo(0,gy); aCtx.lineTo(W,gy); aCtx.stroke(); }
+
+    if(oppAlive){
+      dot(opp.x, opp.y, oppCol, false);
+      if(oppSkin){
+        aCtx.save();
+        aCtx.font = '13px sans-serif'; aCtx.textAlign = 'center'; aCtx.textBaseline = 'middle';
+        aCtx.fillText(oppSkin, opp.x, opp.y - RAD - 10);
+        aCtx.restore();
+      }
+      nameTag(opp.x, opp.y + RAD + 16, oppLabel, oppCol);
+    }
+    if(alive){
+      dot(me.x, me.y, myCol, true);
+      drawSkinBadge(me.x, me.y - RAD - 10);
+      nameTag(me.x, me.y + RAD + 16, 'YOU', myCol);
+    }
+
+    for(const c of cores){
+      const p = corePos(c, now);
+      if(p.y < -c.r*2 || p.y > H + c.r*2) continue;
+      aCtx.save();
+      aCtx.shadowBlur = 18; aCtx.shadowColor = c.c;
+      aCtx.beginPath(); aCtx.arc(p.x, p.y, c.r, 0, Math.PI*2);
+      aCtx.fillStyle = c.c; aCtx.fill();
+      aCtx.shadowBlur = 0;
+      aCtx.beginPath(); aCtx.arc(p.x - c.r*0.28, p.y - c.r*0.28, c.r*0.3, 0, Math.PI*2);
+      aCtx.fillStyle = 'rgba(255,255,255,0.35)'; aCtx.fill();
+      aCtx.restore();
+    }
+  }
+
+  // ── ENDINGS ──
+  // Idempotent: whichever ending gets here first is the one that counts.
+  function report(mine, theirs, note, forced){
+    if(over) return;
+    over = true;
+    const outcome = forced || (mine > theirs ? 'win' : (mine < theirs ? 'loss' : 'draw'));
+    const pts = Math.min(800, Math.round(mine*16) + (outcome === 'win' ? 200 : 0));
+    const bd = {
+      '⏱️ You Survived': mine.toFixed(1) + 's',
+      ['💀 ' + oppLabel + ' Survived']: theirs.toFixed(1) + 's',
+      '📶 Link Lag': lag == null ? '—' : Math.round(lag) + ' ms',
+      '🏆 Awarded': pts + ' PTS'
+    };
+    if(note) bd['🔌 Note'] = note;
+    mpShowDuelResult('dodge', pts, outcome, bd);
+  }
+
+  const droppedEarly = mpInstallRound({
+    onOppLeft(){
+      mpResetRoom();
+      const mine = mySec == null ? round1(elapsed()) : mySec;
+      const theirs = oppSec == null ? 0 : oppSec;
+      report(mine, theirs, 'Rival dropped the link — walkover', 'win');
+    },
+    onResult(result){
+      const secs = (result && result.secs) || {};
+      const mine   = secs[myId]  != null ? +secs[myId]  : (mySec  == null ? 0 : mySec);
+      const theirs = secs[oppId] != null ? +secs[oppId] : (oppSec == null ? 0 : oppSec);
+      report(mine, theirs);
+    }
+  });
+
+  // ── LOOP ──
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--orange),var(--red))';
+  lastT = performance.now();
+
+  function loop(){
+    if(over || ending || !mp) return;
+    const wall = performance.now();
+    const dt = Math.min(0.1, (wall - lastT)/1000);
+    lastT = wall;
+    const now = netNow();
+    const el = elapsed();
+
+    // Host: keep the shared hazard feed coming, and retire cores once they are
+    // certainly off the board.
+    if(isHost && now >= nextSpawn){
+      nextSpawn = now + Math.max(105, 330 - el*3.2);
+      mp.live.child('cores').push({
+        x:  Math.round(20 + Math.random()*(W-40)),
+        y:  -16,
+        vx: Math.round((Math.random()-0.5)*130),
+        vy: Math.round(190 + Math.random()*150 + el*2.6),
+        r:  Math.round(8 + Math.random()*7),
+        c:  CORE_COLORS[Math.floor(Math.random()*CORE_COLORS.length)],
+        t0: now
+      }).catch(()=>{});
+    }
+
+    for(let i = cores.length-1; i >= 0; i--){
+      const c = cores[i];
+      const p = corePos(c, now);
+      if(p.y > H + 80){
+        if(isHost) mp.live.child('cores/' + c.id).remove().catch(()=>{});
+        cores.splice(i, 1);
+        continue;
+      }
+      if(alive){
+        const dx = p.x - me.x, dy = p.y - me.y, rr = c.r + RAD;
+        if(dx*dx + dy*dy < rr*rr) die();
+      }
+    }
+
+    if(alive) send(now);
+    const k = Math.min(1, dt*16);
+    opp.x += (opp.tx - opp.x)*k;
+    opp.y += (opp.ty - opp.y)*k;
+
+    draw(now);
+
+    const mine   = alive    ? el : (mySec  == null ? el : mySec);
+    const theirs = oppAlive ? el : (oppSec == null ? el : oppSec);
+    document.getElementById('g-time').textContent = Math.ceil(CAP - el);
+    document.getElementById('prog-fill').style.width = ((CAP - el)/CAP*100) + '%';
+    mpHudScores(mine.toFixed(1) + 's', theirs.toFixed(1) + 's',
+                (mine + theirs) ? mine/(mine + theirs) : 0.5);
+    setLive(Math.min(800, Math.round(mine*16)));
+    if(pingTick()) mpPing(lag);
+
+    if(isHost && (el >= CAP || (!alive && !oppAlive))) hostFinish();
+    if(!isHost && now > mp.endsAt + 6000){
+      report(mine, theirs, 'Host went quiet — settled on the last synced times');
+      return;
+    }
+
+    gameLoopId = requestAnimationFrame(loop);
+  }
+
+  if(droppedEarly){ mp.round.onOppLeft(); return; }
+  gameLoopId = requestAnimationFrame(loop);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  🖱️ DUEL 3: FRENZY DUEL — the mode that works on any connection
+// ══════════════════════════════════════════════════════════════════════
+// Nothing here depends on WHEN a packet arrives: both sides count their own
+// clicks and publish a running total ten times a second. On a bad link the
+// rival's number is merely stale, never wrong.
+function startClickDuel(){
+  if(!mp) return;
+  document.getElementById('g-click').style.display = 'flex';
+  setControlHint('TAP THE PAD AS FAST AS YOU CAN', 'CLICK THE PAD AS FAST AS YOU CAN');
+
+  const DUR = 12;
+  const isHost = mp.isHost, myId = mp.myId, oppId = mp.oppId;
+  const oppLabel = mp.oppName.toUpperCase().slice(0, 12);
+
+  let n = 0, oppN = 0, over = false, ended = false, lastSend = 0, lag = null, lastTick = 99;
+  const pingTick = mpThrottle(500);
+
+  const btn = document.getElementById('click-btn');
+  const countEl = document.getElementById('click-count');
+  btn.disabled = false;
+  countEl.textContent = '0';
+
+  function paint(){
+    countEl.textContent = n;
+    mpHudScores(n, oppN, (n + oppN) ? n/(n + oppN) : 0.5);
+    setLive(Math.min(500, n*7));
+  }
+
+  // The blip climbs an octave over eight clicks and wraps, so a fast streak
+  // sounds like it's accelerating even though the button is doing one thing.
+  btn.onclick = () => {
+    if(ended || !mp) return;
+    n++;
+    snd('bounce', { semi: (n % 8)*2 });
+    paint();
+  };
+
+  mpOn(mp.live.child('in/' + oppId), 'value', s => {
+    const v = s.val();
+    if(!v || !mp) return;
+    oppN = Math.max(0, +v.n || 0);
+    lag = Math.max(0, netNow() - (+v.t || netNow()));
+    paint();
+  }, 'round');
+
+  function send(now, force){
+    if(!mp) return;
+    if(!force && now - lastSend < 100) return;
+    lastSend = now;
+    mp.live.child('in/' + myId).set({ n, t: now }).catch(()=>{});
+  }
+
+  // Idempotent: whichever ending gets here first is the one that counts.
+  function report(mine, theirs, note, forced){
+    if(over) return;
+    over = true;
+    const outcome = forced || (mine > theirs ? 'win' : (mine < theirs ? 'loss' : 'draw'));
+    const pts = Math.min(500, mine*7 + (outcome === 'win' ? 90 : 0));
+    const bd = {
+      '🖱️ Your Clicks': mine,
+      ['⚡ ' + oppLabel + ' Clicks']: theirs,
+      '📶 Link Lag': lag == null ? '—' : Math.round(lag) + ' ms',
+      '🏆 Awarded': pts + ' PTS'
+    };
+    if(note) bd['🔌 Note'] = note;
+    btn.disabled = true; btn.onclick = null;
+    mpShowDuelResult('click', pts, outcome, bd);
+  }
+
+  const droppedEarly = mpInstallRound({
+    onOppLeft(){
+      mpResetRoom();
+      report(n, oppN, 'Rival dropped the link — walkover', 'win');
+    },
+    onResult(result){
+      const counts = (result && result.counts) || {};
+      report(counts[myId]  != null ? +counts[myId]  : n,
+             counts[oppId] != null ? +counts[oppId] : oppN);
+    }
+  });
+
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--lime),var(--cyan))';
+  paint();
+
+  function loop(){
+    if(over || !mp) return;
+    const now = netNow();
+    const left = Math.max(0, (mp.endsAt - now)/1000);
+    const secs = Math.ceil(left);
+    document.getElementById('g-time').textContent = secs;
+    document.getElementById('prog-fill').style.width = (left/DUR*100) + '%';
+    if(!ended && secs <= 3 && secs > 0 && secs !== lastTick){ lastTick = secs; snd('tick'); }
+
+    if(!ended){
+      send(now);
+      if(left <= 0){
+        ended = true;
+        btn.disabled = true;
+        send(now, true);                 // one last publish before the tally
+        // A beat for the rival's final number to land, then the host writes the
+        // scoreline neither side can argue with.
+        if(isHost) gLater(async () => {
+          if(!mp || over) return;
+          let theirs = oppN;
+          try{
+            const s = await mp.live.child('in/' + oppId).once('value');
+            const v = s.val();
+            if(v) theirs = Math.max(theirs, +v.n || 0);
+          }catch(e){ /* stick with the number we already have */ }
+          const counts = {};
+          counts[myId] = n; counts[oppId] = theirs;
+          mpFinishRound({ counts });
+          // If that write never comes back round as a status change, settle it
+          // here rather than leaving the host on a dead button.
+          gLater(() => report(n, theirs, 'Result write did not land — settled locally'), 4000);
+        }, 700);
+      }
+    }
+    if(!isHost && ended && now > mp.endsAt + 5000){
+      report(n, oppN, 'Host went quiet — settled on the last synced counts');
+      return;
+    }
+    if(pingTick()) mpPing(lag);
+
+    gameLoopId = requestAnimationFrame(loop);
+  }
+
+  if(droppedEarly){ mp.round.onOppLeft(); return; }
+  gameLoopId = requestAnimationFrame(loop);
+}
