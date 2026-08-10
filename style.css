@@ -397,6 +397,32 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
    against the play field, not against the holder that also owns the pad. */
 #board-frame{position:relative;width:fit-content;max-width:100%;margin:0 auto}
 
+/* ── ⚔️ BATTLE BOTS — DEPLOY DECK ── */
+/* Three cards under the board: two units and the RAM upgrade. Tracks the
+   board's width like .g-hdr and .prog-bar do, so the whole game reads as one
+   column. Built by startBattleBots() and emptied by stopGame(). */
+#bb-deck{display:flex;gap:10px;width:100%;max-width:max(var(--board-w,560px),560px);margin-top:10px;flex-shrink:0}
+.bb-btn{
+  position:relative;overflow:hidden;flex:1;min-width:0;
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+  background:var(--s2);border:1.5px solid var(--bc);border-radius:10px;
+  padding:9px 4px;cursor:pointer;color:#fff;font-family:var(--fd);
+  box-shadow:0 0 14px -4px var(--bc),inset 0 0 18px -12px var(--bc);
+  transition:transform .12s ease,box-shadow .2s ease,opacity .2s ease,border-color .2s ease
+}
+.bb-btn:hover:not(.broke):not(.maxed){transform:translateY(-2px);box-shadow:0 0 24px -4px var(--bc)}
+.bb-btn:active{transform:scale(.96)}
+.bb-ico{font-size:1.35rem;line-height:1}
+.bb-name{font-size:.55rem;font-weight:700;letter-spacing:.1em;color:var(--bc);white-space:nowrap}
+.bb-cost{font-size:.52rem;font-weight:700;letter-spacing:.06em;color:var(--dim);white-space:nowrap}
+/* Unaffordable, but still clickable — the deny blip and the toast are how you
+   find out how much more RAM you need. */
+.bb-btn.broke{opacity:.4;border-color:var(--border);box-shadow:none}
+.bb-btn.broke .bb-name{color:var(--dim)}
+.bb-btn.maxed{opacity:.55;border-color:var(--border);box-shadow:none}
+/* Deploy cooldown — a shade that recedes upward as the bay reloads. */
+.bb-btn::after{content:'';position:absolute;left:0;right:0;top:0;height:calc(var(--cd,0) * 100%);background:rgba(4,4,14,.72);pointer-events:none;transition:height .08s linear}
+
 /* NEXT-piece preview (was inline styles; moved here so the mobile rules below
    can actually shrink it — inline wins over a stylesheet otherwise). */
 #tetris-next-wrap{position:absolute;top:10px;right:10px;background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center;pointer-events:none}
@@ -682,6 +708,13 @@ body { overscroll-behavior: none; }
 }
 
 /* Finger-sized targets on touch devices (44px is the accessibility floor). */
+@media (max-width: 520px) {
+  .bb-btn { padding: 7px 3px; gap: 2px; }
+  .bb-ico { font-size: 1.15rem; }
+  .bb-name { font-size: .5rem; letter-spacing: .06em; }
+  .bb-cost { font-size: .48rem; }
+}
+
 @media (pointer: coarse) {
   .btn-sm { padding: 11px 16px; min-height: 44px; }
   .btn { min-height: 44px; }
@@ -805,6 +838,13 @@ body { overscroll-behavior: none; }
   #arcade-controls .ctrl-btn { min-height: 46px; font-size: .68rem; padding: 8px 6px; }
   #arcade-controls .ctrl-btn.glyph { font-size: 1.05rem; }
   #arcade-controls.four-up .ctrl-btn { min-height: 38px; }
+
+  /* The deck stays a full-width row under the board (it's a sibling of the
+     holder, not a child), but flattens to one line so it costs the board as
+     little height as possible. */
+  #bb-deck { margin-top: 6px; gap: 8px; }
+  .bb-btn { flex-direction: row; justify-content: center; align-items: baseline; gap: 6px; padding: 6px 4px; }
+  .bb-ico { font-size: 1rem; }
 }
 
 /* Toasts sit at the bottom on desktop, which on a phone lands them right

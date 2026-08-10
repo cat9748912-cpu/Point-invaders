@@ -1,4 +1,544 @@
 // ══════════════════════════════════════════════════════════════════════
+//  🔊 POINT INVADERS — AUDIO ENGINE
+// ══════════════════════════════════════════════════════════════════════
+// Every sound in the arcade is SYNTHESISED at runtime out of oscillators and
+// noise — there are no .wav/.mp3 files to ship, fetch, cache or 404 on. That
+// keeps the whole hub a three-file drop-in that still works from a file:// URL
+// or offline, and it means a laser can be pitched per-shot instead of being one
+// frozen recording replayed 200 times a round.
+//
+// Public surface (all no-ops, never throwing, if Web Audio is missing):
+//   SFX.play(name, opts)   — one-shot effect; opts {vol, semi, rate}
+//   SFX.music(track)       — 'hub' | 'game' | null
+//   SFX.mode / cycleMode() — 'full' → 'sfx' → 'mute' → 'full'
+//   SFX.bindToggle(el)     — wires a button to cycleMode() and keeps it labelled
+//
+// The engine stays deliberately self-contained: a single IIFE that knows
+// nothing about games, screens or scores and shares nothing with the rest of
+// this file but the window.SFX handle, so it can still be lifted straight back
+// out into another project. It sits at the very top because the code below
+// binds the 🔊 buttons via SFX.bindToggle() while loading.
+window.SFX = (function(){
+'use strict';
+
+// ── PERSISTED PREFERENCES ─────────────────────────────────────────────
+// One control, three settings. Music is the part people turn off first, so it
+// gets its own rung on the ladder rather than being all-or-nothing with the
+// effects. localStorage is wrapped because Safari's private mode throws on it.
+const LS_KEY = 'pi_audio_mode';
+const MODES = ['full','sfx','mute'];
+function loadMode(){
+  try{ const v = localStorage.getItem(LS_KEY); return MODES.includes(v) ? v : 'full'; }
+  catch(e){ return 'full'; }
+}
+function saveMode(m){ try{ localStorage.setItem(LS_KEY, m); }catch(e){} }
+
+let mode = loadMode();
+
+// ── GRAPH ─────────────────────────────────────────────────────────────
+//   voices ─┬─▶ sfxBus  ──┬─▶ comp ─▶ master ─▶ speakers
+//           └─▶ musicBus ─┘        (delay send hangs off musicBus)
+// The compressor is the thing that keeps a Nova Bomb — thirty explosions in
+// four frames — from clipping into a crackle. Buses are separate so muting the
+// music can't cut an effect that's mid-decay.
+let ctx=null, master=null, comp=null, sfxBus=null, musicBus=null, musicDelay=null;
+let noiseBuf=null, unlocked=false;
+
+const SUPPORTED = !!(window.AudioContext || window.webkitAudioContext);
+
+function ensureCtx(){
+  if(ctx || !SUPPORTED) return ctx;
+  try{
+    const AC = window.AudioContext || window.webkitAudioContext;
+    ctx = new AC();
+
+    comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -16; comp.knee.value = 24; comp.ratio.value = 12;
+    comp.attack.value = 0.003; comp.release.value = 0.25;
+
+    master = ctx.createGain();   master.gain.value = 0.85;
+    sfxBus = ctx.createGain();   sfxBus.gain.value = (mode === 'mute') ? 0 : 1;
+    musicBus = ctx.createGain(); musicBus.gain.value = (mode === 'full') ? 1 : 0;
+
+    // Feedback delay on the music only — it's what turns four bare oscillators
+    // into something that sounds like a soundtrack. Effects stay dry so a hit
+    // still reads as instant feedback.
+    musicDelay = ctx.createDelay(1.0);
+    // Placeholder only — music() retunes this to the track's tempo on every
+    // start. A delay is a rhythmic instrument here, not an ambience knob.
+    musicDelay.delayTime.value = 0.30;
+    const fb = ctx.createGain(); fb.gain.value = 0.34;
+    const wet = ctx.createGain(); wet.gain.value = 0.30;
+    const damp = ctx.createBiquadFilter(); damp.type='lowpass'; damp.frequency.value = 2600;
+    musicDelay.connect(damp); damp.connect(fb); fb.connect(musicDelay);
+    musicDelay.connect(wet); wet.connect(comp);
+
+    sfxBus.connect(comp); musicBus.connect(comp);
+    comp.connect(master); master.connect(ctx.destination);
+  }catch(e){ ctx = null; }
+  return ctx;
+}
+
+// Browsers hand back a SUSPENDED context until the page has been interacted
+// with, and silently drop anything scheduled into it. Every plausible first
+// gesture resumes it, then unhooks itself.
+// resume() is a promise, and on the very first gesture the context is still
+// SUSPENDED when the handler returns — so the retry has to hang off the promise
+// rather than off a state read taken microseconds too early. Getting this wrong
+// leaves the soundtrack permanently silent while effects work fine.
+function unlock(){
+  const c = ensureCtx();
+  if(!c) return;
+  unlocked = true;
+  if(c.state === 'suspended') c.resume().then(resumeMusic).catch(()=>{});
+  else resumeMusic();
+}
+['pointerdown','touchstart','keydown','mousedown','click'].forEach(ev=>{
+  window.addEventListener(ev, unlock, { capture:true, passive:true });
+});
+
+// Tabbing away shouldn't leave a soundtrack playing in a background tab, and
+// setInterval throttling there would bunch the scheduler up anyway.
+document.addEventListener('visibilitychange', ()=>{
+  if(!ctx) return;
+  if(document.hidden){ try{ ctx.suspend(); }catch(e){} }
+  else if(unlocked){ try{ ctx.resume().then(resumeMusic).catch(()=>{}); }catch(e){} }
+});
+
+function noiseBuffer(){
+  if(noiseBuf) return noiseBuf;
+  const len = Math.floor(ctx.sampleRate * 1.2);
+  noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = noiseBuf.getChannelData(0);
+  for(let i=0;i<len;i++) d[i] = Math.random()*2 - 1;
+  return noiseBuf;
+}
+
+// ── PRIMITIVES ────────────────────────────────────────────────────────
+const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+const clampF = f => Math.max(20, Math.min(18000, f || 20));
+
+// A single pitched voice. f1 makes it a sweep, which is the whole vocabulary of
+// retro sound design: up = good, down = bad, down-fast = laser.
+function tone(t0, o){
+  const g = ctx.createGain();
+  const osc = ctx.createOscillator();
+  const dur = o.dur, vol = o.vol == null ? 0.2 : o.vol;
+  osc.type = o.type || 'square';
+  osc.frequency.setValueAtTime(clampF(o.f0), t0);
+  if(o.f1 && o.f1 !== o.f0){
+    if(o.linear) osc.frequency.linearRampToValueAtTime(clampF(o.f1), t0 + dur);
+    else osc.frequency.exponentialRampToValueAtTime(clampF(o.f1), t0 + dur);
+  }
+  if(o.detune) osc.detune.setValueAtTime(o.detune, t0);
+
+  const atk = o.attack == null ? 0.005 : o.attack;
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + atk);
+  if(o.hold) g.gain.setValueAtTime(Math.max(0.0002, vol), t0 + Math.min(dur, atk + o.hold));
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+
+  osc.connect(g);
+  let tail = g;
+  if(o.filter){
+    const f = ctx.createBiquadFilter();
+    f.type = o.filter;
+    f.frequency.setValueAtTime(clampF(o.fc), t0);
+    if(o.fc1) f.frequency.exponentialRampToValueAtTime(clampF(o.fc1), t0 + dur);
+    f.Q.value = o.q == null ? 1 : o.q;
+    g.connect(f); tail = f;
+  }
+  tail.connect(o.bus || sfxBus);
+  if(o.send) tail.connect(o.send);
+
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.03);
+  return osc;
+}
+
+// Noise through a swept filter: every impact, whoosh and explosion in the hub.
+function noise(t0, o){
+  const src = ctx.createBufferSource();
+  src.buffer = noiseBuffer();
+  src.loop = true;
+  src.playbackRate.value = o.rate || 1;
+
+  const f = ctx.createBiquadFilter();
+  f.type = o.filter || 'lowpass';
+  f.frequency.setValueAtTime(clampF(o.fc), t0);
+  if(o.fc1) f.frequency.exponentialRampToValueAtTime(clampF(o.fc1), t0 + o.dur);
+  f.Q.value = o.q == null ? 1 : o.q;
+
+  const g = ctx.createGain();
+  const vol = o.vol == null ? 0.2 : o.vol;
+  const atk = o.attack == null ? 0.003 : o.attack;
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + atk);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + o.dur);
+
+  src.connect(f); f.connect(g); g.connect(o.bus || sfxBus);
+  if(o.send) g.connect(o.send);
+  src.start(t0);
+  src.stop(t0 + o.dur + 0.03);
+  return src;
+}
+
+// Play a run of notes as one gesture — used by every chime, fanfare and denial.
+function seq(t0, notes, o){
+  o = o || {};
+  notes.forEach((n, i) => {
+    const step = o.step == null ? 0.075 : o.step;
+    tone(t0 + i * step, {
+      type: o.type || 'square',
+      f0: mtof(n), f1: o.glide ? mtof(n) * o.glide : 0,
+      dur: o.dur == null ? 0.16 : o.dur,
+      vol: (o.vol == null ? 0.18 : o.vol) * (o.fade ? 1 - i * 0.12 : 1),
+      attack: o.attack
+    });
+  });
+}
+
+// ── EFFECT BANK ───────────────────────────────────────────────────────
+// `gap` is the minimum milliseconds between retriggers of the same effect. Game
+// loops fire collision events dozens of times per frame; without a floor here,
+// a Meltdown-tier Nebula wave stacks 40 identical explosions on the same sample
+// boundary and the result is a click, not a bang. It also caps the voice count
+// for free.
+const BANK = {
+  // ── INTERFACE ──
+  ui:        { gap: 30,  fn:(t)=>{ tone(t,{type:'triangle',f0:880,f1:1180,dur:0.055,vol:0.13}); } },
+  uiBack:    { gap: 30,  fn:(t)=>{ tone(t,{type:'triangle',f0:640,f1:400,dur:0.075,vol:0.13}); } },
+  hover:     { gap: 45,  fn:(t)=>{ tone(t,{type:'sine',f0:1500,dur:0.028,vol:0.05}); } },
+  tab:       { gap: 30,  fn:(t)=>{ tone(t,{type:'square',f0:1046,dur:0.045,vol:0.09}); } },
+  toggle:    { gap: 30,  fn:(t)=>{ seq(t,[76,83],{type:'square',dur:0.09,vol:0.13,step:0.055}); } },
+  error:     { gap: 120, fn:(t)=>{ tone(t,{type:'sawtooth',f0:190,f1:96,dur:0.28,vol:0.16,filter:'lowpass',fc:900});
+                                   tone(t+0.09,{type:'sawtooth',f0:150,f1:80,dur:0.24,vol:0.12,filter:'lowpass',fc:700}); } },
+  deny:      { gap: 90,  fn:(t)=>{ tone(t,{type:'square',f0:240,f1:150,dur:0.16,vol:0.14}); } },
+  success:   { gap: 120, fn:(t)=>{ seq(t,[72,76,79,84],{type:'square',dur:0.2,vol:0.15,step:0.07}); } },
+  login:     { gap: 200, fn:(t)=>{ seq(t,[60,67,72,76,79],{type:'triangle',dur:0.42,vol:0.13,step:0.085});
+                                   noise(t,{dur:0.5,vol:0.05,filter:'highpass',fc:400,fc1:5000}); } },
+  logout:    { gap: 200, fn:(t)=>{ seq(t,[72,67,60,55],{type:'triangle',dur:0.3,vol:0.12,step:0.085}); } },
+
+  // ── ECONOMY ──
+  coin:      { gap: 40,  fn:(t)=>{ tone(t,{type:'square',f0:mtof(88),dur:0.07,vol:0.15});
+                                   tone(t+0.06,{type:'square',f0:mtof(93),dur:0.22,vol:0.15}); } },
+  purchase:  { gap: 150, fn:(t)=>{ seq(t,[72,76,79,84,88],{type:'square',dur:0.26,vol:0.14,step:0.06});
+                                   noise(t+0.1,{dur:0.5,vol:0.05,filter:'bandpass',fc:3000,fc1:8000,q:2}); } },
+  equip:     { gap: 120, fn:(t)=>{ seq(t,[79,84,88],{type:'triangle',dur:0.3,vol:0.14,step:0.055});
+                                   noise(t,{dur:0.35,vol:0.045,filter:'highpass',fc:2000,fc1:9000}); } },
+  convert:   { gap: 150, fn:(t)=>{ tone(t,{type:'sine',f0:400,f1:1200,dur:0.3,vol:0.14});
+                                   seq(t+0.14,[84,91],{type:'square',dur:0.2,vol:0.11,step:0.07}); } },
+
+  // ── ROUND FLOW ──
+  countdown: { gap: 200, fn:(t)=>{ tone(t,{type:'square',f0:520,dur:0.16,vol:0.16,hold:0.06});
+                                   tone(t,{type:'sine',f0:1040,dur:0.1,vol:0.06}); } },
+  go:        { gap: 200, fn:(t)=>{ tone(t,{type:'square',f0:880,dur:0.42,vol:0.2,hold:0.18});
+                                   tone(t,{type:'square',f0:1320,dur:0.42,vol:0.09,hold:0.18});
+                                   noise(t,{dur:0.3,vol:0.06,filter:'highpass',fc:1200,fc1:8000}); } },
+  gameOver:  { gap: 400, fn:(t)=>{ seq(t,[65,62,58,53],{type:'sawtooth',dur:0.45,vol:0.16,step:0.15});
+                                   tone(t+0.45,{type:'sine',f0:120,f1:45,dur:0.9,vol:0.18}); } },
+  victory:   { gap: 400, fn:(t)=>{ seq(t,[72,76,79,84],{type:'square',dur:0.3,vol:0.16,step:0.1});
+                                   seq(t+0.4,[88],{type:'square',dur:0.7,vol:0.17,step:0.1});
+                                   noise(t+0.4,{dur:0.8,vol:0.05,filter:'bandpass',fc:2000,fc1:9000,q:1.5}); } },
+  results:   { gap: 400, fn:(t)=>{ seq(t,[67,72,76],{type:'triangle',dur:0.35,vol:0.14,step:0.09}); } },
+
+  // ── WEAPONS & IMPACTS ──
+  shoot:     { gap: 45,  fn:(t,o)=>{ const p=Math.pow(2,(o.semi||0)/12);
+                                   tone(t,{type:'square',f0:940*p,f1:180*p,dur:0.11,vol:0.11,filter:'lowpass',fc:5000,fc1:900}); } },
+  plasma:    { gap: 55,  fn:(t)=>{ tone(t,{type:'sawtooth',f0:1300,f1:210,dur:0.16,vol:0.11,filter:'lowpass',fc:4000,fc1:700,q:6});
+                                   tone(t,{type:'square',f0:650,f1:120,dur:0.14,vol:0.05}); } },
+  missile:   { gap: 60,  fn:(t)=>{ noise(t,{dur:0.28,vol:0.10,filter:'bandpass',fc:500,fc1:2600,q:1.4});
+                                   tone(t,{type:'sawtooth',f0:180,f1:640,dur:0.26,vol:0.07}); } },
+  enemyShot: { gap: 70,  fn:(t)=>{ tone(t,{type:'sawtooth',f0:420,f1:110,dur:0.13,vol:0.07,filter:'lowpass',fc:2200,fc1:500}); } },
+  hit:       { gap: 30,  fn:(t)=>{ noise(t,{dur:0.07,vol:0.13,filter:'bandpass',fc:2200,q:1.2});
+                                   tone(t,{type:'square',f0:420,f1:200,dur:0.06,vol:0.07}); } },
+  explode:   { gap: 45,  fn:(t)=>{ noise(t,{dur:0.34,vol:0.24,filter:'lowpass',fc:2400,fc1:120});
+                                   tone(t,{type:'sine',f0:190,f1:48,dur:0.3,vol:0.16}); } },
+  bigExplode:{ gap: 140, fn:(t)=>{ noise(t,{dur:0.75,vol:0.3,filter:'lowpass',fc:3800,fc1:80});
+                                   tone(t,{type:'sine',f0:150,f1:34,dur:0.8,vol:0.26});
+                                   tone(t,{type:'sawtooth',f0:90,f1:28,dur:0.6,vol:0.1,filter:'lowpass',fc:600}); } },
+  slash:     { gap: 60,  fn:(t)=>{ noise(t,{dur:0.13,vol:0.14,filter:'bandpass',fc:3400,fc1:700,q:2.2});
+                                   tone(t,{type:'sawtooth',f0:800,f1:260,dur:0.1,vol:0.05}); } },
+  dash:      { gap: 90,  fn:(t)=>{ noise(t,{dur:0.24,vol:0.12,filter:'bandpass',fc:700,fc1:3400,q:1.6});
+                                   tone(t,{type:'sine',f0:260,f1:820,dur:0.2,vol:0.06}); } },
+
+  // ── PLAYER STATE ──
+  hurt:      { gap: 110, fn:(t)=>{ tone(t,{type:'sawtooth',f0:340,f1:90,dur:0.32,vol:0.17,filter:'lowpass',fc:1600,fc1:400});
+                                   noise(t,{dur:0.16,vol:0.11,filter:'lowpass',fc:1200}); } },
+  shieldHit: { gap: 100, fn:(t)=>{ tone(t,{type:'sine',f0:900,f1:280,dur:0.22,vol:0.13});
+                                   noise(t,{dur:0.12,vol:0.07,filter:'bandpass',fc:1800,q:3}); } },
+  heal:      { gap: 150, fn:(t)=>{ seq(t,[72,79,84],{type:'sine',dur:0.4,vol:0.13,step:0.07}); } },
+  shield:    { gap: 150, fn:(t)=>{ tone(t,{type:'sine',f0:300,f1:1100,dur:0.42,vol:0.13});
+                                   tone(t+0.05,{type:'triangle',f0:450,f1:1650,dur:0.4,vol:0.07}); } },
+  powerup:   { gap: 120, fn:(t)=>{ seq(t,[67,72,76,79,84],{type:'square',dur:0.24,vol:0.14,step:0.055}); } },
+  levelUp:   { gap: 250, fn:(t)=>{ seq(t,[60,64,67,72,76,79,84],{type:'square',dur:0.34,vol:0.15,step:0.06});
+                                   noise(t,{dur:0.6,vol:0.05,filter:'highpass',fc:600,fc1:8000}); } },
+  ability:   { gap: 160, fn:(t)=>{ tone(t,{type:'sawtooth',f0:120,f1:1400,dur:0.4,vol:0.13,filter:'lowpass',fc:600,fc1:6000,q:5});
+                                   seq(t+0.2,[84,91],{type:'square',dur:0.3,vol:0.11,step:0.07}); } },
+  charge:    { gap: 200, fn:(t)=>{ tone(t,{type:'sawtooth',f0:200,f1:1600,dur:0.7,vol:0.1,filter:'lowpass',fc:800,fc1:5000,q:8}); } },
+
+  // ── PICKUPS & SCORING ──
+  pickup:    { gap: 35,  fn:(t,o)=>{ const p=Math.pow(2,(o.semi||0)/12);
+                                   tone(t,{type:'triangle',f0:760*p,f1:1420*p,dur:0.1,vol:0.13}); } },
+  eat:       { gap: 35,  fn:(t,o)=>{ const p=Math.pow(2,(o.semi||0)/12);
+                                   tone(t,{type:'square',f0:600*p,f1:1000*p,dur:0.08,vol:0.12});
+                                   tone(t+0.05,{type:'square',f0:1000*p,dur:0.09,vol:0.09}); } },
+  score:     { gap: 45,  fn:(t,o)=>{ const s=o.semi||0; seq(t,[84+s,91+s],{type:'square',dur:0.2,vol:0.13,step:0.055}); } },
+  combo:     { gap: 45,  fn:(t,o)=>{ const s=Math.min(12,o.semi||0); seq(t,[79+s,86+s],{type:'square',dur:0.18,vol:0.12,step:0.045}); } },
+  wave:      { gap: 300, fn:(t)=>{ seq(t,[62,69,74,81],{type:'square',dur:0.36,vol:0.15,step:0.08});
+                                   noise(t,{dur:0.5,vol:0.05,filter:'bandpass',fc:800,fc1:6000,q:1.5}); } },
+
+  // ── PHYSICS / BOARD ──
+  bounce:    { gap: 25,  fn:(t,o)=>{ const p=Math.pow(2,(o.semi||0)/12);
+                                   tone(t,{type:'square',f0:620*p,f1:520*p,dur:0.07,vol:0.13}); } },
+  bounceWall:{ gap: 25,  fn:(t)=>{ tone(t,{type:'square',f0:330,f1:290,dur:0.06,vol:0.10}); } },
+  brick:     { gap: 25,  fn:(t,o)=>{ const s=o.semi||0;
+                                   tone(t,{type:'square',f0:mtof(72+s),dur:0.08,vol:0.13});
+                                   noise(t,{dur:0.06,vol:0.06,filter:'bandpass',fc:3200,q:2}); } },
+  jump:      { gap: 40,  fn:(t)=>{ tone(t,{type:'square',f0:300,f1:760,dur:0.13,vol:0.12,filter:'lowpass',fc:3000});
+                                   noise(t,{dur:0.09,vol:0.05,filter:'highpass',fc:2000}); } },
+  flap:      { gap: 40,  fn:(t)=>{ tone(t,{type:'triangle',f0:420,f1:900,dur:0.1,vol:0.12});
+                                   noise(t,{dur:0.08,vol:0.06,filter:'bandpass',fc:1400,fc1:3000,q:1.2}); } },
+  rotate:    { gap: 25,  fn:(t)=>{ tone(t,{type:'square',f0:520,f1:640,dur:0.045,vol:0.09}); } },
+  move:      { gap: 25,  fn:(t)=>{ tone(t,{type:'square',f0:300,dur:0.028,vol:0.06}); } },
+  land:      { gap: 40,  fn:(t)=>{ tone(t,{type:'sine',f0:200,f1:70,dur:0.14,vol:0.16});
+                                   noise(t,{dur:0.09,vol:0.09,filter:'lowpass',fc:900}); } },
+  hardDrop:  { gap: 60,  fn:(t)=>{ tone(t,{type:'sawtooth',f0:700,f1:90,dur:0.13,vol:0.13,filter:'lowpass',fc:2600,fc1:400});
+                                   noise(t+0.1,{dur:0.16,vol:0.14,filter:'lowpass',fc:1000,fc1:200}); } },
+  lineClear: { gap: 80,  fn:(t,o)=>{ const n=Math.max(1,Math.min(4,o.semi||1));
+                                   seq(t,[72,76,79,84].slice(0,n+1),{type:'square',dur:0.3,vol:0.15,step:0.05});
+                                   noise(t,{dur:0.35+n*0.05,vol:0.09,filter:'bandpass',fc:900,fc1:7000,q:1.2}); } },
+
+  // ── PUZZLE / QUIZ ──
+  flip:      { gap: 30,  fn:(t)=>{ tone(t,{type:'triangle',f0:700,f1:980,dur:0.06,vol:0.10}); } },
+  match:     { gap: 60,  fn:(t,o)=>{ const s=o.semi||0; seq(t,[76+s,83+s],{type:'sine',dur:0.3,vol:0.15,step:0.075}); } },
+  correct:   { gap: 50,  fn:(t)=>{ seq(t,[79,86],{type:'square',dur:0.2,vol:0.14,step:0.06}); } },
+  wrong:     { gap: 60,  fn:(t)=>{ tone(t,{type:'sawtooth',f0:220,f1:130,dur:0.22,vol:0.13,filter:'lowpass',fc:1100}); } },
+  // Node Hacker pitches its 16 keys up a minor-pentatonic ladder, so a correct
+  // replay is literally the melody you were just played back.
+  node:      { gap: 20,  fn:(t,o)=>{ const scale=[0,3,5,7,10];
+                                   const i=Math.max(0,o.semi||0);
+                                   const m=57 + scale[i%5] + 12*Math.floor(i/5);
+                                   tone(t,{type:'triangle',f0:mtof(m),dur:0.26,vol:0.16});
+                                   tone(t,{type:'sine',f0:mtof(m+12),dur:0.2,vol:0.06}); } },
+  alarm:     { gap: 500, fn:(t)=>{ tone(t,{type:'square',f0:880,dur:0.16,vol:0.13,hold:0.06});
+                                   tone(t+0.2,{type:'square',f0:660,dur:0.2,vol:0.13,hold:0.06}); } },
+  tick:      { gap: 200, fn:(t)=>{ tone(t,{type:'square',f0:1200,dur:0.04,vol:0.08}); } }
+};
+
+// ── PLAYBACK ──────────────────────────────────────────────────────────
+const lastAt = Object.create(null);
+
+function play(name, opts){
+  if(mode === 'mute') return;
+  const def = BANK[name];
+  if(!def) return;
+  const now = performance.now();
+  if(now - (lastAt[name] || -1e9) < def.gap) return;
+  lastAt[name] = now;
+  const c = ensureCtx();
+  if(!c || c.state !== 'running') return;
+  try{ def.fn(c.currentTime + 0.001, opts || {}); }
+  catch(e){ /* one bad effect must never take a game frame down with it */ }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  🎵 MUSIC — a step sequencer, not a file
+// ══════════════════════════════════════════════════════════════════════
+// Same four-chord synthwave loop underneath both tracks (Am–F–C–G); the hub
+// plays it as a slow pad-and-arp, a round plays it at nearly 1.5× with a kick,
+// a hat and a driving sixteenth arpeggio. Notes are scheduled ahead of the
+// clock in a lookahead window, because setInterval is far too jittery to place
+// a downbeat on its own.
+const CHORDS = [
+  { root: 45, notes: [45, 48, 52, 57, 60, 64] },  // Am
+  { root: 41, notes: [41, 45, 48, 53, 57, 60] },  // F
+  { root: 48, notes: [48, 52, 55, 60, 64, 67] },  // C
+  { root: 43, notes: [43, 47, 50, 55, 59, 62] }   // G
+];
+
+const TRACKS = {
+  hub:  { bpm: 92,  gain: 0.30 },
+  game: { bpm: 136, gain: 0.26 }
+};
+
+let curTrack = null, pendingTrack = null, schedTimer = null;
+let nextStepTime = 0, stepIdx = 0;
+const LOOKAHEAD = 0.15, TICK_MS = 25;
+
+function kick(t, vol){
+  tone(t, { type:'sine', f0:170, f1:44, dur:0.20, vol:vol, attack:0.002, bus:musicBus });
+  noise(t, { dur:0.045, vol:vol*0.5, filter:'lowpass', fc:1600, fc1:300, bus:musicBus });
+}
+function hat(t, vol, open){
+  noise(t, { dur: open?0.14:0.035, vol:vol, filter:'highpass', fc:7000, bus:musicBus });
+}
+function snare(t, vol){
+  noise(t, { dur:0.16, vol:vol, filter:'bandpass', fc:1900, q:0.8, bus:musicBus });
+  tone(t, { type:'triangle', f0:330, f1:180, dur:0.12, vol:vol*0.5, bus:musicBus });
+}
+
+function musicStep(i, t){
+  const track = TRACKS[curTrack];
+  const g = track.gain;
+  const bar = Math.floor(i / 16) % 4;
+  const s = i % 16;
+  const ch = CHORDS[bar];
+
+  if(curTrack === 'hub'){
+    // Pad: a slow-attack triad held across the whole bar, plus a bass root.
+    if(s === 0){
+      ch.notes.slice(0,3).forEach((n,k)=>{
+        tone(t, { type:'sawtooth', f0:mtof(n+12), dur:2.4, vol:g*0.07, attack:0.5,
+                  filter:'lowpass', fc:700, fc1:1400, q:1, detune:(k-1)*7, bus:musicBus });
+      });
+      tone(t, { type:'triangle', f0:mtof(ch.root-12), dur:0.9, vol:g*0.30, bus:musicBus });
+    }
+    if(s === 8) tone(t, { type:'triangle', f0:mtof(ch.root-12), dur:0.7, vol:g*0.22, bus:musicBus });
+    // Sparse arpeggio into the delay — this is the line you actually hum.
+    if(s % 4 === 2){
+      const n = ch.notes[(Math.floor(i/4) * 2) % ch.notes.length] + 12;
+      tone(t, { type:'square', f0:mtof(n), dur:0.34, vol:g*0.10,
+                filter:'lowpass', fc:2600, bus:musicBus, send:musicDelay });
+    }
+    if(s % 8 === 4) hat(t, g*0.06);
+  } else {
+    // Round music: constant sixteenth arp, four-on-the-floor, offbeat bass.
+    if(s % 4 === 0) kick(t, g*0.55);
+    if(s === 4 || s === 12) snare(t, g*0.20);
+    if(s % 2 === 1) hat(t, g*0.055, s % 8 === 7);
+
+    const bassPat = [1,0,0,1,0,0,1,0,1,0,0,1,0,1,0,0];
+    if(bassPat[s]){
+      tone(t, { type:'sawtooth', f0:mtof(ch.root-12), dur:0.13, vol:g*0.34,
+                filter:'lowpass', fc:420, fc1:180, q:4, bus:musicBus });
+    }
+    const arpSeq = [0,2,4,5,4,2,3,1];
+    const n = ch.notes[arpSeq[s % 8] % ch.notes.length] + 12;
+    tone(t, { type:'square', f0:mtof(n), dur:0.11, vol:g*0.075,
+              filter:'lowpass', fc:3200, bus:musicBus, send:musicDelay });
+    if(s === 0){
+      tone(t, { type:'sawtooth', f0:mtof(ch.notes[0]+12), dur:1.6, vol:g*0.05, attack:0.3,
+                filter:'lowpass', fc:900, detune:6, bus:musicBus });
+    }
+  }
+}
+
+function scheduler(){
+  if(!ctx || !curTrack) return;
+  const stepDur = 60 / TRACKS[curTrack].bpm / 4;   // sixteenth notes
+  // A backgrounded tab throttles this interval to once a second or worse. Left
+  // alone the catch-up loop would then dump forty steps into the same instant.
+  if(nextStepTime < ctx.currentTime) nextStepTime = ctx.currentTime + 0.05;
+  while(nextStepTime < ctx.currentTime + LOOKAHEAD){
+    try{ musicStep(stepIdx, nextStepTime); }catch(e){}
+    nextStepTime += stepDur;
+    stepIdx = (stepIdx + 1) % 64;                  // four bars, then round again
+  }
+}
+
+function music(track){
+  if(track !== null && !TRACKS[track]) return;
+  // `pendingTrack` is what the game WANTS playing; `curTrack` is what actually
+  // is. They diverge whenever the context is still locked or the music is
+  // muted, and every path back in (unlock, un-mute) reads the wanted one.
+  pendingTrack = track;
+  if(track === curTrack && schedTimer) return;     // already running: don't restart
+  stopScheduler();
+  curTrack = null;
+  if(!track || mode !== 'full') return;
+  const c = ensureCtx();
+  if(!c || c.state !== 'running') return;          // retried from unlock()
+  curTrack = track;
+
+  // ── TEMPO-SYNC THE DELAY ──
+  // Everything else in the sequencer derives its timing from bpm; the delay was
+  // the one exception, pinned at a flat 300ms. Against the hub's 326ms eighth
+  // that lands every echo 26ms early, and against the round's 220ms eighth it
+  // lines up with nothing at all — so each repeat fell between the sixteenths
+  // of the arp it was echoing, and 0.34 feedback stacked that error up until
+  // the groove smeared. A dotted eighth (45/bpm) is the synthwave staple: the
+  // echo syncopates ACROSS the sixteenths and lands back on the beat every
+  // three, which is what makes an arpeggio cascade instead of blur.
+  const dotted8 = 45 / TRACKS[track].bpm;            // 0.489s @ 92 · 0.331s @ 136
+  musicDelay.delayTime.setTargetAtTime(dotted8, c.currentTime, 0.02);
+
+  stepIdx = 0;
+  nextStepTime = c.currentTime + 0.08;
+  schedTimer = setInterval(scheduler, TICK_MS);
+  scheduler();
+}
+function stopScheduler(){
+  if(schedTimer){ clearInterval(schedTimer); schedTimer = null; }
+}
+function resumeMusic(){ if(pendingTrack && !schedTimer) music(pendingTrack); }
+
+// ── MODE CONTROL ──────────────────────────────────────────────────────
+function applyMode(){
+  saveMode(mode);
+  if(ctx){
+    const t = ctx.currentTime;
+    // Ramped, not switched: a hard gain jump on a running pad is an audible pop.
+    sfxBus.gain.cancelScheduledValues(t);
+    sfxBus.gain.setTargetAtTime(mode === 'mute' ? 0 : 1, t, 0.02);
+    musicBus.gain.cancelScheduledValues(t);
+    musicBus.gain.setTargetAtTime(mode === 'full' ? 1 : 0, t, 0.05);
+  }
+  if(mode === 'full'){
+    if(ctx && ctx.state === 'suspended') ctx.resume().then(resumeMusic).catch(()=>{});
+    else resumeMusic();
+  }else{
+    // Keep the desired track on file so un-muting resumes the right one.
+    const want = curTrack || pendingTrack;
+    stopScheduler();
+    curTrack = null;
+    pendingTrack = want;
+  }
+  buttons.forEach(paintButton);
+}
+
+const MODE_UI = {
+  full: { icon:'🔊', label:'Audio: effects + music',  toast:'🔊 AUDIO ONLINE — effects + music' },
+  sfx:  { icon:'🔈', label:'Audio: effects only',     toast:'🔈 MUSIC MUTED — effects only' },
+  mute: { icon:'🔇', label:'Audio: muted',            toast:'🔇 AUDIO OFFLINE' }
+};
+
+const buttons = [];
+function paintButton(el){
+  const ui = MODE_UI[mode];
+  el.textContent = ui.icon;
+  el.title = ui.label + ' (click to change)';
+  el.setAttribute('aria-label', ui.label);
+  el.classList.toggle('snd-off', mode === 'mute');
+  el.classList.toggle('snd-partial', mode === 'sfx');
+}
+function bindToggle(el){
+  if(!el || buttons.includes(el)) return;
+  buttons.push(el);
+  paintButton(el);
+  el.addEventListener('click', e => { e.stopPropagation(); cycleMode(); });
+}
+function cycleMode(){
+  mode = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
+  applyMode();
+  unlock();
+  play('toggle');
+  return mode;
+}
+function setMode(m){
+  if(!MODES.includes(m) || m === mode) return;
+  mode = m; applyMode();
+}
+
+return {
+  play, music, unlock, bindToggle, cycleMode, setMode,
+  get mode(){ return mode; },
+  modeToast(){ return MODE_UI[mode].toast; },
+  get supported(){ return SUPPORTED; }
+};
+})();
+
+// ══════════════════════════════════════════════════════════════════════
 //  🔥 FIREBASE ENGINE SETUP — REALTIME PROTOCOLS (SAFE CONFIG)
 // ══════════════════════════════════════════════════════════════════════
 const FB = {
@@ -66,6 +606,15 @@ function stopGame(){
   hideTouchHint();
   const rbox=document.getElementById('g-reaction');
   if(rbox){ rbox.onpointerdown=null; rbox.onclick=null; }
+  // Battle Bots builds its deploy cards fresh each round, so emptying the deck
+  // drops that round's click handlers along with the nodes carrying them —
+  // quitting mid-siege can't leave a live "Deploy Tank" behind. Hidden here as
+  // well as in prepGame() so the teardown is complete on its own rather than
+  // relying on whatever game happens to mount next to tidy up after it.
+  const deck=document.getElementById('bb-deck');
+  if(deck){ deck.innerHTML=''; deck.style.display='none'; }
+  const ramPill=document.getElementById('bb-ram-pill');
+  if(ramPill) ramPill.style.display='none';
   const cl=document.getElementById('ctrl-left');
   const cr=document.getElementById('ctrl-right');
   const ca=document.getElementById('ctrl-action');
@@ -88,7 +637,8 @@ const META = {
   arena:  { name: 'CYBER ARENA',  emoji: '⚔️', maxPts: 99999 },
   runner: { name: 'CYBER RUNNER', emoji: '🌌', maxPts: 1200 },
   hacker: { name: 'NODE HACKER',  emoji: '🔓', maxPts: 800 },
-  meteor: { name: 'METEOR SHIELD',emoji: '☄️', maxPts: 1100 }
+  meteor: { name: 'METEOR SHIELD',emoji: '☄️', maxPts: 1100 },
+  battlebots:{name:'BATTLE BOTS', emoji: '🤖', maxPts: 1200 }
 };
 
 // ══════════════════════════════════════════════
@@ -247,11 +797,11 @@ let _tt;
 const toast=(msg,ms=2500,tintClass=null)=>{const el=document.getElementById('toast');el.textContent=msg;el.classList.remove('toast-stable','toast-overclocked','toast-meltdown');if(tintClass)el.classList.add(tintClass);el.classList.add('show');clearTimeout(_tt);_tt=setTimeout(()=>el.classList.remove('show'),ms)};
 
 // ══════════════════════════════════════════════════════════════════════
-//  🔊 AUDIO — hookup to the synth engine in sound.js
+//  🔊 AUDIO — hookup to the synth engine at the top of this file
 // ══════════════════════════════════════════════════════════════════════
 // Everything routes through these two shims rather than touching SFX directly,
-// so a missing/blocked sound.js degrades to a silent arcade instead of a
-// ReferenceError inside a game loop. They're called from hot paths (per shot,
+// so audio that failed to initialise (no Web Audio, or a browser that blocked
+// it) degrades to a silent arcade instead of a ReferenceError in a game loop. They're called from hot paths (per shot,
 // per brick), so they stay as cheap as a property lookup — the rate limiting
 // and the "is audio even unlocked yet" question live inside the engine.
 const snd   = (name, opts) => { if(window.SFX) SFX.play(name, opts); };
@@ -515,13 +1065,20 @@ function fitCanvas(){
   const ctrlH = (ctrlVisible && !beside) ? ctrlBox.height + 10 : 0;   // + #arcade-controls margin-top
   const ctrlW = beside ? ctrlBox.width + 12 : 0;
 
+  // Battle Bots' deploy deck sits under the board and costs it height exactly
+  // the way the control pad does, so it has to be measured too — otherwise the
+  // board sizes itself into the deck and runs off the bottom of the screen.
+  const deck = document.getElementById('bb-deck');
+  const deckH = (deck && getComputedStyle(deck).display !== 'none')
+    ? deck.getBoundingClientRect().height + 10 : 0;   // + #bb-deck margin-top
+
   const availW = area.clientWidth - ctrlW;
   // The header is measured, never assumed, so its exact height (title line,
   // stat pills, hint caption) costs the board only what it actually uses.
   // holder.top is independent of the canvas's own height, so measuring it
   // before resizing doesn't feed back on itself. The 24px covers the screen's
   // bottom padding and the home-indicator safe area.
-  const availH = window.innerHeight - holder.getBoundingClientRect().top - ctrlH - 24;
+  const availH = window.innerHeight - holder.getBoundingClientRect().top - ctrlH - deckH - 24;
 
   // Floor is deliberately low: on a landscape phone there genuinely isn't much
   // height, and a small board beats one whose bottom half is off-screen. In
@@ -901,9 +1458,11 @@ function prepGame(gid){
   document.getElementById('g-hacker').style.display='none';
   document.getElementById('tetris-next-wrap').style.display='none';
   document.getElementById('tetris-lvl-pill').style.display='none';
+  document.getElementById('bb-deck').style.display='none';
+  document.getElementById('bb-ram-pill').style.display='none';
   setControls(null);                 // every game re-declares its own pad
   document.getElementById('g-controls').textContent='';   // and its own hint
-  const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','breaker','arena','runner','meteor'].includes(gid);
+  const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','breaker','arena','runner','meteor','battlebots'].includes(gid);
   document.getElementById('game-screen').classList.toggle('canvas-game', canvasGame);
 
   document.getElementById('g-pts').textContent='0';
@@ -928,6 +1487,7 @@ function prepGame(gid){
   else if(gid==='runner') countdown(()=>startRunner());
   else if(gid==='hacker') countdown(()=>startHacker());
   else if(gid==='meteor') countdown(()=>startMeteor());
+  else if(gid==='battlebots') countdown(()=>startBattleBots());
 }
 
 const setLive=n=>document.getElementById('g-pts').textContent=n;
@@ -6082,6 +6642,719 @@ function startMeteor(){
     }
   }
   requestAnimationFrame(loop);
+}
+
+// ════════════════════════════════════════════
+//  🤖 GAME 16: BATTLE BOTS — LANE SIEGE
+// ════════════════════════════════════════════
+// A side-scrolling lane defence. RAM accrues on its own, you spend it on bots
+// that walk right under their own power, and the two fronts brawl wherever
+// they happen to meet. Bring The Glitch down before it breaches the Mainframe.
+//
+// The game owns no timers of its own: the siege clock is gTimer, the battle
+// loop is gameLoopId, deferred effects go through gLater() and the keyboard
+// lives on window.onkeydown — all four are torn down by stopGame(), which also
+// empties the deploy deck. Quitting therefore leaves nothing of this running.
+//
+// The BB* consts below are initialised at load time and read BOARD_W, so they
+// have to stay below its declaration — which is why the whole game sits here
+// with the other start* functions rather than at the top of the file.
+// ── TUNING ──
+// Everything that decides how the siege feels lives here, so balancing never
+// means reading the simulation.
+const BB = {
+  baseHP: 1000,
+
+  // Bases are fortified: a bot that reaches one deals only this fraction of its
+  // damage there. Without it, whoever's first blob gets across simply wins —
+  // four Scouts would delete a 1000 HP base in ten seconds and the siege would
+  // never become a siege. It's deliberately low, and paired with player units
+  // that clearly out-duel their counterparts: together those two make the
+  // battle's LENGTH come from chewing through a fixed 1000 HP, which is linear
+  // and predictable, rather than from wherever the lane's attrition equilibrium
+  // happens to settle — a knife edge where an 8% enemy buff is the difference
+  // between a reliable win and a permanent midfield stall. This is the dial to
+  // turn for battle length; unit-vs-unit combat is balanced on its own terms.
+  siege: 0.30,
+
+  // Edge gap a unit keeps behind the ally in front of it in its own lane.
+  // Without this queueing, both sides' units occupy the same x and the WHOLE
+  // stack attacks the single front enemy at once — army size then multiplies
+  // damage instead of adding depth, and the larger stack wins every fight with
+  // no losses at all. Queued, each lane resolves as a duel and reinforcements
+  // matter because they step up when the unit in front dies.
+  spacing: 3,
+
+  // Economy. Bots are cheap enough to feel disposable; the upgrade is a real
+  // decision, costing several Tanks up front to pay off over the whole siege.
+  ram:      { start: 80, cap: 999, rate: 20, step: 8, tiers: [150, 260, 420, 700] },
+
+  // Player units. `reach` is the EDGE gap at which a unit stops and swings, so
+  // small numbers read as melee — the two sprites end up nearly touching.
+  // A Scout beats a lone BUG comfortably: the early game has to let you push
+  // the line forward, or there's no siege to fight back from later.
+  units: {
+    scout: { key:'scout', icon:'🤖', name:'SCOUT', cost:30,  hp:110, atk:14, speed:40, reach:8,  rate:520, cool:800,  w:22, h:26 },
+    tank:  { key:'tank',  icon:'🛡️', name:'TANK',  cost:110, hp:380, atk:30, speed:22, reach:12, rate:950, cool:2400, w:30, h:34 }
+  },
+
+  // Hostiles. `from` is the elapsed second at which the type joins the spawn
+  // pool, and `bounty` is the RAM a kill pays back — pushing the front line
+  // forward is how you part-fund the next push. Bounties stay well under what
+  // the kill cost you: paying for itself turns a winning Scout into free
+  // reinforcement and the battle snowballs out of the player's hands.
+  foes: {
+    bug:   { key:'bug',   icon:'🐛', name:'BUG',      hp:70,  atk:10, speed:34, reach:8,  rate:620,  w:22, h:24, color:'#ff0090', from:0,   bounty:5  },
+    virus: { key:'virus', icon:'🦠', name:'VIRUS',    hp:170, atk:18, speed:22, reach:10, rate:880,  w:28, h:30, color:'#a855f7', from:45,  bounty:12 },
+    worm:  { key:'worm',  icon:'🪱', name:'WORM.EXE', hp:430, atk:34, speed:16, reach:12, rate:1150, w:34, h:38, color:'#ff2442', from:105, bounty:28 }
+  },
+
+  // Siege clock. Fixed across all three stability tiers — see startBattleBots().
+  seconds: 240,
+
+  // Waves start lazy and tighten as the siege drags on.
+  // Three duelling lanes can only chew through roughly one hostile per second,
+  // so spawning faster than that just banks an unkillable queue off-screen and
+  // the siege is decided by a backlog the player never sees. This ramps from
+  // ~0.3/s to ~1.3/s: comfortably under the front's throughput early, over it
+  // by the end, which is what makes the late clock genuinely tense.
+  wave: { first: 3000, start: 3500, floor: 2200, tighten: 4, burst: 300 },
+
+  // 550 + 400 + 250 tops out at exactly the 1200 cap. The time bonus pays in
+  // full for winning with `timeFull` of the clock still on it rather than
+  // scaling all the way from an unreachable zero-second purge — a real siege
+  // takes ~170s, so a linear scale would have quietly capped the game at ~1030
+  // and made the card's "UP TO 1200" a lie. A loss still banks up to 400 for
+  // the damage you did put through; a near-miss shouldn't pay nothing.
+  score: { win: 550, hpBonus: 400, timeBonus: 250, timeFull: 0.55, lossMax: 400, cap: 1200 }
+};
+
+// ── GEOMETRY ── (all in the engine's 560×500 board units)
+const BB_GROUND = 402;                      // the lane the units walk on
+const BB_TOWER_W = 68, BB_TOWER_H = 104;
+const BB_P_TOWER = 6, BB_E_TOWER = BOARD_W - 6 - BB_TOWER_W;
+const BB_P_SPAWN = 86, BB_E_SPAWN = BOARD_W - 86;
+const BB_P_LINE = 90, BB_E_LINE = BOARD_W - 90;   // where a unit starts hitting a base
+const BB_LANES = [-14, 0, 14];              // visual stagger, so a stack of four still reads
+
+function startBattleBots(){
+  const holder = document.getElementById('g-canvas-holder');
+  const deck   = document.getElementById('bb-deck');
+  const ramPill= document.getElementById('bb-ram-pill');
+  const ramEl  = document.getElementById('bb-ram');
+  const progEl = document.getElementById('prog-fill');
+  const timeEl = document.getElementById('g-time');
+
+  holder.style.display = 'block';
+  deck.style.display   = 'flex';
+  ramPill.style.display= '';
+  setControls(null);              // the deck IS the control pad — no arrows to show
+  setControlHint('TAP A CARD TO DEPLOY · YOUR BOTS ADVANCE ON THEIR OWN',
+                 'CLICK A CARD OR PRESS 1 / 2 / 3 · YOUR BOTS ADVANCE ON THEIR OWN');
+  showTouchHint('TAP THE CARDS BELOW TO DEPLOY');
+
+  const diffMod = getDifficultyModifier();
+  // ── HOW THE STABILITY TIER APPLIES HERE ──
+  // A lane battle is an attrition race with a TIPPING POINT, not a dial: either
+  // your side out-trades theirs and the front walks forward, or it doesn't and
+  // the game stalls at midfield until the clock runs out. Outcomes either side
+  // of that point are bimodal — clean win or dead stall, very little between —
+  // so the tier gets ONE gentle penalty applied three ways rather than several
+  // stacked ones. Stacking tougher hostiles, more of them, less RAM AND less
+  // time (each modest alone) put both hard tiers so far past the tipping point
+  // that they were unwinnable at any skill level, which made the ×1.5 / ×2.0
+  // payout — the entire reason the tiers exist — impossible to collect.
+  //
+  // Two deliberate omissions:
+  //  · No RAM cut. Extra income doesn't move a stalled front, it just lengthens
+  //    the queue behind it, so throttling income cost the player nothing they
+  //    could feel and bought no real difficulty.
+  //  · No time cut. Alone among the hub's games, this one's win condition is a
+  //    race the clock can put out of reach outright rather than merely scoring
+  //    lower — a halved Meltdown clock left 120s for a ~170s siege.
+  const foeHpScale  = 1 + (diffMod - 1) * 0.16;  // 1.00 / 1.08 / 1.16
+  const foeAtkScale = 1 + (diffMod - 1) * 0.16;
+  const waveScale   = 1 + (diffMod - 1) * 0.16;
+  const TOTAL = BB.seconds;
+
+  // Player colours follow the Black Market equip, the way every other game's
+  // player sprite does. The Tank is a hue-rotation of it rather than a fixed
+  // second colour, so the pair always reads as one faction.
+  const pColor = getEquippedColorHex();
+  const tColor = shiftHue(pColor, 42);
+  const colorOf = { scout: pColor, tank: tColor };
+
+  let ram = BB.ram.start, ramRate = BB.ram.rate, upgIdx = 0;
+  let mainHP = BB.baseHP, glitchHP = BB.baseHP;
+  let bots = [], foes = [], parts = [];
+  let pLane = 0, eLane = 0;         // round-robin, so a deploy spreads your force
+  let elapsed = 0, time = TOTAL, waveNo = 0, waveT = BB.wave.first;
+  let kills = 0, deployed = 0, ended = false, outro = null;
+  let hurtFlash = 0, hitFlash = 0, banner = null, scroll = 0, last = 0;
+
+  timeEl.textContent = fmtTime(time);
+  progEl.style.width = '100%';
+  progEl.style.background = 'linear-gradient(90deg,var(--red),var(--gold))';
+  setLive(0);
+
+  // ── DEPLOY DECK ──
+  // Rebuilt from scratch every round, so the previous round's click handlers
+  // die with the nodes that carried them — the same trick Node Hacker's keypad
+  // and Memory Match's tiles use. stopGame() empties the container, which means
+  // quitting mid-siege drops them too.
+  const cards = [
+    { kind:'unit', spec: BB.units.scout, color: colorOf.scout, cdLeft: 0 },
+    { kind:'unit', spec: BB.units.tank,  color: colorOf.tank,  cdLeft: 0 },
+    { kind:'upg',  icon:'⚡', name:'RAM SPEED', color:'#ffd700', cdLeft: 0 }
+  ];
+  deck.innerHTML = '';
+  const btns = cards.map((c, i) => {
+    const b = document.createElement('button');
+    b.className = 'bb-btn';
+    b.style.setProperty('--bc', c.color);
+    b.innerHTML = `<span class="bb-ico">${c.kind === 'unit' ? c.spec.icon : c.icon}</span>` +
+                  `<span class="bb-name">${c.kind === 'unit' ? c.spec.name : c.name}</span>` +
+                  `<span class="bb-cost"></span>`;
+    b.onclick = () => buy(i);
+    deck.appendChild(b);
+    return { el: b, cost: b.querySelector('.bb-cost'), lastCost: '', lastState: '', lastCd: -1 };
+  });
+
+  // The deck changes the board's available height, so it has to be in the DOM
+  // and visible before the canvas measures itself.
+  fitCanvas();
+  paintDeck();
+
+  function costOf(i){
+    const c = cards[i];
+    if(c.kind === 'unit') return c.spec.cost;
+    return upgIdx < BB.ram.tiers.length ? BB.ram.tiers[upgIdx] : Infinity;
+  }
+
+  function buy(i){
+    if(ended) return;
+    const c = cards[i], cost = costOf(i);
+    if(!Number.isFinite(cost)){ snd('deny'); toast('⚡ RAM THROUGHPUT ALREADY MAXED'); return; }
+    if(c.cdLeft > 0){ snd('deny'); return; }
+    if(ram < cost){ snd('deny'); toast(`⚠️ INSUFFICIENT RAM — NEED ${Math.ceil(cost - ram)} MORE`); return; }
+
+    ram -= cost;
+    if(c.kind === 'upg'){
+      upgIdx++;
+      ramRate += BB.ram.step;
+      snd('levelUp');
+      toast(`⚡ RAM THROUGHPUT → ${Math.round(ramRate)}/s`);
+      banner = { text: `⚡ THROUGHPUT ${Math.round(ramRate)}/s`, life: 1400, color: '#ffd700' };
+    } else {
+      spawnBot(c.spec);
+      c.cdLeft = c.spec.cool;
+      deployed++;
+      snd(c.spec.key === 'tank' ? 'ability' : 'powerup');
+    }
+    paintDeck();
+  }
+
+  // Only touches the DOM when something actually changed — this runs every
+  // frame, and a blind write per card per frame is layout churn for nothing.
+  function paintDeck(){
+    cards.forEach((c, i) => {
+      const b = btns[i], cost = costOf(i);
+      const label = Number.isFinite(cost) ? `${cost} RAM` : 'MAXED';
+      if(label !== b.lastCost){ b.cost.textContent = label; b.lastCost = label; }
+
+      const state = !Number.isFinite(cost) ? 'maxed' : (ram < cost ? 'broke' : '');
+      if(state !== b.lastState){
+        b.el.classList.toggle('broke', state === 'broke');
+        b.el.classList.toggle('maxed', state === 'maxed');
+        b.lastState = state;
+      }
+
+      const cd = c.kind === 'unit' ? Math.max(0, c.cdLeft) / c.spec.cool : 0;
+      const q = Math.round(cd * 20) / 20;            // quantised — 20 steps is plenty
+      if(q !== b.lastCd){ b.el.style.setProperty('--cd', q); b.lastCd = q; }
+    });
+  }
+
+  // ── SPAWNING ──
+  function mkUnit(spec, side, x, color){
+    const lane = side < 0 ? eLane++ % 3 : pLane++ % 3;
+    return {
+      spec, side, x, color, lane,
+      hp: spec.hp * (side < 0 ? foeHpScale : 1),
+      hpMax: spec.hp * (side < 0 ? foeHpScale : 1),
+      atk: spec.atk * (side < 0 ? foeAtkScale : 1),
+      w: spec.w, h: spec.h, speed: spec.speed, reach: spec.reach, rate: spec.rate,
+      cd: 0, yOff: BB_LANES[lane],
+      flash: 0, bob: Math.random() * 6
+    };
+  }
+  function spawnBot(spec){ bots.push(mkUnit(spec, +1, BB_P_SPAWN, colorOf[spec.key])); }
+  function spawnFoe(spec){ foes.push(mkUnit(spec, -1, BB_E_SPAWN, spec.color)); }
+
+  // Later waves lean on the heavier types without ever dropping BUGs entirely,
+  // so the lane keeps its chaff while the real threats arrive behind it.
+  function pickFoe(){
+    const pool = Object.values(BB.foes).filter(f => elapsed >= f.from);
+    const weights = pool.map(f => f.key === 'bug' ? 3 : (elapsed - f.from) / 40 + 1);
+    let r = Math.random() * weights.reduce((a, b) => a + b, 0);
+    for(let i = 0; i < pool.length; i++){ if((r -= weights[i]) <= 0) return pool[i]; }
+    return pool[0];
+  }
+
+  function spawnWave(){
+    waveNo++;
+    const count = Math.min(3, 1 + Math.floor(elapsed / 70));
+    for(let i = 0; i < count; i++){
+      const f = pickFoe();
+      // Trickled rather than dumped, so a wave arrives as a column you can
+      // watch build instead of four sprites appearing on one pixel.
+      gLater(() => { if(!ended) spawnFoe(f); }, i * BB.wave.burst);
+    }
+    waveT = Math.max(BB.wave.floor, BB.wave.start - elapsed * BB.wave.tighten) / waveScale;
+    if(waveNo % 5 === 0){
+      snd('wave');
+      banner = { text: `⚠ WAVE ${waveNo} INBOUND`, life: 1700, color: '#ff2442' };
+    }
+  }
+
+  // ── COMBAT ──
+  // Three lanes, each resolving as its own duel: a unit walks until the edge gap
+  // to the frontmost opponent IN ITS LANE closes to `reach`, then stops dead and
+  // trades blows. The lanes are the same three the renderer staggers units into,
+  // so what you see on the board is exactly what the simulation is doing.
+  function frontTarget(u, list, dir){
+    let best = null, bestGap = Infinity;
+    for(const f of list){
+      if(f.hp <= 0 || f.lane !== u.lane) continue;
+      const gap = dir > 0 ? (f.x - f.w / 2) - (u.x + u.w / 2)
+                          : (u.x - u.w / 2) - (f.x + f.w / 2);
+      if(gap < -44) continue;                 // long past each other — don't moonwalk back
+      if(gap < bestGap){ bestGap = gap; best = f; }
+    }
+    return { target: best, gap: bestGap };
+  }
+
+  // Gap to the nearest ally ahead in the same lane — the queue that stops a
+  // column collapsing onto one x.
+  function allyGap(u, list, dir){
+    let best = Infinity;
+    for(const a of list){
+      if(a === u || a.hp <= 0 || a.lane !== u.lane) continue;
+      const gap = dir > 0 ? (a.x - a.w / 2) - (u.x + u.w / 2)
+                          : (u.x - u.w / 2) - (a.x + a.w / 2);
+      if(gap >= 0 && gap < best) best = gap;
+    }
+    return best;
+  }
+
+  function stepSide(list, opposing, dir, dt){
+    const line = dir > 0 ? BB_E_LINE : BB_P_LINE;
+    for(const u of list){
+      if(u.hp <= 0) continue;
+      if(u.flash > 0) u.flash -= dt;
+
+      const { target, gap } = frontTarget(u, opposing, dir);
+      if(target && gap <= u.reach){
+        u.cd -= dt;
+        if(u.cd <= 0){
+          u.cd = u.rate;
+          u.flash = 130;
+          target.hp -= u.atk;
+          snd('hit');
+          if(target.hp <= 0) killUnit(target, dir);
+        }
+        continue;
+      }
+
+      const atBase = dir > 0 ? (u.x + u.w / 2 >= line) : (u.x - u.w / 2 <= line);
+      if(atBase){
+        u.cd -= dt;
+        if(u.cd <= 0){
+          u.cd = u.rate;
+          u.flash = 130;
+          hitBase(u, dir);
+        }
+        continue;
+      }
+
+      // Hold position behind the ally in front rather than walking through it.
+      if(allyGap(u, list, dir) <= BB.spacing) continue;
+
+      u.x += dir * u.speed * dt / 1000;
+      u.bob += dt / 90;
+    }
+  }
+
+  function killUnit(u, dir){
+    burst(u.x, BB_GROUND + u.yOff - u.h / 2, u.color, 9);
+    snd('explode');
+    if(dir > 0){                       // a player bot did the killing
+      kills++;
+      ram = Math.min(BB.ram.cap, ram + u.spec.bounty);
+      snd('coin');
+    }
+  }
+
+  function hitBase(u, dir){
+    const dmg = u.atk * BB.siege;
+    if(dir > 0){
+      glitchHP -= dmg;
+      hitFlash = 1;
+      snd('brick', { semi: 3 });
+      if(glitchHP <= 0){ glitchHP = 0; end('win'); }
+    } else {
+      mainHP -= dmg;
+      hurtFlash = 1;
+      snd('brick', { semi: -7 });
+      if(mainHP <= 0){ mainHP = 0; end('loss'); }
+    }
+  }
+
+  function burst(x, y, color, n){
+    for(let i = 0; i < n; i++){
+      const a = Math.random() * Math.PI * 2, s = 40 + Math.random() * 110;
+      parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 40, life: 1, color, sz: 2 + Math.random() * 2.5 });
+    }
+  }
+
+  // ── SIEGE CLOCK ──
+  // One second per tick is all the clock needs; the simulation runs on the
+  // frame delta so the RAM counter climbs smoothly rather than in steps.
+  gTimer = setInterval(() => {
+    if(ended) return;
+    time--;
+    timeEl.textContent = fmtTime(time);
+    progEl.style.width = `${Math.max(0, time / TOTAL) * 100}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end('timeout');
+  }, 1000);
+
+  window.onkeydown = e => {
+    if(e.ctrlKey || e.metaKey || e.altKey) return;
+    // Neither fires anything here, but both activate a focused button, so they
+    // get swallowed rather than leaking out into the UI behind the board.
+    if(e.code === 'Space' || e.code === 'Enter') e.preventDefault();
+    const i = ['1', '2', '3'].indexOf(e.key);
+    if(i < 0) return;
+    e.preventDefault();
+    hideTouchHint();
+    buy(i);
+  };
+
+  // ── SIMULATION ──
+  function simulate(dt){
+    elapsed += dt / 1000;
+    ram = Math.min(BB.ram.cap, ram + ramRate * dt / 1000);
+
+    cards.forEach(c => { if(c.cdLeft > 0) c.cdLeft = Math.max(0, c.cdLeft - dt); });
+
+    waveT -= dt;
+    if(waveT <= 0) spawnWave();
+
+    stepSide(bots, foes, +1, dt);
+    stepSide(foes, bots, -1, dt);
+    bots = bots.filter(u => u.hp > 0);
+    foes = foes.filter(u => u.hp > 0);
+
+    // What you'd bank if the siege ended right now, climbing as you chew
+    // through The Glitch. A win replaces it with the full formula.
+    setLive(Math.round(BB.score.lossMax * (1 - Math.max(0, glitchHP) / BB.baseHP)));
+  }
+
+  function stepFx(dt){
+    scroll += dt * 0.012;
+    if(hurtFlash > 0) hurtFlash = Math.max(0, hurtFlash - dt / 420);
+    if(hitFlash  > 0) hitFlash  = Math.max(0, hitFlash  - dt / 300);
+    if(banner){ banner.life -= dt; if(banner.life <= 0) banner = null; }
+    for(let i = parts.length - 1; i >= 0; i--){
+      const p = parts[i];
+      p.x += p.vx * dt / 1000;
+      p.y += p.vy * dt / 1000;
+      p.vy += 420 * dt / 1000;
+      p.life -= dt / 620;
+      if(p.life <= 0) parts.splice(i, 1);
+    }
+  }
+
+  // ── RENDER ──
+  function rrect(x, y, w, h, r){
+    aCtx.beginPath();
+    aCtx.moveTo(x + r, y);
+    aCtx.arcTo(x + w, y, x + w, y + h, r);
+    aCtx.arcTo(x + w, y + h, x, y + h, r);
+    aCtx.arcTo(x, y + h, x, y, r);
+    aCtx.arcTo(x, y, x + w, y, r);
+    aCtx.closePath();
+  }
+
+  function drawField(){
+    aCtx.fillStyle = '#07070f';
+    aCtx.fillRect(0, 0, BOARD_W, BOARD_H);
+
+    // Drifting grid in the sky band — cheap parallax that sells the side-scroll
+    // without moving anything the simulation cares about.
+    aCtx.save();
+    aCtx.strokeStyle = 'rgba(255,255,255,0.045)';
+    aCtx.lineWidth = 1;
+    const off = scroll % 40;
+    for(let x = -off; x <= BOARD_W; x += 40){
+      aCtx.beginPath(); aCtx.moveTo(x, 56); aCtx.lineTo(x, BB_GROUND); aCtx.stroke();
+    }
+    for(let y = 56; y <= BB_GROUND; y += 40){
+      aCtx.beginPath(); aCtx.moveTo(0, y); aCtx.lineTo(BOARD_W, y); aCtx.stroke();
+    }
+    aCtx.restore();
+
+    // Ground slab + the lit lane the whole game happens on
+    aCtx.fillStyle = '#0b0b16';
+    aCtx.fillRect(0, BB_GROUND, BOARD_W, BOARD_H - BB_GROUND);
+    aCtx.save();
+    aCtx.strokeStyle = 'rgba(255,255,255,0.05)';
+    const goff = (scroll * 2) % 28;
+    for(let x = -goff; x <= BOARD_W; x += 28){
+      aCtx.beginPath(); aCtx.moveTo(x, BB_GROUND); aCtx.lineTo(x - 16, BOARD_H); aCtx.stroke();
+    }
+    aCtx.shadowBlur = 12; aCtx.shadowColor = pColor;
+    aCtx.strokeStyle = hexToRgba(pColor, 0.55); aCtx.lineWidth = 2;
+    aCtx.beginPath(); aCtx.moveTo(0, BB_GROUND); aCtx.lineTo(BOARD_W, BB_GROUND); aCtx.stroke();
+    aCtx.restore();
+  }
+
+  function drawTower(x, color, icon, label, hp, flash){
+    const top = BB_GROUND - BB_TOWER_H;
+    aCtx.save();
+    aCtx.shadowBlur = 20; aCtx.shadowColor = color;
+    aCtx.fillStyle = hexToRgba(color, 0.10 + flash * 0.35);
+    aCtx.strokeStyle = color; aCtx.lineWidth = 2;
+    rrect(x, top, BB_TOWER_W, BB_TOWER_H, 6);
+    aCtx.fill(); aCtx.stroke();
+    aCtx.shadowBlur = 0;
+
+    // Window lights, dimming as the base loses integrity — the tower itself
+    // reports its health, so the fight reads without looking up at the bars.
+    const lit = Math.max(0, hp) / BB.baseHP;
+    for(let r = 0; r < 3; r++){
+      for(let c = 0; c < 2; c++){
+        const on = Math.random() < 0.06 ? 0.15 : lit;
+        aCtx.fillStyle = hexToRgba(color, 0.18 + on * 0.55);
+        aCtx.fillRect(x + 13 + c * 28, top + 40 + r * 18, 16, 9);
+      }
+    }
+    aCtx.font = '17px sans-serif';
+    aCtx.textAlign = 'center'; aCtx.textBaseline = 'middle';
+    aCtx.fillText(icon, x + BB_TOWER_W / 2, top + 20);
+
+    aCtx.font = 'bold 8px Orbitron,monospace';
+    aCtx.fillStyle = hexToRgba(color, 0.85);
+    aCtx.fillText(label, x + BB_TOWER_W / 2, BB_GROUND + 16);
+    aCtx.restore();
+  }
+
+  function drawUnit(u){
+    const feet = BB_GROUND + u.yOff;
+    // u.bob only advances while a unit is walking, so an engaged unit stands
+    // still rather than jittering in place through the whole brawl.
+    const top = feet - u.h + Math.sin(u.bob) * 1.2;
+
+    aCtx.save();
+    aCtx.globalAlpha = 0.32;
+    aCtx.fillStyle = '#000';
+    aCtx.beginPath(); aCtx.ellipse(u.x, feet + 2, u.w * 0.5, 3.5, 0, 0, Math.PI * 2); aCtx.fill();
+    aCtx.globalAlpha = 1;
+
+    aCtx.shadowBlur = u.flash > 0 ? 22 : 13;
+    aCtx.shadowColor = u.color;
+    aCtx.fillStyle = hexToRgba(u.color, u.flash > 0 ? 0.45 : 0.17);
+    aCtx.strokeStyle = u.color; aCtx.lineWidth = 2;
+    rrect(u.x - u.w / 2, top, u.w, u.h, 5);
+    aCtx.fill(); aCtx.stroke();
+    aCtx.shadowBlur = 0;
+
+    aCtx.font = `${Math.round(u.h * 0.5)}px sans-serif`;
+    aCtx.textAlign = 'center'; aCtx.textBaseline = 'middle';
+    aCtx.fillText(u.spec.icon, u.x, top + u.h * 0.5);
+
+    // HP pip — flips red once a unit is nearly spent, which is the cue to send
+    // the next one rather than watch this one die.
+    const frac = Math.max(0, u.hp / u.hpMax), pw = u.w + 4;
+    aCtx.fillStyle = 'rgba(0,0,0,0.6)';
+    aCtx.fillRect(u.x - pw / 2, top - 7, pw, 3);
+    aCtx.fillStyle = frac > 0.35 ? u.color : '#ff2442';
+    aCtx.fillRect(u.x - pw / 2, top - 7, pw * frac, 3);
+
+    if(u.flash > 0){
+      const dir = u.side, mx = u.x + dir * (u.w / 2 + 3);
+      aCtx.strokeStyle = '#fff'; aCtx.lineWidth = 2;
+      aCtx.globalAlpha = Math.min(1, u.flash / 130);
+      aCtx.beginPath();
+      aCtx.moveTo(mx, top + u.h * 0.55);
+      aCtx.lineTo(mx + dir * 9, top + u.h * 0.55);
+      aCtx.stroke();
+    }
+    aCtx.restore();
+  }
+
+  function drawHPBar(x, y, w, h, frac, color, label, value, rightAlign){
+    aCtx.save();
+    aCtx.font = 'bold 9px Orbitron,monospace';
+    aCtx.textBaseline = 'alphabetic';
+    aCtx.textAlign = rightAlign ? 'right' : 'left';
+    aCtx.fillStyle = hexToRgba(color, 0.9);
+    aCtx.fillText(label, rightAlign ? x + w : x, y - 5);
+
+    aCtx.fillStyle = 'rgba(255,255,255,0.06)';
+    aCtx.fillRect(x, y, w, h);
+    const fw = Math.max(0, Math.min(1, frac)) * w;
+    aCtx.shadowBlur = 12; aCtx.shadowColor = color;
+    aCtx.fillStyle = color;
+    aCtx.fillRect(rightAlign ? x + w - fw : x, y, fw, h);
+    aCtx.shadowBlur = 0;
+    aCtx.strokeStyle = 'rgba(255,255,255,0.16)'; aCtx.lineWidth = 1;
+    aCtx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+    aCtx.font = 'bold 9px Orbitron,monospace';
+    aCtx.textAlign = 'center'; aCtx.textBaseline = 'middle';
+    aCtx.fillStyle = '#fff';
+    aCtx.fillText(value, x + w / 2, y + h / 2 + 0.5);
+    aCtx.restore();
+  }
+
+  function drawHUD(){
+    drawHPBar(16, 20, 244, 15, mainHP / BB.baseHP, pColor,
+              '🛡️ MAINFRAME', `${Math.max(0, Math.ceil(mainHP))}`, false);
+    drawHPBar(BOARD_W - 260, 20, 244, 15, glitchHP / BB.baseHP, '#ff2442',
+              '☠️ THE GLITCH', `${Math.max(0, Math.ceil(glitchHP))}`, true);
+
+    aCtx.save();
+    aCtx.font = 'bold 8px Orbitron,monospace';
+    aCtx.textAlign = 'center'; aCtx.textBaseline = 'middle';
+    aCtx.fillStyle = 'rgba(255,255,255,0.34)';
+    aCtx.fillText(`WAVE ${waveNo}  ·  ${Math.round(ramRate)}/s RAM`, BOARD_W / 2, 48);
+    aCtx.restore();
+
+    if(banner){
+      const a = Math.min(1, banner.life / 400);
+      aCtx.save();
+      aCtx.globalAlpha = a;
+      aCtx.font = 'bold 15px Orbitron,monospace';
+      aCtx.textAlign = 'center'; aCtx.textBaseline = 'middle';
+      aCtx.shadowBlur = 16; aCtx.shadowColor = banner.color;
+      aCtx.fillStyle = banner.color;
+      aCtx.fillText(banner.text, BOARD_W / 2, 100);
+      aCtx.restore();
+    }
+
+    if(outro){
+      aCtx.save();
+      aCtx.fillStyle = 'rgba(4,4,14,0.62)';
+      aCtx.fillRect(0, 0, BOARD_W, BOARD_H);
+      aCtx.font = 'bold 26px Orbitron,monospace';
+      aCtx.textAlign = 'center'; aCtx.textBaseline = 'middle';
+      aCtx.shadowBlur = 26; aCtx.shadowColor = outro.color;
+      aCtx.fillStyle = outro.color;
+      aCtx.fillText(outro.text, BOARD_W / 2, BOARD_H / 2);
+      aCtx.restore();
+    }
+
+    // Damage vignettes: red when the Mainframe is hit, the equipped colour when
+    // The Glitch takes one, so the two are never confusable at a glance.
+    if(hurtFlash > 0){
+      aCtx.save();
+      aCtx.globalAlpha = hurtFlash * 0.3;
+      aCtx.fillStyle = '#ff2442';
+      aCtx.fillRect(0, 0, BOARD_W, BOARD_H);
+      aCtx.restore();
+    }
+    if(hitFlash > 0){
+      aCtx.save();
+      aCtx.globalAlpha = hitFlash * 0.16;
+      aCtx.fillStyle = pColor;
+      aCtx.fillRect(BOARD_W * 0.55, 0, BOARD_W * 0.45, BOARD_H);
+      aCtx.restore();
+    }
+  }
+
+  function draw(){
+    drawField();
+    drawTower(BB_P_TOWER, pColor,   '🖥️', 'MAINFRAME',  mainHP,   hurtFlash);
+    drawTower(BB_E_TOWER, '#ff2442', '👾', 'THE GLITCH', glitchHP, hitFlash);
+    drawSkinBadge(BB_P_TOWER + BB_TOWER_W / 2, BB_GROUND - BB_TOWER_H - 14, 14);
+
+    // Back lane first, so a crowded front line layers instead of z-fighting.
+    [...bots, ...foes].sort((a, b) => a.yOff - b.yOff).forEach(drawUnit);
+
+    for(const p of parts){
+      aCtx.save();
+      aCtx.globalAlpha = Math.max(0, p.life);
+      aCtx.fillStyle = p.color;
+      aCtx.fillRect(p.x - p.sz / 2, p.y - p.sz / 2, p.sz, p.sz);
+      aCtx.restore();
+    }
+    drawHUD();
+    ramEl.textContent = Math.floor(ram);
+  }
+
+  // ── LOOP ──
+  // Drawing outlives the simulation on purpose: `ended` freezes the battle but
+  // the frame keeps running so the final explosion and the verdict card play
+  // out. stopGame() cancels it for real, from showResults() or from Quit.
+  function loop(now){
+    const dt = last ? Math.min(50, now - last) : 16;   // a stalled tab must not teleport the front line
+    last = now;
+    if(!ended) simulate(dt);
+    stepFx(dt);
+    if(!ended) paintDeck();
+    draw();
+    gameLoopId = requestAnimationFrame(loop);
+  }
+
+  function end(outcome){
+    if(ended) return;
+    ended = true;
+    const win = outcome === 'win';
+    let pts, verdict;
+
+    if(win){
+      pts = Math.min(BB.score.cap,
+        BB.score.win +
+        Math.round(BB.score.hpBonus * Math.max(0, mainHP) / BB.baseHP) +
+        Math.round(BB.score.timeBonus * Math.min(1, (Math.max(0, time) / TOTAL) / BB.score.timeFull)));
+      verdict = '☠️ THE GLITCH PURGED';
+      outro = { text: 'GLITCH PURGED', color: '#39ff14' };
+      burst(BB_E_TOWER + BB_TOWER_W / 2, BB_GROUND - BB_TOWER_H / 2, '#ff2442', 40);
+      snd('bigExplode');
+    } else {
+      pts = Math.round(BB.score.lossMax * (1 - Math.max(0, glitchHP) / BB.baseHP));
+      verdict = outcome === 'timeout' ? '⏱️ SIEGE TIMED OUT' : '💀 MAINFRAME BREACHED';
+      outro = { text: outcome === 'timeout' ? 'SIEGE FAILED' : 'MAINFRAME BREACHED', color: '#ff2442' };
+      if(outcome !== 'timeout') burst(BB_P_TOWER + BB_TOWER_W / 2, BB_GROUND - BB_TOWER_H / 2, pColor, 40);
+      snd(outcome === 'timeout' ? 'alarm' : 'gameOver');
+    }
+    setLive(pts);
+    btns.forEach(b => b.el.classList.add('broke'));
+
+    // Let the explosion and the verdict land before the results card wipes the
+    // board. gLater(), so quitting inside that window cancels it cleanly.
+    gLater(() => {
+      showResults('battlebots', pts, {
+        '⚔️ Outcome': verdict,
+        '🛡️ Mainframe Integrity': `${Math.max(0, Math.ceil(mainHP))} / ${BB.baseHP}`,
+        '☠️ Glitch Integrity': `${Math.max(0, Math.ceil(glitchHP))} / ${BB.baseHP}`,
+        '💀 Hostiles Deleted': kills,
+        '🤖 Bots Deployed': deployed,
+        '🌊 Waves Repelled': waveNo,
+        '⚡ RAM Throughput': `${Math.round(ramRate)}/s`,
+        '🏆 Score Accumulation': `${pts} PTS`
+      });
+    }, 1050);
+  }
+
+  gameLoopId = requestAnimationFrame(loop);
+}
+
+function fmtTime(s){
+  const t = Math.max(0, s);
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
 }
 
 showScreen('auth-screen');

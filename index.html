@@ -174,6 +174,12 @@
           <div class="gc-desc">Detonate anti-malware blasts to shield three mainframe servers from rogue code!</div>
           <span class="gc-pts" data-c="orange">UP TO 1100 PTS</span>
         </div>
+        <div class="game-card" data-game="battlebots" data-c="red">
+          <span class="gc-icon">🤖</span>
+          <div class="gc-name" data-c="red">BATTLE BOTS</div>
+          <div class="gc-desc">Spend RAM on bots, siege The Glitch, and hold the lane to your Mainframe!</div>
+          <span class="gc-pts" data-c="red">UP TO 1200 PTS</span>
+        </div>
       </div>
     </div>
     <div>
@@ -232,6 +238,7 @@
     <div class="g-controls" id="g-controls"></div>
     <div class="g-stats">
       <div class="stat-pill" id="tetris-lvl-pill" style="display:none;">LEVEL <em id="tetris-lvl">1</em></div>
+      <div class="stat-pill" id="bb-ram-pill" style="display:none;">🧠 <em id="bb-ram">0</em> RAM</div>
       <div class="stat-pill">⏱️ <em id="g-time">—</em></div>
       <div class="stat-pill">⭐ <em id="g-pts">0</em></div>
       <button class="btn btn-secondary btn-sm btn-sound" id="btn-sound-game" title="Audio">🔊</button>
@@ -271,6 +278,12 @@
         <button class="ctrl-btn" id="ctrl-right">▶</button>
       </div>
     </div>
+
+    <!-- ⚔️ BATTLE BOTS deploy deck. Sits OUTSIDE #g-canvas-holder because the
+         holder turns into a flex row on a landscape phone (board beside the
+         pad) — as a sibling here it stays under the board in every layout,
+         since .g-area is always a column. Cards are built by startBattleBots(). -->
+    <div id="bb-deck" style="display:none"></div>
 
     <div id="g-memory" class="memory-grid" style="display:none"></div>
 
@@ -411,8 +424,6 @@
   </div>
 </div>
 
-<!-- Audio engine first: app.js calls SFX.play() from module scope onwards. -->
-<script src="sound.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
