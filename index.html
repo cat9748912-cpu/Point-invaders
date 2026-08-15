@@ -216,6 +216,23 @@
 
   <div class="mp-body">
 
+    <!-- ⚙️ SYSTEM STABILITY — the hub's difficulty adjuster, in the arena.
+         Same tiers, same multiplier, same panel. It sits ABOVE the stages so it
+         is there both while you pick a duel and while you sit in the room.
+         In a room it is the HOST'S dial: mpBeginRound() runs BOTH boards on the
+         room's tier, so the guest's copy is a locked readout of the host's
+         choice rather than a control that would quietly do nothing. -->
+    <div class="diff-selector mp-diff" id="mp-diff-selector">
+      <span class="diff-label">⚙️ SYSTEM STABILITY</span>
+      <div class="diff-btns">
+        <button class="diff-btn diff-stable active" id="mp-diff-btn-stable" data-tier="stable">🟢 Stable Core</button>
+        <button class="diff-btn diff-overclocked" id="mp-diff-btn-overclocked" data-tier="overclocked">🟡 Overclock</button>
+        <button class="diff-btn diff-meltdown" id="mp-diff-btn-meltdown" data-tier="meltdown">🔴 Meltdown</button>
+      </div>
+      <span class="diff-mult" id="mp-diff-mult">×1.0 PTS</span>
+      <span class="diff-note" id="mp-diff-note"></span>
+    </div>
+
     <!-- ── STAGE 1 · pick a duel, then connect ── -->
     <div class="mp-stage active" id="mp-stage-pick">
       <div class="sec-label">⚔️ SELECT DUEL</div>

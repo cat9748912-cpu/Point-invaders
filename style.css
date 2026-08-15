@@ -340,6 +340,30 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   color:var(--gold);
   margin-top:6px;
 }
+/* A frozen dial: mid-round anywhere, and for the guest of a room — the round
+   runs on the HOST'S tier, so the guest's panel is a readout, not a control.
+   Dimmed rather than hidden, because the tier is the thing they most need to
+   know before the countdown starts. */
+.diff-selector.locked .diff-btn{cursor:not-allowed}
+.diff-selector.locked .diff-btn:not(.active){opacity:.4}
+/* The active tier keeps its full glow — the hover reset is only for the ones
+   that are no longer choices. */
+.diff-selector.locked .diff-btn:not(.active):hover{background:var(--s2);transform:none}
+.diff-selector.locked .diff-btn:active{transform:none}
+.diff-note{
+  font-family:var(--fd);
+  font-size:.5rem;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:var(--dim);
+  text-align:center;
+  margin-top:2px;
+}
+.diff-note:empty{display:none}
+/* The arena's copy is sized by its own content and centred, like the hub's —
+   left to stretch it became a full-width banner over the duel grid and stopped
+   reading as the same control. */
+.mp-diff{width:max-content;max-width:100%;margin-left:auto;margin-right:auto}
 
 /* ── GAME LAYOUT ENGINE ── */
 /* Every pixel of chrome above the board comes straight off the play field,
@@ -355,9 +379,33 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .g-hdr{display:grid;grid-template-columns:auto 1fr;align-items:center;column-gap:16px;row-gap:12px;width:100%;max-width:max(var(--board-w,560px),560px);margin-bottom:12px}
 .g-title{grid-column:1/-1;grid-row:1;text-align:center;font-family:var(--fd);font-size:.95rem;font-weight:700;letter-spacing:.05em}
 .g-hdr > #btn-quit{grid-column:1;grid-row:2;justify-self:start}
-.g-stats{grid-column:2;grid-row:2;justify-self:end;display:flex;align-items:center;gap:8px}
-.stat-pill{background:var(--s2);border:1px solid var(--border);border-radius:20px;padding:5px 14px;font-family:var(--fd);font-size:.6rem;font-weight:700;white-space:nowrap}
-.stat-pill em{font-style:normal;color:var(--cyan)}
+/* The reserved slots below cost this row width, and the busiest one it ever
+   carries — LEVEL + ping + clock + score, in a Matrix Stack-Off duel — has only
+   520px to live in (the header keeps a 20px notch inset each side). So the
+   pills tighten by the few px the slots take back: the row then fits that duel
+   at any score, which it did NOT before — a five-digit score used to push it
+   ~18px past the board edge. */
+.g-stats{grid-column:2;grid-row:2;justify-self:end;display:flex;align-items:center;gap:6px}
+.stat-pill{background:var(--s2);border:1px solid var(--border);border-radius:20px;padding:5px 10px;font-family:var(--fd);font-size:.6rem;font-weight:700;white-space:nowrap;
+  /* Equal-width digits: without this a 1 is narrower than a 0 and the readout
+     twitches on every tick even when the digit COUNT hasn't changed. */
+  font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+/* Every number in here is a live counter, and the row is right-aligned — so a
+   score going 9 → 10 → 100 widened its pill and shoved every pill to its left
+   along with it, mid-game. Each readout now owns a fixed slot wide enough for
+   the biggest number it can reach, so the row is laid out once and then holds
+   still no matter what the numbers do. */
+.stat-pill em{font-style:normal;color:var(--cyan);display:inline-block;text-align:center}
+#g-pts{min-width:5ch}        /* uncapped in Cyber Arena — five digits of room */
+/* Every other game counts down from a two-digit clock (90s at most), so 3ch
+   used to be plenty — but the Hover-Bike Run has no clock at all: elapsed just
+   climbs for as long as the run survives, same shape as Cyber Arena's score.
+   4ch covers that (and Battle Bots' fixed "M:SS", and the ∞ / — placeholders)
+   without reserving Arena-sized room for a number that stays two digits. */
+#g-time{min-width:4ch}
+#tetris-lvl{min-width:2ch}
+#bb-ram{min-width:3ch}
+#mp-ping{min-width:5ch}      /* "999ms" — mpPing() clamps to keep it in the slot */
 .prog-bar{width:100%;max-width:max(var(--board-w,560px),560px);height:5px;background:var(--s2);border-radius:3px;margin-bottom:12px;overflow:hidden;flex-shrink:0}
 .prog-fill{height:100%;border-radius:3px;transition:width .2s ease-out;background:linear-gradient(90deg,var(--cyan),var(--purple))}
 .g-area{width:100%;max-width:1060px;display:flex;flex-direction:column;align-items:center}
@@ -448,7 +496,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 
 /* ── Click Frenzy ── */
 .click-wrap{display:flex;flex-direction:column;align-items:center;gap:16px}
-#click-count{font-family:var(--fd);font-size:5rem;font-weight:900;color:var(--cyan);line-height:1}
+/* Five-rem digits: an uneven 1 is very visible at this size, and Click Frenzy
+   redraws this number several times a second. */
+#click-count{font-family:var(--fd);font-size:5rem;font-weight:900;color:var(--cyan);line-height:1;
+  font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;min-width:4ch;text-align:center}
 .click-label{color:var(--dim);font-weight:600;font-size:.8rem;letter-spacing:.2em;text-transform:uppercase}
 #click-btn{width:180px;height:180px;border-radius:50%;border:none;background:linear-gradient(135deg,var(--cyan),var(--purple));font-size:3.5rem;cursor:pointer;box-shadow:0 0 50px rgba(0,245,255,.3)}
 #click-btn:active{transform:scale(.9)}
@@ -765,7 +816,10 @@ body { overscroll-behavior: none; }
   .g-hdr { column-gap: 12px; row-gap: 8px; }
   .g-title { font-size: .8rem; }
   .g-controls { font-size: .52rem; line-height: 1.6; }
-  .stat-pill { padding: 5px 10px; font-size: .55rem; }
+  /* Tighter than the desktop pill: the reserved slots are kept at full width
+     here (a five-digit Cyber Arena score has to sit still on a phone too), so
+     the room comes out of the padding instead. */
+  .stat-pill { padding: 5px 8px; font-size: .55rem; }
   .prog-bar { margin-bottom: 10px; }
   .g-area { max-width: 100%; }
   #arcade-controls { max-width: 100%; }
@@ -1066,7 +1120,18 @@ body { overscroll-behavior: none; }
   font-family:var(--fd);font-size:.52rem;letter-spacing:.1em;color:var(--dim);
   max-width:11ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap
 }
-.mp-hud-score{font-family:var(--fd);font-size:1.05rem;font-weight:900;line-height:1;color:var(--cyan)}
+/* Same problem as the stat pills, and worse here: the bar between the two
+   scores is the flexible element, so every digit either side gained pulled the
+   bar — and with it the cyan/pink boundary you are reading — sideways. A fixed
+   slot per score keeps the bar's ends nailed down; each score grows into its
+   own room instead of into the bar's. */
+.mp-hud-score{
+  font-family:var(--fd);font-size:1.05rem;font-weight:900;line-height:1;color:var(--cyan);
+  font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
+  display:inline-block;min-width:5ch;text-align:right
+}
+/* Mirrored: each score stays hard against the bar it belongs to. */
+.mp-hud-right .mp-hud-score{text-align:left}
 .mp-hud-right .mp-hud-score{color:var(--pink)}
 .mp-hud-bar{
   flex:1;height:7px;border-radius:4px;overflow:hidden;background:rgba(255,0,144,.35)
@@ -1114,6 +1179,8 @@ body { overscroll-behavior: none; }
   .mp-room-code{font-size:2rem}
   .mp-seats{gap:8px}
   .mp-seat{padding:12px 8px}
+  /* The reserved slot rides the font size down with it — a five-digit score
+     still has to leave the bar where it was. */
   .mp-hud-score{font-size:.9rem}
   .mp-hud-name{font-size:.46rem;max-width:8ch}
   #mp-overlay-txt{font-size:.7rem}

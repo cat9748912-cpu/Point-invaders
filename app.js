@@ -694,18 +694,18 @@ function getTimeModifier(){
   return DIFFICULTY_TIERS[currentDifficultyTier].timeMult;
 }
 
-function setDifficultyTier(tierKey){
+// There is more than one of these panels on screen now — the hub's and the
+// Network Arena's — so painting one by id would leave the other lying about the
+// active tier. Everything below works off the CLASS, which is what makes the
+// arena's copy the same control rather than a second implementation of it.
+function paintDiffPanels(tierKey){
   const tier = DIFFICULTY_TIERS[tierKey];
   if(!tier) return;
-  currentDifficultyTier = tierKey;
-  gameDifficultyMultiplier = tier.pointMult;
   document.querySelectorAll('.diff-btn').forEach(b=>b.classList.toggle('active', b.dataset.tier===tierKey));
-  const multEl = document.getElementById('diff-mult');
-  if(multEl) multEl.textContent = `×${tier.pointMult.toFixed(1)} PTS`;
+  document.querySelectorAll('.diff-mult').forEach(el=>el.textContent = `×${tier.pointMult.toFixed(1)} PTS`);
   // Recolor the ambient glow behind the panel to match the newly active tier,
   // and give it a brief brighter flash so the change reads as an event, not just a state.
-  const sel = document.getElementById('diff-selector');
-  if(sel){
+  document.querySelectorAll('.diff-selector').forEach(sel=>{
     sel.classList.remove('tier-stable','tier-overclocked','tier-meltdown');
     sel.classList.add(`tier-${tierKey}`);
     sel.classList.remove('flash');
@@ -713,34 +713,54 @@ function setDifficultyTier(tierKey){
     sel.classList.add('flash');
     clearTimeout(sel._flashTimer);
     sel._flashTimer = setTimeout(()=>sel.classList.remove('flash'), 350);
-  }
+  });
+}
+
+function setDifficultyTier(tierKey){
+  const tier = DIFFICULTY_TIERS[tierKey];
+  if(!tier) return;
+  currentDifficultyTier = tierKey;
+  gameDifficultyMultiplier = tier.pointMult;
+  paintDiffPanels(tierKey);
   updateGameCardMaxPoints();
   updateHubDiffDisplay();
+  // The arena's panel can be showing the HOST'S tier instead of ours, and its
+  // duel cards quote point caps that scale with the dial — both are its own
+  // business, so it gets the last word on its own panel.
+  if(typeof mpPaintDiff === 'function') mpPaintDiff();
 }
 
 function lockDifficultySelector(){
-  const sel = document.getElementById('diff-selector');
-  if(!sel) return;
-  sel.classList.add('locked');
-  sel.querySelectorAll('.diff-btn').forEach(b=>b.disabled = true);
+  document.querySelectorAll('.diff-selector').forEach(sel=>{
+    sel.classList.add('locked');
+    sel.querySelectorAll('.diff-btn').forEach(b=>b.disabled = true);
+  });
 }
 function unlockDifficultySelector(){
-  const sel = document.getElementById('diff-selector');
-  if(!sel) return;
-  sel.classList.remove('locked');
-  sel.querySelectorAll('.diff-btn').forEach(b=>b.disabled = false);
+  document.querySelectorAll('.diff-selector').forEach(sel=>{
+    sel.classList.remove('locked');
+    sel.querySelectorAll('.diff-btn').forEach(b=>b.disabled = false);
+  });
 }
 
-document.querySelectorAll('.diff-btn').forEach(btn=>{
-  btn.addEventListener('click',()=>{
-    if(btn.disabled) return;
-    const tierKey = btn.dataset.tier;
-    setDifficultyTier(tierKey);
-    const tier = DIFFICULTY_TIERS[tierKey];
-    // The tier's own pitch: Stable settles, Overclock lifts, Meltdown alarms.
-    snd(tierKey==='meltdown' ? 'alarm' : 'score', { semi: tierKey==='stable' ? -5 : 2 });
-    toast(`${tier.icon} SYSTEM STABILITY: ${tier.label} (×${tier.pointMult.toFixed(1)} PTS)`, 2500, `toast-${tierKey}`);
-  });
+// Delegated rather than bound per button. There are two panels' worth of these
+// now, and one listener at the document covers every tier button that exists —
+// including any panel added later — instead of a bind pass that has to be
+// remembered each time.
+document.addEventListener('click', e=>{
+  const btn = e.target.closest?.('.diff-btn');
+  if(!btn || btn.disabled) return;
+  const tierKey = btn.dataset.tier;
+  const tier = DIFFICULTY_TIERS[tierKey];
+  if(!tier) return;
+  setDifficultyTier(tierKey);
+  // Hosting an open room? It takes the new tier immediately, so the guest's
+  // panel — and the round they are both about to play — follows the dial rather
+  // than whatever happened to be set when the room was opened.
+  if(typeof mpSyncTier === 'function') mpSyncTier();
+  // The tier's own pitch: Stable settles, Overclock lifts, Meltdown alarms.
+  snd(tierKey==='meltdown' ? 'alarm' : 'score', { semi: tierKey==='stable' ? -5 : 2 });
+  toast(`${tier.icon} SYSTEM STABILITY: ${tier.label} (×${tier.pointMult.toFixed(1)} PTS)`, 2500, `toast-${tierKey}`);
 });
 
 function initGameCardBasePoints() {
@@ -1471,6 +1491,10 @@ function enterHub(){
   music('hub');
   loadLeaderboard();
   unlockDifficultySelector();
+  // The line above rewrites #h-pts wholesale, and the "(x1.5)" tag lives INSIDE
+  // it — so the tag has to be put back, or the hub silently stops showing which
+  // tier it is paying out at.
+  updateHubDiffDisplay();
 }
 
 document.getElementById('btn-market').onclick=()=>openMarket();
@@ -1556,8 +1580,10 @@ const setLive=n=>{
 
 // `opts` is how a Network Arena round borrows this card without the solo
 // assumptions baked into it:
-//   noBonus   — skip the difficulty multiplier (the two players may be sitting
-//               on different tiers, so a shared duel can't honour either)
+//   noBonus   — skip the difficulty multiplier entirely (pay the raw score)
+//   tier      — pay out at THIS tier instead of the live dial. A duel needs it
+//               because both boards ran on the room's tier, and that tier has
+//               already been handed back by the time this card is written.
 //   badge     — {text, cls} replacing the tier bonus badge
 //   emoji / name — override the headline
 //   again     — {label, fn} for the left button; hub — {label, fn} for the right
@@ -1570,8 +1596,8 @@ function showResults(gid,pts,bd,opts){
   if(vsResultTap && !opts.internal && vsResultTap(gid, pts, bd)) return;
   stopGame();
   music('hub');
-  const tier = DIFFICULTY_TIERS[currentDifficultyTier];
-  const finalPts = Math.round(pts * (opts.noBonus ? 1 : gameDifficultyMultiplier));
+  const tier = DIFFICULTY_TIERS[opts.tier] || DIFFICULTY_TIERS[currentDifficultyTier];
+  const finalPts = Math.round(pts * (opts.noBonus ? 1 : tier.pointMult));
   const m=META[gid],pct=finalPts/m.maxPts;
   // A three-quarter run earns the fanfare; anything less gets the neutral
   // readout chime, so the sound is honest about how the round actually went.
@@ -8360,6 +8386,10 @@ function mpRoomGone(){
 function mpShowStage(name){
   document.querySelectorAll('.mp-stage').forEach(el => el.classList.remove('active'));
   document.getElementById('mp-stage-' + name)?.classList.add('active');
+  // The stability panel spans both stages, but what it may SAY changes with
+  // them — the pick stage is always your own dial, the room stage may be the
+  // host's. Repainting here also unfreezes it on the way out of a round.
+  if(typeof mpPaintDiff === 'function') mpPaintDiff();
   const e1 = document.getElementById('mp-err'), e2 = document.getElementById('mp-room-err');
   if(e1) e1.textContent = '';
   if(e2) e2.textContent = '';
@@ -8384,6 +8414,82 @@ function mpPaintLink(){
   if(mp){ el.textContent = '◈ ROOM ' + mp.code; el.classList.add('live'); return; }
   el.textContent = '◈ LINK READY';
   el.classList.add('live');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  ⚙️ THE ARENA'S STABILITY DIAL
+// ══════════════════════════════════════════════════════════════════════
+// The same control as the hub's, on the same global tier — but a room has an
+// owner, and the round runs on the ROOM'S tier (mpBeginRound), so the panel has
+// to say whose dial you are looking at:
+//
+//   no room  → your own dial. It stamps every room you open from here.
+//   host     → your own dial, and every change is pushed to the room live.
+//   guest    → a locked readout of the host's tier. Nothing you set locally
+//              would survive vsApplyTier(), so it is shown as theirs, not
+//              offered as yours.
+function mpPaintDiff(){
+  const sel = document.getElementById('mp-diff-selector');
+  if(!sel) return;
+
+  const inRoom  = !!mp;
+  const isGuest = inRoom && !mp.isHost;
+  const roomTier = (inRoom && mp.room && DIFFICULTY_TIERS[mp.room.tier]) ? mp.room.tier : null;
+  const showTier = isGuest ? (roomTier || 'stable') : currentDifficultyTier;
+  const tier = DIFFICULTY_TIERS[showTier] || DIFFICULTY_TIERS.stable;
+  // Not yours to set, or the round is already under way — either way the dial
+  // is frozen rather than hidden, so the tier stays readable.
+  const locked = isGuest || (inRoom && mp.status !== 'waiting');
+
+  sel.classList.toggle('locked', locked);
+  sel.querySelectorAll('.diff-btn').forEach(b => {
+    b.disabled = locked;
+    b.classList.toggle('active', b.dataset.tier === showTier);
+  });
+  sel.classList.remove('tier-stable','tier-overclocked','tier-meltdown');
+  sel.classList.add(`tier-${showTier}`);
+
+  const multEl = document.getElementById('mp-diff-mult');
+  if(multEl) multEl.textContent = `×${tier.pointMult.toFixed(1)} PTS`;
+
+  const note = document.getElementById('mp-diff-note');
+  if(note){
+    note.textContent =
+      !inRoom  ? 'Sets the duels you open — both boards run on the host\'s tier.'
+    : isGuest  ? `${tier.icon} HOST'S CALL · this room runs on ${tier.label}`
+    : locked   ? 'Locked for the round.'
+               : 'Your room, your tier — both boards run on it.';
+  }
+
+  // A guest whose host re-dials mid-lobby should SEE it happen: the panel alone
+  // is easy to miss when your eyes are on the seats.
+  if(inRoom){
+    const prev = mp._seenTier;
+    mp._seenTier = showTier;
+    if(isGuest && prev && prev !== showTier){
+      snd(showTier === 'meltdown' ? 'alarm' : 'score', { semi: showTier === 'stable' ? -5 : 2 });
+      toast(`⚙️ HOST SET ${tier.icon} ${tier.label} (×${tier.pointMult.toFixed(1)} PTS)`, 2600, `toast-${showTier}`);
+    }
+  }
+
+  // The duel cards quote caps that scale with the dial, so they are rebuilt
+  // alongside it — but only while they are actually on screen.
+  if(document.getElementById('mp-stage-pick')?.classList.contains('active')) renderMpModes();
+}
+
+// Host only. A tier picked while a room is already open belongs to the room,
+// not just to this tab — the guest is watching that record.
+function mpSyncTier(){
+  if(!mp || !mp.isHost || mp.inRound) return;
+  mp.roomRef.update({ tier: currentDifficultyTier })
+    .catch(e => console.warn('Tier sync failed:', e));
+}
+
+// Point caps are quoted the same way the hub's mission cards quote theirs, and
+// they scale for the same reason: on Meltdown the cap really is double.
+function mpMetaPts(meta, mult){
+  const d = Number.isFinite(mult) ? mult : gameDifficultyMultiplier;
+  return String(meta || '').replace(/UP TO (\d+) PTS/, (_, n) => `UP TO ${Math.floor(+n * d)} PTS`);
 }
 
 function renderMpModes(){
@@ -8421,7 +8527,7 @@ function renderMpModes(){
       `<span class="mp-mode-icon">${m.icon}</span>` +
       `<div class="mp-mode-name">${m.name}</div>` +
       `<div class="mp-mode-desc">${m.desc}</div>` +
-      `<span class="mp-mode-meta">${m.meta}</span>`;
+      `<span class="mp-mode-meta">${mpMetaPts(m.meta)}</span>`;
     card.onclick = () => { mpMode = key; snd('tab'); renderMpModes(); };
     wrap.appendChild(card);
   });
@@ -8456,8 +8562,13 @@ function mpSeat(el, p, isMe){
 function mpPaintRoom(){
   if(!mp) return;
   const mode = MP_MODES[mp.room && mp.room.mode];
+  // The room's own tier, not this tab's: a guest reading the host's dial has to
+  // see the cap the round will actually pay.
+  const roomTier = DIFFICULTY_TIERS[mp.room && mp.room.tier] || DIFFICULTY_TIERS[currentDifficultyTier];
   document.getElementById('mp-room-code').textContent = mp.code;
-  document.getElementById('mp-room-game').textContent = mode ? `${mode.icon} ${mode.name} · ${mode.meta}` : '—';
+  document.getElementById('mp-room-game').textContent =
+    mode ? `${mode.icon} ${mode.name} · ${mpMetaPts(mode.meta, roomTier.pointMult)}` : '—';
+  mpPaintDiff();
 
   mpSeat(document.getElementById('mp-seat-me'),  mp.me,  true);
   mpSeat(document.getElementById('mp-seat-opp'), mp.opp, false);
@@ -8580,7 +8691,11 @@ function mpHudScores(mine, theirs, share){
 }
 function mpPing(ms){
   const el = document.getElementById('mp-ping');
-  if(el) el.textContent = (ms == null ? '—' : Math.round(ms) + 'ms');
+  if(!el) return;
+  // Three digits is the whole useful range — past a second the link is dead
+  // rather than slow, and a fourth digit would push the readout out of the
+  // fixed slot the pill row is laid out around.
+  el.textContent = ms == null ? '—' : (ms >= 999 ? '999+' : Math.round(ms) + 'ms');
 }
 // Returns a gate that answers true at most once per `ms` — for the handful of
 // things a 60fps loop wants to do a couple of times a second (repaint the ping
@@ -8717,10 +8832,28 @@ function mpShowDuelResult(gid, pts, outcome, bd){
     draw: { text:'🌐 NETWORK ARENA · DRAW',    cls:'res-bonus-net'  }
   }[outcome] || { text:'🌐 NETWORK ARENA', cls:'res-bonus-net' };
 
+  // Both boards ran on the room's tier, so the room's tier is what pays. It has
+  // to be named explicitly — vsRestoreTier() put the local dial back on the way
+  // out of the round, a few lines before this card gets written.
+  const tier = DIFFICULTY_TIERS[vsRoundTier] || DIFFICULTY_TIERS.stable;
+  if(tier.pointMult !== 1) badge.text += ` · ${tier.icon} ×${tier.pointMult.toFixed(1)}`;
+  // The breakdown says where the extra came from, so a doubled score never
+  // looks like a miscount: the stability row lands directly above the award it
+  // explains, and the award is restated with the multiplier applied — every
+  // duel quotes it raw, which no longer matches the headline.
+  const stab = `${tier.icon} ${tier.label} ×${tier.pointMult.toFixed(1)}`;
+  const rows = {};
+  Object.entries(bd || {}).forEach(([k, v]) => {
+    if(k === '🏆 Awarded'){ rows['⚙️ System Stability'] = stab; v = Math.round(pts * tier.pointMult) + ' PTS'; }
+    rows[k] = v;
+  });
+  if(!rows['⚙️ System Stability']) rows['⚙️ System Stability'] = stab;
+  bd = rows;
+
   const inRoom = !!mp;
   showResults(gid, pts, bd, {
     internal: true,                        // this IS the duel's card — don't re-tap it
-    noBonus: true,                         // the round already ran on one shared tier
+    tier: tier.key,                        // the shared tier the round was played on
     badge,
     emoji: outcome === 'win' ? '🏆' : (outcome === 'draw' ? '🤝' : '💀'),
     sound: outcome === 'win' ? 'victory' : (outcome === 'draw' ? 'results' : 'gameOver'),
@@ -9578,8 +9711,14 @@ function startClickDuel(){
 // clocks and doubles hazards, so mixed tiers would be two different games
 // wearing one scoreboard. Saved/restored around the round, not toggled by it.
 let vsSavedTier = null, vsTimer = 0;
+// The tier the round is actually being PLAYED on. Kept separately from the live
+// dial because the dial is put back the moment the round ends (vsRestoreTier
+// runs inside stopGame), and the results card is written after that — without
+// this it would pay out at whatever the player's own hub setting happens to be.
+let vsRoundTier = 'stable';
 function vsApplyTier(tierKey){
   if(!DIFFICULTY_TIERS[tierKey]) tierKey = 'stable';
+  vsRoundTier = tierKey;
   if(vsSavedTier == null) vsSavedTier = currentDifficultyTier;
   if(tierKey !== currentDifficultyTier) setDifficultyTier(tierKey);
 }
