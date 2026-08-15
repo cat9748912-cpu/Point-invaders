@@ -918,7 +918,33 @@ body { overscroll-behavior: none; }
 .mp-sec-2{margin-top:26px}
 
 /* ── MODE PICKER ── */
+/* Sixteen duels is more than fits on one screen, so the kinds are filterable.
+   The chips read as a segmented control rather than as buttons — picking a
+   category is a view change, not an action. */
+.mp-filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.mp-filter{
+  font-family:var(--fd);font-size:.48rem;font-weight:700;letter-spacing:.12em;
+  color:var(--dim);background:var(--s2);border:1px solid var(--border);
+  border-radius:20px;padding:7px 15px;cursor:pointer;
+  transition:color .2s ease,border-color .2s ease,background .2s ease
+}
+.mp-filter:hover{color:var(--txt);border-color:var(--border2)}
+.mp-filter.on{
+  color:var(--cyan);border-color:var(--cyan);background:rgba(0,245,255,.09);
+  box-shadow:0 0 16px rgba(0,245,255,.18)
+}
+.mp-filter em{font-style:normal;opacity:.55;margin-left:6px}
+
 .mp-modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+/* The duel's KIND, top-left, opposite the SELECTED tick. Live rounds share one
+   simulation over the wire; races run two independent boards and compare. */
+.mp-mode-kind{
+  position:absolute;top:10px;left:12px;
+  font-family:var(--fd);font-size:.42rem;font-weight:700;letter-spacing:.12em
+}
+.mp-mode-kind.k-live{color:var(--pink)}
+.mp-mode-kind.k-race{color:var(--lime)}
+.mp-modes .mp-mode{padding-top:30px}
 .mp-mode{
   position:relative;background:var(--s1);border:1px solid var(--border);
   border-radius:var(--rl);padding:20px 16px;text-align:center;cursor:pointer;
@@ -954,6 +980,39 @@ body { overscroll-behavior: none; }
   text-transform:uppercase;margin-bottom:10px
 }
 .mp-err{min-height:22px;margin-top:16px;text-align:center;font-size:.82rem;font-weight:600;color:var(--pink)}
+
+/* ── 🤖 DROID OPPONENT ── */
+.mp-bot-card{border-color:rgba(168,85,247,.4);background:linear-gradient(160deg,rgba(168,85,247,.09),transparent 70%)}
+.mp-bot-card .mp-conn-name{color:var(--purple)}
+.mp-bot-lvls{display:flex;gap:6px;margin-bottom:14px}
+.mp-bot-lvl{
+  flex:1;min-width:0;font-family:var(--fd);font-size:.44rem;font-weight:700;
+  letter-spacing:.08em;color:var(--dim);background:var(--s2);
+  border:1px solid var(--border);border-radius:var(--r);padding:9px 4px;
+  cursor:pointer;transition:all .2s ease;white-space:nowrap;overflow:hidden;text-overflow:ellipsis
+}
+.mp-bot-lvl:hover{color:var(--txt);border-color:var(--border2)}
+.mp-bot-lvl.on{color:#fff;border-color:var(--purple);background:rgba(168,85,247,.18)}
+/* Each rung carries its own warning colour when chosen, so the risk is legible
+   before the round rather than after it. */
+.mp-bot-lvl[data-lvl="rookie"].on{border-color:var(--lime);background:rgba(57,255,20,.16)}
+.mp-bot-lvl[data-lvl="elite"].on{border-color:var(--red);background:rgba(255,36,66,.18)}
+
+/* The droid's seat in the room, and its tag in the versus HUD. */
+.mp-seat.bot{border-color:rgba(168,85,247,.45);background:rgba(168,85,247,.07)}
+.mp-seat.bot .mp-seat-tag{color:var(--purple)}
+.mp-seat-bot-chip{
+  display:inline-block;margin-top:7px;font-family:var(--fd);font-size:.4rem;
+  font-weight:700;letter-spacing:.14em;color:var(--purple);
+  border:1px solid rgba(168,85,247,.5);border-radius:20px;padding:2px 8px
+}
+#btn-mp-addbot{display:none}
+
+/* Waiting on the rival's board to finish: the score race's one idle state. */
+.mp-wait-score{
+  display:block;margin-top:10px;font-family:var(--fd);font-size:.62rem;
+  letter-spacing:.1em;color:var(--cyan)
+}
 
 /* ── ROOM ── */
 .mp-room{max-width:560px;margin:0 auto}

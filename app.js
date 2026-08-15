@@ -659,6 +659,17 @@ const META = {
   battlebots:{name:'BATTLE BOTS', emoji: '🤖', maxPts: 1200 }
 };
 
+// One place that knows how to start each mission. prepGame() runs them behind a
+// countdown; a Network Arena score race runs the very same function behind a
+// SHARED countdown, which is the whole trick — a duel is the solo game with two
+// scoreboards, not a second implementation of it.
+const SOLO_START = {
+  click: startClick,   nebula: startNebula, tetris: startTetris,   dodge: startDodge,
+  memory: startMemory, math: startMath,     reaction: startReaction, pong: startPong,
+  snake: startSnake,   flappy: startFlappy, breaker: startBreaker, arena: startArena,
+  runner: startRunner, hacker: startHacker, meteor: startMeteor,   battlebots: startBattleBots
+};
+
 // ══════════════════════════════════════════════
 //  ⚙️ SYSTEM STABILITY — GLOBAL DIFFICULTY ENGINE
 // ══════════════════════════════════════════════
@@ -1524,26 +1535,24 @@ function resetGameStage(gid){
 
 function prepGame(gid){
   resetGameStage(gid);
-
-  if(gid==='click') countdown(()=>startClick());
-  else if(gid==='nebula') countdown(()=>startNebula());
-  else if(gid==='tetris') countdown(()=>startTetris());
-  else if(gid==='dodge') countdown(()=>startDodge());
-  else if(gid==='memory') countdown(()=>startMemory());
-  else if(gid==='math') countdown(()=>startMath());
-  else if(gid==='reaction') countdown(()=>startReaction());
-  else if(gid==='pong') countdown(()=>startPong());
-  else if(gid==='snake') countdown(()=>startSnake());
-  else if(gid==='flappy') countdown(()=>startFlappy());
-  else if(gid==='breaker')countdown(()=>startBreaker());
-  else if(gid==='arena')  countdown(()=>startArena());
-  else if(gid==='runner') countdown(()=>startRunner());
-  else if(gid==='hacker') countdown(()=>startHacker());
-  else if(gid==='meteor') countdown(()=>startMeteor());
-  else if(gid==='battlebots') countdown(()=>startBattleBots());
+  const start = SOLO_START[gid];
+  if(start) countdown(()=>start());
 }
 
-const setLive=n=>document.getElementById('g-pts').textContent=n;
+// ── SCORE TAPS ────────────────────────────────────────────────────────
+// Every game in the arcade already announces itself twice: setLive() while it
+// runs, showResults() when it ends. A Network Arena SCORE RACE needs exactly
+// those two facts from a game it otherwise doesn't touch, so it listens here
+// instead of each of the sixteen games learning what a duel is.
+//
+// Null outside a race, which is the ordinary case and costs one branch.
+let vsLiveTap = null;      // (n) => void            — the on-screen number changed
+let vsResultTap = null;    // (gid, pts, bd) => bool — true means "I've taken it"
+
+const setLive=n=>{
+  document.getElementById('g-pts').textContent=n;
+  if(vsLiveTap) vsLiveTap(n);
+};
 
 // `opts` is how a Network Arena round borrows this card without the solo
 // assumptions baked into it:
@@ -1554,6 +1563,11 @@ const setLive=n=>document.getElementById('g-pts').textContent=n;
 //   again     — {label, fn} for the left button; hub — {label, fn} for the right
 function showResults(gid,pts,bd,opts){
   opts = opts || {};
+  // A game finishing inside a score race hasn't finished the ROUND — the rival
+  // may still be playing. The race takes the score and puts up its own card
+  // once both boards are done. `internal` is how the race shows that card
+  // without the tap swallowing it in turn.
+  if(vsResultTap && !opts.internal && vsResultTap(gid, pts, bd)) return;
   stopGame();
   music('hub');
   const tier = DIFFICULTY_TIERS[currentDifficultyTier];
@@ -7886,6 +7900,14 @@ async function sendFeedback(payload){
 // The .indexOn is what keeps Quick Match from downloading every open room to
 // sort it client-side; without it Firebase still answers, just noisily.
 
+// ── SESSION ──
+// null whenever this player isn't in a room. Everything below treats a missing
+// `mp` as "we already left", which is what makes the teardown paths safe to
+// run twice. Declared ABOVE the shared clock because Firebase can deliver the
+// first .info/connected value synchronously during .on() — which reaches
+// mpPaintLink, which reads `mp`, before anything further down has evaluated.
+let mp = null;
+
 // ── SHARED CLOCK ──
 // Two browsers disagree about the time by seconds, which is fatal when both
 // sides extrapolate a ball's position from a timestamp. Firebase publishes the
@@ -7899,31 +7921,130 @@ if(db){
 const netNow = () => Date.now() + netOffset;
 
 // ── MODE TABLE ──
+// Every mission in the hub has a counterpart here — sixteen games, sixteen
+// duels — but they are not all the same KIND of duel, and pretending otherwise
+// would have meant sixteen bespoke netcode implementations:
+//
+//   kind:'live'  Two players inside ONE simulation, synchronised over the wire.
+//                Worth the netcode only where the players genuinely share a
+//                board: a ball between two paddles, one hazard feed, one clock.
+//                These three are hand-written.
+//
+//   kind:'race'  Two players, two boards, one scoreboard. Each side plays its
+//                own live round of the ordinary solo game while their scores
+//                stream across; the higher FINAL score takes it. One engine —
+//                startScoreDuel() — drives all thirteen, because it needs
+//                nothing from a game beyond the score it already displays.
+//
 // `gid` points at the solo game each duel borrows its identity from, so points
 // land on the same leaderboard entry and META still knows the name and cap.
-// `seconds` is the round length the host puts on the clock; Core Survival uses
-// it as a hard ceiling rather than a finish line.
+// `seconds` is the round length the host puts on the clock. A live duel treats
+// it as the finish line; a race treats it as a ceiling, since a race normally
+// ends when both boards do.
 const MP_MODES = {
+  // ── LIVE VERSUS ──────────────────────────────────────────────────────
   pongduel: {
-    gid:'pong', icon:'🏓', name:'CYBER PONG DUEL', seconds:60,
+    gid:'pong', icon:'🏓', name:'CYBER PONG DUEL', seconds:60, kind:'live',
     desc:'Sixty seconds, one ball, two real paddles. No AI pattern to read — just whoever reacts faster.',
     meta:'UP TO 900 PTS · 60s',
     start:()=>startPongDuel()
   },
   dodgeduel: {
-    gid:'dodge', icon:'💥', name:'CORE SURVIVAL', seconds:75,
+    gid:'dodge', icon:'💥', name:'CORE SURVIVAL', seconds:75, kind:'live',
     desc:'The same firewall cores rain on both of you, from one shared spawn feed. Outlive your rival.',
     meta:'UP TO 800 PTS · LAST ONE ALIVE',
     start:()=>startDodgeDuel()
   },
   clickduel: {
-    gid:'click', icon:'🖱️', name:'FRENZY DUEL', seconds:12,
+    gid:'click', icon:'🖱️', name:'FRENZY DUEL', seconds:12, kind:'live',
     desc:'Twelve seconds of pure input war. Barely touches the network — plays clean on any link.',
     meta:'UP TO 500 PTS · 12s',
     start:()=>startClickDuel()
+  },
+
+  // ── SCORE RACE ───────────────────────────────────────────────────────
+  // All of these are `start:()=>startScoreDuel(<gid>)`. The engine reads the
+  // rest of the row, so adding a seventeenth game to the arcade means adding a
+  // row here and nothing else.
+  nebularace: {
+    gid:'nebula', icon:'🚀', name:'NEBULA RACE', seconds:150, kind:'race',
+    desc:'Two grids, two invasions, one scoreboard. Purge more of the swarm than your rival before your shield gives out.',
+    meta:'UP TO 1000 PTS · HIGH SCORE WINS'
+  },
+  tetrisrace: {
+    gid:'tetris', icon:'🧱', name:'MATRIX STACK-OFF', seconds:180, kind:'race',
+    desc:'Both wells fill at once. Clear more code lines than the other stack before yours tops out.',
+    meta:'UP TO 1500 PTS · HIGH SCORE WINS'
+  },
+  memoryrace: {
+    gid:'memory', icon:'🧠', name:'RECALL RACE', seconds:70, kind:'race',
+    desc:'Identical clock, separate boards. Unify your pairs faster than the operative across the link.',
+    meta:'UP TO 600 PTS · HIGH SCORE WINS'
+  },
+  mathrace: {
+    gid:'math', icon:'🔢', name:'EQUATION DUEL', seconds:60, kind:'race',
+    desc:'Twenty seconds of arithmetic under fire, side by side. Every solved node is a point they have to answer.',
+    meta:'UP TO 750 PTS · HIGH SCORE WINS'
+  },
+  reactionrace: {
+    gid:'reaction', icon:'⚡', name:'SYNAPSE DUEL', seconds:55, kind:'race',
+    desc:'Two terminals flashing on their own schedules. The steadier trigger finger banks the bigger number.',
+    meta:'UP TO 400 PTS · HIGH SCORE WINS'
+  },
+  snakerace: {
+    gid:'snake', icon:'🐍', name:'SIGNAL CHAIN RACE', seconds:140, kind:'race',
+    desc:'Grow your chain while theirs grows too. Eat more data nodes than your rival — and crash later than they do.',
+    meta:'UP TO 1200 PTS · HIGH SCORE WINS'
+  },
+  flappyrace: {
+    gid:'flappy', icon:'🚁', name:'DRONE GAUNTLET', seconds:150, kind:'race',
+    desc:'Two drones, two firewalls, one count that matters. Thread more columns than they do before you clip one.',
+    meta:'UP TO 1000 PTS · HIGH SCORE WINS'
+  },
+  breakerrace: {
+    gid:'breaker', icon:'🧊', name:'ICE SHATTER RACE', seconds:150, kind:'race',
+    desc:'Same wall, two decks. Break more ICE — and keep more shields — than the operative on the other side.',
+    meta:'UP TO 1100 PTS · HIGH SCORE WINS'
+  },
+  arenarace: {
+    gid:'arena', icon:'⚔️', name:'ARENA SCORE WAR', seconds:200, kind:'race',
+    desc:'Both of you loose in your own arena with uncapped points. Whoever farms harder before falling takes the room.',
+    meta:'INFINITE POINTS · HIGH SCORE WINS'
+  },
+  runnerrace: {
+    gid:'runner', icon:'🌌', name:'HOVER-BIKE RACE', seconds:150, kind:'race',
+    desc:'Two bikes, one firewall behind each. Outrun your rival on distance and cubes, not on their tail lights.',
+    meta:'UP TO 1200 PTS · HIGH SCORE WINS'
+  },
+  hackerrace: {
+    gid:'hacker', icon:'🔓', name:'DECRYPT RACE', seconds:120, kind:'race',
+    desc:'Two mainframes, two key sequences, one trace timer. Decrypt deeper than the operative racing you.',
+    meta:'UP TO 800 PTS · HIGH SCORE WINS'
+  },
+  meteorrace: {
+    gid:'meteor', icon:'☄️', name:'ORBITAL DEFENCE RACE', seconds:150, kind:'race',
+    desc:'Six servers between you, three each. Purge more rogue code — and keep more of yours standing.',
+    meta:'UP TO 1100 PTS · HIGH SCORE WINS'
+  },
+  bbrace: {
+    gid:'battlebots', icon:'🤖', name:'SIEGE RACE', seconds:200, kind:'race',
+    desc:'Two lanes, two Glitches, one RAM economy each. Push your siege further than they push theirs.',
+    meta:'UP TO 1200 PTS · HIGH SCORE WINS'
   }
 };
+// Every race row runs the same engine, so it is filled in here rather than
+// repeated thirteen times above.
+Object.entries(MP_MODES).forEach(([key, m]) => {
+  if(m.kind === 'race' && !m.start) m.start = () => startScoreDuel(key);
+});
+
 let mpMode = 'pongduel';
+let mpFilter = 'all';                       // which kind the picker is showing
+
+const MP_KINDS = {
+  live: { label:'LIVE VERSUS', tag:'◉ LIVE VERSUS', cls:'k-live' },
+  race: { label:'SCORE RACE',  tag:'▲ SCORE RACE',  cls:'k-race' }
+};
 
 // Ambiguous glyphs are left out: nobody reads a room code back correctly when
 // it can contain O/0 or I/1.
@@ -7954,12 +8075,6 @@ function mpErrText(e){
   if(/permission[_ ]denied/i.test(code)) return MP_ERR.DENIED;
   return MP_ERR[e && e.message] || 'Link failed — try again.';
 }
-
-// ── SESSION ──
-// null whenever this player isn't in a room. Everything below treats a missing
-// `mp` as "we already left", which is what makes the teardown paths safe to
-// run twice.
-let mp = null;
 
 function mpOn(ref, evt, cb, bucket){
   if(!mp) return;
@@ -8001,17 +8116,25 @@ const mpColor = (p, fallback) => (p && MP_HEX.test(p.color||'')) ? p.color : (fa
 //  ROOM LIFECYCLE
 // ══════════════════════════════════════════════════════════════════════
 
-function mpAttach(code, isHost){
+// `net` is the database this session talks to. It is the real Firebase one for
+// every duel against a person, and an in-memory loopback for a duel against a
+// droid — see makeLoopDB(). Nothing below this line asks which it is, which is
+// the point: the droid is not a special case inside a round, it is a second
+// client on a very short wire.
+function mpAttach(code, isHost, net, bot){
   mp = {
     code, isHost,
+    net: net || db,
+    bot: bot || null,            // the droid driver, when this is a practice room
     myId: user.uid, oppId: null,
-    roomRef: db.ref('rooms/' + code),
-    live:    db.ref('live/'  + code),
+    roomRef: (net || db).ref('rooms/' + code),
+    live:    (net || db).ref('live/'  + code),
     room: null, status: 'waiting',
     startAt: 0, endsAt: 0,
     me: null, opp: null, oppName: 'RIVAL',
     unsub: [], roundUnsub: [],
     inRound: false, cdRaf: 0,
+    autoBotAt: 0,                // when an unanswered Quick Match calls a droid in
     round: null                  // the active duel's callbacks, set by its start()
   };
   mpOn(mp.roomRef, 'value', mpOnRoom);
@@ -8028,6 +8151,9 @@ async function mpCreateRoom(modeKey){
     hostName: (user && user.username) || 'Operative',
     status: 'waiting',
     open: true,
+    // The host's stability tier travels with the room so both sides can play
+    // the round under ONE set of speed/clock modifiers — see mpBeginRound().
+    tier: currentDifficultyTier,
     createdAt: firebase.database.ServerValue.TIMESTAMP,
     players: { [user.uid]: mpCard('host') }
   });
@@ -8128,6 +8254,8 @@ async function mpLeaveRoom(){
   mp = null;                                  // everything else now no-ops
   session.roundUnsub.concat(session.unsub).forEach(([r,e,c]) => { try{ r.off(e,c); }catch(err){} });
   cancelAnimationFrame(session.cdRaf);
+  clearInterval(session.autoBotTimer);
+  if(session.bot) session.bot.stop();
 
   try{
     const seat = session.roomRef.child('players/' + session.myId);
@@ -8154,7 +8282,9 @@ function mpResetRoom(){
   if(!mp || !mp.isHost) return;
   const upd = { status:'waiting', open:true, startAt:null, endsAt:null };
   upd['players/' + mp.myId + '/ready'] = true;
-  if(mp.oppId) upd['players/' + mp.oppId + '/ready'] = false;
+  // A person has to say they want another round. A droid has no opinion, and
+  // standing it down would disable START with nobody left to press READY.
+  if(mp.oppId) upd['players/' + mp.oppId + '/ready'] = !!mp.bot;
   mp.roomRef.update(upd).catch(e => console.warn('Room reset failed:', e));
   mp.live.remove().catch(()=>{});
 }
@@ -8204,6 +8334,8 @@ function mpRoomGone(){
   mp = null;
   session.roundUnsub.concat(session.unsub).forEach(([r,e,c]) => { try{ r.off(e,c); }catch(err){} });
   cancelAnimationFrame(session.cdRaf);
+  clearInterval(session.autoBotTimer);
+  if(session.bot) session.bot.stop();
   mpPaintLink();
 
   // A duel that had already handed out its own callbacks can report the
@@ -8244,6 +8376,9 @@ function mpPaintLink(){
   const el = document.getElementById('mp-link');
   if(!el) return;
   el.classList.remove('live','busy','down');
+  // A droid duel runs entirely inside this tab, so it is honest about the link
+  // rather than borrowing the language of a room on the grid.
+  if(mp && mp.bot){ el.textContent = '◈ LOCAL DROID LINK'; el.classList.add('live'); return; }
   if(!db){ el.textContent = '◈ NO DATABASE'; el.classList.add('down'); return; }
   if(!netConnected){ el.textContent = '◈ RECONNECTING…'; el.classList.add('busy'); return; }
   if(mp){ el.textContent = '◈ ROOM ' + mp.code; el.classList.add('live'); return; }
@@ -8254,12 +8389,35 @@ function mpPaintLink(){
 function renderMpModes(){
   const wrap = document.getElementById('mp-modes');
   if(!wrap) return;
+
+  const entries = Object.entries(MP_MODES);
+
+  // ── FILTER CHIPS ──
+  const bar = document.getElementById('mp-filters');
+  if(bar){
+    const counts = { all: entries.length };
+    entries.forEach(([, m]) => { counts[m.kind] = (counts[m.kind] || 0) + 1; });
+    bar.innerHTML = '';
+    [['all','ALL DUELS'], ['live', MP_KINDS.live.label], ['race', MP_KINDS.race.label]]
+      .forEach(([key, label]) => {
+        const chip = document.createElement('button');
+        chip.className = 'mp-filter' + (key === mpFilter ? ' on' : '');
+        chip.innerHTML = `${label}<em>${counts[key] || 0}</em>`;
+        chip.onclick = () => { mpFilter = key; snd('tab'); renderMpModes(); };
+        bar.appendChild(chip);
+      });
+  }
+
+  // ── CARDS ──
   wrap.innerHTML = '';
-  Object.entries(MP_MODES).forEach(([key, m]) => {
+  entries.forEach(([key, m]) => {
+    if(mpFilter !== 'all' && m.kind !== mpFilter) return;
+    const kind = MP_KINDS[m.kind] || MP_KINDS.race;
     const card = document.createElement('div');
     card.className = 'mp-mode' + (key === mpMode ? ' sel' : '');
     card.dataset.mode = key;
     card.innerHTML =
+      `<span class="mp-mode-kind ${kind.cls}">${kind.tag}</span>` +
       `<span class="mp-mode-icon">${m.icon}</span>` +
       `<div class="mp-mode-name">${m.name}</div>` +
       `<div class="mp-mode-desc">${m.desc}</div>` +
@@ -8267,6 +8425,13 @@ function renderMpModes(){
     card.onclick = () => { mpMode = key; snd('tab'); renderMpModes(); };
     wrap.appendChild(card);
   });
+
+  // Filtering to a kind the selected duel isn't in would leave nothing ticked
+  // and the connect buttons quietly pointed at an off-screen mode.
+  if(mpFilter !== 'all' && MP_MODES[mpMode] && MP_MODES[mpMode].kind !== mpFilter){
+    const first = entries.find(([, m]) => m.kind === mpFilter);
+    if(first){ mpMode = first[0]; renderMpModes(); }
+  }
 }
 
 function mpSeat(el, p, isMe){
@@ -8279,12 +8444,13 @@ function mpSeat(el, p, isMe){
       '<div class="mp-seat-tag">AWAITING LINK</div>';
     return;
   }
-  el.className = 'mp-seat filled' + (p.ready ? ' ready' : '');
+  el.className = 'mp-seat filled' + (p.ready ? ' ready' : '') + (p.bot ? ' bot' : '');
   const avatar = esc(p.skin) || (p.role === 'host' ? '🛰️' : '🎮');
   el.innerHTML =
     `<span class="mp-seat-avatar">${avatar}</span>` +
     `<div class="mp-seat-name" style="color:${mpColor(p, '#ffffff')}">${esc(p.name)}${isMe ? ' · YOU' : ''}</div>` +
-    `<div class="mp-seat-tag">${p.role === 'host' ? 'HOST' : 'CHALLENGER'} · ${p.ready ? 'READY' : 'STANDBY'}</div>`;
+    `<div class="mp-seat-tag">${p.bot ? 'SYNTHETIC' : (p.role === 'host' ? 'HOST' : 'CHALLENGER')} · ${p.ready ? 'READY' : 'STANDBY'}</div>` +
+    (p.bot ? `<span class="mp-seat-bot-chip">${esc(p.lvl || 'DROID')}</span>` : '');
 }
 
 function mpPaintRoom(){
@@ -8298,12 +8464,21 @@ function mpPaintRoom(){
 
   const readyBtn = document.getElementById('btn-mp-ready');
   const startBtn = document.getElementById('btn-mp-start');
+  const addBotBtn = document.getElementById('btn-mp-addbot');
+  const copyBtn = document.getElementById('btn-mp-copy');
   const statusEl = document.getElementById('mp-room-status');
   const here = !!mp.opp;
+  const isBotRoom = !!mp.bot;
   const guestReady = mp.isHost ? !!(mp.opp && mp.opp.ready) : !!(mp.me && mp.me.ready);
 
   readyBtn.style.display = mp.isHost ? 'none' : '';
   startBtn.style.display = mp.isHost ? '' : 'none';
+  // The code of a droid room is a fiction — there is no grid entry behind it,
+  // so there is nothing worth copying and nobody who could join.
+  if(copyBtn) copyBtn.style.display = isBotRoom ? 'none' : '';
+  // Hosts sitting on an empty seat can stop waiting and summon a droid.
+  if(addBotBtn) addBotBtn.style.display =
+    (mp.isHost && !isBotRoom && !here && mp.status === 'waiting') ? '' : 'none';
 
   if(!mp.isHost){
     readyBtn.textContent = guestReady ? '✔ READY — STAND DOWN' : '✔ READY UP';
@@ -8311,7 +8486,17 @@ function mpPaintRoom(){
   }
   startBtn.disabled = !(here && guestReady && mp.status === 'waiting');
 
-  if(!here)                        statusEl.textContent = `Send code ${mp.code} to whoever you want to beat.`;
+  if(!here){
+    // A Quick Match room that is arming its droid fallback counts down out
+    // loud, so the takeover reads as promised rather than as a glitch.
+    const left = mp.autoBotAt ? Math.max(0, Math.ceil((mp.autoBotAt - Date.now())/1000)) : 0;
+    statusEl.textContent = mp.autoBotAt
+      ? `Scanning the grid for an operative… a droid takes the seat in ${left}s.`
+      : `Send code ${mp.code} to whoever you want to beat.`;
+  }
+  else if(isBotRoom)               statusEl.textContent = mp.status === 'waiting'
+                                                            ? 'Synthetic operative online — start the duel when ready.'
+                                                            : 'Round in progress…';
   else if(!guestReady)             statusEl.textContent = mp.isHost ? `Waiting for ${mp.oppName} to ready up…`
                                                                     : 'Press READY UP when you are set.';
   else if(mp.status !== 'waiting') statusEl.textContent = 'Round in progress…';
@@ -8330,10 +8515,13 @@ function mpOpenLobby(){
 }
 
 // Every connect button funnels through here so the "working…" state, the error
-// line and the hop to the room stage are written once.
-async function mpConnect(btn, work){
-  if(!db || !user){ mpErr(MP_ERR.NO_DB); return; }
-  if(!netConnected){ mpErr(MP_ERR.OFFLINE); return; }
+// line and the hop to the room stage are written once. `local` marks a droid
+// room, which runs entirely inside this tab and so has no business being
+// refused for a dead network link.
+async function mpConnect(btn, work, local){
+  if(!user){ mpErr(MP_ERR.NO_DB); return; }
+  if(!local && !db){ mpErr(MP_ERR.NO_DB); return; }
+  if(!local && !netConnected){ mpErr(MP_ERR.OFFLINE); return; }
   const label = btn.textContent;
   btn.disabled = true;
   btn.textContent = '⏳ Linking…';
@@ -8447,6 +8635,12 @@ function mpBeginRound(){
   onQuitGame = mpQuitRound;
   onStopGame = mpRoundCleanup;
 
+  // Both sides play the round on the HOST'S stability tier. Without this a
+  // score race is unwinnable in one direction — Meltdown halves the clock and
+  // doubles the hazards, so two players on different tiers aren't playing the
+  // same game at all. Put back by mpRoundCleanup() whichever way the round ends.
+  vsApplyTier((mp.room && mp.room.tier) || 'stable');
+
   document.getElementById('mp-hud').style.display = 'flex';
   document.getElementById('mp-ping-pill').style.display = '';
   mpHudNames((user && user.username) || 'YOU', mp.oppName);
@@ -8469,6 +8663,15 @@ function mpInstallRound(cbs){
 // Runs on every exit from a round — timeout, quit, dropped link — because it is
 // wired to stopGame() rather than to any one ending.
 function mpRoundCleanup(){
+  // Unconditional, and BEFORE the session check: a score race that ends with
+  // the room already gone would otherwise leave its taps installed, and a live
+  // vsResultTap swallows the results card of the next SOLO game the player
+  // starts. The tier has to come back for the same reason.
+  vsLiveTap = null;
+  vsResultTap = null;
+  clearInterval(vsTimer); vsTimer = 0;
+  vsRestoreTier();
+
   if(!mp) return;
   mpOff('round');
   cancelAnimationFrame(mp.cdRaf);
@@ -8516,7 +8719,8 @@ function mpShowDuelResult(gid, pts, outcome, bd){
 
   const inRoom = !!mp;
   showResults(gid, pts, bd, {
-    noBonus: true,                         // the two players may be on different tiers
+    internal: true,                        // this IS the duel's card — don't re-tap it
+    noBonus: true,                         // the round already ran on one shared tier
     badge,
     emoji: outcome === 'win' ? '🏆' : (outcome === 'draw' ? '🤝' : '💀'),
     sound: outcome === 'win' ? 'victory' : (outcome === 'draw' ? 'results' : 'gameOver'),
@@ -8551,7 +8755,10 @@ document.getElementById('btn-mp-back').onclick = async () => {
 };
 
 document.getElementById('btn-mp-quick').onclick = function(){
-  mpConnect(this, () => mpQuickMatch(mpMode));
+  mpConnect(this, async () => {
+    await mpQuickMatch(mpMode);
+    mpArmAutoBot();          // if we ended up hosting an empty room, a droid is coming
+  });
 };
 document.getElementById('btn-mp-create').onclick = function(){
   mpConnect(this, () => mpCreateRoom(mpMode));
@@ -8607,6 +8814,7 @@ document.getElementById('btn-mp-start').onclick = async () => {
       status: 'playing', open: false,
       startAt,
       endsAt: startAt + ((mode && mode.seconds) || 60) * 1000,
+      tier: currentDifficultyTier,          // re-stamped: the lobby may have sat a while
       result: null
     });
   }catch(e){
@@ -9351,3 +9559,722 @@ function startClickDuel(){
   if(droppedEarly){ mp.round.onOppLeft(); return; }
   gameLoopId = requestAnimationFrame(loop);
 }
+
+// ══════════════════════════════════════════════════════════════════════
+//  ▲ SCORE RACE — every solo mission as a duel, through one engine
+// ══════════════════════════════════════════════════════════════════════
+// A race never reaches inside a game. It listens at the two places every game
+// already talks to the outside world — setLive() and showResults() — and runs
+// the ordinary solo round in between. That is why thirteen games needed one
+// engine rather than thirteen: the contract was already there.
+//
+// The round is over when both sides have BANKED (their solo game ended and its
+// final score was captured). mode.seconds is only a ceiling: a player still
+// going when it lapses is banked at their live score, so an immortal Arena run
+// can't hold the room hostage.
+
+// ── SHARED TIER ──
+// Both boards run on the HOST'S stability tier for the round. Meltdown halves
+// clocks and doubles hazards, so mixed tiers would be two different games
+// wearing one scoreboard. Saved/restored around the round, not toggled by it.
+let vsSavedTier = null, vsTimer = 0;
+function vsApplyTier(tierKey){
+  if(!DIFFICULTY_TIERS[tierKey]) tierKey = 'stable';
+  if(vsSavedTier == null) vsSavedTier = currentDifficultyTier;
+  if(tierKey !== currentDifficultyTier) setDifficultyTier(tierKey);
+}
+function vsRestoreTier(){
+  if(vsSavedTier == null) return;
+  const t = vsSavedTier;
+  vsSavedTier = null;
+  if(t !== currentDifficultyTier) setDifficultyTier(t);
+}
+
+// How to turn a LIVE number into a FINAL score when a run has to be settled
+// without its own ending — the clock ceiling, a host estimate for a silent
+// rival. Identity for nearly every game, because nearly every game's on-screen
+// number already IS points; Flappy shows pipes and pays 50 a pipe.
+const VS_FORCE_FIN = {
+  flappy: n => Math.min(1000, Math.round(n) * 50)
+};
+
+// Halt the solo game's machinery without ending the ROUND: stopGame() with the
+// round teardown unhooked, then the versus strip put back (stopGame hides it).
+function vsHaltGame(){
+  const keep = onStopGame;
+  onStopGame = null;
+  stopGame();
+  onStopGame = keep;
+  document.getElementById('mp-hud').style.display = 'flex';
+  document.getElementById('mp-ping-pill').style.display = '';
+}
+
+// The one idle state a race has: your run is banked, theirs isn't. Everything
+// swaps to the canvas board because #mp-overlay lives inside it — the DOM games
+// (memory, math, reaction, hacker, click) have nowhere of their own to hang a
+// full-board notice.
+function vsWaitBoard(msg, sub){
+  ['g-click','g-memory','g-math','g-reaction','g-hacker'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.style.display = 'none';
+  });
+  document.getElementById('tetris-next-wrap').style.display = 'none';
+  document.getElementById('tetris-lvl-pill').style.display = 'none';
+  const deck = document.getElementById('bb-deck');
+  if(deck){ deck.innerHTML = ''; deck.style.display = 'none'; }
+  setControls(null);
+  document.getElementById('g-canvas-holder').style.display = 'block';
+  document.getElementById('game-screen').classList.add('canvas-game');
+  fitCanvas();
+  if(aCtx){
+    aCtx.fillStyle = '#07071a';
+    aCtx.fillRect(0, 0, BOARD_W, BOARD_H);
+  }
+  mpOverlay(msg, sub);
+}
+
+function startScoreDuel(modeKey){
+  if(!mp) return;
+  const mode = MP_MODES[modeKey], gid = mode.gid;
+  const isHost = mp.isHost, myId = mp.myId, oppId = mp.oppId;
+  const oppLabel = mp.oppName.toUpperCase().slice(0, 12);
+  const endsAt = mp.endsAt;                    // captured: outlives the session on walkover paths
+  const cap = META[gid].maxPts;
+  const forceFin = VS_FORCE_FIN[gid] || (n => Math.min(cap, Math.round(n)));
+  // Winner's cut. Sized off the cap but held down for the uncapped games, so
+  // Arena's 99999 ceiling doesn't mint a four-figure bonus.
+  const winBonus = Math.round(Math.min(cap, 1500) * 0.18);
+
+  let myLive = 0, oppLive = 0, myFinal = null, oppFin = null;
+  let myDone = false, over = false, finalized = false, lastSend = 0, lag = null;
+  let oppBankedTold = false;
+  const pingTick = mpThrottle(500);
+
+  function paintHud(){
+    const a = myDone ? myFinal : myLive;
+    const b = oppFin != null ? oppFin : oppLive;
+    mpHudScores(myDone ? myFinal + ' ✔' : myLive,
+                oppFin != null ? oppFin + ' ✔' : oppLive,
+                (a + b) ? a/(a + b) : 0.5);
+  }
+
+  // ── THE TWO TAPS ──
+  vsLiveTap = n => {
+    myLive = Math.max(0, +n || 0);
+    paintHud();
+    const now = netNow();
+    if(mp && now - lastSend > 250){
+      lastSend = now;
+      mp.live.child('score/' + myId).set({ n: myLive, t: now }).catch(()=>{});
+    }
+  };
+  vsResultTap = (g, pts) => {
+    if(over || myDone || g !== gid) return false;
+    bank(Math.round(+pts || 0), false);
+    return true;
+  };
+
+  // My solo round ended (or was ceilinged): freeze the board, publish the
+  // number, and wait out the other side.
+  function bank(pts, forcedByClock){
+    if(myDone || over) return;
+    myDone = true;
+    myFinal = Math.min(cap, Math.max(0, pts));
+    vsHaltGame();
+    onQuitGame = mpQuitRound;      // Cyber Arena swaps in its own quit — take it back
+    if(mp) mp.live.child('fin/' + myId).set({ pts: myFinal, t: netNow() }).catch(()=>{});
+    vsWaitBoard(forcedByClock ? 'TIME CEILING — RUN BANKED' : 'RUN BANKED',
+                myFinal + ' PTS · waiting for ' + oppLabel + '…');
+    snd('score');
+    paintHud();
+    maybeFinalize();
+  }
+
+  // Host only: the round settles when both banks are in, or when the ceiling
+  // plus a grace period has passed and the rival's estimate has to stand in.
+  function maybeFinalize(){
+    if(!mp || !isHost || finalized || !myDone) return;
+    if(oppFin == null && netNow() <= endsAt + 4000) return;
+    finalized = true;
+    const theirs = oppFin != null ? oppFin : forceFin(oppLive);
+    const scores = {};
+    scores[myId] = myFinal;
+    scores[oppId] = theirs;
+    mpFinishRound({ scores });
+    gLater(() => report(myFinal, theirs, 'Result write did not land — settled locally'), 4000);
+  }
+
+  // Idempotent: whichever ending gets here first is the one that counts.
+  function report(mine, theirs, note, forced){
+    if(over) return;
+    over = true;
+    const outcome = forced || (mine > theirs ? 'win' : (mine < theirs ? 'loss' : 'draw'));
+    const pts = Math.min(cap, Math.round(mine) + (outcome === 'win' ? winBonus : 0));
+    const bd = {
+      '⭐ Your Score': Math.round(mine),
+      ['🎯 ' + oppLabel + ' Score']: Math.round(theirs),
+      '📶 Link Lag': lag == null ? '—' : Math.round(lag) + ' ms',
+      '🏆 Awarded': pts + ' PTS'
+    };
+    if(note) bd['🔌 Note'] = note;
+    mpShowDuelResult(gid, pts, outcome, bd);
+  }
+
+  // ── WIRE ──
+  mpOn(mp.live.child('score/' + oppId), 'value', s => {
+    const v = s.val();
+    if(!v || !mp) return;
+    oppLive = Math.max(oppLive, +v.n || 0);
+    lag = Math.max(0, netNow() - (+v.t || netNow()));
+    paintHud();
+  }, 'round');
+  mpOn(mp.live.child('fin/' + oppId), 'value', s => {
+    const v = s.val();
+    if(!v || !mp) return;
+    oppFin = Math.max(0, Math.round(+v.pts || 0));
+    paintHud();
+    if(!myDone && !oppBankedTold){
+      oppBankedTold = true;
+      toast('🏁 ' + oppLabel + ' banked ' + oppFin + ' PTS — beat it!', 2600);
+    }
+    maybeFinalize();
+  }, 'round');
+
+  const droppedEarly = mpInstallRound({
+    onOppLeft(){
+      mpResetRoom();
+      if(!myDone){ myDone = true; myFinal = forceFin(myLive); vsHaltGame(); }
+      report(myFinal, oppFin != null ? oppFin : forceFin(oppLive),
+             'Rival dropped the link — walkover', 'win');
+    },
+    onResult(result){
+      const s = (result && result.scores) || {};
+      report(s[myId]  != null ? +s[myId]  : (myFinal == null ? forceFin(myLive) : myFinal),
+             s[oppId] != null ? +s[oppId] : (oppFin != null ? oppFin : forceFin(oppLive)));
+    }
+  });
+
+  // ── PACER ── enforces the ceiling and the safety nets; the solo game owns
+  // the visible clock, so this one stays silent until something is wrong.
+  clearInterval(vsTimer);
+  vsTimer = setInterval(() => {
+    if(over || !mp){ clearInterval(vsTimer); vsTimer = 0; return; }
+    const now = netNow();
+    if(!myDone && now > endsAt) bank(forceFin(myLive), true);
+    if(myDone) maybeFinalize();
+    if(!isHost && myDone && now > endsAt + 8000){
+      report(myFinal, oppFin != null ? oppFin : forceFin(oppLive),
+             'Host went quiet — settled on the last synced score');
+      return;
+    }
+    if(pingTick()) mpPing(lag);
+  }, 600);
+
+  paintHud();
+  if(droppedEarly){ mp.round.onOppLeft(); return; }
+  SOLO_START[gid]();                 // the ordinary solo game, live on this board
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  🤖 DROID OPPONENT — a second client on a very short wire
+// ══════════════════════════════════════════════════════════════════════
+// The droid is not special-cased inside any duel. It is a second CLIENT: it
+// reads the same room node, replays the same hazard feeds, and writes to the
+// same in/<id>, dead/<id>, score/<id> and fin/<id> paths a human would — just
+// against an in-memory database instead of Firebase. Every duel that works
+// against a person therefore works against the droid, including ones written
+// after it.
+
+// ── LOOPBACK DATABASE ──
+// The slice of the Firebase Realtime Database API the Network Arena actually
+// touches, over a plain object. Callbacks are delivered on a microtask, never
+// synchronously, so a write from inside a game loop can't re-enter the loop.
+function makeLoopDB(){
+  const root = {};
+  const listeners = [];          // {path:[], evt, cb, known:Map, all}
+  let pushN = 0, flushQueued = false;
+  const dirty = [];
+
+  const partsOf = p => String(p || '').split('/').filter(Boolean);
+  const samePath = (a, b) => a.join('/') === b.join('/');
+  const overlaps = (a, b) => {
+    const n = Math.min(a.length, b.length);
+    for(let i = 0; i < n; i++) if(a[i] !== b[i]) return false;
+    return true;
+  };
+  const getAt = parts => {
+    let n = root;
+    for(const k of parts){
+      if(n == null || typeof n !== 'object') return null;
+      n = n[k];
+    }
+    return n == null ? null : n;
+  };
+  // Writers keep their objects, readers get the stored tree — a copy on the way
+  // in is what stops the two aliasing each other.
+  const clean = v => v == null ? null : JSON.parse(JSON.stringify(v));
+
+  function setAt(parts, val){
+    if(!parts.length) return;
+    let n = root;
+    const stack = [];
+    for(let i = 0; i < parts.length - 1; i++){
+      stack.push(n);
+      if(n[parts[i]] == null || typeof n[parts[i]] !== 'object') n[parts[i]] = {};
+      n = n[parts[i]];
+    }
+    const leaf = parts[parts.length - 1];
+    if(val == null) delete n[leaf]; else n[leaf] = val;
+    // Firebase has no empty nodes; pruning keeps exists() honest here too.
+    for(let i = parts.length - 2; i >= 0; i--){
+      const parent = stack[i], key = parts[i], child = parent[key];
+      if(child && typeof child === 'object' && Object.keys(child).length === 0) delete parent[key];
+      else break;
+    }
+    dirty.push(parts);
+    scheduleFlush();
+  }
+
+  function snap(parts){
+    const v = getAt(parts);
+    return {
+      key: parts.length ? parts[parts.length - 1] : null,
+      val: () => v,
+      exists: () => v != null,
+      forEach: f => {
+        if(v && typeof v === 'object'){
+          for(const k of Object.keys(v)) f(snap(parts.concat([k])));
+        }
+      }
+    };
+  }
+  const childSnap = (parentParts, key, v) => ({
+    key,
+    val: () => v,
+    exists: () => v != null,
+    forEach: f => {
+      if(v && typeof v === 'object') for(const k of Object.keys(v)) f(childSnap(parentParts.concat([key]), k, v[k]));
+    }
+  });
+
+  function scheduleFlush(){
+    if(flushQueued) return;
+    flushQueued = true;
+    Promise.resolve().then(flush);
+  }
+  function flush(){
+    flushQueued = false;
+    const batch = dirty.splice(0);
+    if(!batch.length && !listeners.some(L => L.all)) return;
+    listeners.slice().forEach(L => {
+      if(!listeners.includes(L)) return;              // detached mid-flush
+      const hit = L.all || batch.some(p => overlaps(p, L.path));
+      if(!hit) return;
+      L.all = false;
+      if(L.evt === 'value'){ L.cb(snap(L.path)); return; }
+      const cur = getAt(L.path);
+      const keys = (cur && typeof cur === 'object') ? Object.keys(cur) : [];
+      if(L.evt === 'child_added'){
+        keys.forEach(k => {
+          if(!L.known.has(k)){ L.known.set(k, cur[k]); L.cb(childSnap(L.path, k, cur[k])); }
+        });
+        [...L.known.keys()].forEach(k => { if(!keys.includes(k)) L.known.delete(k); });
+      }else if(L.evt === 'child_removed'){
+        [...L.known.keys()].forEach(k => {
+          if(!keys.includes(k)){
+            const old = L.known.get(k);
+            L.known.delete(k);
+            L.cb(childSnap(L.path, k, old));
+          }
+        });
+        keys.forEach(k => { if(!L.known.has(k)) L.known.set(k, cur[k]); });
+      }
+    });
+  }
+
+  function ref(path){
+    const parts = partsOf(path);
+    return {
+      key: parts.length ? parts[parts.length - 1] : null,
+      child: p => ref(parts.concat(partsOf(p)).join('/')),
+      on(evt, cb){
+        listeners.push({ path: parts, evt, cb, known: new Map(), all: true });
+        scheduleFlush();
+        return cb;
+      },
+      off(evt, cb){
+        const i = listeners.findIndex(L => L.cb === cb && L.evt === evt && samePath(L.path, parts));
+        if(i >= 0) listeners.splice(i, 1);
+      },
+      once(){ return Promise.resolve(snap(parts)); },
+      set(v){ setAt(parts, clean(v)); return Promise.resolve(); },
+      update(obj){
+        Object.entries(obj || {}).forEach(([k, v]) => setAt(parts.concat(partsOf(k)), clean(v)));
+        return Promise.resolve();
+      },
+      remove(){ setAt(parts, null); return Promise.resolve(); },
+      push(v){
+        const k = 'loop' + (++pushN);
+        setAt(parts.concat([k]), clean(v));
+        return Promise.resolve(ref(parts.concat([k]).join('/')));
+      },
+      transaction(fn){
+        const res = fn(getAt(parts));
+        if(res === undefined) return Promise.resolve({ committed: false, snapshot: snap(parts) });
+        setAt(parts, clean(res));
+        return Promise.resolve({ committed: true, snapshot: snap(parts) });
+      },
+      onDisconnect(){
+        return { remove: () => Promise.resolve(), cancel: () => Promise.resolve() };
+      }
+    };
+  }
+  return { ref };
+}
+
+// ── DROID PERSONALITIES ──
+// Three rungs. The knobs are per-duel-family: paddle speed and aim error for
+// Pong, reaction and stamina for Core Survival, clicks a second for Frenzy,
+// and a target fraction of each game's cap for every score race.
+const MP_BOT_LEVELS = {
+  rookie: {
+    key:'rookie', label:'ROOKIE', chip:'ROOKIE DROID', name:'SPARK-9', color:'#39ff14', skin:'🤖',
+    pong:{ speed:170, err:46, thinkMs:250 },
+    dodge:{ speed:118, react:0.30, lifeMin:10, lifeVar:14 },
+    click:{ cps:4.2 },
+    race:{ frac:0.34, fuzz:0.12 }
+  },
+  veteran: {
+    key:'veteran', label:'VETERAN', chip:'VETERAN DROID', name:'VOLT-77', color:'#a855f7', skin:'🤖',
+    pong:{ speed:265, err:20, thinkMs:120 },
+    dodge:{ speed:190, react:0.15, lifeMin:24, lifeVar:20 },
+    click:{ cps:6.8 },
+    race:{ frac:0.62, fuzz:0.13 }
+  },
+  elite: {
+    key:'elite', label:'ELITE', chip:'ELITE DROID', name:'NULLTRACE', color:'#ff2442', skin:'🤖',
+    pong:{ speed:420, err:6, thinkMs:45 },
+    dodge:{ speed:295, react:0.05, lifeMin:45, lifeVar:30 },
+    click:{ cps:9.6 },
+    race:{ frac:0.92, fuzz:0.12 }
+  }
+};
+
+// What a plausible run of each solo game looks like from the outside: the size
+// of one scoring event, how long a round tends to last, and (where the two
+// differ) how the live number maps to the final one. This is all a score-race
+// droid needs — it fakes a scoreboard, not a game.
+const VS_BOT_PROFILE = {
+  nebula:     { q:20,  dur:[55,110] },
+  tetris:     { q:100, dur:[60,140] },
+  memory:     { q:75,  dur:[16,24]  },
+  math:       { q:50,  dur:[17,21]  },
+  reaction:   { q:120, dur:[12,16]  },
+  snake:      { q:30,  dur:[45,110] },
+  flappy:     { q:1,   dur:[30,100], toLive: f => Math.max(1, Math.round(f/50)), fin: n => Math.min(1000, Math.round(n)*50) },
+  breaker:    { q:35,  dur:[45,70],  bonus:120 },
+  arena:      { q:40,  dur:[80,170], nominal:2600 },
+  runner:     { q:25,  dur:[55,120] },
+  hacker:     { q:45,  dur:[35,75]  },
+  meteor:     { q:30,  dur:[50,85],  bonus:210 },
+  battlebots: { q:60,  dur:[70,110] }
+};
+
+function makeDroid(net, code, botId, levelKey, modeKey){
+  const mode = MP_MODES[modeKey];
+  const L = MP_BOT_LEVELS[levelKey] || MP_BOT_LEVELS.veteran;
+  const live = net.ref('live/' + code);
+  const roomRef = net.ref('rooms/' + code);
+  let timers = [], subs = [], roundActive = false;
+
+  const every = (fn, ms) => { const id = setInterval(fn, ms); timers.push(id); return id; };
+  const later = (fn, ms) => { const id = setTimeout(fn, ms); timers.push(id); return id; };
+  const sub = (r, evt, cb) => { r.on(evt, cb); subs.push([r, evt, cb]); };
+  function stopRound(){
+    timers.forEach(t => { clearInterval(t); clearTimeout(t); });
+    timers = [];
+    subs.forEach(([r, e, c]) => { try{ r.off(e, c); }catch(_){}} );
+    subs = [];
+    roundActive = false;
+  }
+
+  const onRoom = s => {
+    const r = s.val();
+    if(!r){ stopRound(); return; }
+    if(r.status === 'playing' && !roundActive){
+      roundActive = true;
+      later(() => beginRound(r), Math.max(0, (r.startAt || 0) - netNow()));
+    }else if(r.status !== 'playing' && roundActive){
+      stopRound();
+    }
+  };
+  roomRef.on('value', onRoom);
+
+  function beginRound(room){
+    if(mode.kind === 'race')            raceBrain(room);
+    else if(mode.gid === 'pong')        pongBrain(room);
+    else if(mode.gid === 'dodge')       dodgeBrain(room);
+    else if(mode.gid === 'click')       clickBrain(room);
+  }
+
+  // ── 🏓 PONG — track the ball with a speed limit and an aim error ──
+  // The droid is always the GUEST (canonical right paddle); the human host's
+  // physics smooths guestY toward whatever lands on the wire, exactly as it
+  // would for a person.
+  function pongBrain(){
+    const W = BOARD_W, H = BOARD_H, PAD_H = 76, BALL_R = 7;
+    let y = H/2 - PAD_H/2, target = y, snapV = null, err = 0, lastSign = 0;
+
+    sub(live.child('state'), 'value', s => { const v = s.val(); if(v) snapV = v; });
+
+    // Think slowly, move smoothly: the think rate IS the reaction time.
+    every(() => {
+      if(!snapV){ target = H/2 - PAD_H/2; return; }
+      const vx = +snapV.bvx || 0;
+      if(vx > 0){
+        const face = W - 20 - 10;
+        const t = Math.max(0, Math.min(1.6, (face - (+snapV.bx || 0)) / vx));
+        let py = (+snapV.by || 0) + (+snapV.bvy || 0) * t;
+        const span = H - 2*BALL_R;
+        let k = (py - BALL_R) % (2*span);
+        if(k < 0) k += 2*span;
+        py = BALL_R + (k <= span ? k : 2*span - k);
+        if(Math.sign(vx) !== lastSign) err = (Math.random()*2 - 1) * L.pong.err;
+        target = py - PAD_H/2 + err;
+      }else{
+        target = H/2 - PAD_H/2 + err * 0.3;
+      }
+      lastSign = Math.sign(vx || 0);
+    }, L.pong.thinkMs);
+
+    every(() => {
+      const maxStep = L.pong.speed / 30;
+      y += Math.max(-maxStep, Math.min(maxStep, target - y));
+      y = Math.max(0, Math.min(H - PAD_H, y));
+      live.child('in/' + botId).set({ y: Math.round(y*10)/10, t: netNow() }).catch(()=>{});
+    }, 33);
+  }
+
+  // ── 💥 CORE SURVIVAL — replay the shared spawn feed and steer away ──
+  // Same replay math as the clients, same self-owned death. Stamina is the
+  // difficulty: past its scheduled span the droid stops dodging in earnest and
+  // the field finishes it honestly.
+  function dodgeBrain(room){
+    const W = BOARD_W, H = BOARD_H, RAD = 9;
+    let x = W*0.70, y = H*0.30, alive = true;
+    const cores = [];
+    const startAt = room.startAt || netNow();
+    const dieAt = startAt + (L.dodge.lifeMin + Math.random()*L.dodge.lifeVar) * 1000;
+
+    sub(live.child('cores'), 'child_added', s => {
+      const v = s.val();
+      if(!v) return;
+      cores.push({ id:s.key, x:+v.x||0, y:+v.y||0, vx:+v.vx||0, vy:+v.vy||0,
+                   r:Math.max(4, +v.r||8), t0:+v.t0||netNow() });
+    });
+    sub(live.child('cores'), 'child_removed', s => {
+      const i = cores.findIndex(c => c.id === s.key);
+      if(i >= 0) cores.splice(i, 1);
+    });
+
+    every(() => {
+      if(!alive) return;
+      const now = netNow();
+      let fx = 0, fy = 0;
+      for(const c of cores){
+        const age = (now - c.t0)/1000;
+        if(age < L.dodge.react) continue;              // hasn't noticed it yet
+        const cx = c.x + c.vx*age, cy = c.y + c.vy*age;
+        const dx = x - cx, dy = y - cy;
+        const d2 = dx*dx + dy*dy;
+        if(d2 < 120*120){
+          const d = Math.sqrt(d2) || 1;
+          const w = (120 - d)/120;
+          fx += dx/d * w * 300;
+          fy += dy/d * w * 300;
+        }
+      }
+      fx += (W/2 - x) * 0.3;                           // mild centre pull
+      fy += (H*0.55 - y) * 0.3;
+      const sp = now > dieAt ? L.dodge.speed * 0.12 : L.dodge.speed;
+      const mag = Math.hypot(fx, fy);
+      if(mag > 1){ x += fx/mag * sp * 0.05; y += fy/mag * sp * 0.05; }
+      x = Math.max(RAD, Math.min(W - RAD, x));
+      y = Math.max(RAD, Math.min(H - RAD, y));
+
+      for(const c of cores){
+        const age = (now - c.t0)/1000;
+        const cx = c.x + c.vx*age, cy = c.y + c.vy*age;
+        const dx = cx - x, dy = cy - y, rr = c.r + RAD;
+        if(dx*dx + dy*dy < rr*rr){
+          alive = false;
+          const sec = Math.round(Math.max(0, now - startAt)/100)/10;
+          live.child('dead/' + botId).set({ sec, t: now }).catch(()=>{});
+          return;
+        }
+      }
+      live.child('in/' + botId).set({ x: Math.round(x*10)/10, y: Math.round(y*10)/10, t: now }).catch(()=>{});
+    }, 50);
+  }
+
+  // ── 🖱️ FRENZY — a click rate with a human wobble ──
+  function clickBrain(room){
+    const cps = L.click.cps * (0.9 + Math.random()*0.2);
+    let n = 0;
+    every(() => {
+      const now = netNow();
+      if(now < (room.startAt || 0)) return;
+      if(now <= (room.endsAt || 0)) n += cps * 0.1 * (0.7 + Math.random()*0.6);
+      live.child('in/' + botId).set({ n: Math.floor(n), t: now }).catch(()=>{});
+    }, 100);
+  }
+
+  // ── ▲ ANY SCORE RACE — a plausible scoreboard, not a played game ──
+  // Eases toward a target that is a level-dependent fraction of the game's cap,
+  // in that game's own scoring quantum, then banks. From the human's side it is
+  // indistinguishable from a rival's score feed — which is all it ever was.
+  function raceBrain(room){
+    const gid = mode.gid;
+    const prof = VS_BOT_PROFILE[gid] || { q:25, dur:[40,80] };
+    const capReal = META[gid].maxPts;
+    const cap = prof.nominal || capReal;
+    const frac = Math.max(0.05, Math.min(1.05, L.race.frac + (Math.random()*2 - 1) * L.race.fuzz));
+    const finTarget = Math.round(cap * frac);
+    const liveTarget = prof.toLive ? prof.toLive(finTarget) : finTarget;
+    const durCeil = ((mode.seconds || 60) - 4) * 1000;
+    const dur = Math.min(durCeil, (prof.dur[0] + Math.random()*(prof.dur[1] - prof.dur[0])) * 1000);
+    const startAt = room.startAt || netNow();
+    let liveN = 0, finned = false;
+
+    every(() => {
+      if(finned) return;
+      const now = netNow();
+      const t = now - startAt;
+      if(t < 0) return;
+      const p = Math.min(1, t / dur);
+      const eased = p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p + 2, 2)/2;
+      const expect = liveTarget * eased;
+      while(liveN < expect) liveN += prof.q * (Math.random() < 0.25 ? 2 : 1);
+      liveN = Math.min(liveN, liveTarget);
+      live.child('score/' + botId).set({ n: Math.round(liveN), t: now }).catch(()=>{});
+      if(p >= 1){
+        finned = true;
+        const base = prof.fin ? prof.fin(liveN) : Math.round(liveN);
+        const pts = Math.min(capReal, base + Math.round((prof.bonus || 0) * Math.random()));
+        live.child('fin/' + botId).set({ pts, t: now }).catch(()=>{});
+      }
+    }, 400);
+  }
+
+  return {
+    stop(){
+      stopRound();
+      try{ roomRef.off('value', onRoom); }catch(_){}
+    }
+  };
+}
+
+// ── DROID ROOMS ──
+// A droid room is an ordinary room in an in-memory database: same shape, same
+// lifecycle, same listeners. The human is always the host, the droid is
+// pre-seated and pre-ready, and START is live immediately.
+async function mpStartBotRoom(modeKey, levelKey){
+  const L = MP_BOT_LEVELS[levelKey] || MP_BOT_LEVELS.veteran;
+  const net = makeLoopDB();
+  const code = 'DR' +
+    MP_CODE_CHARS[Math.floor(Math.random()*MP_CODE_CHARS.length)] +
+    MP_CODE_CHARS[Math.floor(Math.random()*MP_CODE_CHARS.length)];
+  const botId = 'droid-' + L.key;
+
+  await net.ref('rooms/' + code).set({
+    mode: modeKey,
+    game: MP_MODES[modeKey].gid,
+    host: user.uid,
+    hostName: (user && user.username) || 'Operative',
+    status: 'waiting',
+    open: false,
+    tier: currentDifficultyTier,
+    createdAt: Date.now(),
+    guest: botId,
+    players: {
+      [user.uid]: mpCard('host'),
+      [botId]: { name: L.name, color: L.color, skin: L.skin, role: 'guest',
+                 ready: true, bot: true, lvl: L.chip, joinedAt: Date.now() }
+    }
+  });
+  const bot = makeDroid(net, code, botId, L.key, modeKey);
+  mpAttach(code, true, net, bot);
+  return code;
+}
+
+// Quick Match's fallback: a room opened for strangers that nobody joins hands
+// its empty seat to a droid, with the countdown spoken in the status line.
+const MP_AUTOBOT_MS = 25000;
+function mpArmAutoBot(){
+  if(!mp || !mp.isHost || mp.oppId || mp.bot) return;   // matched instantly, or already synthetic
+  const session = mp;
+  session.autoBotAt = Date.now() + MP_AUTOBOT_MS;
+  session.autoBotTimer = setInterval(async () => {
+    if(mp !== session){ clearInterval(session.autoBotTimer); return; }
+    if(session.oppId || session.status !== 'waiting'){
+      session.autoBotAt = 0;
+      clearInterval(session.autoBotTimer);
+      mpPaintRoom();
+      return;
+    }
+    if(Date.now() >= session.autoBotAt){
+      clearInterval(session.autoBotTimer);
+      await mpSwapToDroid(session.room ? session.room.mode : mpMode);
+      return;
+    }
+    mpPaintRoom();                                      // tick the countdown
+  }, 1000);
+  mpPaintRoom();
+}
+
+async function mpSwapToDroid(modeKey){
+  await mpLeaveRoom();
+  try{
+    await mpStartBotRoom(modeKey, mpBotLevel);
+    toast('🤖 No operatives answered — a droid took the seat.', 3200);
+    mpShowStage('room');
+    mpPaintRoom();
+    snd('equip');
+  }catch(e){
+    console.warn('Droid deploy failed:', e);
+    mpShowStage('pick');
+    renderMpModes();
+  }
+}
+
+// ── DROID WIRING ──
+let mpBotLevel = 'veteran';
+function renderBotLvls(){
+  const wrap = document.getElementById('mp-bot-lvls');
+  if(!wrap) return;
+  wrap.innerHTML = '';
+  Object.values(MP_BOT_LEVELS).forEach(L => {
+    const b = document.createElement('button');
+    b.className = 'mp-bot-lvl' + (L.key === mpBotLevel ? ' on' : '');
+    b.dataset.lvl = L.key;
+    b.textContent = L.label;
+    b.onclick = () => { mpBotLevel = L.key; snd('tab'); renderBotLvls(); };
+    wrap.appendChild(b);
+  });
+}
+renderBotLvls();
+
+document.getElementById('btn-mp-bot').onclick = function(){
+  mpConnect(this, () => mpStartBotRoom(mpMode, mpBotLevel), true);
+};
+
+document.getElementById('btn-mp-addbot').onclick = async function(){
+  if(!mp || !mp.isHost || mp.oppId) return;
+  const modeKey = (mp.room && mp.room.mode) || mpMode;
+  const btn = this;
+  btn.disabled = true;
+  btn.textContent = '⏳ Summoning…';
+  await mpSwapToDroid(modeKey);
+  btn.disabled = false;
+  btn.textContent = '🤖 Fill Seat With Droid';
+};

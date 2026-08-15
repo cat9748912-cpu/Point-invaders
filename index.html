@@ -89,7 +89,7 @@
         <span class="mp-banner-icon">🌐</span>
         <div class="mp-banner-txt">
           <div class="mp-banner-title">NETWORK ARENA</div>
-          <div class="mp-banner-sub">Duel a real operative over the grid — quick match or share a room code.</div>
+          <div class="mp-banner-sub">Every mission, head-to-head — quick match, room codes, or duel a training droid when the grid is quiet.</div>
         </div>
         <button class="btn btn-primary" id="btn-mp-open">ENTER →</button>
       </div>
@@ -219,8 +219,11 @@
     <!-- ── STAGE 1 · pick a duel, then connect ── -->
     <div class="mp-stage active" id="mp-stage-pick">
       <div class="sec-label">⚔️ SELECT DUEL</div>
-      <!-- Cards are built by renderMpModes() so the mode table stays the one
-           source of truth for names, rules and point caps. -->
+      <!-- Every solo mission has a duel counterpart, which is sixteen cards —
+           too many to scan at once, so they filter by KIND of duel. The chips
+           and the cards are both built by renderMpModes() from MP_MODES, which
+           stays the one source of truth for names, rules and point caps. -->
+      <div class="mp-filters" id="mp-filters"></div>
       <div class="mp-modes" id="mp-modes"></div>
 
       <div class="sec-label mp-sec-2">📡 ESTABLISH LINK</div>
@@ -228,8 +231,17 @@
         <div class="card mp-conn-card">
           <div class="mp-conn-icon">⚡</div>
           <div class="mp-conn-name">QUICK MATCH</div>
-          <div class="mp-conn-desc">Drop into the first open room for this duel — or open one and wait.</div>
+          <div class="mp-conn-desc">Drop into the first open room for this duel — or open one and wait. A droid takes the seat if nobody shows.</div>
           <button class="btn btn-primary btn-full" id="btn-mp-quick">Find Opponent</button>
+        </div>
+        <!-- 🤖 The always-available opponent. Every duel in the table above is
+             playable against it, so an empty grid never means an empty arena. -->
+        <div class="card mp-conn-card mp-bot-card">
+          <div class="mp-conn-icon">🤖</div>
+          <div class="mp-conn-name">DUEL A DROID</div>
+          <div class="mp-conn-desc">No waiting, no link. A synthetic operative plays the other half of any duel.</div>
+          <div class="mp-bot-lvls" id="mp-bot-lvls"></div>
+          <button class="btn btn-primary btn-full" id="btn-mp-bot">Deploy Droid</button>
         </div>
         <div class="card mp-conn-card">
           <div class="mp-conn-icon">➕</div>
@@ -271,6 +283,9 @@
         <div class="mp-room-btns">
           <button class="btn btn-primary" id="btn-mp-ready">✔ READY UP</button>
           <button class="btn btn-primary" id="btn-mp-start">🚀 START DUEL</button>
+          <!-- Host only, and only while the second seat is empty: stop waiting
+               and fill it with a droid instead. -->
+          <button class="btn btn-secondary" id="btn-mp-addbot">🤖 Fill Seat With Droid</button>
           <button class="btn btn-secondary" id="btn-mp-leave">Leave Room</button>
         </div>
         <div class="mp-err" id="mp-room-err"></div>
