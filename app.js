@@ -35,6 +35,27 @@ function saveMode(m){ try{ localStorage.setItem(LS_KEY, m); }catch(e){} }
 
 let mode = loadMode();
 
+// Master volume, 0–100. 100 maps to the historical 0.85 master gain, and the
+// curve is perceptual — half-slider should sound half as loud, not nearly full.
+const LS_VOL = 'pi_audio_vol';
+function loadVol(){
+  try{
+    const v = parseInt(localStorage.getItem(LS_VOL));
+    return (v >= 0 && v <= 100) ? v : 100;
+  }catch(e){ return 100; }
+}
+let volume = loadVol();
+const volGain = () => 0.85 * Math.pow(volume / 100, 1.6);
+function setVolume(v){
+  volume = Math.max(0, Math.min(100, Math.round(v) || 0));
+  try{ localStorage.setItem(LS_VOL, String(volume)); }catch(e){}
+  if(ctx && master){
+    const t = ctx.currentTime;
+    master.gain.cancelScheduledValues(t);
+    master.gain.setTargetAtTime(volGain(), t, 0.02);
+  }
+}
+
 // ── GRAPH ─────────────────────────────────────────────────────────────
 //   voices ─┬─▶ sfxBus  ──┬─▶ comp ─▶ master ─▶ speakers
 //           └─▶ musicBus ─┘        (delay send hangs off musicBus)
@@ -56,7 +77,7 @@ function ensureCtx(){
     comp.threshold.value = -16; comp.knee.value = 24; comp.ratio.value = 12;
     comp.attack.value = 0.003; comp.release.value = 0.25;
 
-    master = ctx.createGain();   master.gain.value = 0.85;
+    master = ctx.createGain();   master.gain.value = volGain();
     sfxBus = ctx.createGain();   sfxBus.gain.value = (mode === 'mute') ? 0 : 1;
     musicBus = ctx.createGain(); musicBus.gain.value = (mode === 'full') ? 1 : 0;
 
@@ -518,6 +539,14 @@ function bindToggle(el){
   paintButton(el);
   el.addEventListener('click', e => { e.stopPropagation(); cycleMode(); });
 }
+// Same registry as bindToggle, but the caller owns the click — used by the
+// audio popover, which sets modes directly instead of blind-cycling.
+function bindIndicator(el){
+  if(!el || buttons.includes(el)) return;
+  buttons.push(el);
+  paintButton(el);
+}
+function repaintAll(){ buttons.forEach(paintButton); }
 function cycleMode(){
   mode = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
   applyMode();
@@ -531,8 +560,9 @@ function setMode(m){
 }
 
 return {
-  play, music, unlock, bindToggle, cycleMode, setMode,
+  play, music, unlock, bindToggle, bindIndicator, repaintAll, cycleMode, setMode, setVolume,
   get mode(){ return mode; },
+  get volume(){ return volume; },
   modeToast(){ return MODE_UI[mode].toast; },
   get supported(){ return SUPPORTED; }
 };
@@ -563,6 +593,36 @@ try {
 }
 
 // ════════════════════════════════════════════
+//  👁️ VISUAL COMFORT PREFERENCES
+// ════════════════════════════════════════════
+// Reduced motion follows the OS preference until the player chooses; the
+// colorblind-safe palette is opt-in. Both live as classes on <html> so CSS
+// carries most of the work, plus VFX.shake() for the canvas games.
+const VFX = (function(){
+  const LS_RM = 'pi_reduced_motion', LS_CB = 'pi_cb_safe';
+  const sysRM = () => { try{ return matchMedia('(prefers-reduced-motion: reduce)').matches; }catch(e){ return false; } };
+  const load = (key, fallback) => {
+    try{ const v = localStorage.getItem(key); return v === null ? fallback : v === '1'; }
+    catch(e){ return fallback; }
+  };
+  const save = (key, v) => { try{ localStorage.setItem(key, v ? '1' : '0'); }catch(e){} };
+  let rm = load(LS_RM, sysRM());
+  let cb = load(LS_CB, false);
+  function apply(){
+    document.documentElement.classList.toggle('reduced-motion', rm);
+    document.documentElement.classList.toggle('cb-safe', cb);
+  }
+  apply();
+  return {
+    get reducedMotion(){ return rm; },
+    get cbSafe(){ return cb; },
+    setReducedMotion(v){ rm = !!v; save(LS_RM, rm); apply(); },
+    setCbSafe(v){ cb = !!v; save(LS_CB, cb); apply(); },
+    shake(v){ return rm ? 0 : v; }
+  };
+})();
+
+// ════════════════════════════════════════════
 //  🌌 ARCADE HUB HUB AMBIENT BACKGROUND
 // ════════════════════════════════════════════
 (function(){
@@ -571,7 +631,7 @@ try {
   let p=[];
   const resize=()=>{c.width=innerWidth;c.height=innerHeight};
   const init=()=>{p=Array.from({length:110},()=>({x:Math.random()*c.width,y:Math.random()*c.height,r:Math.random()*1.3+.2,a:Math.random(),da:(Math.random()*.012+.003)*(Math.random()<.5?1:-1),s:Math.random()*.35+.05}))};
-  const draw=()=>{x.clearRect(0,0,c.width,c.height);p.forEach(pt=>{pt.a+=pt.da;if(pt.a>1||pt.a<0)pt.da*=-1;pt.y-=pt.s;if(pt.y<-2){pt.y=c.height+2;pt.x=Math.random()*c.width}x.beginPath();x.arc(pt.x,pt.y,pt.r,0,Math.PI*2);x.fillStyle=`rgba(255,255,255,${Math.max(0,Math.min(.65,pt.a))})`;x.fill()});requestAnimationFrame(draw)};
+  const draw=()=>{x.clearRect(0,0,c.width,c.height);const still=VFX.reducedMotion;p.forEach(pt=>{if(!still){pt.a+=pt.da;if(pt.a>1||pt.a<0)pt.da*=-1;pt.y-=pt.s;if(pt.y<-2){pt.y=c.height+2;pt.x=Math.random()*c.width}}x.beginPath();x.arc(pt.x,pt.y,pt.r,0,Math.PI*2);x.fillStyle=`rgba(255,255,255,${Math.max(0,Math.min(.65,pt.a))})`;x.fill()});requestAnimationFrame(draw)};
   resize();init();draw();window.addEventListener('resize',()=>{resize();init()});
 })();
 
@@ -656,7 +716,10 @@ const META = {
   runner: { name: 'CYBER RUNNER', emoji: '🌌', maxPts: 1200 },
   hacker: { name: 'NODE HACKER',  emoji: '🔓', maxPts: 800 },
   meteor: { name: 'METEOR SHIELD',emoji: '☄️', maxPts: 1100 },
-  battlebots:{name:'BATTLE BOTS', emoji: '🤖', maxPts: 1200 }
+  battlebots:{name:'BATTLE BOTS', emoji: '🤖', maxPts: 1200 },
+  // Not a mission — the chained run. maxPts is the ceiling of the five biggest
+  // caps, which is what clamps the combined award.
+  bossrush:{ name:'BOSS RUSH',    emoji: '🔥', maxPts: 6200 }
 };
 
 // One place that knows how to start each mission. prepGame() runs them behind a
@@ -857,12 +920,118 @@ const snd   = (name, opts) => { if(window.SFX) SFX.play(name, opts); };
 const music = track        => { if(window.SFX) SFX.music(track); };
 
 // The 🔊 button appears in both the hub bar and the game header; they're two
-// views of one setting, so the engine keeps both labelled in sync.
+// views of one setting. Clicking either opens one shared popover — mode chips
+// plus a master volume slider — anchored to whichever button was clicked.
+const audioPop = (function(){
+  let pop = null;
+
+  function build(){
+    pop = document.createElement('div');
+    pop.id = 'audio-pop';
+    pop.innerHTML = `
+      <div class="ap-sec">AUDIO</div>
+      <div class="ap-modes">
+        <button class="ap-mode" data-mode="full">🔊 All</button>
+        <button class="ap-mode" data-mode="sfx">🔈 SFX</button>
+        <button class="ap-mode" data-mode="mute">🔇 Off</button>
+      </div>
+      <div class="ap-vol-row">
+        <input type="range" id="ap-vol" min="0" max="100" step="1" aria-label="Master volume">
+        <span class="ap-vol-num" id="ap-vol-num">100</span>
+      </div>
+      <div class="ap-divider"></div>
+      <div class="ap-sec">VISUAL COMFORT</div>
+      <div class="ap-toggle" id="ap-rm" role="switch" tabindex="0">
+        <span class="ap-toggle-lbl">🌊 Reduce motion</span><span class="ap-switch"></span>
+      </div>
+      <div class="ap-toggle" id="ap-cb" role="switch" tabindex="0">
+        <span class="ap-toggle-lbl">🎨 Colorblind-safe</span><span class="ap-switch"></span>
+      </div>`;
+    document.body.appendChild(pop);
+
+    const wireToggle = (id, get, set, onLabel) => {
+      const el = pop.querySelector(id);
+      const flip = e => {
+        e.stopPropagation();
+        set(!get());
+        paint();
+        snd('toggle');
+        toast(`${onLabel}: ${get() ? 'ON' : 'OFF'}`, 1600);
+      };
+      el.addEventListener('click', flip);
+      el.addEventListener('keydown', e => { if(e.key === 'Enter' || e.key === ' ') flip(e); });
+    };
+    wireToggle('#ap-rm', ()=>VFX.reducedMotion, v=>VFX.setReducedMotion(v), '🌊 Reduced motion');
+    wireToggle('#ap-cb', ()=>VFX.cbSafe,        v=>VFX.setCbSafe(v),        '🎨 Colorblind-safe');
+
+    pop.querySelectorAll('.ap-mode').forEach(b=>{
+      b.addEventListener('click', e=>{
+        e.stopPropagation();
+        SFX.setMode(b.dataset.mode);
+        SFX.unlock();
+        snd('toggle');
+        toast(SFX.modeToast(), 1800);
+        paint();
+      });
+    });
+
+    const vol = pop.querySelector('#ap-vol');
+    vol.addEventListener('input', ()=>{
+      SFX.setVolume(+vol.value);
+      pop.querySelector('#ap-vol-num').textContent = vol.value;
+    });
+    // Preview blip on release, so dragging isn't a machine-gun of clicks.
+    vol.addEventListener('change', ()=>{ SFX.unlock(); snd('toggle'); });
+
+    document.addEventListener('click', e=>{
+      // The anchor buttons run their own open/close toggle — closing here too
+      // would make the button reopen the popover it just closed.
+      if(e.target.closest?.('.btn-sound')) return;
+      if(pop.classList.contains('open') && !pop.contains(e.target)) hide();
+    }, true);
+    document.addEventListener('keydown', e=>{ if(e.key==='Escape') hide(); });
+  }
+
+  function paint(){
+    if(!pop) return;
+    pop.querySelectorAll('.ap-mode').forEach(b=>{
+      b.classList.toggle('active', b.dataset.mode === SFX.mode);
+    });
+    pop.querySelector('#ap-vol').value = SFX.volume;
+    pop.querySelector('#ap-vol-num').textContent = SFX.volume;
+    const rm = pop.querySelector('#ap-rm'), cb = pop.querySelector('#ap-cb');
+    rm.classList.toggle('on', VFX.reducedMotion);
+    rm.setAttribute('aria-checked', VFX.reducedMotion);
+    cb.classList.toggle('on', VFX.cbSafe);
+    cb.setAttribute('aria-checked', VFX.cbSafe);
+  }
+
+  function show(anchor){
+    if(!pop) build();
+    paint();
+    pop.classList.add('open');
+    const r = anchor.getBoundingClientRect();
+    const w = pop.offsetWidth || 230;
+    // Below the button, right-aligned to it, clamped to the viewport.
+    pop.style.top  = Math.min(r.bottom + 8, innerHeight - pop.offsetHeight - 8) + 'px';
+    pop.style.left = Math.max(8, Math.min(r.right - w, innerWidth - w - 8)) + 'px';
+  }
+
+  function hide(){ pop && pop.classList.remove('open'); }
+
+  return { show, hide, get open(){ return !!(pop && pop.classList.contains('open')); } };
+})();
+
 if(window.SFX){
-  SFX.bindToggle(document.getElementById('btn-sound-hub'));
-  SFX.bindToggle(document.getElementById('btn-sound-game'));
   ['btn-sound-hub','btn-sound-game'].forEach(id=>{
-    document.getElementById(id)?.addEventListener('click',()=>toast(SFX.modeToast(),2000));
+    const el = document.getElementById(id);
+    if(!el) return;
+    SFX.bindIndicator(el);
+    el.addEventListener('click', e=>{
+      e.stopPropagation();
+      SFX.unlock();
+      audioPop.open ? audioPop.hide() : audioPop.show(el);
+    });
   });
 }
 
@@ -1404,7 +1573,14 @@ function ensureUserDefaults(raw){
       cursors: [...(raw.owned && raw.owned.cursors || [])],
       skins: [...(raw.owned && raw.owned.skins || [])]
     },
-    equipped: { ...defaults.equipped, ...(raw.equipped || {}) }
+    equipped: { ...defaults.equipped, ...(raw.equipped || {}) },
+    // Progression state. Firebase drops empty objects, so an established player
+    // and a brand-new one both arrive here missing these.
+    achievements: { ...(raw.achievements || {}) },
+    history:      { ...(raw.history || {}) },
+    streak:       { count: 0, lastDay: null, best: 0, ...(raw.streak || {}) },
+    weekly:       { season: null, pts: 0, ...(raw.weekly || {}) },
+    friends:      { ...(raw.friends || {}) }
   };
 }
 
@@ -1472,6 +1648,10 @@ function enterHub(){
   // room is released here rather than in each of them. A no-op when there is
   // no room, which is the common case.
   if(typeof mpLeaveRoom === 'function') mpLeaveRoom();
+  // Same reasoning for a chained run and for a watched room: reaching the hub
+  // ends both, and a spectator that kept its listeners would leak them.
+  if(typeof abortBossRush === 'function') abortBossRush();
+  if(typeof mpStopSpectating === 'function') mpStopSpectating();
   document.getElementById('h-uname').textContent=user.username;
   let guestTagEl=document.getElementById('h-guest-tag');
   if(user.isGuest){
@@ -1490,6 +1670,7 @@ function enterHub(){
   showScreen('hub-screen');
   music('hub');
   loadLeaderboard();
+  refreshHubProgression();
   unlockDifficultySelector();
   // The line above rewrites #h-pts wholesale, and the "(x1.5)" tag lives INSIDE
   // it — so the tag has to be put back, or the hub silently stops showing which
@@ -1497,8 +1678,14 @@ function enterHub(){
   updateHubDiffDisplay();
 }
 
-document.getElementById('btn-market').onclick=()=>openMarket();
-document.getElementById('btn-market-back').onclick=()=>enterHub();
+// Optional-chained: this file is one long top-level script, so a single missing
+// element here would throw and abandon every statement below it — including the
+// SHOP_ITEMS/META tables and all sixteen game registrations. That is exactly
+// what a browser serving a cached older index.html against a newer app.js
+// produces, and it should degrade to "one dead button", not a dead arcade.
+document.getElementById('btn-boss-rush')?.addEventListener('click',()=>startBossRush());
+document.getElementById('btn-market')?.addEventListener('click',()=>openMarket());
+document.getElementById('btn-market-back')?.addEventListener('click',()=>enterHub());
 
 document.querySelectorAll('.game-card').forEach(card=>{
   // Desktop only: on a phone every "hover" is really the start of a tap, so
@@ -1563,6 +1750,151 @@ function prepGame(gid){
   if(start) countdown(()=>start());
 }
 
+// ════════════════════════════════════════════
+//  👻 GHOST REPLAY — race your own best run
+// ════════════════════════════════════════════
+// A game opts in with three calls: begin() at start, sample() once per frame,
+// finish() at the end. Playback is frame-indexed rather than time-indexed, which
+// is why sample() must be called exactly once per frame — the same rhythm the
+// recording was made at.
+//
+// Ghosts live in localStorage, not Firebase: a timeline is thousands of numbers,
+// it is only meaningful against your OWN run, and it must not cost a round trip
+// mid-game. Keyed by tier too, since a Meltdown run is not the same race.
+const Ghost = (function(){
+  const PREFIX = 'pi_ghost_';
+  const MAX_FRAMES = 5000;          // ~80s at 60fps, then recording simply stops
+  let rec = null, play = null;
+
+  const key = gid => `${PREFIX}${gid}:${currentDifficultyTier}`;
+
+  function begin(gid){
+    rec = null; play = null;
+    // A duel or a Boss Rush stage is not a solo run — no ghost either way.
+    if(mp || bossRush) return;
+    rec = { gid, frames: [] };
+    try{
+      const raw = localStorage.getItem(key(gid));
+      const best = raw ? JSON.parse(raw) : null;
+      if(best && Array.isArray(best.frames) && best.frames.length) play = best;
+    }catch(e){ play = null; }
+  }
+
+  // Values are rounded to a tenth — a ghost is a visual pace car, and full
+  // float precision would multiply the stored size for no visible gain.
+  function sample(a, b){
+    if(!rec || rec.frames.length >= MAX_FRAMES) return;
+    rec.frames.push(b == null ? Math.round(a * 10) / 10
+                              : [Math.round(a * 10) / 10, Math.round(b * 10) / 10]);
+  }
+
+  function at(i){
+    if(!play) return null;
+    return i < play.frames.length ? play.frames[i] : null;
+  }
+
+  function finish(score){
+    if(!rec) return;
+    const beat = !play || score > play.score;
+    if(beat && rec.frames.length){
+      try{ localStorage.setItem(key(rec.gid), JSON.stringify({ score, frames: rec.frames })); }
+      catch(e){ /* quota or private mode — a missing ghost is not an error */ }
+    }
+    rec = null;
+    return beat;
+  }
+
+  function cancel(){ rec = null; play = null; }
+
+  return {
+    begin, sample, at, finish, cancel,
+    get racing(){ return !!play; },
+    get target(){ return play ? play.score : 0; }
+  };
+})();
+
+// Shared look for every ghost: the player's own colour, ghosted back.
+function ghostStyle(alpha = 0.28){
+  aCtx.globalAlpha = alpha;
+  aCtx.shadowBlur = 0;
+  aCtx.strokeStyle = getEquippedColorHex();
+  aCtx.fillStyle = 'rgba(255,255,255,0.08)';
+  aCtx.lineWidth = 2;
+  aCtx.setLineDash([5, 4]);
+}
+
+// ════════════════════════════════════════════
+//  🔥 BOSS RUSH — five missions, one score
+// ════════════════════════════════════════════
+// Rides the same vsResultTap seam a duel uses: each stage's results card is
+// intercepted, its RAW score banked, and the next stage started. Only the
+// combined total reaches showResults(), so the tier multiplier and the score
+// write both happen exactly once.
+const BOSS_RUSH_LEN = 5;
+let bossRush = null;
+
+function startBossRush(){
+  // Cyber Arena never ends on its own, so it can't be a stage in a fixed chain.
+  const pool = Object.keys(SOLO_START).filter(g => g !== 'arena');
+  const queue = pool
+    .map(g => ({ g, k: Math.random() }))
+    .sort((a, b) => a.k - b.k)
+    .slice(0, BOSS_RUSH_LEN)
+    .map(x => x.g);
+  bossRush = { queue, idx: 0, total: 0, bd: {} };
+  vsResultTap = bossRushTap;
+  snd('success');
+  toast(`🔥 BOSS RUSH — ${queue.length} missions, one score. No breaks.`, 3200);
+  bossRushNext();
+}
+
+function bossRushNext(){
+  if(!bossRush) return;
+  if(bossRush.idx >= bossRush.queue.length){ bossRushFinish(); return; }
+  const gid = bossRush.queue[bossRush.idx];
+  curGame = gid;
+  document.getElementById('g-title').textContent =
+    `🔥 ${bossRush.idx + 1}/${bossRush.queue.length} · ${META[gid].name}`;
+  showScreen('game-screen');
+  prepGame(gid);
+}
+
+function bossRushTap(gid, pts, bd){
+  if(!bossRush) return false;
+  // The tap short-circuits showResults(), so the finished stage is still
+  // running its loop — stop it here rather than waiting for the next prep.
+  stopGame();
+  bossRush.total += pts;
+  bossRush.bd[`${META[gid].emoji} ${META[gid].name}`] = `${pts} PTS`;
+  bossRush.idx++;
+  const left = bossRush.queue.length - bossRush.idx;
+  snd('score');
+  toast(left > 0 ? `✅ +${pts} PTS · ${left} to go` : `✅ +${pts} PTS · final stage clear`, 1600);
+  setTimeout(bossRushNext, 1100);
+  return true;
+}
+
+function bossRushFinish(){
+  const total = bossRush.total, bd = { ...bossRush.bd };
+  const cleared = bossRush.queue.length;
+  bossRush = null;
+  vsResultTap = null;
+  bd['🔥 Stages Cleared'] = `${cleared}`;
+  showResults('bossrush', total, bd, {
+    emoji: '🔥',
+    name: 'BOSS RUSH',
+    again: { label: 'Run It Again', fn: () => startBossRush() }
+  });
+}
+
+// Quitting mid-chain abandons the whole run — the banked total is forfeit,
+// which is the point of a rush.
+function abortBossRush(){
+  if(!bossRush) return;
+  bossRush = null;
+  vsResultTap = null;
+}
+
 // ── SCORE TAPS ────────────────────────────────────────────────────────
 // Every game in the arcade already announces itself twice: setLive() while it
 // runs, showResults() when it ends. A Network Arena SCORE RACE needs exactly
@@ -1624,7 +1956,11 @@ function showResults(gid,pts,bd,opts){
   document.getElementById('res-pts').textContent=finalPts;
   document.getElementById('res-bd').innerHTML=Object.entries(bd).map(([k,v])=>`<div class="res-row"><span>${k}</span><span class="rv">${v}</span></div>`).join('');
   showScreen('results-screen');
-  saveScore(gid,finalPts);
+  saveScore(gid, finalPts, {
+    tier: tier.key,
+    duelWin: !!opts.duelWin,
+    botLevel: opts.botLevel || null
+  });
 
   const againBtn=document.getElementById('btn-again');
   const hubBtn=document.getElementById('btn-hub');
@@ -1639,33 +1975,294 @@ function showResults(gid,pts,bd,opts){
   };
 }
 
-async function saveScore(gid,pts){
+// The highest single award a mission can legitimately pay: its cap times the
+// best tier multiplier. Anything above that never came from a played round.
+const MAX_TIER_MULT = Math.max(...Object.values(DIFFICULTY_TIERS).map(t => t.pointMult));
+function maxAwardFor(gid){
+  return Math.ceil((META[gid] ? META[gid].maxPts : 2000) * MAX_TIER_MULT);
+}
+
+async function saveScore(gid,pts,ctx){
   if(!db || !user) return;
+  ctx = ctx || {};
+  const award = Math.max(0, Math.min(parseInt(pts || 0) || 0, maxAwardFor(gid)));
   try {
     const playerRef = db.ref('players/' + user.uid);
     playerRef.once('value', (snapshot) => {
       const d = snapshot.val() || { totalPoints: 0, gamesPlayed: 0, highScores: {} };
       const hs = d.highScores || {};
       const currentHighScore = parseInt(hs[gid] || 0);
-      const pointsToAward = parseInt(pts || 0);
-      
-      const newPoints = parseInt(d.totalPoints || 0) + pointsToAward;
-      const newHighScores = { ...hs, [gid]: Math.max(currentHighScore, pointsToAward) };
-      
-      playerRef.update({ 
-        username: user.username, 
-        totalPoints: newPoints, 
-        gamesPlayed: (parseInt(d.gamesPlayed || 0) + 1), 
-        highScores: newHighScores 
+
+      const newPoints = parseInt(d.totalPoints || 0) + award;
+      const newHighScores = { ...hs, [gid]: Math.max(currentHighScore, award) };
+
+      playerRef.update({
+        username: user.username,
+        totalPoints: newPoints,
+        gamesPlayed: (parseInt(d.gamesPlayed || 0) + 1),
+        highScores: newHighScores,
+        // Server clock, not the client's — the rate-limit rule compares it to `now`.
+        lastScoreAt: firebase.database.ServerValue.TIMESTAMP
       }).then(() => {
-        if (user) user.totalPoints = newPoints;
+        if(!user) return;
+        user.totalPoints = newPoints;
+        user.gamesPlayed = parseInt(d.gamesPlayed || 0) + 1;
+        // Runs after the score lands, so achievement thresholds test against the
+        // totals the player actually has rather than the ones they had a moment ago.
+        recordRun(gid, award, ctx);
         loadLeaderboard();
+      }).catch(e => {
+        console.warn('Score rejected:', e);
+        toast('⚠️ Score sync refused by the mainframe.');
       });
     });
     snd('coin');
-    toast(`✅ Matrix Sync: +${pts} PTS`);
+    toast(`✅ Matrix Sync: +${award} PTS`);
   } catch (e) { console.error("Score pipeline error:", e) }
 }
+
+// ════════════════════════════════════════════
+//  🏅 ACHIEVEMENTS · STREAKS · RUN HISTORY
+// ════════════════════════════════════════════
+// One evaluation point: recordRun() is called by saveScore() after every round,
+// solo or duel, and is the only thing that writes progression state. Each
+// achievement is a pure predicate over the run plus the player record, so
+// adding one never means touching a game.
+
+const HISTORY_LEN = 12; // runs kept per mission for the sparkline
+
+const ACHIEVEMENTS = [
+  { id:'first-blood',  icon:'🎯', name:'First Contact',    desc:'Finish your first mission.',                 cr:1,  test:(c)=>c.gamesPlayed >= 1 },
+  { id:'decade',       icon:'🔟', name:'Ten Deep',         desc:'Finish 10 missions.',                        cr:2,  test:(c)=>c.gamesPlayed >= 10 },
+  { id:'century',      icon:'💯', name:'Centurion',        desc:'Finish 100 missions.',                       cr:10, test:(c)=>c.gamesPlayed >= 100 },
+  { id:'pts-5k',       icon:'⭐', name:'Five Thousand',     desc:'Bank 5,000 lifetime points.',                cr:3,  test:(c)=>c.totalPoints >= 5000 },
+  { id:'pts-25k',      icon:'🌟', name:'Twenty-Five K',    desc:'Bank 25,000 lifetime points.',               cr:8,  test:(c)=>c.totalPoints >= 25000 },
+  { id:'pts-100k',     icon:'✨', name:'Six Figures Soon', desc:'Bank 100,000 lifetime points.',              cr:25, test:(c)=>c.totalPoints >= 100000 },
+  { id:'overclocked',  icon:'🟡', name:'Overclocker',      desc:'Score on the Overclock tier.',               cr:2,  test:(c)=>c.tier === 'overclocked' && c.pts > 0 },
+  { id:'meltdown',     icon:'🔴', name:'Meltdown Survivor',desc:'Score on the Meltdown tier.',                cr:5,  test:(c)=>c.tier === 'meltdown' && c.pts > 0 },
+  { id:'meltdown-ace', icon:'☢️', name:'Critical Mastery', desc:'Take 75% of a mission cap on Meltdown.',     cr:12, test:(c)=>c.tier === 'meltdown' && c.pct >= 0.75 },
+  { id:'maxed',        icon:'🏆', name:'Cap Breaker',      desc:'Hit a mission\'s full point cap.',           cr:15, test:(c)=>c.pct >= 1 },
+  { id:'duelist',      icon:'⚔️', name:'Duelist',          desc:'Win a Network Arena duel.',                  cr:4,  test:(c)=>c.duelWin },
+  { id:'droid-elite',  icon:'🤖', name:'Droid Slayer',     desc:'Beat an Elite droid.',                       cr:10, test:(c)=>c.duelWin && c.botLevel === 'elite' },
+  { id:'streak-3',     icon:'🔥', name:'Three-Day Burn',   desc:'Play three days running.',                   cr:3,  test:(c)=>c.streak >= 3 },
+  { id:'streak-7',     icon:'🔆', name:'Week Locked In',   desc:'Play seven days running.',                   cr:10, test:(c)=>c.streak >= 7 },
+  { id:'streak-30',    icon:'💠', name:'Thirty Straight',  desc:'Play thirty days running.',                  cr:50, test:(c)=>c.streak >= 30 },
+  { id:'explorer',     icon:'🗺️', name:'Grid Explorer',    desc:'Score at least once in 8 different missions.',cr:6, test:(c)=>c.missionsPlayed >= 8 },
+  { id:'completionist',icon:'👑', name:'Full Sweep',       desc:'Score at least once in every mission.',      cr:30, test:(c)=>c.missionsPlayed >= Object.keys(SOLO_START).length },
+  { id:'rush-clear',   icon:'🔥', name:'Rush Hour',        desc:'Finish a Boss Rush chain.',                  cr:8,  test:(c)=>c.gid === 'bossrush' }
+];
+
+const achById = id => ACHIEVEMENTS.find(a => a.id === id);
+
+// UTC day key, so a streak can't be farmed by changing timezone.
+const dayKey = (t = Date.now()) => new Date(t).toISOString().slice(0, 10);
+const daysBetween = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
+
+// ISO-ish week key — the bucket the weekly leaderboard sorts on.
+function seasonKey(t = Date.now()){
+  const d = new Date(t);
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7)); // nearest Thursday
+  const year = d.getUTCFullYear();
+  const week = Math.ceil(((d - Date.UTC(year, 0, 1)) / 86400000 + 1) / 7);
+  return `${year}-W${String(week).padStart(2, '0')}`;
+}
+
+// Rolls the daily streak forward. Returns the patch to write, or null when the
+// player has already been counted today.
+function rollStreak(streak){
+  const today = dayKey();
+  if(streak.lastDay === today) return null;
+  const gap = streak.lastDay ? daysBetween(streak.lastDay, today) : null;
+  const count = (gap === 1) ? (streak.count || 0) + 1 : 1;
+  return { count, lastDay: today, best: Math.max(count, streak.best || 0) };
+}
+
+// Escalating drip, capped so a long streak stays a bonus rather than an income.
+const streakReward = n => Math.min(1 + Math.floor(n / 3), 8);
+
+// The whole progression write for one finished round, batched into a single
+// update() so it costs one round trip and can't half-apply.
+function recordRun(gid, pts, ctx){
+  if(!db || !user) return;
+  const m = META[gid];
+  const patch = {}, unlocked = [];
+
+  // ── run history (client-trimmed; the DB keeps only what the sparkline draws)
+  const hist = [...(user.history[gid] || []), pts].slice(-HISTORY_LEN);
+  user.history[gid] = hist;
+  patch['history/' + gid] = hist;
+
+  // ── weekly bucket, reset when the season key rolls over
+  const season = seasonKey();
+  const weekly = (user.weekly.season === season)
+    ? { season, pts: (user.weekly.pts || 0) + pts }
+    : { season, pts };
+  user.weekly = weekly;
+  patch.weekly = weekly;
+
+  // ── daily streak
+  const roll = rollStreak(user.streak);
+  let streakBonus = 0;
+  if(roll){
+    user.streak = roll;
+    patch.streak = roll;
+    streakBonus = streakReward(roll.count);
+  }
+
+  // ── achievements
+  const cond = {
+    gid, pts,
+    tier: ctx.tier || currentDifficultyTier,
+    pct: m ? pts / m.maxPts : 0,
+    duelWin: !!ctx.duelWin,
+    botLevel: ctx.botLevel || null,
+    totalPoints: user.totalPoints || 0,
+    gamesPlayed: user.gamesPlayed || 0,
+    streak: user.streak.count || 0,
+    // Boss Rush banks under its own key but isn't a mission — counting it
+    // would let Full Sweep unlock one mission short.
+    missionsPlayed: Object.keys(user.history)
+      .filter(k => SOLO_START[k] && (user.history[k] || []).length).length
+  };
+  let creditGain = streakBonus;
+  ACHIEVEMENTS.forEach(a => {
+    if(user.achievements[a.id]) return;
+    let hit = false;
+    try{ hit = !!a.test(cond); }catch(e){ hit = false; }
+    if(!hit) return;
+    user.achievements[a.id] = Date.now();
+    patch['achievements/' + a.id] = firebase.database.ServerValue.TIMESTAMP;
+    creditGain += a.cr;
+    unlocked.push(a);
+  });
+
+  if(creditGain > 0){
+    user.credits = (user.credits || 0) + creditGain;
+    patch.credits = user.credits;
+  }
+
+  db.ref('players/' + user.uid).update(patch)
+    .catch(e => console.warn('Progression write failed:', e));
+
+  if(streakBonus > 0) announceStreak(user.streak.count, streakBonus);
+  if(unlocked.length) announceUnlocks(unlocked);
+  refreshHubProgression();
+}
+
+// Unlocks queue rather than stacking — three at once would otherwise overwrite
+// each other in the single shared toast element.
+let _unlockQueue = [], _unlockTimer = null;
+function announceUnlocks(list){
+  _unlockQueue.push(...list);
+  if(_unlockTimer) return;
+  const nextOne = () => {
+    const a = _unlockQueue.shift();
+    if(!a){ _unlockTimer = null; return; }
+    snd('victory');
+    toast(`${a.icon} ACHIEVEMENT — ${a.name}  ·  +${a.cr} CR`, 3200);
+    _unlockTimer = setTimeout(nextOne, 3400);
+  };
+  nextOne();
+}
+
+function announceStreak(count, bonus){
+  setTimeout(() => toast(`🔥 ${count}-DAY STREAK  ·  +${bonus} CR`, 2800), 900);
+}
+
+// ── HUB PROGRESSION UI ──
+// Streak chip in the hub bar, plus the badge shelf under the leaderboard.
+function refreshHubProgression(){
+  if(!user) return;
+  const bar = document.getElementById('h-credits');
+  if(bar) bar.textContent = `💎 ${(user.credits || 0).toLocaleString()} CR`;
+
+  let chip = document.getElementById('h-streak');
+  const n = user.streak.count || 0;
+  if(!chip && bar){
+    chip = document.createElement('div');
+    chip.id = 'h-streak';
+    chip.className = 'hub-streak';
+    bar.parentNode.insertBefore(chip, bar.nextSibling);
+  }
+  if(chip){
+    chip.style.display = n > 0 ? '' : 'none';
+    chip.textContent = `🔥 ${n}`;
+    chip.title = `${n}-day streak · best ${user.streak.best || n}`;
+  }
+  renderBadgeShelf();
+  renderCardSparklines();
+}
+
+function renderBadgeShelf(){
+  const panel = document.getElementById('lb-panel');
+  if(!panel || !panel.parentNode) return;
+  let shelf = document.getElementById('badge-shelf');
+  if(!shelf){
+    const label = document.createElement('div');
+    label.className = 'sec-label badge-label';
+    label.textContent = '🏅 ACHIEVEMENTS';
+    shelf = document.createElement('div');
+    shelf.id = 'badge-shelf';
+    panel.parentNode.appendChild(label);
+    panel.parentNode.appendChild(shelf);
+  }
+  const owned = user.achievements || {};
+  const got = ACHIEVEMENTS.filter(a => owned[a.id]).length;
+  shelf.innerHTML =
+    `<div class="badge-count">${got} / ${ACHIEVEMENTS.length} UNLOCKED</div>` +
+    `<div class="badge-grid">` +
+    ACHIEVEMENTS.map(a => {
+      const has = !!owned[a.id];
+      return `<div class="badge${has ? ' has' : ''}" title="${esc(a.name)} — ${esc(a.desc)}${has ? '' : ' (locked)'}">
+                <span class="badge-ico">${a.icon}</span>
+              </div>`;
+    }).join('') +
+    `</div>`;
+}
+
+// Inline SVG trend line on each mission card — last dozen runs, best marked.
+function sparklineSVG(runs, color){
+  if(!runs || runs.length < 2) return '';
+  const w = 100, h = 22, max = Math.max(...runs, 1), min = Math.min(...runs, 0);
+  const span = (max - min) || 1;
+  const pts = runs.map((v, i) => {
+    const x = (i / (runs.length - 1)) * w;
+    const y = h - ((v - min) / span) * (h - 3) - 1.5;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const bestI = runs.indexOf(max);
+  const bx = (bestI / (runs.length - 1)) * w;
+  const by = h - ((max - min) / span) * (h - 3) - 1.5;
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+            <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.6"
+                      stroke-linejoin="round" stroke-linecap="round" opacity=".85"/>
+            <circle cx="${bx.toFixed(1)}" cy="${by.toFixed(1)}" r="2" fill="${color}"/>
+          </svg>`;
+}
+
+function renderCardSparklines(){
+  if(!user) return;
+  document.querySelectorAll('.game-card').forEach(card => {
+    const gid = card.dataset.game;
+    const runs = (user.history && user.history[gid]) || [];
+    let box = card.querySelector('.gc-spark');
+    if(runs.length < 2){ if(box) box.remove(); return; }
+    if(!box){
+      box = document.createElement('div');
+      box.className = 'gc-spark';
+      card.appendChild(box);
+    }
+    const color = CARD_COLORS[card.dataset.c] || 'var(--cyan)';
+    const best = Math.max(...runs);
+    box.innerHTML = sparklineSVG(runs, color) +
+      `<span class="spark-best">PB ${best.toLocaleString()}</span>`;
+  });
+}
+
+const CARD_COLORS = {
+  cyan:'#00f5ff', pink:'#ff0090', purple:'#a855f7', orange:'#ff6600',
+  lime:'#39ff14', gold:'#ffd700', red:'#ff2442'
+};
 
 // ════════════════════════════════════════════
 //  🛒 BLACK MARKET — CREDITS & COSMETICS
@@ -1699,17 +2296,65 @@ const SHOP_ITEMS = {
     { id:'skin-phantom', name:'Phantom Unit', price:20, emoji:'👻' },
     { id:'skin-mech',    name:'War Mech',     price:25, emoji:'🦿' },
     { id:'skin-alien',   name:'Void Alien',   price:25, emoji:'👽' },
-    { id:'skin-quantum', name:'Quantum Dragon',price:30, emoji:'🐉' }
+    { id:'skin-quantum', name:'Quantum Dragon',price:30, emoji:'🐉' },
+    // Not for sale — granted by grantSeasonCrown() for topping a weekly season.
+    { id:'skin-crown',   name:'Season Crown', price:0,  emoji:'👑', earned:true }
   ]
 };
 
 function findItem(cat, id){ return (SHOP_ITEMS[cat]||[]).find(i=>i.id===id); }
 
+// ── ⏳ DAILY FEATURED ROTATION ──
+// Derived from the UTC day rather than stored anywhere, so every client picks
+// the same items with no server state and no scheduled job. The discount is the
+// reason to come back and look.
+const FEATURE_PER_CAT = 2;
+const FEATURE_DISCOUNT = 0.3;
+
+// Small deterministic string hash — same day + same category = same shortlist.
+function hashStr(s){
+  let h = 2166136261;
+  for(let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
+function featuredIds(cat, day = dayKey()){
+  const pool = (SHOP_ITEMS[cat] || []).filter(i => !i.default && !i.earned);
+  if(pool.length <= FEATURE_PER_CAT) return pool.map(i => i.id);
+  // Deterministic shuffle: sort by a per-item hash of the day, take the top N.
+  return pool
+    .map(i => ({ id: i.id, k: hashStr(day + ':' + cat + ':' + i.id) }))
+    .sort((a, b) => a.k - b.k)
+    .slice(0, FEATURE_PER_CAT)
+    .map(x => x.id);
+}
+
+const isFeatured = (cat, id) => featuredIds(cat).includes(id);
+// The price actually charged — one function so the card and the till agree.
+function priceOf(cat, item){
+  return isFeatured(cat, item.id)
+    ? Math.max(1, Math.round(item.price * (1 - FEATURE_DISCOUNT)))
+    : item.price;
+}
+
+function msToRotation(){
+  const now = new Date();
+  const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  return next - now.getTime();
+}
+function rotationLabel(){
+  const ms = msToRotation();
+  const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
 // Rarity is computed relative to the other paid items in the same category,
 // so the priciest items automatically get the flashiest shop-card treatment.
 function getRarity(cat, item){
-  if(item.default || !item.price) return null;
-  const prices = (SHOP_ITEMS[cat]||[]).filter(i=>!i.default).map(i=>i.price);
+  if(item.default || item.earned || !item.price) return null;
+  // Earned items carry price 0 and would drag `min` down, re-banding every
+  // paid item in the category.
+  const prices = (SHOP_ITEMS[cat]||[]).filter(i=>!i.default && !i.earned).map(i=>i.price);
   const max = Math.max(...prices), min = Math.min(...prices);
   if(item.price===max) return 'legendary';
   if(item.price >= min + (max-min)*0.5) return 'epic';
@@ -1842,6 +2487,30 @@ function openMarket(){
   refreshMarketBalances();
   ['colors','cursors','skins'].forEach(renderShop);
   switchMarketTab('convert');
+  startRotationTicker();
+}
+
+// Countdown under the market tabs. Ticks only while the market is open — the
+// interval is cleared the moment the player leaves.
+let _rotTicker = null;
+function startRotationTicker(){
+  const tabs = document.querySelector('.market-tabs');
+  if(!tabs) return;
+  let el = document.getElementById('shop-rotation');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'shop-rotation';
+    tabs.parentNode.insertBefore(el, tabs.nextSibling);
+  }
+  const paint = () => {
+    if(!document.getElementById('market-screen').classList.contains('active')){
+      clearInterval(_rotTicker); _rotTicker = null; return;
+    }
+    el.innerHTML = `⏳ FEATURED STOCK ROTATES IN <em>${rotationLabel()}</em>`;
+  };
+  paint();
+  clearInterval(_rotTicker);
+  _rotTicker = setInterval(paint, 30000);
 }
 
 function refreshMarketBalances(){
@@ -1898,7 +2567,14 @@ document.getElementById('btn-conv-to-points').onclick = async ()=>{
   const gainedPts = v*CONV_RATE;
   user.credits -= v;
   user.totalPoints = (user.totalPoints||0) + gainedPts;
-  await db.ref('players/'+user.uid).update({ totalPoints:user.totalPoints, credits:user.credits });
+  // Any write that raises totalPoints has to carry the server stamp, or the
+  // rate-limit rule in database.rules.json rejects it — this is a points
+  // increase just as much as a finished round is.
+  await db.ref('players/'+user.uid).update({
+    totalPoints:user.totalPoints,
+    credits:user.credits,
+    lastScoreAt: firebase.database.ServerValue.TIMESTAMP
+  });
   convCreditsInput.value=''; document.getElementById('conv-credits-preview').textContent='= 0 PTS';
   refreshMarketBalances(); loadLeaderboard();
   snd('convert');
@@ -1927,10 +2603,18 @@ function renderShop(cat){
       btnHtml = `<button class="btn btn-secondary btn-sm shop-btn" data-act="unequip" data-cat="${cat}" data-id="${item.id}">Unequip</button>`;
     } else if(owned){
       btnHtml = `<button class="btn btn-primary btn-sm shop-btn" data-act="equip" data-cat="${cat}" data-id="${item.id}">Equip</button>`;
+    } else if(item.earned){
+      // No price — the only way in is the achievement that grants it.
+      btnHtml = `<button class="btn btn-secondary btn-sm shop-btn" disabled>🔒 Earned Only</button>`;
     } else {
-      btnHtml = `<button class="btn btn-primary btn-sm shop-btn" data-act="buy" data-cat="${cat}" data-id="${item.id}">Buy · 💎${item.price}</button>`;
+      const p = priceOf(cat, item);
+      const cut = p < item.price ? `<s class="shop-was">💎${item.price}</s> ` : '';
+      btnHtml = `<button class="btn btn-primary btn-sm shop-btn" data-act="buy" data-cat="${cat}" data-id="${item.id}">Buy · ${cut}💎${p}</button>`;
     }
-    card.innerHTML = `${preview}${badge}<div class="shop-name">${esc(item.name)}</div>${equipped?'<div class="shop-tag">EQUIPPED</div>':''}${btnHtml}`;
+    const feat = (!owned && !item.earned && isFeatured(cat, item.id))
+      ? `<div class="shop-feat">⏳ ${Math.round(FEATURE_DISCOUNT*100)}% OFF</div>` : '';
+    if(feat) card.classList.add('featured');
+    card.innerHTML = `${preview}${badge}${feat}<div class="shop-name">${esc(item.name)}</div>${equipped?'<div class="shop-tag">EQUIPPED</div>':''}${btnHtml}`;
     grid.appendChild(card);
   });
   grid.querySelectorAll('.shop-btn').forEach(btn=>{
@@ -1944,12 +2628,16 @@ async function handleShopAction(act, cat, id){
   if(!item) return;
 
   if(act==='buy'){
-    if((user.credits||0) < item.price){ snd('deny'); toast('⚠️ Insufficient credits.'); return }
-    user.credits -= item.price;
+    if(item.earned){ snd('deny'); toast('🔒 That one has to be earned.'); return }
+    const price = priceOf(cat, item);
+    if((user.credits||0) < price){ snd('deny'); toast('⚠️ Insufficient credits.'); return }
+    user.credits -= price;
     user.owned[cat] = [...(user.owned[cat]||[]), id];
     await db.ref('players/'+user.uid).update({ credits:user.credits, ['owned/'+cat]: user.owned[cat] });
     snd('purchase');
-    toast(`✅ Purchased ${item.name}`);
+    toast(price < item.price
+      ? `✅ Purchased ${item.name} — saved 💎${item.price - price}`
+      : `✅ Purchased ${item.name}`);
   } else if(act==='equip'){
     user.equipped[cat] = id;
     await db.ref('players/'+user.uid).update({ ['equipped/'+cat]: id });
@@ -2590,7 +3278,7 @@ function startNebula(){
     aCtx.clearRect(0, 0, BOARD_W, BOARD_H);
 
     aCtx.save();
-    if (screenShake > 0.5) { aCtx.translate((Math.random()-0.5)*screenShake, (Math.random()-0.5)*screenShake); screenShake *= 0.88; }
+    if (screenShake > 0.5) { const sh = VFX.shake(screenShake); aCtx.translate((Math.random()-0.5)*sh, (Math.random()-0.5)*sh); screenShake *= 0.88; }
 
     // Shield flash overlay
     if (shieldFlashTimer > 0) {
@@ -3053,7 +3741,7 @@ function startTetris(){
     dropCounter += dt; if(dropCounter > dropInterval) playerDrop();
     
     aCtx.save();
-    if(screenShake>0.5) { aCtx.translate((Math.random()-0.5)*screenShake, (Math.random()-0.5)*screenShake); screenShake*=0.8; }
+    if(screenShake>0.5) { const sh = VFX.shake(screenShake); aCtx.translate((Math.random()-0.5)*sh, (Math.random()-0.5)*sh); screenShake*=0.8; }
     
     // Calculate Ghost Piece position
     let ghost = { matrix: player.matrix, pos: {x: player.pos.x, y: player.pos.y} };
@@ -3113,6 +3801,9 @@ function startDodge(){
   let score=0, time=30, isGameOver=false, player={x:BOARD_W/2,y:BOARD_H/2,r:8}, obstacles=[];
   document.getElementById('g-time').textContent=time;
 
+  Ghost.begin('dodge');
+  if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
+
   const place = (x, y) => {
     player.x = Math.max(player.r, Math.min(BOARD_W - player.r, x));
     player.y = Math.max(player.r, Math.min(BOARD_H - player.r, y));
@@ -3160,6 +3851,7 @@ function startDodge(){
   function loop(){
     if(isGameOver) return;
     frame++;
+    Ghost.sample(player.x, player.y);
 
     // Solid dark background so nothing blends into page
     aCtx.fillStyle = '#0a0a1a';
@@ -3170,6 +3862,17 @@ function startDodge(){
     aCtx.lineWidth = 1;
     for(let gx=0;gx<=BOARD_W;gx+=40){ aCtx.beginPath();aCtx.moveTo(gx,0);aCtx.lineTo(gx,BOARD_H);aCtx.stroke(); }
     for(let gy=0;gy<=BOARD_H;gy+=40){ aCtx.beginPath();aCtx.moveTo(0,gy);aCtx.lineTo(BOARD_W,gy);aCtx.stroke(); }
+
+    // Ghost dot — drawn before the live one so it can never mask it.
+    const gp = Ghost.at(frame);
+    if(gp){
+      aCtx.save();
+      ghostStyle();
+      aCtx.beginPath();
+      aCtx.arc(gp[0], gp[1], player.r, 0, Math.PI*2);
+      aCtx.fill(); aCtx.stroke();
+      aCtx.restore();
+    }
 
     // Player dot — equipped color with glow
     aCtx.save();
@@ -3219,7 +3922,15 @@ function startDodge(){
   
   function end(){
     clearCanvasDrag();
-    showResults('dodge',Math.min(800,score),{'⏱️ Operational Lifespan':score/25+'s','🏆 Score Accumulation':`${score} PTS`});
+    const earned=Math.min(800,score);
+    const wasRacing=Ghost.racing, target=Ghost.target;
+    const beat=Ghost.finish(earned);
+    showResults('dodge',earned,{
+      '⏱️ Operational Lifespan':score/25+'s',
+      ...(wasRacing?{'👻 Ghost To Beat':`${target} PTS`}:{}),
+      ...(wasRacing&&beat?{'👻 Result':'GHOST BEATEN'}:{}),
+      '🏆 Score Accumulation':`${earned} PTS`
+    });
   }
   gameLoopId=requestAnimationFrame(loop);
 }
@@ -3295,8 +4006,11 @@ function startMath(){
 //  ⚡ GAME 7: REACTION TIME
 // ════════════════════════════════════════════
 function startReaction(){
-  const box=document.getElementById('g-reaction');box.style.display='flex';box.style.background='var(--red)';
-  const txt=document.getElementById('reaction-text');txt.textContent='WAIT FOR GREEN...';
+  // --rx-* resolve through the cb-safe palette, where "go" is bright yellow —
+  // red→green is exactly the switch a deutan player can't see.
+  const goWord = VFX.cbSafe ? 'YELLOW' : 'GREEN';
+  const box=document.getElementById('g-reaction');box.style.display='flex';box.style.background='var(--rx-wait)';
+  const txt=document.getElementById('reaction-text');txt.textContent=`WAIT FOR ${goWord}...`;
   let state='wait', startT=0, time=15, score=0, reactionEnded=false;
   document.getElementById('g-time').textContent=time;
 
@@ -3316,21 +4030,21 @@ function startReaction(){
   setControlHint('TAP THE INSTANT IT TURNS GREEN','CLICK THE INSTANT IT TURNS GREEN');
   const goLabel = isTouchDevice ? 'TAP NOW!' : 'CLICK NOW!';
 
-  let trigger=later(()=>{if(state==='wait'){state='go';box.style.background='var(--lime)';txt.textContent=goLabel;snd('go');startT=performance.now()}},Math.random()*2500+1500);
+  let trigger=later(()=>{if(state==='wait'){state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=performance.now()}},Math.random()*2500+1500);
 
   // Timed on pointerdown, not click. A synthesised click doesn't land until
   // the finger lifts, which was quietly adding its own latency to every
   // reading — this game's whole score is that number.
   box.onpointerdown=e=>{
     e.preventDefault();
-    if(state==='wait'){clearTimeout(trigger);snd('wrong');txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--orange)';state='hold';later(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--lime)';txt.textContent=goLabel;snd('go');startT=performance.now()},Math.random()*2000+1000)}},1200)}
+    if(state==='wait'){clearTimeout(trigger);snd('wrong');txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--rx-early)';state='hold';later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=performance.now()},Math.random()*2000+1000)}},1200)}
     else if(state==='go'){
       let diff=Math.round(performance.now()-startT);
       let earned=Math.max(10,400-diff);score+=earned;setLive(score);
       // Faster reflex, higher chime — a 150ms tap is audibly better than 320ms.
       snd('score',{semi:Math.max(0,Math.round((400-diff)/40))});
-      txt.textContent=`${diff}ms! REBOOTING...`;box.style.background='var(--cyan)';state='hold';
-      later(()=>{if(time>0){state='wait';box.style.background='var(--red)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--lime)';txt.textContent=goLabel;snd('go');startT=performance.now()},Math.random()*2000+1000)}},1500);
+      txt.textContent=`${diff}ms! REBOOTING...`;box.style.background='var(--rx-hit)';state='hold';
+      later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=performance.now()},Math.random()*2000+1000)}},1500);
     }
   };
   function end(){if(reactionEnded)return;reactionEnded=true;clearTimeout(trigger);box.onpointerdown=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
@@ -3339,24 +4053,132 @@ function startReaction(){
 // ════════════════════════════════════════════
 //  🏆 SYNCED DATA MATRIX LEADERBOARD BUILDER
 // ════════════════════════════════════════════
-async function loadLeaderboard(){
-  const panel=document.getElementById('lb-panel');if(!db){panel.innerHTML='<div class="lb-empty">⚠️ Connecting Live Registry...</div>';return}
-  try{
-    db.ref('players').orderByChild('totalPoints').limitToLast(20).once('value', (snapshot) => {
-      if(!snapshot.exists()){panel.innerHTML='<div class="lb-empty">No logged scores inside network nodes.</div>';return}
-      const players=[];snapshot.forEach(c=>{players.push({uid:c.key,...c.val()})});players.reverse();
-      const medals=['🥇','🥈','🥉'];panel.innerHTML='<div class="lb-title">🏆 TOP PLAYERS</div>';
-      players.forEach((d,i)=>{
-        // Podium place and "this is you" are independent: a logged-in player
-        // sitting 2nd keeps the silver row and gets the blue marker too.
-        const isMe=user&&d.uid===user.uid;
-        const cls=[i<3?`r${i+1}`:'', isMe?'me':''].filter(Boolean).join(' ');
-        const row=document.createElement('div');row.className=`lb-row ${cls}`.trim();
-        row.innerHTML=`<div class="lb-rank">${medals[i]||'#'+(i+1)}</div><div class="lb-name">${esc(d.username)}${isMe?' ← You':''}</div><div class="lb-score">${(parseInt(d.totalPoints)||0).toLocaleString()} PTS</div>`;
-        panel.appendChild(row);
-      });
+// Three views of one board. All-time sorts on totalPoints; Weekly sorts on the
+// weekly bucket and shows only rows from the CURRENT season, so last week's
+// numbers vanish on rollover without anyone having to reset anything; Friends
+// re-sorts the all-time pull down to the people you've added.
+const LB_SCOPES = {
+  alltime: { label:'🏆 ALL-TIME',  title:'🏆 TOP PLAYERS' },
+  weekly:  { label:'📅 THIS WEEK', title:'📅 WEEKLY SEASON' },
+  friends: { label:'👥 FRIENDS',   title:'👥 YOUR RIVALS' }
+};
+let lbScope = 'alltime';
+
+function renderLbTabs(){
+  const panel = document.getElementById('lb-panel');
+  if(!panel || !panel.parentNode) return;
+  let tabs = document.getElementById('lb-tabs');
+  if(!tabs){
+    tabs = document.createElement('div');
+    tabs.id = 'lb-tabs';
+    panel.parentNode.insertBefore(tabs, panel);
+    tabs.addEventListener('click', e => {
+      const b = e.target.closest('.lb-tab');
+      if(!b) return;
+      lbScope = b.dataset.scope;
+      snd('tab');
+      renderLbTabs();
+      loadLeaderboard();
     });
-  }catch(e){console.error(e)}
+  }
+  tabs.innerHTML = Object.entries(LB_SCOPES).map(([k, v]) =>
+    `<button class="lb-tab${k === lbScope ? ' on' : ''}" data-scope="${k}">${v.label}</button>`
+  ).join('');
+}
+
+function lbRows(panel, players, scoreOf){
+  const medals = ['🥇','🥈','🥉'];
+  players.forEach((d, i) => {
+    // Podium place and "this is you" are independent: a logged-in player
+    // sitting 2nd keeps the silver row and gets the blue marker too.
+    const isMe = user && d.uid === user.uid;
+    const cls = [i < 3 ? `r${i+1}` : '', isMe ? 'me' : ''].filter(Boolean).join(' ');
+    const row = document.createElement('div');
+    row.className = `lb-row ${cls}`.trim();
+    const isFriend = !!(user && user.friends && user.friends[d.uid]);
+    const canAdd = user && !isMe && !d.isGuest;
+    row.innerHTML =
+      `<div class="lb-rank">${medals[i] || '#' + (i+1)}</div>` +
+      `<div class="lb-name">${esc(d.username)}${isMe ? ' ← You' : ''}</div>` +
+      (canAdd ? `<button class="lb-fr${isFriend ? ' on' : ''}" data-uid="${esc(d.uid)}" data-name="${esc(d.username)}"
+                   title="${isFriend ? 'Remove rival' : 'Add as rival'}">${isFriend ? '★' : '☆'}</button>` : '') +
+      `<div class="lb-score">${(parseInt(scoreOf(d)) || 0).toLocaleString()} PTS</div>`;
+    panel.appendChild(row);
+  });
+}
+
+async function loadLeaderboard(){
+  const panel = document.getElementById('lb-panel');
+  if(!db){ panel.innerHTML = '<div class="lb-empty">⚠️ Connecting Live Registry...</div>'; return; }
+  renderLbTabs();
+  const scope = lbScope, meta = LB_SCOPES[scope];
+  const season = seasonKey();
+  const scoreOf = d => scope === 'weekly'
+    ? ((d.weekly && d.weekly.season === season) ? d.weekly.pts : 0)
+    : d.totalPoints;
+
+  try{
+    const q = scope === 'weekly'
+      ? db.ref('players').orderByChild('weekly/pts').limitToLast(20)
+      : db.ref('players').orderByChild('totalPoints').limitToLast(scope === 'friends' ? 200 : 20);
+
+    q.once('value', snapshot => {
+      if(!snapshot.exists()){ panel.innerHTML = '<div class="lb-empty">No logged scores inside network nodes.</div>'; return; }
+      let players = [];
+      snapshot.forEach(c => { players.push({ uid:c.key, ...c.val() }); });
+      players.reverse();
+
+      if(scope === 'weekly'){
+        players = players.filter(d => d.weekly && d.weekly.season === season && d.weekly.pts > 0);
+      }else if(scope === 'friends'){
+        const fr = (user && user.friends) || {};
+        players = players.filter(d => fr[d.uid] || (user && d.uid === user.uid)).slice(0, 20);
+      }
+
+      panel.innerHTML = `<div class="lb-title">${meta.title}</div>`;
+      if(!players.length){
+        panel.innerHTML += scope === 'friends'
+          ? '<div class="lb-empty">No rivals yet — tap ☆ beside a player to track them.</div>'
+          : '<div class="lb-empty">Nothing logged for this season yet.</div>';
+        return;
+      }
+      lbRows(panel, players, scoreOf);
+
+      // Top of a finished-enough season gets the crown cosmetic, granted once.
+      if(scope === 'weekly' && user && players[0] && players[0].uid === user.uid) grantSeasonCrown();
+    });
+  }catch(e){ console.error(e); }
+}
+
+// Star toggle, delegated so it survives every re-render of the board.
+document.addEventListener('click', async e => {
+  const b = e.target.closest?.('.lb-fr');
+  if(!b || !user || !db) return;
+  e.stopPropagation();
+  const uid = b.dataset.uid, name = b.dataset.name;
+  const had = !!user.friends[uid];
+  if(had) delete user.friends[uid]; else user.friends[uid] = true;
+  b.classList.toggle('on', !had);
+  b.textContent = had ? '☆' : '★';
+  snd(had ? 'uiBack' : 'success');
+  toast(had ? `☆ ${name} removed from rivals` : `★ ${name} added to rivals`, 2000);
+  try{
+    await db.ref(`players/${user.uid}/friends/${uid}`).set(had ? null : true);
+  }catch(err){ console.warn('Rival write failed:', err); }
+}, true);
+
+// One-off cosmetic for topping a weekly season. Uses the normal owned/equipped
+// shape so it shows up in the Black Market like anything else.
+async function grantSeasonCrown(){
+  if(!user || !db) return;
+  const id = 'skin-crown';
+  if((user.owned.skins || []).includes(id)) return;
+  user.owned.skins = [...(user.owned.skins || []), id];
+  try{
+    await db.ref(`players/${user.uid}/owned/skins`).set(user.owned.skins);
+    snd('victory');
+    toast('👑 SEASON CROWN UNLOCKED — top of the weekly board!', 4000);
+  }catch(e){ console.warn('Crown grant failed:', e); }
 }
 const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
@@ -3567,6 +4389,10 @@ function startSnake(){
   let dir={x:1,y:0},nextDir={x:1,y:0};
   let snake=[{x:10,y:12},{x:9,y:12},{x:8,y:12}];
   let food=spawnFood(),speed=160 / diffMod,lastMoveTime=0,particles=[];
+  let gTick=0;
+
+  Ghost.begin('snake');
+  if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
 
   document.getElementById('g-time').textContent=Math.ceil(time);
   document.getElementById('prog-fill').style.background='linear-gradient(90deg,var(--lime),var(--cyan))';
@@ -3625,10 +4451,15 @@ function startSnake(){
   function end(reason){
     if(isOver)return;isOver=true;
     if(reason!=='timeout') snd('gameOver');
-    showResults('snake',Math.min(1200,score),{
+    const earned=Math.min(1200,score);
+    const wasRacing=Ghost.racing, target=Ghost.target;
+    const beat=Ghost.finish(earned);
+    showResults('snake',earned,{
       '🐍 Nodes Consumed':Math.floor(score/30),
       '📏 Max Length':snake.length,
-      '🏆 Score Accumulation':`${score} PTS`
+      ...(wasRacing?{'👻 Ghost To Beat':`${target} PTS`}:{}),
+      ...(wasRacing&&beat?{'👻 Result':'GHOST BEATEN'}:{}),
+      '🏆 Score Accumulation':`${earned} PTS`
     });
   }
 
@@ -3648,6 +4479,12 @@ function startSnake(){
       if(snake.some(s=>s.x===head.x&&s.y===head.y)){snd('bigExplode');end('self');return;}
 
       snake.unshift(head);
+      // Indexed by MOVE, not by animation frame: the snake steps on a fixed
+      // interval, so a tick-indexed ghost replays at the same pace on any
+      // refresh rate. `speed` shortens as you grow, and the ghost carries its
+      // own run's pacing with it.
+      gTick++;
+      Ghost.sample(head.x, head.y);
 
       if(head.x===food.x&&head.y===food.y){
         score+=30;setLive(score);
@@ -3672,6 +4509,16 @@ function startSnake(){
     aCtx.strokeStyle='rgba(57,255,20,0.05)';aCtx.lineWidth=1;
     for(let i=0;i<=COLS;i++){aCtx.beginPath();aCtx.moveTo(i*CELL,0);aCtx.lineTo(i*CELL,H);aCtx.stroke();}
     for(let i=0;i<=ROWS;i++){aCtx.beginPath();aCtx.moveTo(0,i*CELL);aCtx.lineTo(W,i*CELL);aCtx.stroke();}
+
+    // Ghost head from your best run, under the live snake.
+    const gh = Ghost.at(gTick);
+    if(gh){
+      aCtx.save();
+      ghostStyle();
+      aCtx.fillRect(gh[0]*CELL+1, gh[1]*CELL+1, CELL-2, CELL-2);
+      aCtx.strokeRect(gh[0]*CELL+1, gh[1]*CELL+1, CELL-2, CELL-2);
+      aCtx.restore();
+    }
 
     // Snake body
     const snakeHeadColor = getEquippedColorHex();
@@ -3748,6 +4595,9 @@ function startFlappy(){
   let pipes=[],particles=[];
   const DRONE_X=80,DRONE_H=28,DRONE_W=38;
 
+  Ghost.begin('flappy');
+  if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
+
   document.getElementById('g-time').textContent='∞';
   document.getElementById('prog-fill').style.width='100%';
   document.getElementById('prog-fill').style.background='linear-gradient(90deg,var(--gold),var(--orange))';
@@ -3773,8 +4623,12 @@ function startFlappy(){
   function end(){
     if(isOver)return;isOver=true;
     const earned=Math.min(1000,score*50);
+    const wasRacing=Ghost.racing, target=Ghost.target;
+    const beat=Ghost.finish(earned);
     showResults('flappy',earned,{
       '🚧 Firewalls Cleared':score,
+      ...(wasRacing?{'👻 Ghost To Beat':`${target} PTS`}:{}),
+      ...(wasRacing&&beat?{'👻 Result':'GHOST BEATEN'}:{}),
       '🏆 Score Accumulation':`${earned} PTS`
     });
   }
@@ -3828,6 +4682,9 @@ function startFlappy(){
     // Physics
     droneVY+=GRAVITY;
     droneY+=droneVY;
+    // Exactly once per frame, before any early return — playback is indexed by
+    // frame, so a skipped sample would shift the whole ghost out of step.
+    Ghost.sample(droneY);
 
     // Spawn pipes every ~90 frames -> adjusted by difficulty
     if(frame%(90/diffMod)===0)spawnPipe();
@@ -3890,6 +4747,16 @@ function startFlappy(){
       aCtx.beginPath();aCtx.moveTo(p.x+PIPE_W/2,p.topH+GAP+16);aCtx.lineTo(p.x+PIPE_W/2,H);aCtx.stroke();
       aCtx.setLineDash([]);
     });
+
+    // Ghost of your best run, under the live drone so it never hides it.
+    const ghostY = Ghost.at(frame);
+    if(ghostY != null){
+      aCtx.save();
+      ghostStyle();
+      aCtx.strokeRect(DRONE_X-DRONE_W/2, ghostY-DRONE_H/2, DRONE_W, DRONE_H);
+      aCtx.fillRect(DRONE_X-DRONE_W/2, ghostY-DRONE_H/2, DRONE_W, DRONE_H);
+      aCtx.restore();
+    }
 
     // Score display
     aCtx.save();aCtx.shadowBlur=12;aCtx.shadowColor='#ffd700';
@@ -5562,8 +6429,9 @@ function startArena() {
       // Screen shake
       let shakeX = 0, shakeY = 0;
       if (screenShake > 0) {
-        shakeX = (Math.random() - 0.5) * screenShake;
-        shakeY = (Math.random() - 0.5) * screenShake;
+        const sh = VFX.shake(screenShake);
+        shakeX = (Math.random() - 0.5) * sh;
+        shakeY = (Math.random() - 0.5) * sh;
         screenShake = Math.max(0, screenShake - 1.5);
       }
 
@@ -5627,6 +6495,9 @@ function startRunner(){
   let speed=BASE_SPEED, dist=0, cubes=0, hull=3, frame=0, elapsed=0;
   let lane=1, visX=laneX(1), jumpT=0, invuln=0, shake=0, isOver=false;
   let items=[], particles=[], floats=[], spawnCd=90;
+
+  Ghost.begin('runner');
+  if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
 
   document.getElementById('g-time').textContent='0';
   document.getElementById('prog-fill').style.width='100%';
@@ -5715,11 +6586,15 @@ function startRunner(){
   function end(){
     if(isOver)return; isOver=true;
     const final=Math.min(1200, score());
+    const wasRacing=Ghost.racing, target=Ghost.target;
+    const beat=Ghost.finish(final);
     showResults('runner', final, {
       '🌌 Distance Run': `${Math.floor(dist/10)} M`,
       '💠 Data Cubes': cubes,
       '⚡ Top Velocity': `${(speed/BASE_SPEED).toFixed(2)}×`,
       '⏱️ Uptime': `${elapsed}s`,
+      ...(wasRacing?{'👻 Ghost To Beat':`${target} PTS`}:{}),
+      ...(wasRacing&&beat?{'👻 Result':'GHOST BEATEN'}:{}),
       '🏆 Score Accumulation': `${final} PTS`
     });
   }
@@ -5851,6 +6726,7 @@ function startRunner(){
     if(jumpT>0) jumpT--;
     if(invuln>0) invuln--;
     visX+=(laneX(lane)-visX)*0.28;
+    Ghost.sample(visX);
 
     spawnCd-=speed;
     if(spawnCd<=0){ spawnRow(); spawnCd=152+Math.random()*66; }
@@ -5886,13 +6762,25 @@ function startRunner(){
     aCtx.clearRect(0,0,W,H);
     aCtx.save();
     if(shake>0){
-      aCtx.translate((Math.random()-0.5)*shake,(Math.random()-0.5)*shake);
+      const sh=VFX.shake(shake);
+      aCtx.translate((Math.random()-0.5)*sh,(Math.random()-0.5)*sh);
       shake*=0.85; if(shake<0.4) shake=0;
     }
 
     drawTrack();
     const eq=getEquippedColorHex();
     items.forEach(it=>drawItem(it,eq));
+
+    // Ghost bike from your best run — track-level, under the live rider.
+    const gx = Ghost.at(frame);
+    if(gx != null){
+      aCtx.save();
+      ghostStyle();
+      aCtx.strokeRect(gx-16, RIDE_Y-14, 32, 28);
+      aCtx.fillRect(gx-16, RIDE_Y-14, 32, 28);
+      aCtx.restore();
+    }
+
     drawRider();
 
     // No shadowBlur on particles: a blurred shadow is per-pixel work on a board
@@ -8383,6 +9271,96 @@ function mpRoomGone(){
 //  LOBBY UI
 // ══════════════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════
+//  👁️ SPECTATOR — watch a room without taking a seat
+// ══════════════════════════════════════════════════════════════════════
+// Deliberately NOT built on mp{}: every path in there assumes a seat, an
+// onDisconnect claim and a playable round. A watcher only reads, so it gets its
+// own tiny session and touches nothing the duel depends on.
+let spec = null;
+
+async function mpSpectateRoom(rawCode){
+  const code = String(rawCode || '').trim().toUpperCase();
+  if(!/^[A-Z0-9]{4}$/.test(code)) throw new Error('BAD_CODE');
+  const snap = await db.ref('rooms/' + code).once('value');
+  if(!snap.exists()) throw new Error('NO_ROOM');
+
+  mpStopSpectating();
+  spec = {
+    code,
+    roomRef: db.ref('rooms/' + code),
+    liveRef: db.ref('live/' + code),
+    unsub: [],
+    room: null,
+    scores: {}
+  };
+  const onRoom = s => {
+    if(!spec) return;
+    if(!s.exists()){ toast('🔌 That room closed.', 2600); mpStopSpectating(); mpShowStage('pick'); return; }
+    spec.room = s.val();
+    paintSpectator();
+  };
+  const onScore = s => {
+    if(!spec) return;
+    spec.scores = s.val() || {};
+    paintSpectator();
+  };
+  spec.roomRef.on('value', onRoom);
+  spec.liveRef.child('score').on('value', onScore);
+  spec.unsub.push([spec.roomRef, 'value', onRoom], [spec.liveRef.child('score'), 'value', onScore]);
+
+  mpShowStage('watch');
+  showScreen('mp-screen');
+  return code;
+}
+
+function mpStopSpectating(){
+  if(!spec) return;
+  spec.unsub.forEach(([r, e, c]) => { try{ r.off(e, c); }catch(err){} });
+  spec = null;
+}
+
+function paintSpectator(){
+  if(!spec) return;
+  const wrap = document.getElementById('spec-body');
+  if(!wrap) return;
+  const r = spec.room || {};
+  const players = r.players || {};
+  const ids = Object.keys(players);
+  const mode = MP_MODES[r.mode];
+  const statusTxt = {
+    waiting: 'Waiting for a second operative…',
+    playing: 'Duel in progress',
+    done:    'Duel complete'
+  }[r.status || 'waiting'] || r.status;
+
+  const side = id => {
+    const card = players[id] || {};
+    const live = spec.scores[id];
+    const name = (live && live.name) || card.name || 'Operative';
+    const n = live ? live.n : '—';
+    return `<div class="spec-side">
+              <div class="spec-name">${esc(name)}</div>
+              <div class="spec-score">${esc(String(n))}</div>
+            </div>`;
+  };
+
+  const res = r.result;
+  wrap.innerHTML = `
+    <div class="spec-head">
+      <div class="spec-code">ROOM ${esc(spec.code)}</div>
+      <div class="spec-mode">${esc(mode ? mode.name : (r.game || 'DUEL'))}</div>
+    </div>
+    <div class="spec-board">
+      ${ids[0] ? side(ids[0]) : '<div class="spec-side spec-empty">EMPTY SEAT</div>'}
+      <div class="spec-vs">VS</div>
+      ${ids[1] ? side(ids[1]) : '<div class="spec-side spec-empty">EMPTY SEAT</div>'}
+    </div>
+    <div class="spec-status">${esc(statusTxt)}</div>
+    ${res ? `<div class="spec-result">🏁 ${esc(String(res.text || res.winnerName || 'Result in'))}</div>` : ''}
+    <div class="spec-note">Watching only — scores update live while the duel runs.</div>`;
+}
+
 function mpShowStage(name){
   document.querySelectorAll('.mp-stage').forEach(el => el.classList.remove('active'));
   document.getElementById('mp-stage-' + name)?.classList.add('active');
@@ -8688,6 +9666,22 @@ function mpHudScores(mine, theirs, share){
   document.getElementById('mp-hud-opp-score').textContent = theirs;
   const f = document.getElementById('mp-hud-fill');
   if(f) f.style.width = (Math.max(0, Math.min(1, share == null ? 0.5 : share)) * 100).toFixed(1) + '%';
+  publishSpectatorScore(mine);
+}
+
+// Every duel already funnels its scoreline through mpHudScores(), so this is
+// the one place that can offer a uniform number to watchers — the per-mode
+// `live/` payloads (paddle Y, cores, deaths) mean something different in each
+// duel and none of them is a score. Throttled, and skipped entirely in a droid
+// room, whose loopback database no watcher can reach.
+let _specPubAt = 0;
+function publishSpectatorScore(n){
+  if(!mp || mp.bot || !mp.inRound) return;
+  const t = performance.now();
+  if(t - _specPubAt < 400) return;
+  _specPubAt = t;
+  mp.live.child('score/' + mp.myId).set({ n: Number(n) || 0, name: (user && user.username) || 'Operative' })
+    .catch(()=>{});
 }
 function mpPing(ms){
   const el = document.getElementById('mp-ping');
@@ -8854,6 +9848,8 @@ function mpShowDuelResult(gid, pts, outcome, bd){
   showResults(gid, pts, bd, {
     internal: true,                        // this IS the duel's card — don't re-tap it
     tier: tier.key,                        // the shared tier the round was played on
+    duelWin: outcome === 'win',
+    botLevel: (mp && mp.bot) ? mpBotLevel : null,
     badge,
     emoji: outcome === 'win' ? '🏆' : (outcome === 'draw' ? '🤝' : '💀'),
     sound: outcome === 'win' ? 'victory' : (outcome === 'draw' ? 'results' : 'gameOver'),
@@ -8901,6 +9897,16 @@ document.getElementById('btn-mp-join').onclick = function(){
   mpConnect(this, () => mpJoinRoom(input.value));
 };
 
+document.getElementById('btn-mp-spec').onclick = function(){
+  const input = document.getElementById('mp-spec-input');
+  mpConnect(this, () => mpSpectateRoom(input.value));
+};
+document.getElementById('btn-spec-leave').onclick = () => {
+  mpStopSpectating();
+  mpShowStage('pick');
+  renderMpModes();
+};
+
 const mpCodeInput = document.getElementById('mp-code-input');
 mpCodeInput.addEventListener('input', () => {
   mpCodeInput.value = mpCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0,4);
@@ -8908,6 +9914,15 @@ mpCodeInput.addEventListener('input', () => {
 });
 mpCodeInput.addEventListener('keydown', e => {
   if(e.key === 'Enter') document.getElementById('btn-mp-join').click();
+});
+
+const mpSpecInput = document.getElementById('mp-spec-input');
+mpSpecInput.addEventListener('input', () => {
+  mpSpecInput.value = mpSpecInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0,4);
+  mpErr('');
+});
+mpSpecInput.addEventListener('keydown', e => {
+  if(e.key === 'Enter') document.getElementById('btn-mp-spec').click();
 });
 
 document.getElementById('btn-mp-copy').onclick = async () => {

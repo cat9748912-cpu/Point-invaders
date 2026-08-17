@@ -93,6 +93,17 @@
         </div>
         <button class="btn btn-primary" id="btn-mp-open">ENTER →</button>
       </div>
+      <!-- 🔥 BOSS RUSH — five random missions chained into one score. Sits with
+           the arena banner because it is also a different KIND of thing from a
+           single mission card. -->
+      <div class="mp-banner br-banner" id="br-banner">
+        <span class="mp-banner-icon">🔥</span>
+        <div class="mp-banner-txt">
+          <div class="mp-banner-title">BOSS RUSH</div>
+          <div class="mp-banner-sub">Five random missions back-to-back. One combined score, no breaks — quit and you forfeit the lot.</div>
+        </div>
+        <button class="btn btn-primary" id="btn-boss-rush">RUN IT →</button>
+      </div>
       <div class="sec-label">⚡ SELECT MISSION</div>
       <div class="games-grid">
         <div class="game-card" data-game="click" data-c="cyan">
@@ -274,8 +285,26 @@
                  autocomplete="off" autocapitalize="characters" spellcheck="false">
           <button class="btn btn-secondary btn-full" id="btn-mp-join">Join Room</button>
         </div>
+        <!-- 👁️ Read-only seat: watches a room's scoreline without claiming a
+             seat, so a full room is still worth a code. -->
+        <div class="card mp-conn-card">
+          <div class="mp-conn-icon">👁️</div>
+          <div class="mp-conn-name">SPECTATE</div>
+          <div class="mp-conn-desc">Watch a duel live without taking a seat. Works on a room that's already full.</div>
+          <input class="input mp-code-input" id="mp-spec-input" maxlength="4" placeholder="ABCD"
+                 autocomplete="off" autocapitalize="characters" spellcheck="false">
+          <button class="btn btn-secondary btn-full" id="btn-mp-spec">Watch Room</button>
+        </div>
       </div>
       <div class="mp-err" id="mp-err"></div>
+    </div>
+
+    <!-- ── STAGE 3 · watching someone else's duel ── -->
+    <div class="mp-stage" id="mp-stage-watch">
+      <div class="card mp-room" id="spec-body"></div>
+      <div class="mp-room-btns">
+        <button class="btn btn-secondary" id="btn-spec-leave">← Stop Watching</button>
+      </div>
     </div>
 
     <!-- ── STAGE 2 · the room ── -->
@@ -566,5 +595,90 @@
 </div>
 
 <script src="app.js"></script>
+<script>
+// ══════════════════════════════════════════════════════════════════════
+//  📦 INSTALL BOOTSTRAP — icon, manifest, service worker
+// ══════════════════════════════════════════════════════════════════════
+// The app icon and the web manifest are built here rather than shipped as
+// files, so a deploy is four files instead of seven. The service worker is the
+// one piece that CANNOT be inlined: browsers require it to live at its own
+// same-origin URL, because that URL is what defines the pages it may control.
+(function(){
+  'use strict';
+
+  // ── ICON ──
+  // One pixel-invader drawing, rendered twice: plain for the browser tab and
+  // the iOS home screen, and again inset for Android's "maskable" slot, which
+  // crops the outer ~17% to whatever shape the launcher uses.
+  const DEFS = '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
+               '<stop offset="0" stop-color="#00f5ff"/><stop offset="1" stop-color="#ff0090"/>' +
+               '</linearGradient></defs>';
+  const GLYPH =
+    '<g fill="url(#g)">' +
+      '<rect x="176" y="128" width="160" height="32"/>' +
+      '<rect x="144" y="160" width="224" height="32"/>' +
+      '<rect x="128" y="192" width="256" height="96"/>' +
+      '<rect x="160" y="208" width="48" height="48" fill="#04040e"/>' +
+      '<rect x="304" y="208" width="48" height="48" fill="#04040e"/>' +
+      '<rect x="128" y="288" width="48" height="48"/>' +
+      '<rect x="224" y="288" width="64" height="48"/>' +
+      '<rect x="336" y="288" width="48" height="48"/>' +
+      '<rect x="160" y="336" width="48" height="32"/>' +
+      '<rect x="304" y="336" width="48" height="32"/>' +
+    '</g><rect x="240" y="392" width="32" height="32" fill="#39ff14"/>';
+
+  const icon = (rx, scale) => 'data:image/svg+xml,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">' + DEFS +
+    '<rect width="512" height="512" rx="' + rx + '" fill="#04040e"/>' +
+    '<g transform="translate(256 256) scale(' + scale + ') translate(-256 -256)">' +
+    GLYPH + '</g></svg>'
+  );
+  const ICON_ANY = icon(96, 1), ICON_MASK = icon(0, 0.66);
+
+  const addLink = (rel, href, extra) => {
+    const l = document.createElement('link');
+    l.rel = rel; l.href = href;
+    if(extra) Object.assign(l, extra);
+    document.head.appendChild(l);
+    return l;
+  };
+  addLink('icon', ICON_ANY, { type: 'image/svg+xml' });
+  addLink('apple-touch-icon', ICON_ANY);
+
+  // ── MANIFEST ──
+  // Built at runtime because start_url and scope have to be absolute: relative
+  // paths inside a data: URI have no directory to resolve against. Deriving
+  // them from location means this works unchanged at the domain root, under
+  // /Point-invaders/ on GitHub Pages, and on a local dev server.
+  const dir = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '');
+  const manifest = {
+    name: 'Point Invaders — Arcade Hub',
+    short_name: 'Point Invaders',
+    description: 'A neon arcade hub: 16 mini-games, head-to-head duels, and a live leaderboard.',
+    start_url: dir,
+    scope: dir,
+    display: 'fullscreen',
+    display_override: ['fullscreen', 'standalone'],
+    orientation: 'any',
+    background_color: '#04040e',
+    theme_color: '#04040e',
+    categories: ['games', 'entertainment'],
+    icons: [
+      { src: ICON_ANY,  sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+      { src: ICON_MASK, sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' }
+    ]
+  };
+  addLink('manifest', 'data:application/manifest+json,' + encodeURIComponent(JSON.stringify(manifest)));
+
+  // ── SERVICE WORKER ──
+  // Relative URL, so the scope follows the deploy path. file:// has no SW at all.
+  if('serviceWorker' in navigator && location.protocol.startsWith('http')){
+    addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js')
+        .catch(e => console.warn('Service worker registration failed:', e));
+    });
+  }
+})();
+</script>
 </body>
 </html>

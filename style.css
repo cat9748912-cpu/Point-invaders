@@ -7,7 +7,21 @@
   /* Leaderboard: podium metals + the "that's you" blue */
   --silver:#c9d4e0;--bronze:#cd7f32;--blue:#3b82f6;
   --text:#fff;--dim:rgba(255,255,255,0.55);--dimmer:rgba(255,255,255,0.28);
-  --fd:'Orbitron',monospace;--fb:'Rajdhani',sans-serif;--r:12px;--rl:18px
+  --fd:'Orbitron',monospace;--fb:'Rajdhani',sans-serif;--r:12px;--rl:18px;
+  /* Reaction Time's state colors. Named by MEANING, not hue, so the
+     colorblind-safe palette can repoint them without touching the game. */
+  --rx-wait:var(--red);--rx-go:var(--lime);--rx-early:var(--orange);--rx-hit:var(--cyan)
+}
+
+/* ── 🎨 COLORBLIND-SAFE PALETTE ──
+   Okabe-Ito derived: the red/green pair that carries meaning in this game
+   becomes blue/orange, which stays distinguishable for all three common
+   types of color vision deficiency. Neon character is kept where it's
+   decorative; only the load-bearing signals are repointed. */
+html.cb-safe{
+  --cyan:#56b4e9;--pink:#cc79a7;--lime:#f0e442;--gold:#e69f00;
+  --purple:#9a7fd1;--orange:#e69f00;--red:#0072b2;
+  --rx-wait:#0072b2;--rx-go:#f0e442;--rx-early:#e69f00;--rx-hit:#56b4e9;
 }
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--fb);overflow:hidden;-webkit-font-smoothing:antialiased}
 #bg-canvas{position:fixed;inset:0;z-index:0;pointer-events:none}
@@ -1193,3 +1207,101 @@ body { overscroll-behavior: none; }
   .mp-hud-name{display:none}
   .mp-hud-score{font-size:.8rem}
 }
+
+/* ── 🔊 AUDIO POPOVER ── */
+#audio-pop{position:fixed;z-index:400;min-width:230px;background:rgba(8,8,24,.97);border:1px solid var(--border2);border-radius:var(--r);padding:14px;box-shadow:0 8px 40px rgba(0,0,0,.6),0 0 24px rgba(0,245,255,.08);opacity:0;pointer-events:none;transform:translateY(-6px);transition:opacity .18s ease,transform .18s ease}
+#audio-pop.open{opacity:1;pointer-events:all;transform:translateY(0)}
+.ap-sec{font-family:var(--fd);font-size:.55rem;font-weight:700;letter-spacing:.25em;color:var(--cyan);margin-bottom:10px}
+.ap-sec + .ap-sec, .ap-vol-row + .ap-sec{margin-top:14px}
+.ap-modes{display:flex;gap:6px;margin-bottom:12px}
+.ap-mode{flex:1;font-family:var(--fd);font-size:.6rem;font-weight:700;letter-spacing:.05em;padding:8px 4px;border-radius:8px;border:1px solid var(--border);background:var(--s1);color:var(--dim);cursor:pointer;transition:all .15s ease}
+.ap-mode:hover{background:var(--s2);color:var(--text)}
+.ap-mode.active{background:rgba(0,245,255,.12);border-color:var(--cyan);color:var(--cyan);box-shadow:0 0 12px rgba(0,245,255,.2)}
+.ap-vol-row{display:flex;align-items:center;gap:10px}
+.ap-vol-num{font-family:var(--fd);font-size:.65rem;font-weight:700;color:var(--text);min-width:3ch;text-align:right}
+#ap-vol{flex:1;appearance:none;-webkit-appearance:none;height:4px;border-radius:2px;background:linear-gradient(90deg,var(--cyan),var(--purple));outline:none;cursor:pointer}
+#ap-vol::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--cyan);border:2px solid #04040e;box-shadow:0 0 10px rgba(0,245,255,.6);cursor:pointer}
+#ap-vol::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:var(--cyan);border:2px solid #04040e;box-shadow:0 0 10px rgba(0,245,255,.6);cursor:pointer}
+
+/* ── 👁️ REDUCED MOTION ──
+   Transitions that only decorate are cut to near-zero; the screen system keeps
+   a short fade so navigation doesn't jump-cut. Looping/attention-grabbing
+   animations stop entirely — those are the ones that cause trouble. */
+html.reduced-motion *,
+html.reduced-motion *::before,
+html.reduced-motion *::after{
+  animation-duration:.001ms !important;
+  animation-iteration-count:1 !important;
+  transition-duration:.08s !important;
+  scroll-behavior:auto !important;
+}
+html.reduced-motion .screen{transition:opacity .12s ease !important;transform:none !important}
+html.reduced-motion .screen.active{transform:none !important}
+/* Hover lifts and pulses read as motion on a big card grid — flatten them. */
+html.reduced-motion .btn-primary:hover,
+html.reduced-motion .btn-secondary:hover,
+html.reduced-motion .game-card:hover,
+html.reduced-motion .shop-card:hover{transform:none !important}
+
+/* ── 👁️ VISUAL COMFORT POPOVER (shares #audio-pop shell) ── */
+.ap-toggle{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;cursor:pointer;user-select:none}
+.ap-toggle-lbl{font-family:var(--fb);font-size:.82rem;font-weight:600;color:var(--text)}
+.ap-switch{position:relative;flex:0 0 38px;height:20px;border-radius:10px;background:var(--s2);border:1px solid var(--border);transition:background .18s ease,border-color .18s ease}
+.ap-switch::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--dim);transition:transform .18s ease,background .18s ease}
+.ap-toggle.on .ap-switch{background:rgba(0,245,255,.18);border-color:var(--cyan)}
+.ap-toggle.on .ap-switch::after{transform:translateX(18px);background:var(--cyan)}
+.ap-divider{height:1px;background:var(--border);margin:12px 0 0}
+
+/* ── 🔥 STREAK CHIP ── */
+.hub-streak{font-family:var(--fd);font-size:.62rem;font-weight:700;letter-spacing:.06em;padding:5px 10px;border-radius:20px;background:rgba(255,102,0,.14);border:1px solid rgba(255,102,0,.5);color:var(--orange);white-space:nowrap}
+
+/* ── 🏅 BADGE SHELF ── */
+.badge-label{margin-top:24px}
+#badge-shelf{background:var(--s1);border:1px solid var(--border);border-radius:var(--rl);padding:14px}
+.badge-count{font-family:var(--fd);font-size:.55rem;font-weight:700;letter-spacing:.18em;color:var(--dim);margin-bottom:12px}
+.badge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(38px,1fr));gap:8px}
+.badge{display:flex;align-items:center;justify-content:center;aspect-ratio:1;border-radius:10px;background:var(--s1);border:1px solid var(--border);font-size:1.05rem;filter:grayscale(1);opacity:.32;cursor:help;transition:transform .18s ease,opacity .18s ease,filter .18s ease}
+.badge.has{filter:none;opacity:1;border-color:rgba(255,215,0,.55);background:rgba(255,215,0,.09);box-shadow:0 0 14px rgba(255,215,0,.14)}
+.badge.has:hover{transform:translateY(-2px) scale(1.06)}
+.badge-ico{line-height:1}
+
+/* ── 📈 MISSION CARD SPARKLINE ── */
+.gc-spark{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:9px;border-top:1px solid var(--border)}
+.gc-spark .spark{flex:1;height:22px;min-width:0}
+.spark-best{font-family:var(--fd);font-size:.5rem;font-weight:700;letter-spacing:.08em;color:var(--dim);white-space:nowrap}
+
+/* ── 🏆 LEADERBOARD SCOPE TABS ── */
+#lb-tabs{display:flex;gap:6px;margin-bottom:12px}
+.lb-tab{flex:1;font-family:var(--fd);font-size:.52rem;font-weight:700;letter-spacing:.08em;padding:8px 4px;border-radius:8px;border:1px solid var(--border);background:var(--s1);color:var(--dim);cursor:pointer;white-space:nowrap;transition:all .15s ease}
+.lb-tab:hover{background:var(--s2);color:var(--text)}
+.lb-tab.on{background:rgba(0,245,255,.12);border-color:var(--cyan);color:var(--cyan)}
+
+/* ── ★ RIVAL STAR ── */
+.lb-fr{background:none;border:none;color:var(--dimmer);font-size:.95rem;line-height:1;padding:0 6px;cursor:pointer;transition:color .15s ease,transform .15s ease}
+.lb-fr:hover{color:var(--gold);transform:scale(1.2)}
+.lb-fr.on{color:var(--gold)}
+
+/* ── ⏳ FEATURED ROTATION ── */
+#shop-rotation{font-family:var(--fd);font-size:.55rem;font-weight:700;letter-spacing:.14em;color:var(--dim);text-align:center;padding:10px 0 2px}
+#shop-rotation em{font-style:normal;color:var(--gold)}
+.shop-card.featured{border-color:rgba(255,215,0,.5);box-shadow:0 0 22px rgba(255,215,0,.12)}
+.shop-feat{position:absolute;top:8px;left:8px;font-family:var(--fd);font-size:.46rem;font-weight:700;letter-spacing:.1em;padding:3px 7px;border-radius:20px;background:var(--gold);color:#000}
+.shop-was{opacity:.55;margin-right:2px}
+
+/* ── 🔥 BOSS RUSH BANNER ── */
+.br-banner{border-color:rgba(255,102,0,.42);background:linear-gradient(120deg,rgba(255,102,0,.12),rgba(255,36,66,.07))}
+.br-banner .mp-banner-title{color:var(--orange)}
+
+/* ── 👁️ SPECTATOR ── */
+.spec-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:16px}
+.spec-code{font-family:var(--fd);font-size:.6rem;font-weight:700;letter-spacing:.2em;color:var(--dim)}
+.spec-mode{font-family:var(--fd);font-size:.72rem;font-weight:700;color:var(--cyan)}
+.spec-board{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:14px;margin-bottom:16px}
+.spec-side{background:var(--s1);border:1px solid var(--border);border-radius:var(--r);padding:14px 10px;text-align:center;min-width:0}
+.spec-side.spec-empty{color:var(--dimmer);font-family:var(--fd);font-size:.58rem;letter-spacing:.14em}
+.spec-name{font-family:var(--fd);font-size:.64rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.spec-score{font-family:var(--fd);font-size:1.7rem;font-weight:900;color:var(--cyan);margin-top:6px;line-height:1}
+.spec-vs{font-family:var(--fd);font-size:.66rem;font-weight:900;color:var(--pink);letter-spacing:.1em}
+.spec-status{text-align:center;font-family:var(--fb);font-size:.9rem;color:var(--dim)}
+.spec-result{text-align:center;font-family:var(--fd);font-size:.72rem;font-weight:700;color:var(--gold);margin-top:10px}
+.spec-note{text-align:center;font-family:var(--fb);font-size:.76rem;color:var(--dimmer);margin-top:14px}
