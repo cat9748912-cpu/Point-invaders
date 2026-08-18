@@ -1305,3 +1305,39 @@ html.reduced-motion .shop-card:hover{transform:none !important}
 .spec-status{text-align:center;font-family:var(--fb);font-size:.9rem;color:var(--dim)}
 .spec-result{text-align:center;font-family:var(--fd);font-size:.72rem;font-weight:700;color:var(--gold);margin-top:10px}
 .spec-note{text-align:center;font-family:var(--fb);font-size:.76rem;color:var(--dimmer);margin-top:14px}
+
+/* ══════════════════════════════════════════════════════════════
+   📴 OFFLINE BANNER
+   Fixed to the bottom rather than the top: the hub bar, the game
+   header and the results card all own the top edge already.
+   ══════════════════════════════════════════════════════════════ */
+#offline-bar{
+  display:none;
+  position:fixed;
+  left:0; right:0; bottom:0;
+  z-index:9000;
+  padding:8px 14px;
+  padding-bottom:calc(8px + env(safe-area-inset-bottom, 0px));
+  background:linear-gradient(90deg, rgba(255,145,0,.94), rgba(255,80,0,.94));
+  color:#1a0d00;
+  font-family:'Rajdhani',sans-serif;
+  font-weight:700;
+  font-size:.82rem;
+  letter-spacing:.03em;
+  text-align:center;
+  text-shadow:none;
+  box-shadow:0 -4px 18px rgba(255,120,0,.4);
+  pointer-events:none;
+}
+#offline-bar b{ letter-spacing:.08em; }
+
+/* The network-only doors stay visible but read as unavailable, so the hub
+   does not appear to lose features while the connection is down. */
+html.is-offline #btn-market,
+html.is-offline #btn-save-acct,
+html.is-offline #btn-mp-open,
+html.is-offline #btn-boss-rush{
+  opacity:.45;
+  filter:grayscale(.7);
+  cursor:not-allowed;
+}

@@ -593,6 +593,166 @@ try {
 }
 
 // ════════════════════════════════════════════
+//  📴 OFFLINE MODE
+// ══════════════════════════════════════════════════════════════════════
+// Firebase Auth persists its session locally, so a returning player still HAS
+// an identity with no connection. The profile is the problem: it lives in the
+// Realtime Database, and RTDB on the web keeps no on-disk cache, so
+// once('value') never settles offline — it does not reject, it simply waits.
+// That await is what strands a player on the auth screen forever.
+//
+// So the profile is mirrored into localStorage on every read and write, and
+// the boot path races the database against a clock. Miss the deadline and the
+// mirror takes over: the arcade opens, solo missions play, and finished runs
+// are banked until the network comes back.
+
+const LS_PROFILE = 'pi_profile_v1';
+const LS_QUEUE   = 'pi_pending_v1';
+const NET_WAIT   = 6000;
+
+let offlineMode = false;
+
+const lsGet = (k, fb) => { try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; }catch(e){ return fb } };
+const lsSet = (k, v)  => { try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} };
+
+// The timeout IS the offline signal — see the note above about RTDB never
+// rejecting on its own.
+function withTimeout(p, ms){
+  return Promise.race([
+    Promise.resolve(p),
+    new Promise((_, rej) => setTimeout(() => {
+      // Tagged, because this error reaches the auth screen's error mapper. An
+      // untagged Error has no .code, falls off the end of fErrMap, and gets
+      // reported as "Matrix validation anomaly." — which tells a player with no
+      // wifi absolutely nothing about what went wrong.
+      const e = new Error('offline-timeout');
+      e.code = 'app/offline';
+      e.isOffline = true;
+      rej(e);
+    }, ms))
+  ]);
+}
+
+function cacheProfile(u){
+  if(!u || !u.uid) return;
+  lsSet(LS_PROFILE, { uid: u.uid, at: Date.now(), data: u });
+}
+function readCachedProfile(uid){
+  const rec = lsGet(LS_PROFILE, null);
+  return rec && rec.uid === uid ? rec.data : null;
+}
+const pendingRuns = () => { const q = lsGet(LS_QUEUE, []); return Array.isArray(q) ? q : [] };
+
+function paintOfflineBanner(){
+  let el = document.getElementById('offline-bar');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'offline-bar';
+    document.body.appendChild(el);
+  }
+  const n = pendingRuns().length;
+  el.style.display = offlineMode ? 'block' : 'none';
+  if(offlineMode){
+    el.innerHTML = '📴 <b>OFFLINE</b> — solo missions only. ' +
+      (n ? n + ' run' + (n > 1 ? 's' : '') + ' banked, syncing when you reconnect.'
+         : 'Scores are saved on this device.');
+  }
+}
+
+function setOfflineMode(on){
+  if(offlineMode === on){ paintOfflineBanner(); return; }
+  offlineMode = on;
+  document.documentElement.classList.toggle('is-offline', on);
+  paintOfflineBanner();
+  if(!on) flushPendingRuns();
+}
+
+// Network-only doors, gated in one place. The listener sits on `document` in
+// the capture phase deliberately: these buttons' own handlers are bound later
+// in this file, and at the target element listeners fire in registration order
+// regardless of the capture flag — so a guard bound to the button itself would
+// run second and be too late to stop anything.
+document.addEventListener('click', e => {
+  if(!offlineMode || !e.target || !e.target.closest) return;
+  const el = e.target.closest('#btn-mp-open, #btn-market, #btn-save-acct, #btn-boss-rush');
+  if(!el) return;
+  e.stopImmediatePropagation();
+  e.preventDefault();
+  snd('deny');
+  toast('📴 That needs a connection. Solo missions still work.');
+}, true);
+
+// Browser-level signals are instant but only report whether the radio is on,
+// so they prompt a re-check rather than being trusted outright.
+addEventListener('online',  () => { if(db && user) setOfflineMode(false); });
+addEventListener('offline', () => { if(user) setOfflineMode(true); });
+
+// ── THE CACHED LOGIN ──
+// The mirror IS the saved login: it holds the uid and everything the hub needs
+// to draw itself. Firebase cannot mint OR restore a session without a network
+// in every case, and entering the hub used to be possible only through
+// onAuthStateChanged — so a player with no wifi sat on the auth screen even
+// though their profile was sitting in localStorage the whole time.
+//
+// This opens the arcade straight from that mirror. It grants no new authority:
+// every write still goes through the queue and is replayed under the real
+// Firebase session once the network is back, and the rules still check
+// auth.uid on the server. It is a local reader of local data.
+const hasMirror = () => { const r = lsGet(LS_PROFILE, null); return !!(r && r.uid && r.data) };
+
+function offlineResume(){
+  const rec = lsGet(LS_PROFILE, null);
+  if(!rec || !rec.uid || !rec.data) return false;
+  user = { uid: rec.uid, ...ensureUserDefaults(rec.data) };
+  user.isGuest = !!rec.data.isGuest;
+  setOfflineMode(true);
+  applyEquippedCosmetics();
+  snd('login');
+  enterHub();
+  return true;
+}
+
+// Offered rather than forced whenever the network is merely doubtful — the
+// player can still wait and sign in properly if they know they have signal.
+function showResumeOffer(){
+  if(user || !hasMirror()) return false;
+  const anchor = document.getElementById('btn-guest');
+  if(!anchor) return false;
+  const host = anchor.parentElement;
+
+  let btn = document.getElementById('btn-offline-resume');
+  if(!btn){
+    btn = document.createElement('button');
+    btn.id = 'btn-offline-resume';
+    btn.className = 'btn btn-guest btn-full btn-lg';
+    btn.onclick = offlineResume;
+    const note = document.createElement('div');
+    note.className = 'guest-note';
+    note.id = 'offline-resume-note';
+    note.textContent = 'Saved on this device. Scores bank locally and sync when you reconnect.';
+    host.appendChild(btn);
+    host.appendChild(note);
+  }
+  const rec = lsGet(LS_PROFILE, null);
+  btn.textContent = `📴 Continue Offline as ${(rec.data && rec.data.username) || 'Player'}`;
+  btn.style.display = '';
+  const n = document.getElementById('offline-resume-note');
+  if(n) n.style.display = '';
+  return true;
+}
+
+// Boot fallback. onAuthStateChanged only fires when Firebase manages to restore
+// a session, and offline it may never fire at all — leaving the auth screen up
+// with no explanation. If nothing has claimed the screen shortly after load and
+// the device is plainly offline, the mirror opens by itself; if the network is
+// only doubtful, the button is offered instead.
+addEventListener('load', () => setTimeout(() => {
+  if(user || !hasMirror()) return;
+  if(!navigator.onLine || !auth) offlineResume();
+  else showResumeOffer();
+}, 2500));
+
+// ════════════════════════════════════════════
 //  👁️ VISUAL COMFORT PREFERENCES
 // ════════════════════════════════════════════
 // Reduced motion follows the OS preference until the player chooses; the
@@ -1448,16 +1608,25 @@ document.getElementById('tab-signup').onclick=()=>{
 };
 
 document.getElementById('btn-login').onclick=async()=>{
-  if(!auth){toast('⚠️ Connection state unconfigured');return}
+  if(!auth){ showAuthOfflineNotice(); return }
   const email=document.getElementById('l-email').value.trim();
   const pass=document.getElementById('l-pass').value;
   if(!email||!pass){setErr('Fields cannot remain unassigned.');return}
-  try{const c=await auth.signInWithEmailAndPassword(email,pass);await loadUser(c.user.uid)}
-  catch(e){console.error('Sign-in failed:',e);setErrCode(e,'email')}
+  try{
+    // Timed, or a dead network leaves this awaiting a promise Firebase will
+    // never settle and the button simply stops responding.
+    const c=await withTimeout(auth.signInWithEmailAndPassword(email,pass), NET_WAIT);
+    await loadUser(c.user.uid);
+  }
+  catch(e){
+    console.error('Sign-in failed:',e);
+    if(e && e.isOffline) showAuthOfflineNotice();
+    else setErrCode(e,'email');
+  }
 };
 
 document.getElementById('btn-signup').onclick=async()=>{
-  if(!auth||!db){toast('⚠️ Connection state unconfigured');return}
+  if(!auth||!db){ showAuthOfflineNotice(); return }
   const name=document.getElementById('s-name').value.trim();
   const email=document.getElementById('s-email').value.trim();
   const pass=document.getElementById('s-pass').value;
@@ -1465,10 +1634,14 @@ document.getElementById('btn-signup').onclick=async()=>{
   if(!/^[a-zA-Z0-9_-]{2,20}$/.test(name)){setErr('Format error inside username syntax.');return}
   authPending=true;
   try{
-    const c=await auth.createUserWithEmailAndPassword(email,pass);
+    const c=await withTimeout(auth.createUserWithEmailAndPassword(email,pass), NET_WAIT);
     await db.ref('players/' + c.user.uid).set({ username: name, totalPoints: 0, gamesPlayed: 0 });
     await loadUser(c.user.uid);
-  }catch(e){console.error('Sign-up failed:',e);setErrCode(e,'email')}
+  }catch(e){
+    console.error('Sign-up failed:',e);
+    if(e && e.isOffline) showAuthOfflineNotice();
+    else setErrCode(e,'email');
+  }
   finally{authPending=false}
 };
 
@@ -1496,6 +1669,9 @@ const fErrVerifyFirst='Identity re-key blocked — turn OFF “Email enumeration
 
 const fErr=(e,ctx)=>{
   const c=e&&e.code;
+  // Our own timeout, not a Firebase rejection — it carries no meaningful code
+  // and must never reach fErrMap's catch-all.
+  if(e&&e.isOffline) return '📴 No connection to the mainframe.';
   if(c==='auth/operation-not-allowed'||c==='auth/admin-restricted-operation'){
     if(/verify.*email|email.*verif/i.test(fErrRaw(e))) return fErrVerifyFirst;
     return fErrProviderOff[ctx]||fErrProviderOff.email;
@@ -1526,16 +1702,18 @@ const setErrCode = (e, ctx) => showAuthErr(document.getElementById('auth-err'), 
 const guestTag = uid => 'Guest_' + String(uid).replace(/[^a-zA-Z0-9]/g,'').slice(0,5).toUpperCase();
 
 async function signInAsGuest(){
-  if(!auth||!db){toast('⚠️ Connection state unconfigured');return}
+  if(!auth||!db){ showAuthOfflineNotice(); return }
   const btn=document.getElementById('btn-guest');
   const label=btn.textContent;
   btn.disabled=true;btn.textContent='⏳ Booting guest node...';
   setErr('');
   authPending=true; // hold off onAuthStateChanged until the profile node exists
   try{
-    const c=await auth.signInAnonymously();
+    // Timed, or a dead network leaves the button spinning on "Booting guest
+    // node..." with nothing ever resolving.
+    const c=await withTimeout(auth.signInAnonymously(), NET_WAIT);
     const ref=db.ref('players/' + c.user.uid);
-    const snap=await ref.once('value');
+    const snap=await withTimeout(ref.once('value'), NET_WAIT);
     if(!snap.exists()){
       await ref.set({
         username: guestTag(c.user.uid),
@@ -1550,7 +1728,10 @@ async function signInAsGuest(){
     toast('🎮 Guest access granted — progress lives in this browser only.',4000);
   }catch(e){
     console.error('Guest sign-in failed:',e);
-    setErrCode(e,'guest');
+    // A dead network is not a credential problem: a new anonymous identity
+    // simply cannot be minted offline, so point at the saved profile instead.
+    if(e && e.isOffline) showAuthOfflineNotice();
+    else setErrCode(e,'guest');
   }finally{
     authPending=false;
     btn.disabled=false;btn.textContent=label;
@@ -1558,6 +1739,11 @@ async function signInAsGuest(){
 }
 
 document.getElementById('btn-guest').onclick=signInAsGuest;
+
+// initializeApp() threw, which on a first visit means the SDK itself could not
+// be fetched. Without this the auth screen just sits there with three buttons
+// that quietly do nothing.
+if(!auth) showAuthOfflineNotice();
 
 function ensureUserDefaults(raw){
   raw = raw || {};
@@ -1585,16 +1771,59 @@ function ensureUserDefaults(raw){
 }
 
 async function loadUser(uid){
-  if(!db)return;
-  const snapshot = await db.ref('players/' + uid).once('value');
-  const data = snapshot.exists() ? snapshot.val() : {};
+  let data = null, live = false, existed = false;
+
+  if(db){
+    try{
+      const snapshot = await withTimeout(db.ref('players/' + uid).once('value'), NET_WAIT);
+      existed = snapshot.exists();
+      data = existed ? snapshot.val() : {};
+      live = true;
+    }catch(e){
+      console.warn('Profile fetch did not answer — opening offline:', e.message);
+    }
+  }
+
+  if(!live){
+    // Nothing live and nothing mirrored means this device has never once
+    // loaded this profile, so there is genuinely nothing to open.
+    data = readCachedProfile(uid);
+    if(!data){ showAuthOfflineNotice(); return; }
+  }
+
   user = { uid, ...ensureUserDefaults(data) };
   // Anonymous sessions are the source of truth for guest status, not the DB flag.
   user.isGuest = !!(auth && auth.currentUser && auth.currentUser.isAnonymous);
-  if(user.isGuest && !snapshot.exists()) user.username = guestTag(uid);
+  if(user.isGuest && live && !existed) user.username = guestTag(uid);
+
+  setOfflineMode(!live);
+  if(live) cacheProfile(user);
   applyEquippedCosmetics();
   snd('login');
   enterHub();
+  if(live) flushPendingRuns();
+}
+
+// Shown when there is no connection AND no mirrored profile — the one case
+// offline genuinely cannot serve, because a Firebase identity cannot be minted
+// without a network.
+function showAuthOfflineNotice(){
+  // With a mirror on this device there is nothing to apologise for — offer the
+  // way in instead of an error.
+  if(showResumeOffer()){
+    const el = document.getElementById('auth-err');
+    if(el){
+      el.textContent = '📴 No connection — but this device has your progress saved.';
+      el.style.display = 'block';
+    }
+    return;
+  }
+  const el = document.getElementById('auth-err');
+  if(el){
+    el.textContent = '📴 No connection. Signing in needs a network the first time — after one online visit, the arcade opens offline.';
+    el.style.display = 'block';
+  }
+  setOfflineMode(true);
 }
 
 // Restores an existing session on reload — including anonymous guests, whose
@@ -1983,42 +2212,123 @@ function maxAwardFor(gid){
 }
 
 async function saveScore(gid,pts,ctx){
-  if(!db || !user) return;
+  if(!user) return;
   ctx = ctx || {};
   const award = Math.max(0, Math.min(parseInt(pts || 0) || 0, maxAwardFor(gid)));
-  try {
-    const playerRef = db.ref('players/' + user.uid);
-    playerRef.once('value', (snapshot) => {
-      const d = snapshot.val() || { totalPoints: 0, gamesPlayed: 0, highScores: {} };
-      const hs = d.highScores || {};
-      const currentHighScore = parseInt(hs[gid] || 0);
 
-      const newPoints = parseInt(d.totalPoints || 0) + award;
-      const newHighScores = { ...hs, [gid]: Math.max(currentHighScore, award) };
+  if(!db || offlineMode){ bankRunOffline(gid, award, ctx); return; }
 
-      playerRef.update({
-        username: user.username,
-        totalPoints: newPoints,
-        gamesPlayed: (parseInt(d.gamesPlayed || 0) + 1),
-        highScores: newHighScores,
-        // Server clock, not the client's — the rate-limit rule compares it to `now`.
-        lastScoreAt: firebase.database.ServerValue.TIMESTAMP
-      }).then(() => {
-        if(!user) return;
-        user.totalPoints = newPoints;
-        user.gamesPlayed = parseInt(d.gamesPlayed || 0) + 1;
-        // Runs after the score lands, so achievement thresholds test against the
-        // totals the player actually has rather than the ones they had a moment ago.
-        recordRun(gid, award, ctx);
-        loadLeaderboard();
-      }).catch(e => {
-        console.warn('Score rejected:', e);
-        toast('⚠️ Score sync refused by the mainframe.');
-      });
-    });
+  try{
+    await pushRun({ gid, award, ctx });
     snd('coin');
     toast(`✅ Matrix Sync: +${award} PTS`);
-  } catch (e) { console.error("Score pipeline error:", e) }
+  }catch(e){
+    // The write did not land. Banking it beats losing the round — the player
+    // earned those points whether or not the mainframe was reachable.
+    console.warn('Score write failed, banking locally:', e);
+    setOfflineMode(true);
+    bankRunOffline(gid, award, ctx);
+  }
+}
+
+// The single server write for a finished round. Split out of saveScore() so the
+// offline flush replays banked runs through exactly the same path, rather than
+// a parallel copy that could drift away from it.
+function pushRun({ gid, award, ctx }){
+  const playerRef = db.ref('players/' + user.uid);
+  return withTimeout(playerRef.once('value'), NET_WAIT).then(snapshot => {
+    const d  = snapshot.val() || { totalPoints: 0, gamesPlayed: 0, highScores: {} };
+    const hs = d.highScores || {};
+    const newPoints     = parseInt(d.totalPoints || 0) + award;
+    const newGames      = parseInt(d.gamesPlayed || 0) + 1;
+    const newHighScores = { ...hs, [gid]: Math.max(parseInt(hs[gid] || 0), award) };
+
+    return withTimeout(playerRef.update({
+      username: user.username,
+      totalPoints: newPoints,
+      gamesPlayed: newGames,
+      highScores: newHighScores,
+      // Server clock, not the client's — the rate-limit rule compares it to `now`.
+      lastScoreAt: firebase.database.ServerValue.TIMESTAMP
+    }), NET_WAIT).then(() => {
+      if(!user) return;
+      user.totalPoints = newPoints;
+      user.gamesPlayed = newGames;
+      user.highScores  = newHighScores;
+      // Runs after the score lands, so achievement thresholds test against the
+      // totals the player actually has rather than the ones they had a moment ago.
+      recordRun(gid, award, ctx);
+      cacheProfile(user);
+      loadLeaderboard();
+    });
+  });
+}
+
+// An offline round is banked, not lost. Local totals move immediately so the hub
+// stays honest about what was just earned; they are optimistic only in that the
+// server recomputes from its own state on flush and loadUser() then resyncs, so
+// a replayed run can never double-count.
+function bankRunOffline(gid, award, ctx){
+  const q = pendingRuns();
+  q.push({ gid, award, ctx, at: Date.now() });
+  lsSet(LS_QUEUE, q);
+
+  user.totalPoints = (user.totalPoints || 0) + award;
+  user.gamesPlayed = (user.gamesPlayed || 0) + 1;
+  user.highScores  = user.highScores || {};
+  user.highScores[gid] = Math.max(parseInt(user.highScores[gid] || 0), award);
+  cacheProfile(user);
+
+  const hp = document.getElementById('h-pts');
+  if(hp) hp.textContent = `🏆 ${(user.totalPoints || 0).toLocaleString()} PTS`;
+  if(typeof updateHubDiffDisplay === 'function') updateHubDiffDisplay();
+  paintOfflineBanner();
+
+  snd('coin');
+  toast(`📴 +${award} PTS banked — syncs when you reconnect`);
+}
+
+// Replayed one at a time with a deliberate gap: the database rules refuse a
+// second score write inside 2.5s, so a burst flush would have most of the queue
+// rejected as rate-limited.
+async function flushPendingRuns(){
+  if(!db || !user || offlineMode || flushPendingRuns.busy) return;
+  const q = pendingRuns();
+  if(!q.length) return;
+
+  flushPendingRuns.busy = true;
+  toast(`📡 Syncing ${q.length} banked run${q.length > 1 ? 's' : ''}…`);
+  const left = q.slice();
+  try{
+    for(const run of q){
+      try{
+        await new Promise(r => setTimeout(r, 2600));
+        await pushRun(run);
+        left.shift();
+        lsSet(LS_QUEUE, left);   // persisted per run, so a mid-flush reload resumes
+      }catch(e){
+        // Still unreachable — keep whatever is left for the next reconnect.
+        console.warn('Banked run not accepted, keeping it queued:', e);
+        setOfflineMode(true);
+        break;
+      }
+    }
+    if(!left.length){
+      // Server state is the truth once the queue drains: the optimistic local
+      // totals get replaced rather than added to.
+      try{
+        const snap = await withTimeout(db.ref('players/' + user.uid).once('value'), NET_WAIT);
+        user = { uid: user.uid, ...ensureUserDefaults(snap.val() || {}) };
+        user.isGuest = !!(auth && auth.currentUser && auth.currentUser.isAnonymous);
+        cacheProfile(user);
+        enterHub();
+      }catch(e){ console.warn('Post-sync refresh failed:', e); }
+      toast('✅ Banked runs synced.');
+    }
+  } finally {
+    flushPendingRuns.busy = false;
+    paintOfflineBanner();
+  }
 }
 
 // ════════════════════════════════════════════
@@ -4110,6 +4420,13 @@ function lbRows(panel, players, scoreOf){
 async function loadLeaderboard(){
   const panel = document.getElementById('lb-panel');
   if(!db){ panel.innerHTML = '<div class="lb-empty">⚠️ Connecting Live Registry...</div>'; return; }
+  // Offline the query below never calls back, so the panel would sit on
+  // "Loading scores..." indefinitely. Say what is actually happening instead.
+  if(offlineMode){
+    renderLbTabs();
+    panel.innerHTML = '<div class="lb-empty">📴 Offline — the live registry needs a connection.</div>';
+    return;
+  }
   renderLbTabs();
   const scope = lbScope, meta = LB_SCOPES[scope];
   const season = seasonKey();
