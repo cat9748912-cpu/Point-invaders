@@ -679,13 +679,29 @@ document.addEventListener('click', e => {
   e.stopImmediatePropagation();
   e.preventDefault();
   snd('deny');
+  // For a local player the Save button is the one they will press the moment
+  // wifi returns — tell them that, not the generic line.
+  if(el.id === 'btn-save-acct' && isLocalSession()){
+    if(navigator.onLine && auth && db){ claimLocalAccount(); return; }
+    toast('📴 Connect to wifi, then press Save to keep your progress.');
+    return;
+  }
   toast('📴 That needs a connection. Solo missions still work.');
 }, true);
 
 // Browser-level signals are instant but only report whether the radio is on,
-// so they prompt a re-check rather than being trusted outright.
-addEventListener('online',  () => { if(db && user) setOfflineMode(false); });
-addEventListener('offline', () => { if(user) setOfflineMode(true); });
+// so they prompt a re-check rather than being trusted outright. A local session
+// must NOT flip online here: its uid is device-made, the server would reject
+// every write under it, and going "online" is claimLocalAccount()'s job — so
+// for local sessions these only repaint the Save button.
+addEventListener('online',  () => {
+  if(isLocalSession()){ refreshClaimUi(); toast('📡 Back online — press 💾 Save to keep your progress.', 5000); return; }
+  if(db && user) setOfflineMode(false);
+});
+addEventListener('offline', () => {
+  if(isLocalSession()){ refreshClaimUi(); return; }
+  if(user) setOfflineMode(true);
+});
 
 // ── THE CACHED LOGIN ──
 // The mirror IS the saved login: it holds the uid and everything the hub needs
@@ -741,15 +757,159 @@ function showResumeOffer(){
   return true;
 }
 
+// ── PLAYING WITH NO ACCOUNT AT ALL ──
+// A first-time player with no wifi has nothing cached and no way to reach
+// Firebase, so there is no identity to restore and none can be minted. Rather
+// than turn them away, this mints a purely LOCAL one: no network, no Firebase,
+// just a uid in localStorage. They play immediately, and every finished round
+// banks into the same queue the offline path already uses.
+//
+// Nothing here is a security boundary. A local session can write only to this
+// device; claimLocalAccount() is what later exchanges it for a real Firebase
+// identity, and only then does any of it reach the leaderboard.
+const LS_LOCAL = 'pi_local_v1';
+const isLocalSession = () => !!(user && user.isLocal);
+
+function startLocalPlay(){
+  const uid = 'local-' + Math.random().toString(36).slice(2, 10);
+  user = { uid, ...ensureUserDefaults({ username: 'Player', isLocal: true, isGuest: true }) };
+  user.isLocal = true;
+  user.isGuest = true;
+  lsSet(LS_LOCAL, 1);
+  cacheProfile(user);
+  setOfflineMode(true);
+  applyEquippedCosmetics();
+  snd('login');
+  enterHub();
+  refreshClaimUi();
+  toast('🎮 Playing locally. Connect to wifi later to save your progress.', 5000);
+  return true;
+}
+
+// Turns a local session into a real anonymous guest and replays everything it
+// banked. The queue is what carries the progress across: each run is re-sent
+// through the normal write path, so the server validates every point rather
+// than trusting a total this device made up.
+async function claimLocalAccount(){
+  if(!isLocalSession()) return false;
+  if(!auth || !db){ toast('📴 Still no connection.'); return false; }
+
+  const btn = document.getElementById('btn-save-acct');
+  const label = btn && btn.textContent;
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Saving…'; }
+
+  try{
+    toast('📡 Claiming your account…');
+    const c   = await withTimeout(auth.signInAnonymously(), NET_WAIT);
+    const uid = c.user.uid;
+    // signInAnonymously() REUSES a persisted anonymous session when one exists
+    // — and set() on an existing node would wipe that guest's real totals, so
+    // only a genuinely new node is written. (Banked runs then ADD to whatever
+    // the reclaimed account already had, which is the right outcome.)
+    const snap = await withTimeout(db.ref('players/' + uid).once('value'), NET_WAIT);
+    if(!snap.exists()){
+      await withTimeout(db.ref('players/' + uid).set({
+        username: guestTag(uid),
+        totalPoints: 0, gamesPlayed: 0, credits: 0, isGuest: true,
+        createdAt: firebase.database.ServerValue.TIMESTAMP
+      }), NET_WAIT);
+    }
+
+    // Re-point the session at the real identity. The local totals stay on
+    // screen meanwhile — the flush recomputes them from the server and the
+    // final resync repaints, so the player never watches them fall to zero.
+    user.uid      = uid;
+    user.isLocal  = false;
+    user.isGuest  = true;
+    user.username = guestTag(uid);
+    lsSet(LS_LOCAL, 0);
+    cacheProfile(user);
+
+    setOfflineMode(false);      // drains the banked queue into the new account
+    refreshClaimUi();
+    return true;
+  }catch(e){
+    console.warn('Account claim failed:', e);
+    toast(e && e.isOffline ? '📴 Still no connection — your progress is safe on this device.'
+                           : '⚠️ Could not claim the account.');
+    return false;
+  }finally{
+    if(btn){ btn.disabled = false; if(label) btn.textContent = label; }
+  }
+}
+
+// The hub's Save Account button does double duty. Normally it opens the
+// email/password upgrade modal (a handler assigned inside a closure far below —
+// unreachable by name from here, so it is captured off the element rather than
+// referenced). For a local session it becomes the claim; once the claim lands,
+// the captured handler goes back and the button is the ordinary guest upgrade.
+function refreshClaimUi(){
+  const btn = document.getElementById('btn-save-acct');
+  if(!btn) return;
+  if(!isLocalSession()){
+    if(btn._upgradeHandler){ btn.onclick = btn._upgradeHandler; btn._upgradeHandler = null; }
+    btn.textContent = '💾 Save Account';
+    return;
+  }
+  const online = navigator.onLine && !!auth && !!db;
+  if(!btn._upgradeHandler) btn._upgradeHandler = btn.onclick;
+  btn.style.display = '';
+  btn.textContent = online ? '💾 Save Progress Online' : '💾 Save (needs wifi)';
+  btn.onclick = () => {
+    if(navigator.onLine && auth && db) claimLocalAccount();
+    else toast('📴 Connect to wifi, then press this to save your progress.');
+  };
+}
+
+// Offered whenever there is no connection and no saved profile — the case that
+// used to be a dead end.
+function showLocalPlayOffer(){
+  if(user) return false;
+  const anchor = document.getElementById('btn-guest');
+  if(!anchor) return false;
+
+  let btn = document.getElementById('btn-local-play');
+  if(!btn){
+    btn = document.createElement('button');
+    btn.id = 'btn-local-play';
+    btn.className = 'btn btn-guest btn-full btn-lg';
+    btn.textContent = '🎮 Play Without Signing In';
+    btn.onclick = startLocalPlay;
+    const note = document.createElement('div');
+    note.className = 'guest-note';
+    note.id = 'local-play-note';
+    note.textContent = 'No wifi needed. Your scores are kept on this device and can be saved to an account once you are back online.';
+    anchor.parentElement.appendChild(btn);
+    anchor.parentElement.appendChild(note);
+  }
+  btn.style.display = '';
+  const n = document.getElementById('local-play-note');
+  if(n) n.style.display = '';
+  return true;
+}
+
 // Boot fallback. onAuthStateChanged only fires when Firebase manages to restore
 // a session, and offline it may never fire at all — leaving the auth screen up
 // with no explanation. If nothing has claimed the screen shortly after load and
 // the device is plainly offline, the mirror opens by itself; if the network is
 // only doubtful, the button is offered instead.
 addEventListener('load', () => setTimeout(() => {
-  if(user || !hasMirror()) return;
-  if(!navigator.onLine || !auth) offlineResume();
-  else showResumeOffer();
+  if(user) return;
+  if(hasMirror()){
+    if(!navigator.onLine || !auth) offlineResume();
+    else showResumeOffer();
+    return;
+  }
+  // No saved profile. If the network is plainly down, sitting on a login screen
+  // that cannot possibly succeed helps nobody — offer local play instead.
+  if(!navigator.onLine || !auth){
+    showLocalPlayOffer();
+    const el = document.getElementById('auth-err');
+    if(el && !el.textContent){
+      el.textContent = '📴 No connection. You can play now and save your progress later.';
+      el.style.display = 'block';
+    }
+  }
 }, 2500));
 
 // ════════════════════════════════════════════
@@ -1818,9 +1978,11 @@ function showAuthOfflineNotice(){
     }
     return;
   }
+  // No saved profile either: offer play-now instead of an apology.
+  showLocalPlayOffer();
   const el = document.getElementById('auth-err');
   if(el){
-    el.textContent = '📴 No connection. Signing in needs a network the first time — after one online visit, the arcade opens offline.';
+    el.textContent = '📴 No connection. You can play now without an account and save your progress once you are back online.';
     el.style.display = 'block';
   }
   setOfflineMode(true);
@@ -1858,8 +2020,25 @@ document.getElementById('btn-logout').onclick=async()=>{
       ? `Exiting deletes this guest profile and its ${pts} PTS permanently.\n\nWant to keep them? Cancel, then use “💾 Save Account”.\n\nExit and delete anyway?`
       : 'Exiting deletes this guest profile permanently. Exit anyway?';
     if(!confirm(warn)) return;
-    await purgeGuestAccount();
+    if(isLocalSession()){
+      // A local profile lives in this browser, not in Firebase — wiping it
+      // means clearing the mirror and the banked queue, or the next boot's
+      // resume path would cheerfully resurrect what was just deleted.
+      try{
+        localStorage.removeItem(LS_PROFILE);
+        localStorage.removeItem(LS_QUEUE);
+        localStorage.removeItem(LS_LOCAL);
+      }catch(e){}
+    } else if(offlineMode){
+      // A real guest's purge is two server deletes; offline they never settle
+      // and the button would simply freeze. Refuse honestly instead.
+      toast('📴 Deleting a guest profile needs a connection. Reconnect and try again.');
+      return;
+    } else {
+      await purgeGuestAccount();
+    }
     snd('logout');
+    setOfflineMode(false);
     user=null;showScreen('auth-screen');setErr('');toast('🗑️ Guest profile wiped from the grid.');
     return;
   }
@@ -1894,6 +2073,9 @@ function enterHub(){
   // "Save Account" is only meaningful while the session is still anonymous
   const saveBtn=document.getElementById('btn-save-acct');
   if(saveBtn)saveBtn.style.display=user.isGuest?'':'none';
+  // For a local session the button reads as the claim; every hub repaint goes
+  // through here, so this keeps its text and handler current either way.
+  refreshClaimUi();
   document.getElementById('h-pts').textContent=`🏆 ${(user.totalPoints||0).toLocaleString()} PTS`;
   document.getElementById('h-credits').textContent=`💎 ${(user.credits||0).toLocaleString()} CR`;
   showScreen('hub-screen');
@@ -2292,6 +2474,9 @@ function bankRunOffline(gid, award, ctx){
 // second score write inside 2.5s, so a burst flush would have most of the queue
 // rejected as rate-limited.
 async function flushPendingRuns(){
+  // A local session's queue must only ever drain through claimLocalAccount(),
+  // which first swaps in a uid the server will actually accept writes for.
+  if(isLocalSession()) return;
   if(!db || !user || offlineMode || flushPendingRuns.busy) return;
   const q = pendingRuns();
   if(!q.length) return;
