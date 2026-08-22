@@ -750,7 +750,20 @@ function showResumeOffer(){
     host.appendChild(note);
   }
   const rec = lsGet(LS_PROFILE, null);
-  btn.textContent = `📴 Continue Offline as ${(rec.data && rec.data.username) || 'Player'}`;
+  const who = (rec && rec.data && rec.data.username) || 'Player';
+  // Two spans rather than one string. A username can be 20 characters and the
+  // button is only as wide as the auth card, so something has to give; the CSS
+  // pins the static half and clips only the name to an ellipsis. Written as one
+  // label, the browser had no seam to cut at and the whole thing overflowed.
+  btn.textContent = '';
+  const lbl = document.createElement('span');
+  lbl.className = 'ofr-label';
+  lbl.textContent = '📴 Continue Offline as';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'ofr-name';
+  nameEl.textContent = who;
+  btn.append(lbl, nameEl);
+  btn.title = `Continue offline as ${who}`;   // clipped names stay readable on hover
   btn.style.display = '';
   const n = document.getElementById('offline-resume-note');
   if(n) n.style.display = '';

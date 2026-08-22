@@ -67,6 +67,21 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .btn-guest:active:not(:disabled){transform:scale(.96)}
 .btn-guest:disabled{opacity:.5;cursor:progress;transform:none;box-shadow:none}
 .guest-note{font-size:.72rem;color:var(--dimmer);text-align:center;margin-top:10px;line-height:1.4}
+
+/* ── OFFLINE / LOCAL ENTRY BUTTONS ──
+   These two are built in JS, and their labels are longer than the ~350px the
+   auth card gives them — "Continue Offline as <name>" carries a username of up
+   to 20 characters. They inherit .btn's white-space:nowrap, so the label used
+   to spill straight past the rounded border instead of stopping at it.
+   Trimming the oversized .btn-lg side padding buys back room, and overflow
+   +text-overflow turn whatever still doesn't fit into an ellipsis. */
+#btn-offline-resume,#btn-local-play{padding-left:14px;padding-right:14px;overflow:hidden;text-overflow:ellipsis}
+/* Laid out as a row so the two halves can be told apart: the static part keeps
+   its full width and only the username is clipped, which means the button
+   always still reads "CONTINUE OFFLINE AS …" rather than losing the verb. */
+#btn-offline-resume{display:flex;align-items:center;justify-content:center;gap:.5ch}
+#btn-offline-resume .ofr-label{flex:0 0 auto}
+#btn-offline-resume .ofr-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hub-guest-tag{background:rgba(57,255,20,.1);border:1px solid rgba(57,255,20,.35);border-radius:20px;padding:4px 10px;font-family:var(--fd);font-size:.5rem;font-weight:700;letter-spacing:.12em;color:var(--lime)}
 
 /* ── HUB SCREEN ── */
@@ -620,7 +635,36 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
    z-index sits above .screen (10) and #cd-ov (999) but below
    #toast (9999), so confirmation toasts stay readable.
    ══════════════════════════════════════════════════════════════ */
-.hub-right{flex-wrap:wrap;justify-content:flex-end}
+/* ── HUB BAR: ONE ROW ──
+   The controls used to drop onto a second row the moment the bar ran out of
+   width — Exit landed underneath the others and the bar stood two rows tall for
+   the sake of one button. Two things keep it to a single row.
+
+   First, room: tighter padding on the bar, its buttons and the stat pills gives
+   back ~90px, which already covers the ~26px the signed-in layout was short by.
+
+   Second, an order of sacrifice. Save Account only appears for local and guest
+   sessions, and with six buttons up there the bar can still come up ~120px
+   short. Wrapping is a flex container's first answer to that, but it is the
+   wrong one here: it costs a whole row to save a few pixels. nowrap makes the
+   overflow get absorbed by shrinking instead, and the shrink factors below
+   decide what gives — the username first (it is the only part whose width is
+   unbounded by its own label, and it stays legible as an ellipsis), the
+   wordmark only once the username has hit its floor, and the controls never. */
+.hub-bar{padding-left:16px;padding-right:16px}
+.hub-right{flex-wrap:nowrap;justify-content:flex-end;gap:8px;min-width:0}
+.hub-right>*{flex:0 0 auto}
+.hub-right .btn{padding-left:10px;padding-right:10px}
+.hub-pts,.hub-credits{padding-left:10px;padding-right:10px}
+.hub-logo-sm{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* shrink:100 — drained almost to the floor before the wordmark gives anything. */
+.hub-uname{flex:0 100 auto;min-width:44px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Below this the row cannot hold nine controls however hard it shrinks, and
+   nowrap would push them out through the border. Wrapping only ever engages
+   when the content genuinely does not fit, so this costs nothing at the widths
+   where it does. It also covers the stacked phone layout further down. */
+@media (max-width:900px){ .hub-right{flex-wrap:wrap} }
 .btn-feedback{color:var(--lime);border-color:rgba(57,255,20,.35)}
 .btn-feedback:hover{background:rgba(57,255,20,.14);border-color:var(--lime);box-shadow:0 0 18px rgba(57,255,20,.22)}
 
