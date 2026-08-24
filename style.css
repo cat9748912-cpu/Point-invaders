@@ -600,6 +600,99 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .hack-grid.locked .hack-node{cursor:default}
 .hack-grid.locked{opacity:.94}
 
+/* ── 🔌 OVERCLOCK PATH ──
+   --pc is the board's neon, assigned by startOverclockPath() from the equipped
+   Black Market colour; --pc-soft / --pc-glow are pre-mixed rgba of it, the same
+   way Node Hacker mixes --nc, rather than color-mix(). */
+.path-wrap{display:flex;flex-direction:column;align-items:center;gap:14px;width:100%;max-width:420px}
+.path-readout{width:100%;text-align:center;background:var(--s1);border:1px solid rgba(168,85,247,.28);border-radius:var(--r);padding:12px 14px}
+.path-status{font-family:var(--fd);font-size:.7rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--purple);text-shadow:0 0 10px rgba(168,85,247,.55);min-height:17px;line-height:1.4}
+.path-status.warn{color:var(--gold);text-shadow:0 0 10px rgba(255,215,0,.55)}
+/* The RECALIBRATING flash. steps(2) rather than a fade, because a clean blink
+   reads as a fault light and a fade reads as a transition. */
+.path-status.fail{color:var(--red);text-shadow:0 0 10px rgba(255,36,66,.6);animation:pathBlink .34s steps(2,end) 2}
+.path-status.win{color:var(--lime);text-shadow:0 0 12px rgba(57,255,20,.65)}
+@keyframes pathBlink{0%,100%{opacity:1}50%{opacity:.24}}
+
+/* How much of the circuit is carrying current. */
+.path-meter{margin-top:10px;height:5px;border-radius:3px;background:var(--s2);border:1px solid var(--border);overflow:hidden}
+.path-meter-fill{height:100%;width:0;border-radius:3px;background:linear-gradient(90deg,var(--pc,var(--purple)),#fff);box-shadow:0 0 10px var(--pc,var(--purple));transition:width .18s ease}
+
+/* The board is one square box with the grid and the trace stacked inside it,
+   both pinned to its edges — that shared box is what lets the SVG be drawn in
+   the grid's own pixel coordinates. */
+.path-board{position:relative;width:min(100%,400px,52vh);aspect-ratio:1/1}
+.path-grid{position:absolute;inset:0;z-index:1;display:grid;grid-template-columns:repeat(5,1fr);gap:9px;touch-action:none}
+/* Above the nodes so the current reads as one continuous wire threading
+   through them, and pointer-transparent so the nodes stay what you touch. */
+.path-trace{position:absolute;inset:0;z-index:2;pointer-events:none;overflow:visible}
+.trace-glow{fill:none;stroke:var(--pc,var(--purple));stroke-width:15;stroke-linecap:round;stroke-linejoin:round;opacity:.20;filter:blur(3px)}
+.trace-core{fill:none;stroke:var(--pc,var(--purple));stroke-width:5;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 0 6px var(--pc,var(--purple)))}
+
+.path-node{
+  position:relative;display:flex;align-items:center;justify-content:center;
+  background:var(--s2);border:1.5px solid var(--border);border-radius:10px;
+  cursor:pointer;overflow:hidden;
+  transition:background .12s ease,border-color .12s ease,box-shadow .12s ease,transform .12s ease
+}
+.path-node::before{
+  content:'';position:absolute;inset:0;border-radius:inherit;
+  background:radial-gradient(circle at 50% 50%,var(--pc,var(--purple)),transparent 70%);
+  opacity:.06;transition:opacity .12s ease
+}
+.path-dot{width:9px;height:9px;border-radius:50%;background:var(--dimmer);position:relative;transition:background .12s ease,box-shadow .12s ease,transform .12s ease}
+.path-glyph{font-family:var(--fd);font-size:.72rem;font-weight:900;letter-spacing:.06em;color:var(--dimmer);position:relative;transition:color .12s ease,text-shadow .12s ease}
+/* Node A — where the current has to start, so it is lit before anything else is. */
+.path-node.start{border-color:var(--pc,var(--purple));background:var(--pc-soft,rgba(168,85,247,.2))}
+.path-node.start .path-glyph{color:var(--pc,var(--purple));text-shadow:0 0 10px var(--pc,var(--purple))}
+/* Dead code — dashed and struck through, because "you cannot route here" has to
+   survive being read at a glance with five seconds left. */
+.path-node.dead{background:rgba(255,36,66,.10);border-color:rgba(255,36,66,.34);border-style:dashed;cursor:not-allowed}
+.path-node.dead::before{background:radial-gradient(circle at 50% 50%,var(--red),transparent 70%);opacity:.05}
+.path-node.dead .path-glyph{color:rgba(255,36,66,.7)}
+.path-node.on{background:var(--pc-soft,rgba(168,85,247,.2));border-color:var(--pc,var(--purple));box-shadow:0 0 18px var(--pc-glow,rgba(168,85,247,.34)),inset 0 0 16px var(--pc-glow,rgba(168,85,247,.34))}
+.path-node.on::before{opacity:.34}
+.path-node.on .path-dot{background:#fff;box-shadow:0 0 10px var(--pc,var(--purple));transform:scale(1.15)}
+.path-node.on .path-glyph{color:#fff;text-shadow:0 0 10px var(--pc,var(--purple))}
+.path-node.head{box-shadow:0 0 26px var(--pc,var(--purple)),inset 0 0 18px var(--pc-glow,rgba(168,85,247,.34));transform:scale(1.06)}
+/* Scoped to real pointers — on a phone :hover latches after a tap and would
+   leave half the board looking energised. */
+@media (hover: hover){
+  .path-node:not(.dead):not(.on):hover{border-color:var(--pc,var(--purple));transform:translateY(-2px)}
+  .path-node:not(.dead):not(.on):hover .path-dot{background:var(--dim)}
+}
+/* Invalid move: the whole board kicks red for the length of the lockout. */
+.path-grid.recal{animation:pathRecal .5s ease}
+.path-grid.recal .path-node:not(.dead){border-color:rgba(255,36,66,.55);background:rgba(255,36,66,.10)}
+@keyframes pathRecal{0%,100%{transform:translateX(0)}20%{transform:translateX(-5px)}60%{transform:translateX(5px)}}
+.path-grid.done{animation:pathDone .6s ease}
+@keyframes pathDone{0%,100%{transform:scale(1)}45%{transform:scale(1.035)}}
+
+/* ── 🎚️ FREQUENCY MODULATOR CONSOLE ──
+   Matches #bb-deck's geometry: a full-width row under the board that tracks the
+   board's own width rather than the screen's, so the sliders stay the same
+   length as the scope they drive. */
+#g-freq-ctl{display:flex;gap:14px;width:100%;max-width:max(var(--board-w,560px),560px);margin-top:10px;flex-shrink:0}
+.freq-slider{flex:1;min-width:0;background:var(--s1);border:1px solid var(--border);border-radius:var(--r);padding:9px 13px 12px}
+.freq-lbl{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-family:var(--fd);font-size:.56rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:8px}
+.freq-lbl em{font-style:normal;font-size:.74rem;color:var(--cyan);text-shadow:0 0 8px rgba(0,245,255,.5)}
+.freq-range{
+  -webkit-appearance:none;appearance:none;display:block;width:100%;height:6px;
+  border-radius:3px;background:linear-gradient(90deg,rgba(0,245,255,.30),rgba(255,0,144,.30));
+  border:1px solid var(--border);outline:none;cursor:pointer
+}
+/* Both vendor thumbs, spelled out separately — a browser drops the WHOLE rule
+   if it cannot parse one selector in the list, so these must not be grouped. */
+.freq-range::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;width:20px;height:20px;border-radius:50%;
+  background:var(--cyan);border:2px solid #fff;box-shadow:0 0 12px var(--cyan);cursor:pointer
+}
+.freq-range::-moz-range-thumb{
+  width:18px;height:18px;border-radius:50%;
+  background:var(--cyan);border:2px solid #fff;box-shadow:0 0 12px var(--cyan);cursor:pointer
+}
+.freq-range:focus-visible{box-shadow:0 0 0 2px rgba(0,245,255,.45)}
+
 /* ── RESULTS SCREEN ── */
 #results-screen .res-card{max-width:440px;width:100%;text-align:center}
 .res-emoji{font-size:4.5rem;display:block;margin-bottom:18px}
@@ -764,10 +857,16 @@ button, .btn, .auth-tab, .market-tab, .diff-btn, .game-card, .shop-card,
 /* Stop long-press selecting label text or raising the iOS callout menu
    mid-game. Inputs and the feedback textarea stay selectable. */
 button, .btn, .auth-tab, .market-tab, .diff-btn, .game-card, .shop-card,
-.memory-card, .hack-node, .fb-node, .ctrl-btn, .hub-bar, .g-hdr, .market-bar {
+.memory-card, .hack-node, .path-node, .fb-node, .ctrl-btn, .hub-bar, .g-hdr, .market-bar {
   -webkit-user-select: none; user-select: none;
   -webkit-touch-callout: none;
 }
+/* Deliberately NOT in the touch-action:manipulation list above: Overclock Path
+   is drag-driven, and .path-grid claims touch-action:none so a finger tracing a
+   route draws on the board rather than scrolling the page out from under it.
+   The tap-highlight still has to go, or every node flashes grey as the drag
+   crosses it. */
+.path-node { -webkit-tap-highlight-color: transparent; }
 
 /* Play surfaces: swallow every browser gesture so a drag or hold never
    scrolls, zooms, or pulls-to-refresh the page out from under the game. */
@@ -813,6 +912,9 @@ body { overscroll-behavior: none; }
   .shop-card:active, .btn:active { transform: scale(.97); }
   /* .lit is applied by the game itself, so it must survive the press state. */
   .hack-node:not(.lit):active { border-color: var(--nc); transform: scale(.96); }
+  /* Same reasoning for the circuit board: .on and .dead are game state, and a
+     press must not repaint a node the route is already running through. */
+  .path-node:not(.on):not(.dead):active { border-color: var(--pc, var(--purple)); transform: scale(.96); }
   .btn-primary { box-shadow: 0 0 20px rgba(0,245,255,.25); }
 }
 
@@ -957,6 +1059,21 @@ body { overscroll-behavior: none; }
   #bb-deck { margin-top: 6px; gap: 8px; }
   .bb-btn { flex-direction: row; justify-content: center; align-items: baseline; gap: 6px; padding: 6px 4px; }
   .bb-ico { font-size: 1rem; }
+
+  /* The modulator console is a sibling of the holder too, so it also stays a
+     full-width row under the scope — just a flatter one, since height is the
+     scarce thing in landscape. */
+  #g-freq-ctl { margin-top: 6px; gap: 8px; }
+  .freq-slider { padding: 5px 10px 7px; }
+  .freq-lbl { margin-bottom: 5px; font-size: .5rem; }
+
+  /* Overclock Path is not a canvas game, so it is laid out by .path-board's own
+     clamp — which is capped against the viewport HEIGHT here for the same
+     reason the board is: in landscape there is width to spare and none of it. */
+  .path-wrap { gap: 8px; max-width: 340px; }
+  .path-readout { padding: 7px 10px; }
+  .path-board { width: min(100%, 340px, 58vh); }
+  .path-grid { gap: 6px; }
 }
 
 /* Toasts sit at the bottom on desktop, which on a phone lands them right

@@ -1050,6 +1050,8 @@ const META = {
   hacker: { name: 'NODE HACKER',  emoji: '🔓', maxPts: 800 },
   meteor: { name: 'METEOR SHIELD',emoji: '☄️', maxPts: 1100 },
   battlebots:{name:'BATTLE BOTS', emoji: '🤖', maxPts: 1200 },
+  path:   { name: 'OVERCLOCK PATH', emoji: '🔌', maxPts: 1100 },
+  freq:   { name: 'FREQUENCY MODULATOR', emoji: '🎚️', maxPts: 950 },
   // Not a mission — the chained run. maxPts is the ceiling of the five biggest
   // caps, which is what clamps the combined award.
   bossrush:{ name:'BOSS RUSH',    emoji: '🔥', maxPts: 6200 }
@@ -1063,7 +1065,8 @@ const SOLO_START = {
   click: startClick,   nebula: startNebula, tetris: startTetris,   dodge: startDodge,
   memory: startMemory, math: startMath,     reaction: startReaction, pong: startPong,
   snake: startSnake,   flappy: startFlappy, breaker: startBreaker, arena: startArena,
-  runner: startRunner, hacker: startHacker, meteor: startMeteor,   battlebots: startBattleBots
+  runner: startRunner, hacker: startHacker, meteor: startMeteor,   battlebots: startBattleBots,
+  path: startOverclockPath, freq: startFrequencyModulator
 };
 
 // ══════════════════════════════════════════════
@@ -2151,13 +2154,15 @@ function resetGameStage(gid){
   document.getElementById('g-math').style.display='none';
   document.getElementById('g-reaction').style.display='none';
   document.getElementById('g-hacker').style.display='none';
+  document.getElementById('g-path').style.display='none';
+  document.getElementById('g-freq-ctl').style.display='none';
   document.getElementById('tetris-next-wrap').style.display='none';
   document.getElementById('tetris-lvl-pill').style.display='none';
   document.getElementById('bb-deck').style.display='none';
   document.getElementById('bb-ram-pill').style.display='none';
   setControls(null);                 // every game re-declares its own pad
   document.getElementById('g-controls').textContent='';   // and its own hint
-  const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','breaker','arena','runner','meteor','battlebots'].includes(gid);
+  const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','breaker','arena','runner','meteor','battlebots','freq'].includes(gid);
   document.getElementById('game-screen').classList.toggle('canvas-game', canvasGame);
 
   document.getElementById('g-pts').textContent='0';
@@ -8872,6 +8877,644 @@ function startBattleBots(){
   }
 
   gameLoopId = requestAnimationFrame(loop);
+}
+
+// ════════════════════════════════════════════
+//  🔌 GAME 17: OVERCLOCK PATH
+// ════════════════════════════════════════════
+// A one-line circuit puzzle: energise node A, then drag the current through
+// every live node exactly once without ever crossing the trace you have
+// already laid.
+//
+// The board is generated BACKWARDS FROM A SOLUTION. A randomised self-avoiding
+// walk is carved first, and whatever cells it never reaches become the dead
+// code. Scattering blocks first and then hoping a Hamiltonian path survives is
+// the version that hands out impossible boards — and on a 15 second clock an
+// unsolvable board is indistinguishable from a player who is simply too slow.
+// Carving first makes "solvable" a property of the generator instead of
+// something to test for afterwards.
+function startOverclockPath(){
+  const wrap=document.getElementById('g-path');
+  wrap.style.display='flex';
+  setControlHint('DRAG FROM NODE A THROUGH EVERY LIVE NODE',
+                 'CLICK OR DRAG NODE TO NODE · ARROWS / WASD ALSO STEER THE CURRENT');
+
+  const grid=document.getElementById('path-grid');
+  const trace=document.getElementById('path-trace');
+  const statusEl=document.getElementById('path-status');
+  const meterEl=document.getElementById('path-meter');
+
+  // The current runs in the equipped Black Market colour, so the board
+  // re-themes on equip the same way Node Hacker's keypad does.
+  const NEON=getEquippedColorHex();
+  wrap.style.setProperty('--pc', NEON);
+  wrap.style.setProperty('--pc-soft', hexToRgba(NEON,0.20));
+  wrap.style.setProperty('--pc-glow', hexToRgba(NEON,0.34));
+
+  const diffMod=getDifficultyModifier();
+  const N=5, CELLS=N*N;
+  // More dead code at the hotter tiers. It reads as a nastier board, but it is
+  // also the only thing keeping one winnable once the clock is cut in half — a
+  // shorter route is the compensation for having a third less time to find it.
+  const DEAD_COUNT=Math.min(9, 4+Math.round((diffMod-1)*2));   // 4 / 5 / 6
+  const OPEN=CELLS-DEAD_COUNT;
+  // 15s is the brief's clock; the tier dial scales it like every other mission.
+  // Floored, because 15 × 0.5 is a different game rather than a harder one.
+  const time0=Math.max(10, Math.round(15*getTimeModifier()));
+
+  const ROUTE_PTS=700, CLEAR_BONUS=250, SPEED_PTS=15;
+  const rc=i=>[Math.floor(i/N), i%N];
+  const neighbours=i=>{
+    const [r,c]=rc(i), out=[];
+    if(r>0)   out.push(i-N);
+    if(r<N-1) out.push(i+N);
+    if(c>0)   out.push(i-1);
+    if(c<N-1) out.push(i+1);
+    return out;
+  };
+  const shuffle=a=>{
+    for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
+    return a;
+  };
+
+  // ── BOARD GENERATION ──
+  // Randomised depth-first walk with backtracking, looking for a self-avoiding
+  // route of exactly OPEN cells. The step budget is what stops a bad start from
+  // freezing the tab; blowing it just means "try a different start", and a 5×5
+  // has far too many routes for forty starts to all fail.
+  function carve(){
+    for(let attempt=0; attempt<40; attempt++){
+      const seen=new Array(CELLS).fill(false), route=[];
+      let budget=20000;
+      const walk=i=>{
+        if(budget--<=0) return false;
+        seen[i]=true; route.push(i);
+        if(route.length===OPEN) return true;
+        for(const n of shuffle(neighbours(i))) if(!seen[n] && walk(n)) return true;
+        seen[i]=false; route.pop();
+        return false;
+      };
+      if(walk(Math.floor(Math.random()*CELLS))) return route;
+    }
+    return null;
+  }
+  // Belt and braces: a boustrophedon sweep is a valid self-avoiding walk over
+  // the whole grid, so its first OPEN cells are a valid route too. Dull, but a
+  // dull board beats a broken one.
+  function fallback(){
+    const p=[];
+    for(let r=0;r<N;r++) for(let k=0;k<N;k++) p.push(r*N + (r%2 ? N-1-k : k));
+    return p.slice(0,OPEN);
+  }
+
+  const solution=carve()||fallback();
+  const dead=new Set();
+  for(let i=0;i<CELLS;i++) dead.add(i);
+  solution.forEach(i=>dead.delete(i));
+  const START=solution[0];
+
+  // ── BOARD DOM ──
+  // Rebuilt every round, which drops the previous round's nodes and anything
+  // clinging to them — the same trick Memory Match and Node Hacker use.
+  grid.innerHTML='';
+  grid.style.gridTemplateColumns=`repeat(${N},1fr)`;
+  grid.classList.remove('recal','done');
+  const nodes=[];
+  for(let i=0;i<CELLS;i++){
+    const n=document.createElement('div');
+    n.className='path-node'+(dead.has(i)?' dead':'')+(i===START?' start':'');
+    n.dataset.idx=i;
+    n.innerHTML = dead.has(i)  ? '<span class="path-glyph">✕</span>'
+                : i===START    ? '<span class="path-glyph">A</span>'
+                :                '<span class="path-dot"></span>';
+    grid.appendChild(n);
+    nodes.push(n);
+  }
+
+  let time=time0, route=[], best=0, resets=0;
+  let ended=false, scored=false, locked=false, dragging=false;
+
+  document.getElementById('g-time').textContent=time;
+  document.getElementById('prog-fill').style.width='100%';
+  document.getElementById('prog-fill').style.background='linear-gradient(90deg,var(--purple),var(--cyan))';
+
+  // Progress is measured in SEGMENTS laid, not nodes touched — sitting on node
+  // A having done nothing is worth nothing, and the last hop is worth as much
+  // as the first.
+  const routeScore=len=>Math.round(Math.max(0,len-1)/(OPEN-1)*ROUTE_PTS);
+  const setStatus=(txt,cls)=>{ statusEl.className='path-status'+(cls?' '+cls:''); statusEl.textContent=txt; };
+
+  // ── TRACE ──
+  // Drawn in the grid's own pixel space off each node's measured box, so the
+  // current lands dead centre whatever the board has been sized to.
+  function paint(){
+    const w=grid.clientWidth, h=grid.clientHeight;
+    trace.setAttribute('viewBox',`0 0 ${w} ${h}`);
+    trace.setAttribute('width',w);
+    trace.setAttribute('height',h);
+    const head=route.length ? route[route.length-1] : -1;
+    const live=new Set(route);
+    nodes.forEach((n,i)=>{
+      n.classList.toggle('on', live.has(i));
+      n.classList.toggle('head', i===head);
+    });
+    if(route.length>1){
+      const pts=route.map(i=>{
+        const n=nodes[i];
+        return `${(n.offsetLeft+n.offsetWidth/2).toFixed(1)},${(n.offsetTop+n.offsetHeight/2).toFixed(1)}`;
+      }).join(' ');
+      // Two passes: a fat blurred pass for the bloom, a thin bright one for the
+      // wire itself. One stroke with a shadow cannot do both.
+      trace.innerHTML=`<polyline class="trace-glow" points="${pts}"/><polyline class="trace-core" points="${pts}"/>`;
+    } else trace.innerHTML='';
+    meterEl.style.width=`${route.length/OPEN*100}%`;
+  }
+
+  // A straight run between two cells in the same row or column, as the list of
+  // cells it passes through. Null if they are not in line.
+  function straightRun(from,to){
+    const [r0,c0]=rc(from), [r1,c1]=rc(to);
+    if(r0!==r1 && c0!==c1) return null;
+    const dr=Math.sign(r1-r0), dc=Math.sign(c1-c0), out=[];
+    let r=r0, c=c0;
+    while(r!==r1 || c!==c1){ r+=dr; c+=dc; out.push(r*N+c); }
+    return out.length ? out : null;
+  }
+
+  function tryEnter(i){
+    if(ended || locked || !Number.isFinite(i)) return;
+
+    if(!route.length){
+      // Nothing is energised yet, so only node A can start the current.
+      // Touching another live node is a misread rather than a mistake — it
+      // costs a nudge, not a recalibration, because there is no trace to spoil.
+      if(i===START){
+        route=[START];
+        snd('node',{semi:0});
+        setStatus('▶ CURRENT LIVE — ROUTE EVERY NODE');
+        paint();
+      } else if(!dead.has(i)) setStatus('◀ BEGIN AT NODE A','warn');
+      return;
+    }
+
+    const head=route[route.length-1];
+    if(i===head) return;
+    // Stepping back onto the cell you just left RETRACTS the trace. That is an
+    // undo, not a crossing — without it, one wrong turn during a drag would
+    // cost the whole board.
+    if(route.length>1 && i===route[route.length-2]){
+      route.pop(); snd('move'); paint(); return;
+    }
+
+    // A fast drag can cross a cell between two pointermove samples, which would
+    // read as a broken link the player never made. A run along a row or column
+    // is therefore filled in rather than rejected — the trace they drew IS that
+    // run. Anything not in line is a genuine jump and still fails.
+    let steps;
+    if(neighbours(head).includes(i)) steps=[i];
+    else steps=straightRun(head,i);
+    if(!steps) return fail('⛔ BROKEN LINK');
+    for(const s of steps){
+      if(dead.has(s))      return fail('⛔ DEAD CODE NODE');
+      if(route.includes(s)) return fail('⛔ TRACE CROSSED ITSELF');
+    }
+
+    steps.forEach(s=>route.push(s));
+    best=Math.max(best,route.length);
+    setLive(routeScore(best));
+    snd('node',{semi:(route.length%8)*2});
+    paint();
+    if(route.length===OPEN) complete();
+    else setStatus(`▶ ${route.length} / ${OPEN} NODES ENERGISED`);
+  }
+
+  function fail(why){
+    if(ended || locked) return;
+    locked=true; resets++;
+    snd('error');
+    grid.classList.add('recal');
+    setStatus(`${why} — RECALIBRATING…`,'fail');
+    route=[];
+    paint();
+    // A short lockout on purpose: the clock does not stop for it, so a long
+    // penalty would be the entire round rather than a stumble inside it.
+    gLater(()=>{
+      if(ended) return;
+      locked=false;
+      grid.classList.remove('recal');
+      setStatus('▶ RESTART FROM NODE A');
+    }, 700);
+  }
+
+  function complete(){
+    if(ended) return;
+    ended=true; locked=true;                 // freezes the clock and the board
+    grid.classList.add('done');
+    snd('victory');
+    setStatus('✅ CIRCUIT OVERCLOCKED — FULL CURRENT','win');
+    gLater(()=>end('complete'), 950);
+  }
+
+  gTimer=setInterval(()=>{
+    if(ended) return;
+    time--;
+    document.getElementById('g-time').textContent=time;
+    document.getElementById('prog-fill').style.width=`${Math.max(0,time/time0*100)}%`;
+    if(time<=5 && time>0){ snd('tick'); if(!locked) setStatus('⚠️ POWER DRAIN CRITICAL','warn'); }
+    if(time<=0) end('timeout');
+  },1000);
+
+  // ── INPUT ──
+  // One activation path for click and drag alike: whatever node is under the
+  // pointer gets offered to tryEnter(). Hit-testing by coordinate rather than
+  // by listening on each node is what makes touch work — a captured finger
+  // reports every move to the GRID, never to the node it happens to be over.
+  const idxAt=(x,y)=>{
+    const el=document.elementFromPoint(x,y);
+    const node=el && el.closest ? el.closest('.path-node') : null;
+    return node && grid.contains(node) ? parseInt(node.dataset.idx,10) : NaN;
+  };
+  grid.onpointerdown=e=>{
+    if(ended) return;
+    e.preventDefault();
+    dragging=true;
+    // Capture keeps the whole gesture on the grid; without it a finger that
+    // strays off the board stops reporting and the trace freezes mid-route.
+    try{ grid.setPointerCapture(e.pointerId); }catch(err){}
+    tryEnter(idxAt(e.clientX,e.clientY));
+  };
+  grid.onpointermove=e=>{
+    if(!dragging || ended) return;
+    e.preventDefault();
+    tryEnter(idxAt(e.clientX,e.clientY));
+  };
+  const release=e=>{
+    dragging=false;
+    try{ grid.releasePointerCapture(e.pointerId); }catch(err){}
+  };
+  grid.onpointerup=release;
+  grid.onpointercancel=release;
+
+  const STEP={ArrowUp:-N,ArrowDown:N,ArrowLeft:-1,ArrowRight:1,W:-N,S:N,A:-1,D:1};
+  window.onkeydown=e=>{
+    if(e.ctrlKey||e.metaKey||e.altKey||ended) return;
+    if(e.code==='Space'||e.code==='Enter'){
+      e.preventDefault();
+      if(!route.length) tryEnter(START);
+      return;
+    }
+    const key=String(e.key).length===1 ? String(e.key).toUpperCase() : e.key;
+    const d=STEP[key];
+    if(d===undefined) return;
+    e.preventDefault();
+    if(!route.length) return tryEnter(START);
+    const head=route[route.length-1], [r,c]=rc(head);
+    // Reject a step that would wrap the edge: head+1 from the last column is
+    // the NEXT row's first cell, which is not a neighbour of anything here.
+    if((d===-1&&c===0)||(d===1&&c===N-1)||(d===-N&&r===0)||(d===N&&r===N-1)) return;
+    tryEnter(head+d);
+  };
+
+  // The trace lives in the grid's pixel space, so it has to be redrawn whenever
+  // that space changes — a phone rotating, or the header wrapping to a second
+  // line — or the current runs beside the nodes instead of through them.
+  let ro=null;
+  if(window.ResizeObserver){ ro=new ResizeObserver(()=>paint()); ro.observe(grid); }
+
+  // stopGame() knows nothing about pointer handlers hung on a DOM panel, so the
+  // round takes its own down — however it ends, and including a mid-board quit.
+  onStopGame=()=>{
+    ended=true;
+    if(ro){ ro.disconnect(); ro=null; }
+    grid.onpointerdown=grid.onpointermove=grid.onpointerup=grid.onpointercancel=null;
+  };
+
+  function end(reason){
+    if(scored) return; scored=true;
+    ended=true; locked=true;
+    const cleared=reason==='complete';
+    const left=Math.max(0,time);
+    const final=Math.min(1100,
+      routeScore(best) + (cleared ? CLEAR_BONUS + left*SPEED_PTS : 0));
+    showResults('path', final, {
+      '🔌 Circuit Status': cleared ? 'FULLY OVERCLOCKED' : 'POWER DRAINED',
+      '🧩 Nodes Routed': `${best} / ${OPEN}`,
+      '💀 Dead Code Bypassed': DEAD_COUNT,
+      '♻️ Recalibrations': resets,
+      ...(cleared ? {'⏱️ Current To Spare': `${left}s`} : {}),
+      '🏆 Score Accumulation': `${final} PTS`
+    }, cleared ? undefined : { sound:'gameOver' });
+  }
+
+  setStatus('⚡ BOARD ENERGISED — BEGIN AT NODE A');
+  paint();
+}
+
+// ════════════════════════════════════════════
+//  🎚️ GAME 18: FREQUENCY MODULATOR
+// ════════════════════════════════════════════
+// A two-scope signal bench. The top scope carries the array's target waveform,
+// the bottom one carries your output — with the target ghosted over it, since
+// comparing two curves 240px apart is a memory test, not a tuning one.
+//
+// Only AMPLITUDE and WAVELENGTH are yours to move; the waveform SHAPE is given
+// and both scopes always draw the same one. Matching a shape you cannot control
+// would be a guessing game, and the printed formula is there to name what you
+// are tuning, not to be reverse-engineered.
+function startFrequencyModulator(){
+  document.getElementById('g-canvas-holder').style.display='block';
+  const panel=document.getElementById('g-freq-ctl');
+  panel.style.display='flex';
+  setControls(null);                 // the sliders below the scope are the pad
+  setControlHint('DRAG THE TWO SLIDERS UNTIL BOTH SCOPES AGREE',
+                 '↑/↓ AMPLITUDE · ←/→ WAVELENGTH · HOLD SHIFT FOR FINE TRIM');
+  showTouchHint('MATCH THE TOP SIGNAL WITH THE SLIDERS');
+  fitCanvas();
+
+  const W=BOARD_W, H=BOARD_H;        // 560 × 500
+  const HALF=94;                     // scope half-height
+  const TY=132, BY=368, MID=250;     // target scope · output scope · readout band
+  // Amplitude is in board pixels and capped just inside HALF, so even a maxed
+  // wave draws inside its own scope instead of bleeding into the other one.
+  const A_MIN=16, A_MAX=90, L_MIN=40, L_MAX=180;
+  const A_SPAN=A_MAX-A_MIN, L_SPAN=L_MAX-L_MIN;
+  const LOCK_AT=0.95;                // the brief's 95% margin…
+  const HOLD_MS=1500;                // …sustained for a second and a half
+  const A_TOL=(1-LOCK_AT)*A_SPAN, L_TOL=(1-LOCK_AT)*L_SPAN;
+
+  // Both scopes are drawn with f(), so the player is always tuning against a
+  // shape they can actually reach. Only the printed formula cycles.
+  const FORMS=[
+    { name:'SINE',     label:(a,l)=>`ƒ(x) = ${a}·sin(2πx/${l})`,        f:t=>Math.sin(t) },
+    { name:'HARMONIC', label:(a,l)=>`ƒ(x) = ${a}·[sinθ + ½sin2θ] · λ=${l}`, f:t=>(Math.sin(t)+0.5*Math.sin(2*t))/1.5 },
+    { name:'SAWTOOTH', label:(a,l)=>`ƒ(x) = ${a}·saw(2πx/${l})`,        f:t=>{ const p=((t/(Math.PI*2))%1+1)%1; return 2*p-1; } },
+    { name:'TRIANGLE', label:(a,l)=>`ƒ(x) = ${a}·tri(2πx/${l})`,        f:t=>{ const p=((t/(Math.PI*2))%1+1)%1; return 4*Math.abs(p-0.5)-1; } },
+    // tanh rather than Math.sign: a true square draws as vertical jumps that
+    // alias into a ladder at this line width. This reads square and stays smooth.
+    { name:'SQUARE',   label:(a,l)=>`ƒ(x) = ${a}·sgn(sin 2πx/${l})`,    f:t=>Math.tanh(Math.sin(t)*4) }
+  ];
+
+  const diffMod=getDifficultyModifier();
+  const time0=Math.round(45*getTimeModifier());
+  const TARGET_C='#ff0090';
+  const OUT_C=getEquippedColorHex();
+  const LOCK_C='#39ff14';
+
+  let time=time0, score=0, stage=1, cleared=0, ended=false;
+  let amp=52, len=110;                        // your output
+  let tAmp=0, tLen=0, form=FORMS[0], drift={a:0,l:0};
+  let held=0, stageT=0, bestMatch=0, phase=0;
+  let banner='', bannerT=0, lastT=performance.now();
+
+  document.getElementById('g-time').textContent=time;
+  document.getElementById('prog-fill').style.width='100%';
+  document.getElementById('prog-fill').style.background='linear-gradient(90deg,var(--cyan),var(--pink))';
+
+  // ── CONSOLE ──
+  const ampEl=document.getElementById('freq-amp');
+  const lenEl=document.getElementById('freq-len');
+  const ampVal=document.getElementById('freq-amp-val');
+  const lenVal=document.getElementById('freq-len-val');
+  ampEl.min=A_MIN; ampEl.max=A_MAX; ampEl.value=amp;
+  lenEl.min=L_MIN; lenEl.max=L_MAX; lenEl.value=len;
+  const syncConsole=()=>{
+    ampEl.value=Math.round(amp); lenEl.value=Math.round(len);
+    ampVal.textContent=Math.round(amp); lenVal.textContent=Math.round(len);
+  };
+  // snd() throttles 'move' to one every 25ms of its own accord, which is what
+  // keeps a dragged slider from firing a click per pixel.
+  ampEl.oninput=()=>{ if(ended) return; hideTouchHint(); amp=parseFloat(ampEl.value); syncConsole(); snd('move'); };
+  lenEl.oninput=()=>{ if(ended) return; hideTouchHint(); len=parseFloat(lenEl.value); syncConsole(); snd('move'); };
+  syncConsole();
+
+  function newStage(){
+    form=FORMS[(stage-1)%FORMS.length];
+    // Held clear of where the dials already sit, so a stage can never arrive
+    // pre-solved by whatever the last one happened to end on.
+    do{ tAmp=A_MIN+Math.random()*A_SPAN; } while(Math.abs(tAmp-amp)<A_SPAN*0.2);
+    do{ tLen=L_MIN+Math.random()*L_SPAN; } while(Math.abs(tLen-len)<L_SPAN*0.2);
+    // Above STABLE the target will not hold still. A locked signal then has to
+    // be TRACKED for its 1.5 seconds rather than dialled in once and released,
+    // which is a fairer way to charge for the ×1.5 and ×2.0 than shaving the
+    // 95% margin the brief fixed.
+    const wander=(diffMod-1)*0.6;
+    drift={ a:(Math.random()<.5?-1:1)*wander*3.2, l:(Math.random()<.5?-1:1)*wander*3.6 };
+    held=0; stageT=0;
+  }
+
+  // Both properties have to agree, so the WORSE of the two is the score — an
+  // average would hand out a lock to a perfect amplitude on a wrong wavelength.
+  const matchPct=()=>Math.max(0, Math.min(
+    1-Math.abs(amp-tAmp)/A_SPAN,
+    1-Math.abs(len-tLen)/L_SPAN
+  ));
+
+  function stageClear(){
+    // Base plus what is left of a speed window: dialling it in fast is the
+    // whole skill, and the 1.5s hold is already sunk into every clear.
+    const speed=Math.max(0, Math.round(70 - stageT/1000*9));
+    const gained=85+speed;
+    score+=gained; cleared++; stage++;
+    setLive(Math.min(950,score));
+    snd('levelUp');
+    banner=`✅ NODE STABILISED · +${gained} PTS`;
+    bannerT=1100;
+    newStage();
+  }
+
+  gTimer=setInterval(()=>{
+    if(ended) return;
+    time--;
+    document.getElementById('g-time').textContent=time;
+    document.getElementById('prog-fill').style.width=`${Math.max(0,time/time0*100)}%`;
+    if(time<=5 && time>0) snd('tick');
+    if(time<=0) end();
+  },1000);
+
+  window.onkeydown=e=>{
+    if(e.ctrlKey||e.metaKey||e.altKey||ended) return;
+    const step=e.shiftKey ? 0.5 : 2;
+    const k=String(e.key).length===1 ? String(e.key).toUpperCase() : e.key;
+    let used=true;
+    if(k==='ArrowUp'   || k==='W') amp=Math.min(A_MAX,amp+step);
+    else if(k==='ArrowDown'  || k==='S') amp=Math.max(A_MIN,amp-step);
+    else if(k==='ArrowRight' || k==='D') len=Math.min(L_MAX,len+step);
+    else if(k==='ArrowLeft'  || k==='A') len=Math.max(L_MIN,len-step);
+    else used=false;
+    if(!used) return;
+    e.preventDefault();
+    syncConsole();
+  };
+
+  // ── DRAWING ──
+  // `l` is the wavelength in pixels, so x/l·2π is the phase at that column.
+  // `phase` scrolls both waves together — a frozen trace reads as a picture of
+  // a signal rather than a live one.
+  function wave(cy, a, l, colour, alpha, width, glow){
+    aCtx.save();
+    aCtx.globalAlpha=alpha;
+    aCtx.strokeStyle=colour;
+    aCtx.lineWidth=width;
+    aCtx.lineJoin='round';
+    if(glow){ aCtx.shadowBlur=glow; aCtx.shadowColor=colour; }
+    aCtx.beginPath();
+    for(let x=0;x<=W;x+=2){
+      const y=cy - a*form.f(x/l*Math.PI*2 + phase);
+      if(x===0) aCtx.moveTo(x,y); else aCtx.lineTo(x,y);
+    }
+    aCtx.stroke();
+    aCtx.restore();
+  }
+
+  function scope(cy, colour, title){
+    aCtx.save();
+    aCtx.fillStyle=hexToRgba(colour,0.04);
+    aCtx.fillRect(6, cy-HALF, W-12, HALF*2);
+    aCtx.strokeStyle=hexToRgba(colour,0.30);
+    aCtx.lineWidth=1.5;
+    aCtx.strokeRect(6, cy-HALF, W-12, HALF*2);
+    aCtx.setLineDash([4,5]);
+    aCtx.strokeStyle=hexToRgba(colour,0.22);
+    aCtx.beginPath(); aCtx.moveTo(6,cy); aCtx.lineTo(W-6,cy); aCtx.stroke();
+    aCtx.setLineDash([]);
+    aCtx.font='bold 10px Orbitron,monospace';
+    aCtx.fillStyle=colour;
+    aCtx.textAlign='left';
+    aCtx.fillText(title, 14, cy-HALF+15);
+    aCtx.restore();
+  }
+
+  const trim=(d,tol,up,down)=> Math.abs(d)<=tol ? '● LOCKED' : (d>0 ? up : down);
+
+  function loop(){
+    if(ended) return;
+    const now=performance.now();
+    const dt=Math.min(50, now-lastT); lastT=now;
+    phase += dt/1000*1.6;
+    if(bannerT>0) bannerT-=dt;
+
+    if(drift.a || drift.l){
+      tAmp+=drift.a*dt/1000;
+      tLen+=drift.l*dt/1000;
+      if(tAmp<A_MIN||tAmp>A_MAX){ tAmp=Math.max(A_MIN,Math.min(A_MAX,tAmp)); drift.a*=-1; }
+      if(tLen<L_MIN||tLen>L_MAX){ tLen=Math.max(L_MIN,Math.min(L_MAX,tLen)); drift.l*=-1; }
+    }
+
+    const m=matchPct();
+    const locking=m>=LOCK_AT;
+    bestMatch=Math.max(bestMatch,m);
+    stageT+=dt;
+    if(locking) held+=dt;
+    else{
+      // Losing a lock that was most of the way home is worth hearing about.
+      if(held>HOLD_MS*0.4) snd('deny');
+      held=0;
+    }
+    if(held>=HOLD_MS) stageClear();
+
+    // ── board ──
+    // fitCanvas() only wipes the context when the backing store actually
+    // changes size, so whatever the previous mission left on the shared canvas
+    // — a globalAlpha, a shadow, a dash pattern, a centred baseline — is still
+    // set when this one mounts. Normalised here rather than trusted, since the
+    // first thing below is a full-board fill that a stale alpha would make
+    // translucent.
+    aCtx.globalAlpha=1;
+    aCtx.shadowBlur=0;
+    aCtx.setLineDash([]);
+    aCtx.textBaseline='alphabetic';
+    aCtx.fillStyle='#05060f';
+    aCtx.fillRect(0,0,W,H);
+    aCtx.strokeStyle='rgba(255,255,255,0.045)';
+    aCtx.lineWidth=1;
+    for(let x=0;x<=W;x+=40){ aCtx.beginPath(); aCtx.moveTo(x,0); aCtx.lineTo(x,H); aCtx.stroke(); }
+    for(let y=0;y<=H;y+=40){ aCtx.beginPath(); aCtx.moveTo(0,y); aCtx.lineTo(W,y); aCtx.stroke(); }
+
+    // ── header: the cycling formula ──
+    aCtx.font='bold 12px Orbitron,monospace';
+    aCtx.fillStyle=TARGET_C;
+    aCtx.textAlign='center';
+    aCtx.fillText(form.label(Math.round(tAmp), Math.round(tLen)), W/2, 24);
+
+    // ── target scope ──
+    scope(TY, TARGET_C, `TARGET SIGNAL · ${form.name}${drift.a||drift.l ? ' · DRIFTING' : ''}`);
+    wave(TY, tAmp, tLen, TARGET_C, 1, 2.4, 16);
+
+    // ── output scope, target ghosted over it ──
+    scope(BY, locking?LOCK_C:OUT_C, `YOUR OUTPUT · STAGE ${stage}`);
+    wave(BY, tAmp, tLen, TARGET_C, 0.30, 1.6, 0);
+    wave(BY, amp, len, locking?LOCK_C:OUT_C, 1, 2.6, locking?22:14);
+
+    // ── readout band ──
+    const pct=Math.round(m*100);
+    aCtx.save();
+    aCtx.textAlign='center';
+    aCtx.font='900 24px Orbitron,monospace';
+    aCtx.fillStyle=locking ? LOCK_C : (m>0.85 ? '#ffd700' : '#ff2442');
+    aCtx.shadowBlur=locking?18:0; aCtx.shadowColor=aCtx.fillStyle;
+    aCtx.fillText(`${pct}% MATCH`, W/2, MID-4);
+    aCtx.restore();
+
+    const lw=230, lx=(W-lw)/2, ly=MID+10;
+    aCtx.fillStyle='rgba(255,255,255,0.08)';
+    aCtx.fillRect(lx,ly,lw,7);
+    aCtx.save();
+    aCtx.fillStyle=locking?LOCK_C:'rgba(255,255,255,0.16)';
+    if(locking){ aCtx.shadowBlur=12; aCtx.shadowColor=LOCK_C; }
+    aCtx.fillRect(lx,ly,lw*Math.min(1,held/HOLD_MS),7);
+    aCtx.restore();
+    aCtx.font='bold 8px Orbitron,monospace';
+    aCtx.fillStyle='rgba(255,255,255,0.45)';
+    aCtx.textAlign='center';
+    aCtx.fillText(`HOLD ${(HOLD_MS/1000).toFixed(1)}s ABOVE ${Math.round(LOCK_AT*100)}% TO STABILISE`, W/2, ly+20);
+
+    // ── footer: which way each dial has to go ──
+    const dA=tAmp-amp, dL=tLen-len;
+    aCtx.font='bold 11px Orbitron,monospace';
+    aCtx.textAlign='left';
+    aCtx.fillStyle=Math.abs(dA)<=A_TOL ? LOCK_C : 'rgba(255,255,255,0.62)';
+    aCtx.fillText(`AMP ${Math.round(amp)}  ${trim(dA,A_TOL,'▲ RAISE','▼ LOWER')}`, 14, H-12);
+    aCtx.textAlign='right';
+    aCtx.fillStyle=Math.abs(dL)<=L_TOL ? LOCK_C : 'rgba(255,255,255,0.62)';
+    aCtx.fillText(`${trim(dL,L_TOL,'▶ WIDEN','◀ NARROW')}  λ ${Math.round(len)}`, W-14, H-12);
+
+    // ── stage-clear banner ──
+    if(bannerT>0){
+      aCtx.save();
+      aCtx.globalAlpha=Math.min(1,bannerT/400);
+      aCtx.font='900 15px Orbitron,monospace';
+      aCtx.fillStyle=LOCK_C;
+      aCtx.shadowBlur=16; aCtx.shadowColor=LOCK_C;
+      aCtx.textAlign='center';
+      aCtx.fillText(banner, W/2, TY-HALF-8);
+      aCtx.restore();
+    }
+
+    gameLoopId=requestAnimationFrame(loop);
+  }
+
+  // The console lives in the shared DOM, so its handlers come down with the
+  // round however it ends — including a quit part-way through a stage.
+  onStopGame=()=>{
+    ended=true;
+    ampEl.oninput=lenEl.oninput=null;
+    panel.style.display='none';
+  };
+
+  function end(){
+    if(ended) return; ended=true;
+    const final=Math.min(950,score);
+    showResults('freq', final, {
+      '📡 Node Array': cleared ? `${cleared} NODE${cleared===1?'':'S'} STABILISED` : 'ARRAY UNSTABLE',
+      '🎚️ Stages Cleared': cleared,
+      '🎯 Peak Correlation': `${Math.round(bestMatch*100)}%`,
+      '📶 Last Waveform': form.name,
+      '🏆 Score Accumulation': `${final} PTS`
+    }, cleared ? undefined : { sound:'gameOver' });
+  }
+
+  newStage();
+  gameLoopId=requestAnimationFrame(loop);
 }
 
 function fmtTime(s){
