@@ -475,10 +475,13 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 #board-frame{position:relative;width:fit-content;max-width:100%;margin:0 auto}
 
 /* ── ⚔️ BATTLE BOTS — DEPLOY DECK ── */
-/* Three cards under the board: two units and the RAM upgrade. Tracks the
-   board's width like .g-hdr and .prog-bar do, so the whole game reads as one
-   column. Built by startBattleBots() and emptied by stopGame(). */
-#bb-deck{display:flex;gap:10px;width:100%;max-width:max(var(--board-w,560px),560px);margin-top:10px;flex-shrink:0}
+/* The deploy deck under the board — the whole bot roster plus the EMP surge
+   and the RAM upgrade. Tracks the board's width like .g-hdr and .prog-bar do,
+   so the whole game reads as one column, and is allowed to wrap: fitCanvas()
+   measures the deck's real height, so on a narrow screen a second row of
+   cards costs the board height instead of running off the bottom.
+   Built by startBattleBots() and emptied by stopGame(). */
+#bb-deck{display:flex;flex-wrap:wrap;gap:10px;width:100%;max-width:max(var(--board-w,560px),560px);margin-top:10px;flex-shrink:0}
 .bb-btn{
   position:relative;overflow:hidden;flex:1;min-width:0;
   display:flex;flex-direction:column;align-items:center;gap:3px;
@@ -920,7 +923,10 @@ body { overscroll-behavior: none; }
 
 /* Finger-sized targets on touch devices (44px is the accessibility floor). */
 @media (max-width: 520px) {
-  .bb-btn { padding: 7px 3px; gap: 2px; }
+  /* Seven cards can't share one phone-width row — a 22% basis breaks the
+     deck into a 4 + 3 grid instead of squeezing every label to nothing. */
+  #bb-deck { gap: 6px; }
+  .bb-btn { padding: 7px 3px; gap: 2px; flex-basis: 22%; }
   .bb-ico { font-size: 1.15rem; }
   .bb-name { font-size: .5rem; letter-spacing: .06em; }
   .bb-cost { font-size: .48rem; }
@@ -1056,9 +1062,13 @@ body { overscroll-behavior: none; }
   /* The deck stays a full-width row under the board (it's a sibling of the
      holder, not a child), but flattens to one line so it costs the board as
      little height as possible. */
-  #bb-deck { margin-top: 6px; gap: 8px; }
-  .bb-btn { flex-direction: row; justify-content: center; align-items: baseline; gap: 6px; padding: 6px 4px; }
+  #bb-deck { margin-top: 6px; gap: 6px; }
+  .bb-btn { flex-direction: row; justify-content: center; align-items: baseline; gap: 4px; padding: 6px 3px; }
   .bb-ico { font-size: 1rem; }
+  /* Seven cards across the one row — shave the labels so the widest names
+     (FIREWALL, RAM SPEED) still fit a seventh of the board. */
+  .bb-name { font-size: .48rem; letter-spacing: .04em; }
+  .bb-cost { font-size: .44rem; }
 
   /* The modulator console is a sibling of the holder too, so it also stays a
      full-width row under the scope — just a flatter one, since height is the

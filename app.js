@@ -8202,7 +8202,13 @@ const BB = {
   // happens to settle — a knife edge where an 8% enemy buff is the difference
   // between a reliable win and a permanent midfield stall. This is the dial to
   // turn for battle length; unit-vs-unit combat is balanced on its own terms.
-  siege: 0.30,
+  // Raised 0.30 -> 0.33 with the five-bot roster: headless siege sims left
+  // Meltdown's only failures as near-miss timeouts (~100 HP shy of the purge),
+  // and the extra 10% of base chew converts those into wins for tight play
+  // without changing a single duel. Both sides get it; the Mainframe still
+  // never actually fell across 1800 simulated sieges, so in practice it is
+  // pure pace.
+  siege: 0.33,
 
   // Edge gap a unit keeps behind the ally in front of it in its own lane.
   // Without this queueing, both sides' units occupy the same x and the WHOLE
@@ -8220,20 +8226,41 @@ const BB = {
   // small numbers read as melee — the two sprites end up nearly touching.
   // A Scout beats a lone BUG comfortably: the early game has to let you push
   // the line forward, or there's no siege to fight back from later.
+  // `reach` doubles as the ranged stat: anything at or past BB_RANGED stops
+  // well short of the brawl and fires tracers instead. The attack check runs
+  // BEFORE the ally-queue check in stepSide(), so a Zapper shoots OVER the
+  // ally holding the line in front of it — which is what makes Firewall+Zapper
+  // a real combo rather than two units taking turns to die.
   units: {
-    scout: { key:'scout', icon:'🤖', name:'SCOUT', cost:30,  hp:110, atk:14, speed:40, reach:8,  rate:520, cool:800,  w:22, h:26 },
-    tank:  { key:'tank',  icon:'🛡️', name:'TANK',  cost:110, hp:380, atk:30, speed:22, reach:12, rate:950, cool:2400, w:30, h:34 }
+    scout:  { key:'scout',  icon:'🤖', name:'SCOUT',    cost:30,  hp:110, atk:14, speed:40, reach:8,  rate:520,  cool:800,  w:22, h:26 },
+    wall:   { key:'wall',   icon:'🧱', name:'FIREWALL', cost:20,  hp:320, atk:4,  speed:30, reach:6,  rate:1000, cool:1800, w:24, h:26 },
+    zapper: { key:'zapper', icon:'🔫', name:'ZAPPER',   cost:70,  hp:90,  atk:16, speed:30, reach:52, rate:700,  cool:1600, w:22, h:26 },
+    tank:   { key:'tank',   icon:'🛡️', name:'TANK',     cost:110, hp:380, atk:30, speed:22, reach:12, rate:950,  cool:2400, w:30, h:34 },
+    titan:  { key:'titan',  icon:'🦾', name:'TITAN',    cost:300, hp:950, atk:62, speed:14, reach:12, rate:1300, cool:6000, w:36, h:42 }
   },
+
+  // The deck's artillery piece: flat damage to every hostile on the field, on
+  // the longest cooldown in the deck. 70 deletes the chaff outright (BUG,
+  // SPYWARE) and softens everything heavier without touching the bases — it
+  // buys the front line a breath, it doesn't win the siege by itself.
+  emp: { cost:120, dmg:70, cool:22000 },
 
   // Hostiles. `from` is the elapsed second at which the type joins the spawn
   // pool, and `bounty` is the RAM a kill pays back — pushing the front line
   // forward is how you part-fund the next push. Bounties stay well under what
   // the kill cost you: paying for itself turns a winning Scout into free
   // reinforcement and the battle snowballs out of the player's hands.
+  // ADWARE is the enemy's ranged answer — it out-reaches everything but the
+  // Zapper, so a pure turtle gets chipped down and pushing the line stays the
+  // winning move. SPYWARE is fast chaff that makes the EMP feel great, and
+  // TROJAN.SYS is the gilded siege engine that punishes a stalled front late.
   foes: {
-    bug:   { key:'bug',   icon:'🐛', name:'BUG',      hp:70,  atk:10, speed:34, reach:8,  rate:620,  w:22, h:24, color:'#ff0090', from:0,   bounty:5  },
-    virus: { key:'virus', icon:'🦠', name:'VIRUS',    hp:170, atk:18, speed:22, reach:10, rate:880,  w:28, h:30, color:'#a855f7', from:45,  bounty:12 },
-    worm:  { key:'worm',  icon:'🪱', name:'WORM.EXE', hp:430, atk:34, speed:16, reach:12, rate:1150, w:34, h:38, color:'#ff2442', from:105, bounty:28 }
+    bug:     { key:'bug',     icon:'🐛', name:'BUG',        hp:70,  atk:10, speed:34, reach:8,  rate:620,  w:22, h:24, color:'#ff0090', from:0,   bounty:5  },
+    virus:   { key:'virus',   icon:'🦠', name:'VIRUS',      hp:170, atk:18, speed:22, reach:10, rate:880,  w:28, h:30, color:'#a855f7', from:45,  bounty:12 },
+    adware:  { key:'adware',  icon:'📢', name:'ADWARE',     hp:130, atk:12, speed:26, reach:46, rate:900,  w:26, h:28, color:'#ff8c00', from:70,  bounty:16 },
+    worm:    { key:'worm',    icon:'🪱', name:'WORM.EXE',   hp:430, atk:34, speed:16, reach:12, rate:1150, w:34, h:38, color:'#ff2442', from:105, bounty:28 },
+    spyware: { key:'spyware', icon:'🕷️', name:'SPYWARE',    hp:60,  atk:9,  speed:58, reach:7,  rate:470,  w:20, h:22, color:'#c8ff00', from:140, bounty:9  },
+    trojan:  { key:'trojan',  icon:'🐴', name:'TROJAN.SYS', hp:780, atk:46, speed:12, reach:12, rate:1300, w:40, h:44, color:'#ffd700', from:170, bounty:65 }
   },
 
   // Siege clock. Fixed across all three stability tiers — see startBattleBots().
@@ -8263,6 +8290,7 @@ const BB_P_TOWER = 6, BB_E_TOWER = BOARD_W - 6 - BB_TOWER_W;
 const BB_P_SPAWN = 86, BB_E_SPAWN = BOARD_W - 86;
 const BB_P_LINE = 90, BB_E_LINE = BOARD_W - 90;   // where a unit starts hitting a base
 const BB_LANES = [-14, 0, 14];              // visual stagger, so a stack of four still reads
+const BB_RANGED = 24;                       // reach at or past this = a shooter, drawn with tracers
 
 function startBattleBots(){
   const holder = document.getElementById('g-canvas-holder');
@@ -8277,7 +8305,7 @@ function startBattleBots(){
   ramPill.style.display= '';
   setControls(null);              // the deck IS the control pad — no arrows to show
   setControlHint('TAP A CARD TO DEPLOY · YOUR BOTS ADVANCE ON THEIR OWN',
-                 'CLICK A CARD OR PRESS 1 / 2 / 3 · YOUR BOTS ADVANCE ON THEIR OWN');
+                 'CLICK A CARD OR PRESS 1–7 · YOUR BOTS ADVANCE ON THEIR OWN');
   showTouchHint('TAP THE CARDS BELOW TO DEPLOY');
 
   const diffMod = getDifficultyModifier();
@@ -8305,19 +8333,25 @@ function startBattleBots(){
   const TOTAL = BB.seconds;
 
   // Player colours follow the Black Market equip, the way every other game's
-  // player sprite does. The Tank is a hue-rotation of it rather than a fixed
-  // second colour, so the pair always reads as one faction.
+  // player sprite does. Every other bot is a hue-rotation of that one colour
+  // rather than a fixed palette, so however the deck grows the whole roster
+  // still reads as one faction against the malware's fixed pinks and reds.
   const pColor = getEquippedColorHex();
-  const tColor = shiftHue(pColor, 42);
-  const colorOf = { scout: pColor, tank: tColor };
+  const colorOf = {
+    scout:  pColor,
+    wall:   shiftHue(pColor, -26),
+    zapper: shiftHue(pColor, 20),
+    tank:   shiftHue(pColor, 42),
+    titan:  shiftHue(pColor, 64)
+  };
 
   let ram = BB.ram.start, ramRate = BB.ram.rate, upgIdx = 0;
   let mainHP = BB.baseHP, glitchHP = BB.baseHP;
-  let bots = [], foes = [], parts = [];
+  let bots = [], foes = [], parts = [], beams = [];
   let pLane = 0, eLane = 0;         // round-robin, so a deploy spreads your force
   let elapsed = 0, time = TOTAL, waveNo = 0, waveT = BB.wave.first;
-  let kills = 0, deployed = 0, ended = false, outro = null;
-  let hurtFlash = 0, hitFlash = 0, banner = null, scroll = 0, last = 0;
+  let kills = 0, deployed = 0, empFired = 0, ended = false, outro = null;
+  let hurtFlash = 0, hitFlash = 0, empFlash = 0, banner = null, scroll = 0, last = 0;
 
   timeEl.textContent = fmtTime(time);
   progEl.style.width = '100%';
@@ -8330,8 +8364,12 @@ function startBattleBots(){
   // and Memory Match's tiles use. stopGame() empties the container, which means
   // quitting mid-siege drops them too.
   const cards = [
-    { kind:'unit', spec: BB.units.scout, color: colorOf.scout, cdLeft: 0 },
-    { kind:'unit', spec: BB.units.tank,  color: colorOf.tank,  cdLeft: 0 },
+    { kind:'unit', spec: BB.units.scout,  color: colorOf.scout,  cdLeft: 0 },
+    { kind:'unit', spec: BB.units.wall,   color: colorOf.wall,   cdLeft: 0 },
+    { kind:'unit', spec: BB.units.zapper, color: colorOf.zapper, cdLeft: 0 },
+    { kind:'unit', spec: BB.units.tank,   color: colorOf.tank,   cdLeft: 0 },
+    { kind:'unit', spec: BB.units.titan,  color: colorOf.titan,  cdLeft: 0 },
+    { kind:'emp',  icon:'💥', name:'EMP',       color:'#ffffff', cdLeft: 0 },
     { kind:'upg',  icon:'⚡', name:'RAM SPEED', color:'#ffd700', cdLeft: 0 }
   ];
   deck.innerHTML = '';
@@ -8355,6 +8393,7 @@ function startBattleBots(){
   function costOf(i){
     const c = cards[i];
     if(c.kind === 'unit') return c.spec.cost;
+    if(c.kind === 'emp')  return BB.emp.cost;
     return upgIdx < BB.ram.tiers.length ? BB.ram.tiers[upgIdx] : Infinity;
   }
 
@@ -8372,11 +8411,14 @@ function startBattleBots(){
       snd('levelUp');
       toast(`⚡ RAM THROUGHPUT → ${Math.round(ramRate)}/s`);
       banner = { text: `⚡ THROUGHPUT ${Math.round(ramRate)}/s`, life: 1400, color: '#ffd700' };
+    } else if(c.kind === 'emp'){
+      fireEMP();
+      c.cdLeft = BB.emp.cool;
     } else {
       spawnBot(c.spec);
       c.cdLeft = c.spec.cool;
       deployed++;
-      snd(c.spec.key === 'tank' ? 'ability' : 'powerup');
+      snd(c.spec.key === 'tank' || c.spec.key === 'titan' ? 'ability' : 'powerup');
     }
     paintDeck();
   }
@@ -8396,7 +8438,8 @@ function startBattleBots(){
         b.lastState = state;
       }
 
-      const cd = c.kind === 'unit' ? Math.max(0, c.cdLeft) / c.spec.cool : 0;
+      const cool = c.kind === 'unit' ? c.spec.cool : c.kind === 'emp' ? BB.emp.cool : 0;
+      const cd = cool ? Math.max(0, c.cdLeft) / cool : 0;
       const q = Math.round(cd * 20) / 20;            // quantised — 20 steps is plenty
       if(q !== b.lastCd){ b.el.style.setProperty('--cd', q); b.lastCd = q; }
     });
@@ -8417,6 +8460,25 @@ function startBattleBots(){
   }
   function spawnBot(spec){ bots.push(mkUnit(spec, +1, BB_P_SPAWN, colorOf[spec.key])); }
   function spawnFoe(spec){ foes.push(mkUnit(spec, -1, BB_E_SPAWN, spec.color)); }
+
+  // ── EMP SURGE ──
+  // Whole-field damage, paid in RAM and throttled by the deck's longest
+  // cooldown. Kills pay their bounty like any other, so surging a wave of
+  // chaff part-refunds itself — the Battle Cats cannon, in Mainframe money.
+  function fireEMP(){
+    empFired++;
+    empFlash = 1;
+    snd('bigExplode');
+    banner = { text: '💥 EMP SURGE', life: 1400, color: '#ffffff' };
+    for(const f of foes){
+      if(f.hp <= 0) continue;
+      f.hp -= BB.emp.dmg;
+      f.flash = 200;
+      if(f.hp <= 0) killUnit(f, +1);
+      else burst(f.x, BB_GROUND + f.yOff - f.h / 2, '#ffffff', 3);
+    }
+    foes = foes.filter(u => u.hp > 0);
+  }
 
   // Later waves lean on the heavier types without ever dropping BUGs entirely,
   // so the lane keeps its chaff while the real threats arrive behind it.
@@ -8487,7 +8549,18 @@ function startBattleBots(){
           u.cd = u.rate;
           u.flash = 130;
           target.hp -= u.atk;
-          snd('hit');
+          // Shooters read as GUNS, not long arms: a tracer to the target and
+          // an impact spark, where melee keeps the little white jab.
+          if(u.reach >= BB_RANGED){
+            const ty = BB_GROUND + target.yOff - target.h * 0.5;
+            beams.push({ x1: u.x + dir * u.w / 2, y1: BB_GROUND + u.yOff - u.h * 0.55,
+                         x2: target.x - dir * target.w / 2, y2: ty,
+                         color: u.color, life: 1 });
+            burst(target.x - dir * target.w / 2, ty, u.color, 2);
+            snd('shoot');
+          } else {
+            snd('hit');
+          }
           if(target.hp <= 0) killUnit(target, dir);
         }
         continue;
@@ -8561,8 +8634,9 @@ function startBattleBots(){
     // Neither fires anything here, but both activate a focused button, so they
     // get swallowed rather than leaking out into the UI behind the board.
     if(e.code === 'Space' || e.code === 'Enter') e.preventDefault();
-    const i = ['1', '2', '3'].indexOf(e.key);
-    if(i < 0) return;
+    if(e.key.length !== 1) return;
+    const i = e.key.charCodeAt(0) - 49;            // '1'…'9' → card index
+    if(i < 0 || i >= cards.length) return;
     e.preventDefault();
     hideTouchHint();
     buy(i);
@@ -8592,6 +8666,7 @@ function startBattleBots(){
     scroll += dt * 0.012;
     if(hurtFlash > 0) hurtFlash = Math.max(0, hurtFlash - dt / 420);
     if(hitFlash  > 0) hitFlash  = Math.max(0, hitFlash  - dt / 300);
+    if(empFlash  > 0) empFlash  = Math.max(0, empFlash  - dt / 260);
     if(banner){ banner.life -= dt; if(banner.life <= 0) banner = null; }
     for(let i = parts.length - 1; i >= 0; i--){
       const p = parts[i];
@@ -8600,6 +8675,10 @@ function startBattleBots(){
       p.vy += 420 * dt / 1000;
       p.life -= dt / 620;
       if(p.life <= 0) parts.splice(i, 1);
+    }
+    for(let i = beams.length - 1; i >= 0; i--){
+      beams[i].life -= dt / 140;
+      if(beams[i].life <= 0) beams.splice(i, 1);
     }
   }
 
@@ -8799,6 +8878,13 @@ function startBattleBots(){
       aCtx.fillRect(BOARD_W * 0.55, 0, BOARD_W * 0.45, BOARD_H);
       aCtx.restore();
     }
+    if(empFlash > 0){
+      aCtx.save();
+      aCtx.globalAlpha = empFlash * 0.22;
+      aCtx.fillStyle = '#eaf6ff';
+      aCtx.fillRect(0, 0, BOARD_W, BOARD_H);
+      aCtx.restore();
+    }
   }
 
   function draw(){
@@ -8809,6 +8895,16 @@ function startBattleBots(){
 
     // Back lane first, so a crowded front line layers instead of z-fighting.
     [...bots, ...foes].sort((a, b) => a.yOff - b.yOff).forEach(drawUnit);
+
+    for(const b of beams){
+      aCtx.save();
+      aCtx.globalAlpha = Math.max(0, b.life) * 0.9;
+      aCtx.strokeStyle = b.color;
+      aCtx.lineWidth = 2;
+      aCtx.shadowBlur = 8; aCtx.shadowColor = b.color;
+      aCtx.beginPath(); aCtx.moveTo(b.x1, b.y1); aCtx.lineTo(b.x2, b.y2); aCtx.stroke();
+      aCtx.restore();
+    }
 
     for(const p of parts){
       aCtx.save();
@@ -8869,6 +8965,7 @@ function startBattleBots(){
         '☠️ Glitch Integrity': `${Math.max(0, Math.ceil(glitchHP))} / ${BB.baseHP}`,
         '💀 Hostiles Deleted': kills,
         '🤖 Bots Deployed': deployed,
+        '💥 EMP Surges': empFired,
         '🌊 Waves Repelled': waveNo,
         '⚡ RAM Throughput': `${Math.round(ramRate)}/s`,
         '🏆 Score Accumulation': `${pts} PTS`
