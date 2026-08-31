@@ -12351,43 +12351,96 @@ const MP_BOT_LEVELS = {
     pong:{ speed:170, err:46, thinkMs:250 },
     dodge:{ speed:118, react:0.30, lifeMin:10, lifeVar:14 },
     click:{ cps:4.2 },
-    race:{ frac:0.34, fuzz:0.12 }
+    race:{ skill:0.30, spread:0.16 }
   },
   veteran: {
     key:'veteran', label:'VETERAN', chip:'VETERAN DROID', name:'VOLT-77', color:'#a855f7', skin:'🤖',
     pong:{ speed:265, err:20, thinkMs:120 },
     dodge:{ speed:190, react:0.15, lifeMin:24, lifeVar:20 },
     click:{ cps:6.8 },
-    race:{ frac:0.62, fuzz:0.13 }
+    race:{ skill:0.58, spread:0.18 }
   },
   elite: {
     key:'elite', label:'ELITE', chip:'ELITE DROID', name:'NULLTRACE', color:'#ff2442', skin:'🤖',
     pong:{ speed:420, err:6, thinkMs:45 },
     dodge:{ speed:295, react:0.05, lifeMin:45, lifeVar:30 },
     click:{ cps:9.6 },
-    race:{ frac:0.92, fuzz:0.12 }
+    race:{ skill:0.86, spread:0.13 }
   }
 };
 
-// What a plausible run of each solo game looks like from the outside: the size
-// of one scoring event, how long a round tends to last, and (where the two
-// differ) how the live number maps to the final one. This is all a score-race
-// droid needs — it fakes a scoreboard, not a game.
+// What a plausible run of each solo game looks like from the outside. This is
+// all a score-race droid needs — it fakes a scoreboard, not a game — but the
+// numbers on that scoreboard have to be ones a HUMAN could have posted:
+//
+//   q     the size of one scoring event, so the live feed climbs in the lumps
+//         that game actually pays in.
+//   dur   how long a round of it tends to last.
+//   step  the game's score LATTICE. Almost every game here pays in fixed
+//         lumps — 75 a pair, 50 an answer, 30 a node — so its scores are all
+//         multiples of one number. A droid posting 552 in MEMORY MATCH, where
+//         every reachable score is a multiple of 75, outs itself as a bot the
+//         moment anyone reads the results card.
+//   band  what a weak and a very strong HUMAN actually score. Deliberately not
+//         [0, maxPts]: a cap is a theoretical ceiling nobody touches (MATH
+//         BLITZ's 750 needs 15 correct answers in 20 seconds), so reading a
+//         droid's score off a fraction of one produced totals that were both
+//         unreachable and, at the top end, superhuman.
+//   bonus points the real game banks at the BUZZER rather than during play
+//         (shields intact, servers standing), as { unit, max }. Held out of
+//         the live feed so it lands as a jump on the results card, exactly
+//         like a human's does.
 const VS_BOT_PROFILE = {
-  nebula:     { q:20,  dur:[55,110] },
-  tetris:     { q:100, dur:[60,140] },
-  memory:     { q:75,  dur:[16,24]  },
-  math:       { q:50,  dur:[17,21]  },
-  reaction:   { q:120, dur:[12,16]  },
-  snake:      { q:30,  dur:[45,110] },
-  flappy:     { q:1,   dur:[30,100], toLive: f => Math.max(1, Math.round(f/50)), fin: n => Math.min(1000, Math.round(n)*50) },
-  breaker:    { q:35,  dur:[45,70],  bonus:120 },
-  arena:      { q:40,  dur:[80,170], nominal:2600 },
-  runner:     { q:25,  dur:[55,120] },
-  hacker:     { q:45,  dur:[35,75]  },
-  meteor:     { q:30,  dur:[50,85],  bonus:210 },
-  battlebots: { q:60,  dur:[70,110] }
+  nebula:     { q:20,  dur:[55,110], step:20, band:[140, 940]  },   // 20 an alien
+  tetris:     { q:30,  dur:[60,140], step:10, band:[70, 1120]  },   // 10/30/70/150 a clear
+  memory:     { q:75,  dur:[16,24],  step:75, band:[300, 600]  },   // 75 a pair, 8 pairs, 25s
+  math:       { q:50,  dur:[17,21],  step:50, band:[150, 700]  },   // 50 an answer, 20s
+  reaction:   { q:110, dur:[12,16],  step:5,  band:[45, 400]   },   // 400 minus your ms, 15s
+  snake:      { q:30,  dur:[45,110], step:30, band:[90, 1050]  },   // 30 a node
+  flappy:     { q:1,   dur:[30,100], step:50, band:[50, 900],
+                // The live feed counts PIPES; the card multiplies by 50.
+                toLive: f => Math.max(1, Math.round(f / 50)) },
+  breaker:    { q:50,  dur:[45,70],  step:10, band:[180, 1040], bonus:{ unit:40, max:3 } },
+  arena:      { q:35,  dur:[80,170], step:10, band:[420, 3600] },   // no cap; a long run
+  runner:     { q:25,  dur:[55,120], step:1,  band:[130, 1120] },   // distance + 30 a cube
+  hacker:     { q:25,  dur:[35,75],  step:5,  band:[70, 760]   },   // 5 a node + a key bonus
+  meteor:     { q:30,  dur:[50,85],  step:10, band:[200, 1040], bonus:{ unit:70, max:3 } },
+
+  // BATTLE BOTS is the one game whose scores are not a single range. It pays
+  // on a SPLIT scale with a dead band in the middle: a siege that times out
+  // banks up to 400 for the damage it managed, while a purge starts at 550 and
+  // climbs on Mainframe integrity and time to spare. Nothing scores 401-549,
+  // so the droid settles the outcome first and then runs the real formula —
+  // the flat-fraction model landed in that gap about a fifth of the time.
+  battlebots: { q:60,  dur:[95,150],
+                toLive: f => Math.min(400, f),      // live pips cap at the loss scale
+                pick: s => {
+                  if(Math.random() > s)             // the siege ran out of clock
+                    return Math.round(400 * Math.min(1, s * (0.55 + Math.random() * 0.85)));
+                  const hp   = Math.min(1, 0.30 + s * (0.35 + Math.random() * 0.65));
+                  const spare= Math.min(1, s * (0.35 + Math.random() * 0.95));
+                  return Math.min(1200, 550 + Math.round(400 * hp) + Math.round(250 * spare));
+                } }
 };
+
+// A 0..1 skill draw becomes a score that game can actually produce: linear
+// across the human band, then snapped to the lattice.
+function botRaceScore(prof, skill){
+  if(prof.pick) return prof.pick(skill);
+  const [lo, hi] = prof.band;
+  const step = prof.step || 1;
+  return Math.max(lo, Math.min(hi, Math.round((lo + (hi - lo) * skill) / step) * step));
+}
+
+// End-of-round survival bonuses, rolled per shield / per server rather than
+// scaled smoothly — a human ends with a whole number of them standing, so the
+// droid's bonus is always a clean multiple of the unit too.
+function botRaceBonus(prof, skill){
+  if(!prof.bonus) return 0;
+  let n = 0;
+  for(let i = 0; i < prof.bonus.max; i++) if(Math.random() < skill * 0.8) n++;
+  return n * prof.bonus.unit;
+}
 
 function makeDroid(net, code, botId, levelKey, modeKey){
   const mode = MP_MODES[modeKey];
@@ -12544,12 +12597,23 @@ function makeDroid(net, code, botId, levelKey, modeKey){
   // indistinguishable from a rival's score feed — which is all it ever was.
   function raceBrain(room){
     const gid = mode.gid;
-    const prof = VS_BOT_PROFILE[gid] || { q:25, dur:[40,80] };
+    const prof = VS_BOT_PROFILE[gid] || { q:25, dur:[40,80], step:5, band:[80, META[gid].maxPts * 0.55] };
     const capReal = META[gid].maxPts;
-    const cap = prof.nominal || capReal;
-    const frac = Math.max(0.05, Math.min(1.05, L.race.frac + (Math.random()*2 - 1) * L.race.fuzz));
-    const finTarget = Math.round(cap * frac);
-    const liveTarget = prof.toLive ? prof.toLive(finTarget) : finTarget;
+
+    // ONE skill draw for the round, which the game's own scoring rules then
+    // turn into a number. The old model read the score off a flat fraction of
+    // META.maxPts, and a cap is not a score: it produced totals that were
+    // impossible on the lattice (552 in a game paying 75 a pair), that landed
+    // in BATTLE BOTS' unreachable 401-549 gap, and that at ELITE sat above
+    // anything a person posts.
+    const skill = Math.max(0, Math.min(1, L.race.skill + (Math.random()*2 - 1) * L.race.spread));
+    const bonusN = botRaceBonus(prof, skill);
+    const finTarget = Math.min(capReal, botRaceScore(prof, skill));
+
+    // The live feed shows only what was PLAYED; the buzzer bonus is added on
+    // the card, so the droid's number jumps at the end the way a human's does.
+    const played = Math.max(0, finTarget - bonusN);
+    const liveTarget = prof.toLive ? prof.toLive(played) : played;
     const durCeil = ((mode.seconds || 60) - 4) * 1000;
     const dur = Math.min(durCeil, (prof.dur[0] + Math.random()*(prof.dur[1] - prof.dur[0])) * 1000);
     const startAt = room.startAt || netNow();
@@ -12568,9 +12632,9 @@ function makeDroid(net, code, botId, levelKey, modeKey){
       live.child('score/' + botId).set({ n: Math.round(liveN), t: now }).catch(()=>{});
       if(p >= 1){
         finned = true;
-        const base = prof.fin ? prof.fin(liveN) : Math.round(liveN);
-        const pts = Math.min(capReal, base + Math.round((prof.bonus || 0) * Math.random()));
-        live.child('fin/' + botId).set({ pts, t: now }).catch(()=>{});
+        // finTarget already IS a reachable score for this game, bonus included
+        // — banking it verbatim is what keeps the results card honest.
+        live.child('fin/' + botId).set({ pts: finTarget, t: now }).catch(()=>{});
       }
     }, 400);
   }

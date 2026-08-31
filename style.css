@@ -24,6 +24,44 @@ html.cb-safe{
   --rx-wait:#0072b2;--rx-go:#f0e442;--rx-early:#e69f00;--rx-hit:#56b4e9;
 }
 html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--fb);overflow:hidden;-webkit-font-smoothing:antialiased}
+
+/* ── ⬍ SCROLLBARS ──
+   The browser default (grey thumb, white track) is the one piece of chrome
+   that ignores the palette, and it shows on every scrolling surface: .screen,
+   .market-body, .lb-panel, .mp-body, .fb-modal, .fb-textarea. Same neon
+   gradient + glow as the rest of the UI. Colors are palette vars, so the
+   cb-safe overrides above repoint the scrollbar for free. */
+:root{--sb-track:rgba(255,255,255,.04);--sb-glow:rgba(0,245,255,.4)}
+html.cb-safe{--sb-glow:rgba(86,180,233,.4)}
+
+/* Firefox has no ::-webkit-scrollbar, so it gets the flat-accent fallback.
+   Scoped to browsers that lack the pseudo-element on purpose: Chrome ignores
+   every ::-webkit-scrollbar rule on any element that sets scrollbar-width or
+   scrollbar-color, and both properties inherit — setting them on <html> would
+   silently kill the gradient everywhere. */
+@supports not selector(::-webkit-scrollbar){
+  html{scrollbar-width:thin;scrollbar-color:var(--cyan) var(--sb-track)}
+  .fb-modal{scrollbar-color:var(--lime) var(--sb-track)}
+}
+
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:var(--sb-track);border-radius:10px;box-shadow:inset 0 0 0 1px var(--border)}
+::-webkit-scrollbar-thumb{
+  background:linear-gradient(180deg,var(--cyan),var(--purple));
+  border:2px solid transparent;background-clip:padding-box;border-radius:10px;
+  box-shadow:0 0 8px var(--sb-glow)
+}
+::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,var(--pink),var(--cyan));background-clip:padding-box;box-shadow:0 0 14px var(--sb-glow)}
+::-webkit-scrollbar-thumb:active{background:linear-gradient(180deg,var(--pink),var(--purple));background-clip:padding-box}
+::-webkit-scrollbar-corner{background:transparent}
+
+/* Form fields are small — a 10px bar swamps them. */
+textarea::-webkit-scrollbar,select::-webkit-scrollbar,.input::-webkit-scrollbar{width:7px;height:7px}
+textarea::-webkit-scrollbar-thumb,select::-webkit-scrollbar-thumb,.input::-webkit-scrollbar-thumb{border-width:1px}
+
+/* The feedback modal is lime-accented, so its scrollbar follows suit. */
+.fb-modal::-webkit-scrollbar-thumb{background:linear-gradient(180deg,var(--lime),var(--cyan));background-clip:padding-box;box-shadow:0 0 8px rgba(57,255,20,.35)}
+.fb-modal::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,var(--cyan),var(--lime));background-clip:padding-box;box-shadow:0 0 14px rgba(57,255,20,.5)}
 #bg-canvas{position:fixed;inset:0;z-index:0;pointer-events:none}
 
 /* ── SCREEN SYSTEM ── */
