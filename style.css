@@ -794,11 +794,22 @@ textarea::-webkit-scrollbar-thumb,select::-webkit-scrollbar-thumb,.input::-webki
 /* shrink:100 — drained almost to the floor before the wordmark gives anything. */
 .hub-uname{flex:0 100 auto;min-width:44px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-/* Below this the row cannot hold nine controls however hard it shrinks, and
-   nowrap would push them out through the border. Wrapping only ever engages
-   when the content genuinely does not fit, so this costs nothing at the widths
-   where it does. It also covers the stacked phone layout further down. */
-@media (max-width:900px){ .hub-right{flex-wrap:wrap} }
+/* The row cannot hold this many controls however hard it shrinks, and nowrap
+   pushes the surplus out through the border instead — leftwards, because the
+   row is justified to the end, so the overflow lands ON the wordmark rather
+   than off the edge where it would at least be visible as a mistake.
+
+   This used to be gated at max-width:900px. That was the wrong axis: the bar is
+   capped at 1060px, so how much room the controls have barely changes above
+   that — a guest session (which adds the GUEST tag and the long SAVE PROGRESS
+   ONLINE button) overflowed by ~110px at 1440px just as it did at 1024px, and
+   the media query never fired because the VIEWPORT was wide. The number of
+   controls is what varies, not the width available to them.
+
+   Unconditional wrapping fixes every width at once, and costs nothing at the
+   sizes that already fit: flex-wrap only ever engages when the content
+   genuinely does not fit, which is exactly the condition we want it on. */
+.hub-right{flex-wrap:wrap;row-gap:8px}
 .btn-feedback{color:var(--lime);border-color:rgba(57,255,20,.35)}
 .btn-feedback:hover{background:rgba(57,255,20,.14);border-color:var(--lime);box-shadow:0 0 18px rgba(57,255,20,.22)}
 
@@ -1549,4 +1560,354 @@ html.is-offline #btn-boss-rush{
   opacity:.45;
   filter:grayscale(.7);
   cursor:not-allowed;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   ✨ FEATURE SUITE — chaos, squads, levels, kit, drives, exits, terminal
+   ══════════════════════════════════════════════════════════════════════
+   Everything below reuses the palette vars and the .card / .btn / .lb-row
+   furniture already defined above, so a repointed --cyan (an equipped
+   colour, or the colourblind-safe palette) carries through all of it. */
+
+/* A third way into the matrix, on the shelf that already names it. */
+.badge-label{cursor:pointer;transition:color .16s ease}
+.badge-label:hover{color:var(--gold)}
+.badge-open{font-style:normal;font-size:.5rem;color:var(--dimmer);letter-spacing:.14em;margin-left:6px}
+.badge-label:hover .badge-open{color:var(--gold)}
+
+/* ── 📈 OPERATIVE RAIL ── */
+.xp-rail{
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:9px 18px;margin:0 auto 18px;max-width:1400px;
+  border:1px solid var(--border);border-radius:var(--r);
+  background:linear-gradient(90deg,rgba(0,245,255,.05),rgba(255,255,255,.02));
+}
+.xp-rail.has-points{border-color:rgba(57,255,20,.4);box-shadow:0 0 18px rgba(57,255,20,.1)}
+.xp-lvl{font-family:var(--fd);font-size:.68rem;font-weight:900;color:var(--cyan);letter-spacing:.14em;white-space:nowrap}
+.xp-track{flex:1;min-width:110px;height:7px;border-radius:7px;background:var(--s2);overflow:hidden;box-shadow:inset 0 0 0 1px var(--border)}
+.xp-fill{height:100%;border-radius:7px;background:linear-gradient(90deg,var(--cyan),var(--lime));box-shadow:0 0 12px var(--cyan);transition:width .5s cubic-bezier(.2,.9,.3,1)}
+.xp-num{font-family:var(--fd);font-size:.55rem;color:var(--dim);letter-spacing:.1em;white-space:nowrap}
+.xp-perk-btn{animation:perkPulse 2s ease-in-out infinite}
+@keyframes perkPulse{0%,100%{box-shadow:0 0 0 rgba(57,255,20,0)}50%{box-shadow:0 0 18px rgba(57,255,20,.55)}}
+
+/* ── 📅 DAILY HACK ── */
+.dh-banner{border-color:rgba(255,215,0,.38)!important}
+.dh-banner .mp-banner-icon{filter:drop-shadow(0 0 10px var(--gold))}
+.dh-banner.done{opacity:.82}
+.dh-lb-label{margin-top:26px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.dh-reset{font-style:normal;font-size:.5rem;color:var(--dimmer);letter-spacing:.14em}
+.dh-lb-panel{max-height:230px;overflow-y:auto}
+.dh-row .lb-score{color:var(--gold)}
+.dh-note{padding:12px 0 4px!important;font-size:.66rem!important}
+
+/* ── 📟 GRID TERMINAL ── */
+.chat-panel{
+  border:1px solid var(--border);border-radius:var(--r);background:var(--s1);
+  padding:12px;display:flex;flex-direction:column;gap:10px;
+}
+.chat-log{
+  height:190px;overflow-y:auto;display:flex;flex-direction:column;gap:5px;
+  font-family:var(--fd);font-size:.56rem;line-height:1.55;letter-spacing:.04em;
+}
+.chat-line{display:flex;gap:8px;align-items:baseline;animation:chatIn .3s ease}
+@keyframes chatIn{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
+.chat-time{color:var(--dimmer);flex:0 0 auto;font-size:.5rem}
+.chat-body{flex:1;min-width:0;word-break:break-word;color:var(--dim)}
+.chat-line.said .chat-body{color:var(--text)}
+.chat-who{color:var(--cyan);font-weight:700}
+.chat-sys{color:var(--lime);opacity:.82}
+.chat-input-row{display:flex;gap:8px}
+.chat-input{flex:1;min-width:0;font-size:.72rem;padding:8px 11px}
+
+/* ── 📥 REPLAY ── */
+.replay-panel{border:1px solid var(--border);border-radius:var(--r);background:var(--s1);padding:12px;display:flex;flex-direction:column;gap:10px}
+.replay-row{display:flex;gap:8px}
+.replay-input{flex:1;min-width:0;font-family:var(--fd);font-size:.62rem;padding:8px 11px;letter-spacing:.04em}
+.replay-out:empty{display:none}
+.replay-err{color:var(--red);font-size:.74rem;line-height:1.5}
+.replay-card{border:1px solid var(--border2);border-radius:var(--r);background:var(--s2);padding:12px;margin-bottom:10px}
+.replay-head{display:flex;align-items:center;gap:11px;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+.replay-emoji{font-size:1.7rem;line-height:1}
+.replay-title{font-family:var(--fd);font-size:.66rem;font-weight:900;letter-spacing:.1em}
+.replay-by{font-size:.66rem;color:var(--dim)}
+.replay-score{margin-left:auto;font-family:var(--fd);font-size:1.15rem;font-weight:900;color:var(--gold);text-align:right;line-height:1}
+.replay-score em{display:block;font-style:normal;font-size:.44rem;color:var(--dimmer);letter-spacing:.16em}
+.replay-card .rv.better{color:var(--lime)}
+.replay-card .rv.worse{color:var(--red)}
+.replay-try{width:100%}
+/* The code itself: selectable, wrapping, and monospaced so a retyped
+   character can be checked against the one it replaced. */
+.res-replay:empty{display:none}
+.res-replay{margin-top:14px}
+.replay-code{
+  font-family:var(--fd);font-size:.56rem;letter-spacing:.06em;line-height:1.6;
+  word-break:break-all;user-select:all;-webkit-user-select:all;
+  padding:10px 12px;border:1px dashed rgba(0,245,255,.4);border-radius:var(--r);
+  background:rgba(0,245,255,.05);color:var(--cyan);text-align:left;
+}
+.replay-hint{margin-top:6px;font-size:.66rem;color:var(--dim)}
+
+/* ── 🌀 CHAOS MODIFIER ── */
+#chaos-banner{
+  display:flex;align-items:center;gap:14px;
+  margin:10px auto 0;max-width:660px;padding:12px 18px;
+  border:1px solid rgba(255,36,66,.5);border-radius:var(--r);
+  background:linear-gradient(100deg,rgba(255,36,66,.14),rgba(168,85,247,.1));
+  box-shadow:0 0 26px rgba(255,36,66,.22);
+  transition:padding .35s ease,gap .35s ease,max-width .35s ease;
+}
+#chaos-banner.big{animation:chaosIn .45s cubic-bezier(.2,.9,.3,1.35)}
+@keyframes chaosIn{from{opacity:0;transform:translateY(-14px) scale(.94)}to{opacity:1;transform:none}}
+/* Shrunk to a chip once the round is under way — still legible, out of the way. */
+#chaos-banner.chip{max-width:340px;padding:5px 12px;gap:9px}
+#chaos-banner.chip .chaos-desc{display:none}
+#chaos-banner.chip .chaos-icon{font-size:1rem}
+#chaos-banner.chip .chaos-name{font-size:.54rem}
+.chaos-icon{font-size:1.7rem;line-height:1;filter:drop-shadow(0 0 10px var(--red))}
+.chaos-txt{min-width:0}
+.chaos-name{font-family:var(--fd);font-size:.7rem;font-weight:900;color:var(--red);letter-spacing:.16em}
+.chaos-desc{font-size:.74rem;color:var(--dim);margin-top:2px}
+/* 🕶️ BLIND TERMINAL. Only the play area blanks — the header, the clock and the
+   score stay up, so the round remains legible as a round while the board is
+   gone. Short and linear on purpose: this should read as a dropped feed, not
+   as a fade. */
+.g-area{transition:opacity .12s linear}
+.g-area.blind-out{opacity:0}
+/* ⏳ TIME DILATOR: a single cyan pulse over the board where the seconds landed. */
+.g-area.dilated{animation:dilate .7s ease}
+@keyframes dilate{0%{filter:none}30%{filter:brightness(1.5) drop-shadow(0 0 22px var(--cyan))}100%{filter:none}}
+
+/* ── ⚡ POWER-UP DOCK ── */
+#pu-dock{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:8px auto 0;padding:0 12px}
+.pu-btn{
+  display:flex;align-items:center;gap:7px;padding:6px 12px;
+  border:1px solid rgba(57,255,20,.42);border-radius:99px;
+  background:rgba(57,255,20,.08);color:var(--text);cursor:pointer;
+  font-family:var(--fd);font-size:.52rem;letter-spacing:.12em;
+  transition:transform .12s ease,box-shadow .2s ease,background .2s ease;
+}
+.pu-btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 0 18px rgba(57,255,20,.35);background:rgba(57,255,20,.15)}
+.pu-btn:active:not(:disabled){transform:translateY(0)}
+.pu-btn.passive{cursor:default;border-color:rgba(0,245,255,.42);background:rgba(0,245,255,.08);opacity:.9}
+.pu-emoji{font-size:.95rem;line-height:1}
+.pu-count{
+  font-weight:900;min-width:17px;height:17px;line-height:17px;text-align:center;
+  border-radius:99px;background:rgba(255,255,255,.14);font-size:.5rem;
+}
+.pu-btn.fired{animation:puFire .55s ease}
+@keyframes puFire{0%{box-shadow:0 0 0 rgba(57,255,20,0)}25%{box-shadow:0 0 30px var(--lime);transform:scale(1.14)}100%{box-shadow:none;transform:none}}
+
+/* ── 🛒 MARKET: consumables, drives, exit states ── */
+.pu-kit{margin-bottom:20px}
+.pu-kit-lbl{font-family:var(--fd);font-size:.56rem;color:var(--lime);letter-spacing:.16em;margin-bottom:9px}
+.pu-kit-lbl.empty{color:var(--dim);letter-spacing:.08em;line-height:1.6;font-family:var(--fb);font-size:.78rem}
+.pu-kit-row{display:flex;gap:9px;flex-wrap:wrap}
+.pu-chip{
+  display:inline-flex;align-items:center;gap:6px;padding:6px 12px;
+  border:1px solid rgba(57,255,20,.35);border-radius:99px;background:rgba(57,255,20,.07);
+  font-size:.74rem;
+}
+.pu-chip em{font-style:normal;font-family:var(--fd);font-size:.56rem;color:var(--lime)}
+/* A drive or an exit state cannot be judged from a name and a price, so those
+   cards carry a sentence — which makes them taller than a colour swatch. */
+.shop-desc{font-size:.72rem;color:var(--dim);line-height:1.5;margin:6px 0 10px;text-align:center}
+.shop-held{font-family:var(--fd);font-size:.5rem;color:var(--dimmer);letter-spacing:.14em;margin-bottom:9px}
+.shop-held em{font-style:normal;color:var(--lime)}
+.shop-card.consumable{border-color:rgba(57,255,20,.3)}
+
+/* ── 👥 SQUAD SIZE PICKER ── */
+.mp-teamsize{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;padding:9px 14px;border:1px solid var(--border);border-radius:var(--r);background:var(--s1)}
+.mp-teamsize.squad{border-color:rgba(168,85,247,.42);background:rgba(168,85,247,.06)}
+.mp-teamsize-lbl{font-family:var(--fd);font-size:.55rem;color:var(--purple);letter-spacing:.16em}
+.mp-size-btn{
+  font-family:var(--fd);font-size:.52rem;letter-spacing:.12em;padding:6px 13px;
+  border:1px solid var(--border2);border-radius:99px;background:transparent;
+  color:var(--dim);cursor:pointer;transition:all .18s ease;
+}
+.mp-size-btn:hover{color:var(--text);border-color:var(--purple)}
+.mp-size-btn.on{background:rgba(168,85,247,.18);border-color:var(--purple);color:var(--text);box-shadow:0 0 14px rgba(168,85,247,.3)}
+.mp-teamsize-note{flex:1;min-width:180px;font-size:.72rem;color:var(--dim)}
+/* A duel that cannot be played 2v2 is greyed rather than removed — a mode
+   vanishing from the grid reads as a bug. */
+.mp-mode.barred{opacity:.4;filter:grayscale(.75);cursor:not-allowed}
+.mp-mode.barred:hover{transform:none}
+.mp-mode.barred .mp-mode-meta{color:var(--purple)}
+
+/* ── 👥 2v2 CO-OP GRID ── */
+.mp-teams{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:stretch;margin:18px 0}
+.mp-team{display:flex;flex-direction:column;gap:9px;padding:12px;border:1px solid var(--border);border-radius:var(--r);background:var(--s1)}
+.mp-team[data-team="alpha"]{border-color:rgba(0,245,255,.3)}
+.mp-team[data-team="bravo"]{border-color:rgba(255,0,144,.3)}
+/* Your own side is the one you should be able to find without reading. */
+.mp-team.mine{background:rgba(255,255,255,.05);box-shadow:inset 0 0 0 1px var(--border2)}
+.mp-team.mine .mp-team-name::after{content:' · YOUR SQUAD';color:var(--dimmer);font-size:.44rem}
+.mp-team-hdr{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.mp-team-name{font-family:var(--fd);font-size:.56rem;font-weight:900;letter-spacing:.14em}
+.mp-team[data-team="alpha"] .mp-team-name{color:var(--cyan)}
+.mp-team[data-team="bravo"] .mp-team-name{color:var(--pink)}
+/* The side's headcount, not a score — a lobby has no round to report yet. It
+   goes amber while a side is a seat short, which is the state a waiting player
+   is actually scanning for. */
+.mp-team-score{font-family:var(--fd);font-size:.7rem;font-weight:900;color:var(--lime);letter-spacing:.08em}
+.mp-team-score.short{color:var(--gold)}
+.mp-vs-teams{align-self:center}
+
+/* ── 🏆 ACHIEVEMENT MATRIX ── */
+.ach-tint .fb-modal{max-width:760px;border-color:rgba(255,215,0,.42);box-shadow:0 0 70px rgba(255,215,0,.13),inset 0 0 0 1px rgba(255,255,255,.03)}
+.ach-tint .fb-modal::before{background:linear-gradient(90deg,transparent,var(--gold),transparent);box-shadow:0 0 12px var(--gold)}
+.ach-progress{height:6px;border-radius:6px;background:var(--s2);overflow:hidden;margin-bottom:20px;box-shadow:inset 0 0 0 1px var(--border)}
+.ach-progress-fill{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--gold),var(--lime));box-shadow:0 0 12px var(--gold);transition:width .6s cubic-bezier(.2,.9,.3,1)}
+.ach-matrix{display:grid;grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:11px}
+.ach-cell{
+  display:flex;flex-direction:column;gap:5px;padding:13px 12px;
+  border:1px solid var(--border);border-radius:var(--r);background:var(--s1);
+  transition:transform .16s ease,box-shadow .2s ease;
+}
+.ach-cell:hover{transform:translateY(-2px)}
+/* Locked = dim grey, unlocked = neon green. The state is carried by the border,
+   the icon and the text together rather than by colour alone, so it survives
+   the colourblind-safe palette and a greyscale print alike. */
+.ach-cell.locked{border-color:rgba(255,255,255,.08);background:rgba(255,255,255,.02)}
+.ach-cell.locked .ach-ico{filter:grayscale(1);opacity:.34}
+.ach-cell.locked .ach-name{color:#8a8a96}
+.ach-cell.locked .ach-desc,.ach-cell.locked .ach-cr{color:rgba(255,255,255,.22)}
+.ach-cell.locked .ach-state{color:#8a8a96}
+.ach-cell.unlocked{border-color:rgba(57,255,20,.5);background:rgba(57,255,20,.07);box-shadow:0 0 20px rgba(57,255,20,.1)}
+.ach-cell.unlocked .ach-name{color:var(--lime)}
+.ach-cell.unlocked .ach-state{color:var(--lime)}
+.ach-cell.unlocked:hover{box-shadow:0 0 30px rgba(57,255,20,.22)}
+.ach-ico{font-size:1.6rem;line-height:1}
+.ach-name{font-family:var(--fd);font-size:.58rem;font-weight:900;letter-spacing:.1em}
+.ach-desc{font-size:.72rem;color:var(--dim);line-height:1.5;flex:1}
+.ach-foot{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-top:4px;padding-top:7px;border-top:1px solid var(--border)}
+.ach-cr{font-size:.66rem;color:var(--gold)}
+.ach-state{font-family:var(--fd);font-size:.44rem;letter-spacing:.14em}
+
+/* ── 🌳 PERK TREE ── */
+.perk-tint .fb-modal{max-width:600px;border-color:rgba(57,255,20,.45)}
+.perk-tree{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+.perk-node{
+  display:flex;flex-direction:column;gap:6px;padding:16px 14px;
+  border:1px solid var(--border);border-radius:var(--rl);background:var(--s1);
+  position:relative;transition:transform .16s ease,box-shadow .2s ease;
+}
+.perk-node.open{border-color:rgba(57,255,20,.45);box-shadow:0 0 22px rgba(57,255,20,.12)}
+.perk-node.open:hover{transform:translateY(-3px)}
+.perk-node.owned{border-color:var(--lime);background:rgba(57,255,20,.08)}
+.perk-node.locked{opacity:.55}
+.perk-ico{font-size:1.7rem;line-height:1}
+.perk-name{font-family:var(--fd);font-size:.66rem;font-weight:900;letter-spacing:.1em}
+.perk-effect{font-family:var(--fd);font-size:.52rem;color:var(--lime);letter-spacing:.1em}
+.perk-desc{font-size:.74rem;color:var(--dim);line-height:1.55;flex:1;margin-bottom:6px}
+.perk-tag{font-family:var(--fd);font-size:.5rem;color:var(--lime);letter-spacing:.16em}
+
+/* ══════════════════════════════════════════════════════════════
+   💀 EXIT STATES
+   One stage, three looks. It sits above every screen and below the
+   toast, so the flourish covers the board it belongs to without
+   hiding a message that outlives it.
+   ══════════════════════════════════════════════════════════════ */
+#exit-fx{position:fixed;inset:0;z-index:2500;display:none;pointer-events:none;overflow:hidden}
+#exit-fx.show{display:block}
+#exit-fx-body{position:absolute;inset:0}
+
+/* 🟦 FAKE BSOD — the real proportions: a lot of blue, a small block of text
+   pinned about a sixth of the way down, and a percentage that never quite
+   explains itself. */
+#exit-fx.fx-bsod{background:#0078d7;animation:bsodIn .16s steps(2)}
+@keyframes bsodIn{from{opacity:0}to{opacity:1}}
+#exit-fx.fx-bsod #exit-fx-body{
+  inset:auto 0 0 0;top:16%;padding:0 8vw;max-width:1000px;margin:0 auto;
+  font-family:'Segoe UI',var(--fb),sans-serif;color:#fff;text-align:left;
+}
+.bsod-face{font-size:6.5rem;line-height:1;font-weight:300;margin-bottom:26px}
+.bsod-head{font-size:1.55rem;font-weight:400;line-height:1.35;margin-bottom:14px}
+.bsod-sub{font-size:1rem;opacity:.92;margin-bottom:26px;line-height:1.5}
+.bsod-dump{
+  font-family:Consolas,var(--fd),monospace;font-size:.72rem;line-height:1.75;
+  white-space:pre;overflow-x:auto;opacity:.9;
+  padding:12px 14px;background:rgba(0,0,0,.16);border-radius:4px;margin-bottom:18px;
+}
+.bsod-pct{font-size:1.15rem;font-variant-numeric:tabular-nums}
+
+/* 🟩 MATRIX DISSOLVE — columns of glyphs falling past a darkening board. */
+#exit-fx.fx-matrix{background:rgba(2,6,4,.55);animation:mxFade 1.5s ease forwards}
+@keyframes mxFade{0%{background:rgba(2,6,4,0)}45%{background:rgba(2,6,4,.72)}100%{background:rgba(2,6,4,.95)}}
+.mx-col{
+  position:absolute;top:-115%;font-family:var(--fd),monospace;font-size:1rem;
+  line-height:1.05;color:#00ff41;text-shadow:0 0 9px #00ff41;
+  opacity:.82;white-space:nowrap;
+  animation-name:mxFall;animation-timing-function:linear;animation-fill-mode:forwards;
+}
+@keyframes mxFall{
+  0%{transform:translateY(0);opacity:0}
+  12%{opacity:.9}
+  100%{transform:translateY(230vh);opacity:0}
+}
+
+/* 📺 STATIC EXPLOSION — a CRT flash, a burst of noise, one roll bar. */
+#exit-fx.fx-static{background:#000}
+.crt-flash{position:absolute;inset:0;background:#fff;animation:crtFlash .9s ease-out forwards}
+@keyframes crtFlash{0%{opacity:1}14%{opacity:.15}30%{opacity:.6}100%{opacity:0}}
+/* Repeating gradients rather than an image: no asset to load, and it scales to
+   any viewport without resampling. */
+.crt-noise{
+  position:absolute;inset:0;opacity:.72;mix-blend-mode:screen;
+  background:
+    repeating-linear-gradient(0deg,rgba(255,255,255,.16) 0 1px,transparent 1px 3px),
+    repeating-linear-gradient(90deg,rgba(255,255,255,.09) 0 2px,transparent 2px 5px);
+  animation:crtNoise .07s steps(2) infinite;
+}
+@keyframes crtNoise{0%{transform:translate(0,0)}50%{transform:translate(-3px,2px)}100%{transform:translate(2px,-2px)}}
+.crt-roll{
+  position:absolute;left:0;right:0;height:22vh;
+  background:linear-gradient(180deg,transparent,rgba(255,255,255,.22),transparent);
+  animation:crtRoll .9s linear forwards;
+}
+@keyframes crtRoll{from{top:-25vh}to{top:105vh}}
+
+/* ── 👁️ REDUCED MOTION ──
+   The blanket html.reduced-motion rule further up already flattens every
+   animation and transition added above, and playExitFx() declines to run at
+   all when the preference is set — so the only thing left is the one effect
+   that is GAMEPLAY rather than decoration.
+
+   🕶️ BLIND TERMINAL is a repeating full-screen blackout, which is precisely
+   the pattern the preference exists to avoid. It is not simply switched off —
+   that would hand a player an easier round for their accessibility setting —
+   so it becomes a heavy dim instead: the board still goes unreadable for the
+   same 0.3s, without the strobe. */
+html.reduced-motion .g-area.blind-out{opacity:.12}
+
+/* ── 📱 NARROW SCREENS ──
+   The canvas is sized by fitCanvas() against the space left over, so anything
+   that adds height above the board costs play area on a phone. The two
+   round-time additions shrink first. */
+@media(max-width:760px){
+  .xp-rail{gap:9px;padding:8px 12px;margin-bottom:14px}
+  .xp-num{display:none}
+  .mp-teams{grid-template-columns:1fr;gap:10px}
+  .mp-vs-teams{padding:2px 0}
+  .ach-matrix{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:9px}
+  .perk-tree{grid-template-columns:1fr}
+  .chat-log{height:150px}
+  #chaos-banner{margin-top:6px;padding:8px 12px;gap:10px}
+  #chaos-banner .chaos-desc{font-size:.68rem}
+  .bsod-face{font-size:4rem;margin-bottom:16px}
+  .bsod-head{font-size:1.15rem}
+  .bsod-sub{font-size:.86rem;margin-bottom:16px}
+  .bsod-dump{font-size:.6rem}
+  #exit-fx.fx-bsod #exit-fx-body{top:12%;padding:0 7vw}
+}
+/* Landscape phones have no vertical room at all: the chaos banner collapses to
+   its chip immediately and the dock tightens, rather than pushing the board
+   off the bottom of the screen. */
+@media(max-height:560px) and (orientation:landscape){
+  #chaos-banner{max-width:300px;padding:4px 10px;gap:8px;margin-top:4px}
+  #chaos-banner .chaos-desc{display:none}
+  #chaos-banner .chaos-icon{font-size:.95rem}
+  #chaos-banner .chaos-name{font-size:.5rem}
+  #pu-dock{margin-top:4px}
+  .pu-btn{padding:4px 9px;font-size:.46rem}
+  .xp-rail{display:none}
 }

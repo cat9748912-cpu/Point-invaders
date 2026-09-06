@@ -371,17 +371,57 @@ function play(name, opts){
 // a hat and a driving sixteenth arpeggio. Notes are scheduled ahead of the
 // clock in a lookahead window, because setInterval is far too jittery to place
 // a downbeat on its own.
-const CHORDS = [
-  { root: 45, notes: [45, 48, 52, 57, 60, 64] },  // Am
-  { root: 41, notes: [41, 45, 48, 53, 57, 60] },  // F
-  { root: 48, notes: [48, 52, 55, 60, 64, 67] },  // C
-  { root: 43, notes: [43, 47, 50, 55, 59, 62] }   // G
-];
+// ── PROGRESSIONS ──
+// One set per Music Drive. The sequencer never learns which drive is playing;
+// it reads whatever `CHORDS` currently points at, so a new drive is a new entry
+// here and a row in SHOP_ITEMS.drives — never a change to musicStep().
+const CHORD_SETS = {
+  classic: [                                        // Am–F–C–G · the house sound
+    { root: 45, notes: [45, 48, 52, 57, 60, 64] },  // Am
+    { root: 41, notes: [41, 45, 48, 53, 57, 60] },  // F
+    { root: 48, notes: [48, 52, 55, 60, 64, 67] },  // C
+    { root: 43, notes: [43, 47, 50, 55, 59, 62] }   // G
+  ],
+  dark: [                                           // Dm–Bb–Gm–A · minor, heavier
+    { root: 38, notes: [38, 41, 45, 50, 53, 57] },  // Dm
+    { root: 34, notes: [34, 38, 41, 46, 50, 53] },  // Bb
+    { root: 43, notes: [43, 46, 50, 55, 58, 62] },  // Gm
+    { root: 45, notes: [45, 49, 52, 57, 61, 64] }   // A (major third — the sting)
+  ],
+  bright: [                                         // C–G–Am–F · the lift
+    { root: 48, notes: [48, 52, 55, 60, 64, 67] },  // C
+    { root: 43, notes: [43, 47, 50, 55, 59, 62] },  // G
+    { root: 45, notes: [45, 48, 52, 57, 60, 64] },  // Am
+    { root: 41, notes: [41, 45, 48, 53, 57, 60] }   // F
+  ],
+  vapor: [                                          // Fmaj7–Em7–Dm7–Cmaj7 · drift
+    { root: 41, notes: [41, 45, 48, 52, 57, 60] },
+    { root: 40, notes: [40, 43, 47, 50, 55, 59] },
+    { root: 38, notes: [38, 41, 45, 48, 53, 57] },
+    { root: 36, notes: [36, 40, 43, 47, 52, 55] }
+  ]
+};
+
+// The live progression and voicing. Swapped by setDrive(); the defaults ARE the
+// Synthwave Retro drive, so an account that never opens the market sounds
+// exactly as it always has.
+let CHORDS = CHORD_SETS.classic;
+let VOICE  = { pad:'sawtooth', lead:'square', bass:'sawtooth' };
 
 const TRACKS = {
-  hub:  { bpm: 92,  gain: 0.30 },
-  game: { bpm: 136, gain: 0.26 }
+  hub:  { bpm: 92,  gain: 0.30, baseBpm: 92  },
+  game: { bpm: 136, gain: 0.26, baseBpm: 136 }
 };
+
+// ── ⏱️ TENSION ──
+// A round whose clock has dropped under five seconds gets the whole loop lifted
+// 25% — tempo AND pitch together, which is what makes it read as panic rather
+// than as a tempo change. One multiplier drives both, so they can never drift
+// apart. `tension` is the target; `tensionNow` is what the scheduler has
+// actually reached, ramped over a few steps so the lift arrives as a surge
+// instead of a jump cut.
+const TENSION_MUL = 1.25;
+let tension = 1, tensionNow = 1;
 
 let curTrack = null, pendingTrack = null, schedTimer = null;
 let nextStepTime = 0, stepIdx = 0;
@@ -405,21 +445,26 @@ function musicStep(i, t){
   const bar = Math.floor(i / 16) % 4;
   const s = i % 16;
   const ch = CHORDS[bar];
+  // Every frequency in the loop goes through here, so the tension lift is a
+  // genuine pitch shift of the whole arrangement rather than a filter tweak on
+  // one voice. `p` is 1 in the ordinary case and costs a multiply.
+  const p = tensionNow;
+  const f = n => mtof(n) * p;
 
   if(curTrack === 'hub'){
     // Pad: a slow-attack triad held across the whole bar, plus a bass root.
     if(s === 0){
       ch.notes.slice(0,3).forEach((n,k)=>{
-        tone(t, { type:'sawtooth', f0:mtof(n+12), dur:2.4, vol:g*0.07, attack:0.5,
+        tone(t, { type:VOICE.pad, f0:f(n+12), dur:2.4, vol:g*0.07, attack:0.5,
                   filter:'lowpass', fc:700, fc1:1400, q:1, detune:(k-1)*7, bus:musicBus });
       });
-      tone(t, { type:'triangle', f0:mtof(ch.root-12), dur:0.9, vol:g*0.30, bus:musicBus });
+      tone(t, { type:'triangle', f0:f(ch.root-12), dur:0.9, vol:g*0.30, bus:musicBus });
     }
-    if(s === 8) tone(t, { type:'triangle', f0:mtof(ch.root-12), dur:0.7, vol:g*0.22, bus:musicBus });
+    if(s === 8) tone(t, { type:'triangle', f0:f(ch.root-12), dur:0.7, vol:g*0.22, bus:musicBus });
     // Sparse arpeggio into the delay — this is the line you actually hum.
     if(s % 4 === 2){
       const n = ch.notes[(Math.floor(i/4) * 2) % ch.notes.length] + 12;
-      tone(t, { type:'square', f0:mtof(n), dur:0.34, vol:g*0.10,
+      tone(t, { type:VOICE.lead, f0:f(n), dur:0.34, vol:g*0.10,
                 filter:'lowpass', fc:2600, bus:musicBus, send:musicDelay });
     }
     if(s % 8 === 4) hat(t, g*0.06);
@@ -431,15 +476,15 @@ function musicStep(i, t){
 
     const bassPat = [1,0,0,1,0,0,1,0,1,0,0,1,0,1,0,0];
     if(bassPat[s]){
-      tone(t, { type:'sawtooth', f0:mtof(ch.root-12), dur:0.13, vol:g*0.34,
+      tone(t, { type:VOICE.bass, f0:f(ch.root-12), dur:0.13, vol:g*0.34,
                 filter:'lowpass', fc:420, fc1:180, q:4, bus:musicBus });
     }
     const arpSeq = [0,2,4,5,4,2,3,1];
     const n = ch.notes[arpSeq[s % 8] % ch.notes.length] + 12;
-    tone(t, { type:'square', f0:mtof(n), dur:0.11, vol:g*0.075,
+    tone(t, { type:VOICE.lead, f0:f(n), dur:0.11, vol:g*0.075,
               filter:'lowpass', fc:3200, bus:musicBus, send:musicDelay });
     if(s === 0){
-      tone(t, { type:'sawtooth', f0:mtof(ch.notes[0]+12), dur:1.6, vol:g*0.05, attack:0.3,
+      tone(t, { type:VOICE.pad, f0:f(ch.notes[0]+12), dur:1.6, vol:g*0.05, attack:0.3,
                 filter:'lowpass', fc:900, detune:6, bus:musicBus });
     }
   }
@@ -447,7 +492,12 @@ function musicStep(i, t){
 
 function scheduler(){
   if(!ctx || !curTrack) return;
-  const stepDur = 60 / TRACKS[curTrack].bpm / 4;   // sixteenth notes
+  // Chase the tension target rather than snapping to it: the scheduler runs
+  // every 25ms, so this reaches the full 1.25 in roughly a fifth of a second —
+  // fast enough to feel like the music reacted, slow enough not to click.
+  tensionNow += (tension - tensionNow) * 0.18;
+  if(Math.abs(tension - tensionNow) < 0.002) tensionNow = tension;
+  const stepDur = 60 / (TRACKS[curTrack].bpm * tensionNow) / 4;   // sixteenth notes
   // A backgrounded tab throttles this interval to once a second or worse. Left
   // alone the catch-up loop would then dump forty steps into the same instant.
   if(nextStepTime < ctx.currentTime) nextStepTime = ctx.currentTime + 0.05;
@@ -493,6 +543,41 @@ function stopScheduler(){
   if(schedTimer){ clearInterval(schedTimer); schedTimer = null; }
 }
 function resumeMusic(){ if(pendingTrack && !schedTimer) music(pendingTrack); }
+
+// ── 🎵 DRIVE CONTROL ──
+// Re-voices the sequencer in place. The loop is restarted only when something
+// that affects TIMING changed, because the delay line is tuned per-bpm at the
+// top of music() — a chord swap alone can take effect on the next bar with no
+// audible seam at all.
+function setDrive(cfg){
+  cfg = cfg || {};
+  const set = CHORD_SETS[cfg.chords] || CHORD_SETS.classic;
+  const voice = cfg.voice === 'square'   ? { pad:'square',   lead:'square',   bass:'square'   }
+              : cfg.voice === 'triangle' ? { pad:'triangle', lead:'triangle', bass:'sine'     }
+              :                            { pad:'sawtooth', lead:'square',   bass:'sawtooth' };
+  const bpm = cfg.bpm || {};
+  const retimed = (bpm.hub  && bpm.hub  !== TRACKS.hub.bpm) ||
+                  (bpm.game && bpm.game !== TRACKS.game.bpm);
+
+  CHORDS = set;
+  VOICE  = voice;
+  TRACKS.hub.bpm  = TRACKS.hub.baseBpm  = bpm.hub  || 92;
+  TRACKS.game.bpm = TRACKS.game.baseBpm = bpm.game || 136;
+
+  if(retimed && curTrack){
+    const want = curTrack;
+    curTrack = null;          // force music() past its "already running" guard
+    music(want);
+  }
+}
+
+// Called by the games' clocks. `on` is simply "is the round inside its last few
+// seconds" — the engine owns what that sounds like.
+function setTension(on){
+  const want = on ? TENSION_MUL : 1;
+  if(want === tension) return;
+  tension = want;
+}
 
 // ── MODE CONTROL ──────────────────────────────────────────────────────
 function applyMode(){
@@ -561,6 +646,8 @@ function setMode(m){
 
 return {
   play, music, unlock, bindToggle, bindIndicator, repaintAll, cycleMode, setMode, setVolume,
+  setDrive, setTension,
+  get tense(){ return tension > 1; },
   get mode(){ return mode; },
   get volume(){ return volume; },
   modeToast(){ return MODE_UI[mode].toast; },
@@ -1001,6 +1088,13 @@ function stopGame(){
   cancelAnimationFrame(gameLoopId); gameLoopId=null;
   gTimeouts.forEach(clearTimeout); gTimeouts.clear();
   window.onkeydown=window.onkeyup=null;
+  // The round's chaos modifier, its tension lift and its power-up dock are all
+  // round-scoped. They come down HERE rather than in each ending, for the same
+  // reason the timers do: there are a dozen ways out of a round and only one of
+  // them is the clock running out.
+  if(typeof chaosClear === 'function') chaosClear();
+  musicTension(false);
+  if(typeof hidePowerDock === 'function') hidePowerDock();
   if(aCanvas){
     aCanvas.onmousemove=null; aCanvas.onclick=null;
     aCanvas.ontouchmove=null; aCanvas.ontouchstart=null;
@@ -1084,9 +1178,16 @@ const DIFFICULTY_TIERS = {
 let currentDifficultyTier = 'stable';
 let gameDifficultyMultiplier = 1.0; // tracks the active tier's point multiplier
 
-// Speed/hazard modifier for the active tier (>1 = harder/faster)
+// Speed/hazard modifier for the active tier (>1 = harder/faster).
+// ⏩ DOUBLE SPEED rides this multiplier rather than reaching into eighteen game
+// loops. It is deliberately NOT the full ×2 the modifier's clocks run at: the
+// interval halving in chaosRun() already doubles every timer and every
+// tick-driven behaviour, and stacking a second ×2 on hazard VELOCITIES on top
+// of that made the canvas games unreadable rather than fast. ×1.5 here is what
+// makes a Nebula swarm visibly quicken while its clock genuinely doubles.
+let chaosSpeedMul = 1;
 function getDifficultyModifier(){
-  return DIFFICULTY_TIERS[currentDifficultyTier].speedMult;
+  return DIFFICULTY_TIERS[currentDifficultyTier].speedMult * chaosSpeedMul;
 }
 // Countdown/timer modifier for the active tier (<1 = less time)
 function getTimeModifier(){
@@ -1254,6 +1355,9 @@ const toast=(msg,ms=2500,tintClass=null)=>{const el=document.getElementById('toa
 // and the "is audio even unlocked yet" question live inside the engine.
 const snd   = (name, opts) => { if(window.SFX) SFX.play(name, opts); };
 const music = track        => { if(window.SFX) SFX.music(track); };
+// "The clock is nearly out." Driven from one MutationObserver on #g-time rather
+// than from eighteen game loops — see watchGameClock().
+const musicTension = on    => { if(window.SFX) SFX.setTension(on); };
 
 // The 🔊 button appears in both the hub bar and the game header; they're two
 // views of one setting. Clicking either opens one shared popover — mode chips
@@ -1467,10 +1571,15 @@ function bindHold(el, onDown, onUp){
   on(window, 'mouseup', release);   // releasing off the button still counts
 
   el._holdCleanup = () => bound.forEach(([t, type, fn, opts]) => t.removeEventListener(type, fn, opts));
+  // 🔄 The press/release pair, kept on the element. The listeners themselves are
+  // closed over inside `bound` and cannot be read back out, so INVERSE CONTROLS
+  // needs this to re-bind ◀ and ▶ to each other's behaviour — see chaosRun().
+  el._holdPair = { down: onDown, up: onUp };
 }
 function clearHold(el){
   if(!el) return;
   if(el._holdCleanup){ el._holdCleanup(); el._holdCleanup = null; }
+  el._holdPair = null;
   el.onpointerdown = el.onpointerup = el.onpointercancel = el.onlostpointercapture = null;
   el.onmousedown = el.onmouseup = el.onmouseleave = null;
   el.ontouchstart = el.ontouchend = el.ontouchcancel = null;
@@ -1502,10 +1611,18 @@ function boardPos(clientX, clientY){
   const rect = aCanvas.getBoundingClientRect();
   const w = aCanvas.clientWidth  || rect.width  || 1;
   const h = aCanvas.clientHeight || rect.height || 1;
-  return {
+  const p = {
     x: (clientX - rect.left - aCanvas.clientLeft) * (BOARD_W / w),
     y: (clientY - rect.top  - aCanvas.clientTop ) * (BOARD_H / h)
   };
+  // 🔄 INVERSE CONTROLS mirrors the board here rather than in each game: this is
+  // the one funnel every drag, swipe and tap passes through on its way to
+  // becoming a coordinate, so one flip covers all of them and none of them has
+  // to know a modifier exists. Vertical is mirrored too — Flappy is a vertical
+  // game, and "reversed direction inputs" that left it untouched would be a
+  // modifier half the arcade ignored.
+  if(chaosInverse){ p.x = BOARD_W - p.x; p.y = BOARD_H - p.y; }
+  return p;
 }
 
 // Drag binding for the play surface.
@@ -1925,15 +2042,24 @@ function ensureUserDefaults(raw){
   raw = raw || {};
   const defaults = {
     username: 'Player', totalPoints: 0, gamesPlayed: 0, credits: 0,
-    owned: { colors: [], cursors: [], skins: [] },
-    equipped: { colors: 'col-cyan', cursors: 'cur-default', skins: 'skin-default' }
+    // Levelling. `xp` is the lifetime total; the level and the points it has
+    // paid out are DERIVED from it by xpLevel(), and stored only so a level-up
+    // can be detected between two rounds rather than recomputed from scratch.
+    xp: 0, level: 1, perkSpent: 0,
+    owned: { colors: [], cursors: [], skins: [], drives: [], exits: [] },
+    equipped: {
+      colors: 'col-cyan', cursors: 'cur-default', skins: 'skin-default',
+      drives: 'drv-synthwave', exits: 'exit-default'
+    }
   };
   return {
     ...defaults, ...raw,
     owned: {
       colors: [...(raw.owned && raw.owned.colors || [])],
       cursors: [...(raw.owned && raw.owned.cursors || [])],
-      skins: [...(raw.owned && raw.owned.skins || [])]
+      skins: [...(raw.owned && raw.owned.skins || [])],
+      drives: [...(raw.owned && raw.owned.drives || [])],
+      exits: [...(raw.owned && raw.owned.exits || [])]
     },
     equipped: { ...defaults.equipped, ...(raw.equipped || {}) },
     // Progression state. Firebase drops empty objects, so an established player
@@ -1942,7 +2068,16 @@ function ensureUserDefaults(raw){
     history:      { ...(raw.history || {}) },
     streak:       { count: 0, lastDay: null, best: 0, ...(raw.streak || {}) },
     weekly:       { season: null, pts: 0, ...(raw.weekly || {}) },
-    friends:      { ...(raw.friends || {}) }
+    friends:      { ...(raw.friends || {}) },
+    // Perks bought from the tree, keyed by perk id → true. Separate from
+    // `achievements` because these are SPENT for, not earned.
+    perks:        { ...(raw.perks || {}) },
+    // Consumables, keyed by shop id → count remaining. A number rather than a
+    // list: two Time Dilators are not distinguishable from each other.
+    powerups:     { ...(raw.powerups || {}) },
+    // The player's own best on today's seeded run. `day` is the UTC key it was
+    // set on, which is the whole reset mechanism — a stale key reads as no run.
+    daily:        { day: null, pts: 0, gid: null, ...(raw.daily || {}) }
   };
 }
 
@@ -2030,6 +2165,9 @@ document.getElementById('btn-logout').onclick=async()=>{
   // Signing out while holding a room would leave it on the grid until the tab
   // closed, so the seat goes back first whatever the player decides below.
   await mpLeaveRoom();
+  // The grid terminal is the one thing that keeps ticking with nobody in the
+  // hub, and its listener is bound to this account's session.
+  stopChatTerminal();
   if(user && user.isGuest){
     const pts = (user.totalPoints||0).toLocaleString();
     const warn = (user.totalPoints>0)
@@ -2076,6 +2214,10 @@ function enterHub(){
   // ends both, and a spectator that kept its listeners would leak them.
   if(typeof abortBossRush === 'function') abortBossRush();
   if(typeof mpStopSpectating === 'function') mpStopSpectating();
+  // A Daily Hack that was walked away from mid-round still holds the fixed
+  // tier. Released here for the same reason the room and the chain are: this is
+  // the one door every "I'm done" path goes through.
+  if(typeof abortDailyRun === 'function') abortDailyRun();
   document.getElementById('h-uname').textContent=user.username;
   let guestTagEl=document.getElementById('h-guest-tag');
   if(user.isGuest){
@@ -2103,6 +2245,18 @@ function enterHub(){
   // it — so the tag has to be put back, or the hub silently stops showing which
   // tier it is paying out at.
   updateHubDiffDisplay();
+  // Everything the hub gained: the level rail, today's seeded challenge and its
+  // board, the grid terminal and the consumable kit. Guarded as one block —
+  // these are hub furniture, and a single one of them throwing must not leave
+  // the player looking at a half-painted hub.
+  try{
+    paintXpRail();
+    paintDailyBanner();
+    loadDailyBoard();
+    startChatTerminal();
+    paintPowerKit();
+    applyMusicDrive();
+  }catch(e){ console.warn('Hub panels failed to paint:', e); }
 }
 
 // Optional-chained: this file is one long top-level script, so a single missing
@@ -2173,10 +2327,21 @@ function resetGameStage(gid){
   if(aCanvas) { aCanvas.onmousemove = null; }
 }
 
-function prepGame(gid){
+// `mod` is an already-rolled chaos modifier, or null for an ordinary round.
+// Passed in rather than rolled here because who rolls it is the caller's
+// business: Boss Rush rolls one per stage, the Network Arena rolls one per room
+// and publishes it so both sides get the SAME one, and a plain mission gets
+// none at all.
+function prepGame(gid, mod){
   resetGameStage(gid);
   const start = SOLO_START[gid];
-  if(start) countdown(()=>start());
+  if(!start) return;
+  chaosAnnounce(mod);
+  countdown(()=>{
+    chaosArm(mod);
+    chaosRun(start);
+    showPowerDock();
+  });
 }
 
 // ════════════════════════════════════════════
@@ -2270,7 +2435,7 @@ function startBossRush(){
     .sort((a, b) => a.k - b.k)
     .slice(0, BOSS_RUSH_LEN)
     .map(x => x.g);
-  bossRush = { queue, idx: 0, total: 0, bd: {} };
+  bossRush = { queue, idx: 0, total: 0, bd: {}, mods: [] };
   vsResultTap = bossRushTap;
   snd('success');
   toast(`🔥 BOSS RUSH — ${queue.length} missions, one score. No breaks.`, 3200);
@@ -2285,7 +2450,12 @@ function bossRushNext(){
   document.getElementById('g-title').textContent =
     `🔥 ${bossRush.idx + 1}/${bossRush.queue.length} · ${META[gid].name}`;
   showScreen('game-screen');
-  prepGame(gid);
+  // 🌀 A fresh roll per STAGE, not per run: the point of a rush is that you
+  // never settle in, and five stages under one modifier is just a long round
+  // with a handicap. Recorded so the final card can list what it threw at you.
+  const mod = chaosRoll();
+  if(mod) bossRush.mods.push(`${mod.icon} ${mod.name}`);
+  prepGame(gid, mod);
 }
 
 function bossRushTap(gid, pts, bd){
@@ -2306,9 +2476,11 @@ function bossRushTap(gid, pts, bd){
 function bossRushFinish(){
   const total = bossRush.total, bd = { ...bossRush.bd };
   const cleared = bossRush.queue.length;
+  const mods = bossRush.mods.slice();
   bossRush = null;
   vsResultTap = null;
   bd['🔥 Stages Cleared'] = `${cleared}`;
+  if(mods.length) bd['🌀 Modifiers Survived'] = mods.join(' · ');
   showResults('bossrush', total, bd, {
     emoji: '🔥',
     name: 'BOSS RUSH',
@@ -2356,9 +2528,21 @@ function showResults(gid,pts,bd,opts){
   // without the tap swallowing it in turn.
   if(vsResultTap && !opts.internal && vsResultTap(gid, pts, bd)) return;
   stopGame();
+  // 💀 The equipped EXIT STATE plays over the board that just died, and the card
+  // lands when it clears. Split here rather than inside the card so the exit
+  // covers the same moment the old code spent doing nothing — the beat between
+  // the last frame of the game and the first frame of the readout.
+  playExitFx(gid, pts, opts, () => showResultsCard(gid, pts, bd, opts));
+}
+
+function showResultsCard(gid,pts,bd,opts){
+  opts = opts || {};
   music('hub');
   const tier = DIFFICULTY_TIERS[opts.tier] || DIFFICULTY_TIERS[currentDifficultyTier];
-  const finalPts = Math.round(pts * (opts.noBonus ? 1 : tier.pointMult));
+  // 🌳 Perk A rides here rather than inside each game, for the same reason the
+  // tier multiplier does: this is the one place a raw score becomes an award.
+  const perkMult = perkScoreMult(gid, opts);
+  const finalPts = Math.round(pts * (opts.noBonus ? 1 : tier.pointMult) * perkMult);
   const m=META[gid],pct=finalPts/m.maxPts;
   // A three-quarter run earns the fanfare; anything less gets the neutral
   // readout chime, so the sound is honest about how the round actually went.
@@ -2383,13 +2567,35 @@ function showResults(gid,pts,bd,opts){
                                    : `${tier.icon} ${tier.label} · ×${tier.pointMult.toFixed(1)} BONUS`;
 
   document.getElementById('res-pts').textContent=finalPts;
+  // Rows the round itself can't know about: the perk cut it just paid, the
+  // modifier it was played under, and the seed if it was the Daily Hack.
+  bd = { ...bd };
+  if(perkMult > 1) bd['🌳 Perk · Arcade Boost'] = `+${Math.round((perkMult-1)*100)}%`;
+  if(chaos.last)   bd['🌀 Chaos Modifier'] = `${chaos.last.icon} ${chaos.last.name}`;
+  if(dailyActive)  bd['📅 Daily Seed'] = dailySeedLabel() + (dailyRun ? '' : ' · PRACTICE');
   document.getElementById('res-bd').innerHTML=Object.entries(bd).map(([k,v])=>`<div class="res-row"><span>${k}</span><span class="rv">${v}</span></div>`).join('');
   showScreen('results-screen');
+  // 📋 The run, encoded. Built before saveScore() so it describes what was
+  // played rather than what the profile looks like afterwards.
+  stampReplay(gid, finalPts, tier.key);
+  // recordRun() lands one database round trip later, by which time the round's
+  // own state has been torn down — so every fact it needs about THIS run is
+  // captured here and travels with it rather than being read back.
   saveScore(gid, finalPts, {
     tier: tier.key,
     duelWin: !!opts.duelWin,
-    botLevel: opts.botLevel || null
+    botLevel: opts.botLevel || null,
+    perfect: !!opts.perfect,
+    maxed: !!opts.maxed,
+    chaos: chaos.last ? chaos.last.id : null,
+    daily: dailyRun,
+    teamSize: (mp && mp.teamSize) || 1
   });
+  // 📅 A Daily Hack round posts to its own board and then stands down — which
+  // also hands the player's stability dial back. It runs on `dailyActive`, not
+  // on `dailyRun`: a practice replay has nothing to post but still has a tier
+  // to release.
+  if(dailyActive) settleDailyRun(gid, finalPts);
 
   const againBtn=document.getElementById('btn-again');
   const hubBtn=document.getElementById('btn-hub');
@@ -2415,6 +2621,11 @@ async function saveScore(gid,pts,ctx){
   if(!user) return;
   ctx = ctx || {};
   const award = Math.max(0, Math.min(parseInt(pts || 0) || 0, maxAwardFor(gid)));
+
+  // 📈 XP is earned by PLAYING, so it is granted here — the one call every
+  // finished round makes — rather than inside recordRun(), which never runs on
+  // the offline path and would quietly stop the profile levelling with no wifi.
+  awardXp(award);
 
   if(!db || offlineMode){ bankRunOffline(gid, award, ctx); return; }
 
@@ -2562,7 +2773,19 @@ const ACHIEVEMENTS = [
   { id:'streak-30',    icon:'💠', name:'Thirty Straight',  desc:'Play thirty days running.',                  cr:50, test:(c)=>c.streak >= 30 },
   { id:'explorer',     icon:'🗺️', name:'Grid Explorer',    desc:'Score at least once in 8 different missions.',cr:6, test:(c)=>c.missionsPlayed >= 8 },
   { id:'completionist',icon:'👑', name:'Full Sweep',       desc:'Score at least once in every mission.',      cr:30, test:(c)=>c.missionsPlayed >= Object.keys(SOLO_START).length },
-  { id:'rush-clear',   icon:'🔥', name:'Rush Hour',        desc:'Finish a Boss Rush chain.',                  cr:8,  test:(c)=>c.gid === 'bossrush' }
+  { id:'rush-clear',   icon:'🔥', name:'Rush Hour',        desc:'Finish a Boss Rush chain.',                  cr:8,  test:(c)=>c.gid === 'bossrush' },
+  // ── MATRIX ADDITIONS ──
+  // Both are facts only the GAME can know, so each one sets a flag on the
+  // results options rather than being inferred from the score here: a 950 in
+  // Frequency Modulator says nothing about whether the first lock was clean.
+  { id:'perfect-sync', icon:'🎯', name:'Perfect Sync',     desc:'Lock the first Frequency Modulator stage without a miss.', cr:12,
+    test:(c)=>c.gid === 'freq' && c.perfect },
+  { id:'max-overclock',icon:'⚡', name:'Overclocked',      desc:'Hit the maximum possible score in Click Frenzy.',          cr:15,
+    test:(c)=>c.gid === 'click' && c.maxed },
+  { id:'chaos-rider',  icon:'🌀', name:'Chaos Rider',      desc:'Finish a run under a chaos modifier.',       cr:5,  test:(c)=>!!c.chaos },
+  { id:'daily-hacker', icon:'📅', name:'Daily Hacker',     desc:'Post a score on the Daily Hack.',            cr:4,  test:(c)=>!!c.daily },
+  { id:'squad',        icon:'👥', name:'Squad Tactics',    desc:'Win a 2v2 co-op grid round.',                cr:8,  test:(c)=>c.duelWin && c.teamSize === 2 },
+  { id:'level-10',     icon:'🌳', name:'Tenth Tier',       desc:'Reach profile level 10.',                    cr:10, test:(c)=>c.level >= 10 }
 ];
 
 const achById = id => ACHIEVEMENTS.find(a => a.id === id);
@@ -2629,6 +2852,13 @@ function recordRun(gid, pts, ctx){
     pct: m ? pts / m.maxPts : 0,
     duelWin: !!ctx.duelWin,
     botLevel: ctx.botLevel || null,
+    // Facts only the round itself could report, forwarded from showResultsCard.
+    perfect: !!ctx.perfect,
+    maxed: !!ctx.maxed,
+    chaos: ctx.chaos || null,
+    daily: !!ctx.daily,
+    teamSize: +ctx.teamSize || 1,
+    level: xpLevel(user.xp || 0).level,
     totalPoints: user.totalPoints || 0,
     gamesPlayed: user.gamesPlayed || 0,
     streak: user.streak.count || 0,
@@ -2713,9 +2943,16 @@ function renderBadgeShelf(){
   if(!shelf){
     const label = document.createElement('div');
     label.className = 'sec-label badge-label';
-    label.textContent = '🏅 ACHIEVEMENTS';
+    // The shelf is the WORDED way into the matrix. The hub bar's 🏆 is
+    // icon-only — the bar has no room for a label — so this is where the
+    // feature is actually named, and clicking either lands in the same place.
+    label.innerHTML = '🏅 ACHIEVEMENTS <em class="badge-open">VIEW MATRIX →</em>';
     shelf = document.createElement('div');
     shelf.id = 'badge-shelf';
+    label.style.cursor = shelf.style.cursor = 'pointer';
+    const open = () => openOverlay('ach-overlay', renderAchievementMatrix);
+    label.onclick = open;
+    shelf.onclick = open;
     panel.parentNode.appendChild(label);
     panel.parentNode.appendChild(shelf);
   }
@@ -2812,6 +3049,50 @@ const SHOP_ITEMS = {
     { id:'skin-quantum', name:'Quantum Dragon',price:30, emoji:'🐉' },
     // Not for sale — granted by grantSeasonCrown() for topping a weekly season.
     { id:'skin-crown',   name:'Season Crown', price:0,  emoji:'👑', earned:true }
+  ],
+
+  // ── ⚡ CONSUMABLES ──
+  // The one category that is SPENT rather than equipped, so it carries `use`
+  // (what the dock button does) instead of a colour or an emoji to wear.
+  // `stack` caps how many can be held, so credits can't be parked here.
+  powerups: [
+    { id:'pu-dilator', name:'Time Dilator',   price:5,  emoji:'⏳', consumable:true, stack:9,
+      desc:'Adds +3s to the active game timer. One shot, any mission with a clock.' },
+    { id:'pu-shield',  name:'Shield Overlay', price:10, emoji:'🛡️', consumable:true, stack:9,
+      desc:'Absorbs one crash in Grid Snake or one hit in Flappy Drone.' }
+  ],
+
+  // ── 🎵 MUSIC DRIVES ──
+  // Each drive re-voices the sequencer at the top of this file rather than
+  // loading a file: `bpm` retimes it, `chords` swaps the progression, `voice`
+  // picks the oscillator flavours. See applyMusicDrive().
+  drives: [
+    { id:'drv-synthwave', name:'Synthwave Retro',   price:0,  emoji:'🌆', default:true,
+      desc:'The house sound. Am–F–C–G, warm saw pad, dotted-eighth delay.',
+      bpm:{hub:92,game:136}, chords:'classic', voice:'saw' },
+    { id:'drv-darksynth', name:'Darksynth Terminal',price:8,  emoji:'🕯️',
+      desc:'Slower, minor and mean. Detuned square bass under a narrow filter.',
+      bpm:{hub:80,game:124}, chords:'dark',    voice:'square' },
+    { id:'drv-outrun',    name:'Outrun Overdrive',  price:12, emoji:'🏎️',
+      desc:'Pushed tempo, bright major lift — built for a clock you are losing.',
+      bpm:{hub:104,game:152}, chords:'bright', voice:'saw' },
+    { id:'drv-vapor',     name:'Vapor Cathedral',   price:16, emoji:'🌫️',
+      desc:'Half-speed drift, wide triangles, long tails. Calm before a Meltdown.',
+      bpm:{hub:68,game:108}, chords:'vapor',   voice:'triangle' }
+  ],
+
+  // ── 💀 EXIT STATES ──
+  // What the screen does on the way to the results card. `fx` is the class the
+  // exit stage wears; playExitFx() owns the rest.
+  exits: [
+    { id:'exit-default', name:'Clean Shutdown',  price:0,  emoji:'⬛', default:true,
+      desc:'No flourish — straight to the readout.', fx:null },
+    { id:'exit-bsod',    name:'Fake BSOD',       price:6,  emoji:'🟦',
+      desc:'Classic blue screen with a full terminal dump of the crash.', fx:'bsod' },
+    { id:'exit-matrix',  name:'Matrix Dissolve', price:9,  emoji:'🟩',
+      desc:'The board dissolves into falling characters before it clears.', fx:'matrix' },
+    { id:'exit-static',  name:'Static Explosion',price:12, emoji:'📺',
+      desc:'A CRT flash and a burst of static, then the points land.', fx:'static' }
   ]
 };
 
@@ -2832,7 +3113,12 @@ function hashStr(s){
 }
 
 function featuredIds(cat, day = dayKey()){
-  const pool = (SHOP_ITEMS[cat] || []).filter(i => !i.default && !i.earned);
+  // Consumables are excluded. The rotation exists to nudge a player toward a
+  // cosmetic they do not own yet — a one-off purchase — and a repeatable one
+  // behaves differently under it: the discount stops being a nudge and becomes
+  // the correct day to stock up, and the advertised 5 CR / 10 CR stop being
+  // what a Time Dilator costs.
+  const pool = (SHOP_ITEMS[cat] || []).filter(i => !i.default && !i.earned && !i.consumable);
   if(pool.length <= FEATURE_PER_CAT) return pool.map(i => i.id);
   // Deterministic shuffle: sort by a per-item hash of the day, take the top N.
   return pool
@@ -2864,6 +3150,9 @@ function rotationLabel(){
 // Rarity is computed relative to the other paid items in the same category,
 // so the priciest items automatically get the flashiest shop-card treatment.
 function getRarity(cat, item){
+  // A consumable's price says how strong one use is, not how rare the item is —
+  // banding them would print "LEGENDARY" on a 10 CR shield you can buy nine of.
+  if(item.consumable) return null;
   if(item.default || item.earned || !item.price) return null;
   // Earned items carry price 0 and would drag `min` down, re-banding every
   // paid item in the category.
@@ -2993,12 +3282,17 @@ function applyEquippedCosmetics(){
     fx.style.display = 'none';
     fx.className = '';
   }
+
+  // The soundtrack is a cosmetic like any other, so it is re-applied on the same
+  // pass that repaints the colour and the pointer.
+  applyMusicDrive();
 }
 
 function openMarket(){
   showScreen('market-screen');
   refreshMarketBalances();
-  ['colors','cursors','skins'].forEach(renderShop);
+  ['powerups','colors','cursors','skins','drives','exits'].forEach(renderShop);
+  paintPowerKit();
   switchMarketTab('convert');
   startRotationTicker();
 }
@@ -3111,8 +3405,19 @@ function renderShop(cat){
           : `<div class="shop-swatch" style="background:${item.color};box-shadow:0 0 20px ${item.color}"></div>`)
       : `<div class="shop-emoji">${item.emoji}</div>`;
     const badge = rarity ? `<div class="rarity-badge ${rarity}">${rarity}</div>` : '';
+    const p = priceOf(cat, item);
+    const cut = p < item.price ? `<s class="shop-was">💎${item.price}</s> ` : '';
     let btnHtml;
-    if(equipped){
+    if(item.consumable){
+      // Consumables are never "owned" or "equipped" — they are stocked. The card
+      // keeps offering the buy until the stack is full, and says how many are in
+      // the kit right now.
+      const held = powerHeld(item.id);
+      card.classList.add('consumable');
+      btnHtml = held >= (item.stack || 9)
+        ? `<button class="btn btn-secondary btn-sm shop-btn" disabled>KIT FULL · ${held}</button>`
+        : `<button class="btn btn-primary btn-sm shop-btn" data-act="buy" data-cat="${cat}" data-id="${item.id}">Buy · ${cut}💎${p}</button>`;
+    } else if(equipped){
       btnHtml = `<button class="btn btn-secondary btn-sm shop-btn" data-act="unequip" data-cat="${cat}" data-id="${item.id}">Unequip</button>`;
     } else if(owned){
       btnHtml = `<button class="btn btn-primary btn-sm shop-btn" data-act="equip" data-cat="${cat}" data-id="${item.id}">Equip</button>`;
@@ -3120,14 +3425,19 @@ function renderShop(cat){
       // No price — the only way in is the achievement that grants it.
       btnHtml = `<button class="btn btn-secondary btn-sm shop-btn" disabled>🔒 Earned Only</button>`;
     } else {
-      const p = priceOf(cat, item);
-      const cut = p < item.price ? `<s class="shop-was">💎${item.price}</s> ` : '';
       btnHtml = `<button class="btn btn-primary btn-sm shop-btn" data-act="buy" data-cat="${cat}" data-id="${item.id}">Buy · ${cut}💎${p}</button>`;
     }
     const feat = (!owned && !item.earned && isFeatured(cat, item.id))
       ? `<div class="shop-feat">⏳ ${Math.round(FEATURE_DISCOUNT*100)}% OFF</div>` : '';
     if(feat) card.classList.add('featured');
-    card.innerHTML = `${preview}${badge}${feat}<div class="shop-name">${esc(item.name)}</div>${equipped?'<div class="shop-tag">EQUIPPED</div>':''}${btnHtml}`;
+    // A drive, an exit state and a consumable all need a sentence to be worth
+    // anything — a colour swatch explains itself, "Darksynth Terminal" does not.
+    const desc = item.desc ? `<div class="shop-desc">${esc(item.desc)}</div>` : '';
+    const held = item.consumable ? `<div class="shop-held">IN KIT · <em>${powerHeld(item.id)}</em></div>` : '';
+    card.innerHTML = `${preview}${badge}${feat}<div class="shop-name">${esc(item.name)}</div>${desc}${held}` +
+                     `${equipped?'<div class="shop-tag">EQUIPPED</div>':''}${btnHtml}`;
+    // A drive is only judgeable by ear, so equipping one auditions it: the hub
+    // loop restarts on the new voicing the moment the button lands.
     grid.appendChild(card);
   });
   grid.querySelectorAll('.shop-btn').forEach(btn=>{
@@ -3136,7 +3446,10 @@ function renderShop(cat){
 }
 
 async function handleShopAction(act, cat, id){
-  if(!user || !db){ toast('⚠️ Connection state unconfigured'); return }
+  // A guest with no link still has a wallet — it is mirrored in localStorage
+  // like everything else — so the market stays open and the write is banked
+  // through saveProfilePatch() instead of being refused outright.
+  if(!user){ toast('⚠️ Connection state unconfigured'); return }
   const item = findItem(cat, id);
   if(!item) return;
 
@@ -3144,23 +3457,36 @@ async function handleShopAction(act, cat, id){
     if(item.earned){ snd('deny'); toast('🔒 That one has to be earned.'); return }
     const price = priceOf(cat, item);
     if((user.credits||0) < price){ snd('deny'); toast('⚠️ Insufficient credits.'); return }
-    user.credits -= price;
-    user.owned[cat] = [...(user.owned[cat]||[]), id];
-    await db.ref('players/'+user.uid).update({ credits:user.credits, ['owned/'+cat]: user.owned[cat] });
-    snd('purchase');
-    toast(price < item.price
-      ? `✅ Purchased ${item.name} — saved 💎${item.price - price}`
-      : `✅ Purchased ${item.name}`);
+
+    if(item.consumable){
+      const held = powerHeld(id);
+      if(held >= (item.stack || 9)){ snd('deny'); toast('⚠️ Kit is full.'); return }
+      user.credits -= price;
+      user.powerups[id] = held + 1;
+      await saveProfilePatch({ credits:user.credits, ['powerups/'+id]: user.powerups[id] });
+      snd('purchase');
+      toast(`✅ ${item.emoji} ${item.name} stocked — ${user.powerups[id]} in kit`);
+      paintPowerKit();
+      paintPowerDock();
+    } else {
+      user.credits -= price;
+      user.owned[cat] = [...(user.owned[cat]||[]), id];
+      await saveProfilePatch({ credits:user.credits, ['owned/'+cat]: user.owned[cat] });
+      snd('purchase');
+      toast(price < item.price
+        ? `✅ Purchased ${item.name} — saved 💎${item.price - price}`
+        : `✅ Purchased ${item.name}`);
+    }
   } else if(act==='equip'){
     user.equipped[cat] = id;
-    await db.ref('players/'+user.uid).update({ ['equipped/'+cat]: id });
+    await saveProfilePatch({ ['equipped/'+cat]: id });
     snd('equip');
     toast(`⚡ Equipped ${item.name}`);
     applyEquippedCosmetics();
   } else if(act==='unequip'){
     const defItem = SHOP_ITEMS[cat].find(i=>i.default);
     user.equipped[cat] = defItem.id;
-    await db.ref('players/'+user.uid).update({ ['equipped/'+cat]: defItem.id });
+    await saveProfilePatch({ ['equipped/'+cat]: defItem.id });
     snd('uiBack');
     toast(`Unequipped ${item.name}`);
     applyEquippedCosmetics();
@@ -3189,7 +3515,14 @@ function startClick(){
     if(t<=0){
       clearInterval(gTimer);ended=true;btn.disabled=true;btn.onclick=null;
       const pts=Math.min(500,clicks*8);
-      setTimeout(()=>showResults('click',pts,{'🖱️ Structural Actions':clicks,'🏆 Final Score':`${pts} PTS`}),400);
+      // ⚡ OVERCLOCKED wants the ceiling itself, not "close to it": 500 is the
+      // cap and 63 clicks is what reaches it, so the flag is the clamp firing.
+      const maxed=pts>=500;
+      setTimeout(()=>showResults('click',pts,{
+        '🖱️ Structural Actions':clicks,
+        ...(maxed?{'⚡ Threshold':'MAXIMUM SCORE REACHED'}:{}),
+        '🏆 Final Score':`${pts} PTS`
+      },{ maxed }),400);
     }
   },1000);
 }
@@ -4492,7 +4825,10 @@ function startMath(){
   document.getElementById('g-time').textContent=time;
 
   function gen(){
-    let a=Math.floor(Math.random()*12)+2, b=Math.floor(Math.random()*12)+2, ops=['+','-','*'], op=ops[Math.floor(Math.random()*3)];
+    // 📅 dailyRand() is an ordinary Math.random() outside a Daily Hack. Inside
+    // one it is the day's seeded stream, which is what makes every operative on
+    // the grid answer the SAME twenty questions in the same order.
+    let a=Math.floor(dailyRand()*12)+2, b=Math.floor(dailyRand()*12)+2, ops=['+','-','*'], op=ops[Math.floor(dailyRand()*3)];
     document.getElementById('math-question').textContent=`${a} ${op} ${b}`;
     curAns=op==='+'?a+b:op==='-'?a-b:a*b;
     document.getElementById('math-answer').value='';document.getElementById('math-answer').focus();
@@ -4994,9 +5330,21 @@ function startSnake(){
       const head={x:snake[0].x+dir.x,y:snake[0].y+dir.y};
 
       // Wall collision
-      if(head.x<0||head.x>=COLS||head.y<0||head.y>=ROWS){snd('bigExplode');end('wall');return;}
+      const hitWall = head.x<0||head.x>=COLS||head.y<0||head.y>=ROWS;
       // Self collision
-      if(snake.some(s=>s.x===head.x&&s.y===head.y)){snd('bigExplode');end('self');return;}
+      const hitSelf = !hitWall && snake.some(s=>s.x===head.x&&s.y===head.y);
+      if(hitWall || hitSelf){
+        // 🛡️ SHIELD OVERLAY absorbs the crash. The chain doesn't advance into
+        // whatever it hit — it reverses instead, which is the only outcome that
+        // leaves a survivable board: a wall bounce that kept going would be a
+        // second crash next tick, and a self-hit has nowhere else to go.
+        if(powerConsume('pu-shield', 'CRASH ABSORBED')){
+          nextDir={x:-dir.x,y:-dir.y};
+          snake.reverse();
+          return;
+        }
+        snd('bigExplode'); end(hitWall?'wall':'self'); return;
+      }
 
       snake.unshift(head);
       // Indexed by MOVE, not by animation frame: the snake steps on a fixed
@@ -5227,13 +5575,26 @@ function startFlappy(){
       // Collision: top pipe
       if(DRONE_X+DRONE_W/2>p.x&&DRONE_X-DRONE_W/2<p.x+PIPE_W){
         if(droneY-DRONE_H/2<p.topH||droneY+DRONE_H/2>p.topH+GAP){
-          drawDrone(droneY,true);snd('bigExplode');end();return;
+          // 🛡️ A shielded hit costs the shield and phases the drone through:
+          // it is parked in the middle of the gap and its fall is cancelled, so
+          // the save actually buys the column rather than a single frame of it.
+          if(powerConsume('pu-shield', 'FIREWALL PHASED')){
+            droneY=p.topH+GAP/2; droneVY=0; p.shielded=true;
+          }else{
+            drawDrone(droneY,true);snd('bigExplode');end();return;
+          }
         }
       }
     }
 
     // Floor / ceiling
-    if(droneY+DRONE_H/2>H||droneY-DRONE_H/2<0){drawDrone(droneY,true);snd('bigExplode');end();return;}
+    if(droneY+DRONE_H/2>H||droneY-DRONE_H/2<0){
+      if(powerConsume('pu-shield', 'IMPACT ABSORBED')){
+        droneY=Math.max(DRONE_H/2+2, Math.min(H-DRONE_H/2-2, droneY)); droneVY=0;
+      }else{
+        drawDrone(droneY,true);snd('bigExplode');end();return;
+      }
+    }
 
     // ── DRAW ──
     aCtx.clearRect(0,0,W,H);
@@ -8345,7 +8706,12 @@ function startBattleBots(){
     titan:  shiftHue(pColor, 64)
   };
 
-  let ram = BB.ram.start, ramRate = BB.ram.rate, upgIdx = 0;
+  // 🌳 Perk B lifts the throughput the siege is built around. It multiplies the
+  // RATE rather than handing out a lump of RAM, so the advantage compounds over
+  // a long hold instead of just buying the opening bot.
+  const ramPerk = perkRamMult();
+  let ram = BB.ram.start, ramRate = BB.ram.rate * ramPerk, upgIdx = 0;
+  if(ramPerk > 1) toast(`🌳 ACCELERATED RAM — throughput ×${ramPerk.toFixed(2)}`, 2600);
   let mainHP = BB.baseHP, glitchHP = BB.baseHP;
   let bots = [], foes = [], parts = [], beams = [];
   let pLane = 0, eLane = 0;         // round-robin, so a deploy spreads your force
@@ -8407,7 +8773,9 @@ function startBattleBots(){
     ram -= cost;
     if(c.kind === 'upg'){
       upgIdx++;
-      ramRate += BB.ram.step;
+      // Scaled by the perk too, so an upgrade bought under it is worth the same
+      // proportional jump as the base rate it is added to.
+      ramRate += BB.ram.step * ramPerk;
       snd('levelUp');
       toast(`⚡ RAM THROUGHPUT → ${Math.round(ramRate)}/s`);
       banner = { text: `⚡ THROUGHPUT ${Math.round(ramRate)}/s`, life: 1400, color: '#ffd700' };
@@ -9362,6 +9730,9 @@ function startFrequencyModulator(){
   let tAmp=0, tLen=0, form=FORMS[0], drift={a:0,l:0};
   let held=0, stageT=0, bestMatch=0, phase=0;
   let banner='', bannerT=0, lastT=performance.now();
+  // 🎯 True until a lock on stage one is reached and then lost. Cleared by the
+  // loop, read once by stageClear() — see the PERFECT SYNC achievement.
+  let firstTryClean=true, perfectSync=false;
 
   document.getElementById('g-time').textContent=time;
   document.getElementById('prog-fill').style.width='100%';
@@ -9411,6 +9782,7 @@ function startFrequencyModulator(){
     // whole skill, and the 1.5s hold is already sunk into every clear.
     const speed=Math.max(0, Math.round(70 - stageT/1000*9));
     const gained=85+speed;
+    if(stage===1 && firstTryClean) perfectSync=true;
     score+=gained; cleared++; stage++;
     setLive(Math.min(950,score));
     snd('levelUp');
@@ -9505,6 +9877,11 @@ function startFrequencyModulator(){
     else{
       // Losing a lock that was most of the way home is worth hearing about.
       if(held>HOLD_MS*0.4) snd('deny');
+      // 🎯 PERFECT SYNC watches exactly this: a lock that was reached and then
+      // dropped is no longer a first-try match, so the flag dies the first time
+      // the hold breaks on stage one. Only a hold that RAN is a broken one —
+      // the frames before the dials ever reach 95% are not a miss.
+      if(held>0 && stage===1) firstTryClean=false;
       held=0;
     }
     if(held>=HOLD_MS) stageClear();
@@ -9605,9 +9982,10 @@ function startFrequencyModulator(){
       '📡 Node Array': cleared ? `${cleared} NODE${cleared===1?'':'S'} STABILISED` : 'ARRAY UNSTABLE',
       '🎚️ Stages Cleared': cleared,
       '🎯 Peak Correlation': `${Math.round(bestMatch*100)}%`,
+      ...(perfectSync ? {'🎯 First Lock':'PERFECT — NO MISS'} : {}),
       '📶 Last Waveform': form.name,
       '🏆 Score Accumulation': `${final} PTS`
-    }, cleared ? undefined : { sound:'gameOver' });
+    }, { perfect: perfectSync, ...(cleared ? {} : { sound:'gameOver' }) });
   }
 
   newStage();
@@ -9618,6 +9996,1109 @@ function fmtTime(s){
   const t = Math.max(0, s);
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
 }
+
+// ══════════════════════════════════════════════════════════════════════
+//  💾 PROFILE WRITES — one door, online or not
+// ══════════════════════════════════════════════════════════════════════
+// Everything added below this line mutates `user` and then calls this. The
+// mirror is written UNCONDITIONALLY and first, which is the whole guest story:
+// a player with no account, no connection, or both still keeps their level,
+// their perks, their kit and today's Daily Hack, because localStorage is the
+// authority the boot path already falls back to (see readCachedProfile).
+//
+// The server write is best-effort on top of that. It is skipped entirely for a
+// local session, whose uid the database rules would reject anyway.
+function saveProfilePatch(patch){
+  if(!user) return Promise.resolve();
+  cacheProfile(user);
+  if(!db || offlineMode || isLocalSession()) return Promise.resolve();
+  return db.ref('players/' + user.uid).update(patch)
+    .catch(e => { console.warn('Profile write failed — kept in the local mirror:', e); });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  🌀 CHAOS MODIFIERS — one rule bent per round
+// ══════════════════════════════════════════════════════════════════════
+// A modifier is applied by BENDING A SEAM THE ARCADE ALREADY HAS, never by
+// editing a game:
+//
+//   🔄 INVERSE CONTROLS  boardPos() mirrors the play field, and the keyboard
+//                        handler each game installs is wrapped in one that
+//                        swaps the arrow it was handed. Two funnels, eighteen
+//                        games, zero per-game code.
+//   ⏩ DOUBLE SPEED      setInterval is halved for the duration of the game's
+//                        own start() call, so every clock and tick-driven
+//                        behaviour it installs runs twice as fast — plus a lift
+//                        on the hazard-speed multiplier for the loops that are
+//                        driven by requestAnimationFrame instead.
+//   🕶️ BLIND TERMINAL    a CSS class blanks the play area to opacity 0 for
+//                        0.3s once every 1.5s. Purely visual: the round keeps
+//                        running underneath, which is the point.
+//
+// Who ROLLS one is the caller's business. Boss Rush rolls per stage; the
+// Network Arena's host rolls once into the room record so every client reads
+// the same id; an ordinary mission never rolls at all.
+const CHAOS_MODS = [
+  { id:'inverse', icon:'🔄', name:'INVERSE CONTROLS',
+    desc:'Every direction you press comes out backwards.' },
+  { id:'double',  icon:'⏩', name:'DOUBLE SPEED',
+    desc:'Clocks and hazards run at twice the rate. Half the round, same target.' },
+  { id:'blind',   icon:'🕶️', name:'BLIND TERMINAL',
+    desc:'The feed cuts out for a third of a second, every second and a half.' }
+];
+
+// Better than even, but not certain — a stage that comes up clean is what makes
+// the ones that don't feel like an event.
+const CHAOS_ODDS = 0.55;
+const CHAOS_BLIND_EVERY = 1500, CHAOS_BLIND_FOR = 300;
+
+// Read by boardPos() on every pointer sample, so it is a bare boolean rather
+// than a lookup through the chaos record.
+let chaosInverse = false;
+
+// `last` is what the round that just ENDED was played under. It exists because
+// stopGame() tears the modifier down before the results card is written — the
+// card and the achievement check both need to know what was running a moment
+// ago, and `active` is already null by then.
+const chaos = { active: null, last: null, blindTimer: 0, bannerTimer: 0 };
+
+const chaosById  = id => CHAOS_MODS.find(m => m.id === id) || null;
+const chaosRoll  = () => Math.random() < CHAOS_ODDS
+  ? CHAOS_MODS[Math.floor(Math.random() * CHAOS_MODS.length)]
+  : null;
+
+// Shown during the countdown, so the modifier is read BEFORE the round it
+// changes rather than discovered by losing to it.
+function chaosAnnounce(mod){
+  const el = document.getElementById('chaos-banner');
+  if(!el) return;
+  clearTimeout(chaos.bannerTimer);
+  if(!mod){ el.style.display = 'none'; el.className = ''; return; }
+  document.getElementById('chaos-icon').textContent = mod.icon;
+  document.getElementById('chaos-name').textContent = mod.name;
+  document.getElementById('chaos-desc').textContent = mod.desc;
+  el.style.display = 'flex';
+  el.className = 'big';
+  snd('alarm');
+  toast(`🌀 CHAOS — ${mod.icon} ${mod.name}`, 3000);
+  // Shrinks to a chip rather than disappearing: mid-round is exactly when a
+  // player looks up wondering why the controls feel wrong.
+  chaos.bannerTimer = setTimeout(() => el.classList.replace('big', 'chip'), 3200);
+}
+
+// Installed the moment the countdown ends, before the game starts.
+function chaosArm(mod){
+  chaos.active = chaos.last = mod || null;
+  if(!mod) return;
+  if(mod.id === 'inverse') chaosInverse = true;
+  if(mod.id === 'double')  chaosSpeedMul = 1.5;
+  if(mod.id === 'blind'){
+    const area = document.querySelector('.g-area');
+    chaos.blindTimer = setInterval(() => {
+      if(!area) return;
+      area.classList.add('blind-out');
+      setTimeout(() => area.classList.remove('blind-out'), CHAOS_BLIND_FOR);
+    }, CHAOS_BLIND_EVERY);
+  }
+}
+
+// Runs a game's start function under the active modifier.
+//
+// The setInterval swap is scoped to the SYNCHRONOUS call: every game installs
+// its clock inside start(), so this catches exactly the intervals that belong
+// to the round and none of the arcade's own (the music scheduler, the shop
+// rotation ticker, the versus pacer) — all of which were created long before
+// this line and are never re-created here.
+function chaosRun(startFn){
+  const doubling = chaos.active && chaos.active.id === 'double';
+  const realSetInterval = window.setInterval;
+  if(doubling){
+    window.setInterval = function(fn, ms, ...rest){
+      const scaled = typeof ms === 'number' && ms > 0 ? Math.max(8, ms / 2) : ms;
+      return realSetInterval.call(window, fn, scaled, ...rest);
+    };
+  }
+  try{
+    startFn();
+  } finally {
+    if(doubling) window.setInterval = realSetInterval;
+  }
+
+  // Keyboard, after the fact: the game has just assigned its own handler, so
+  // this wraps whatever is there instead of racing it. `code` and `key` are
+  // read-only on a real KeyboardEvent, so the handler is handed a shim that
+  // answers the swapped value and forwards everything else untouched.
+  if(chaosInverse){
+    const flip = h => h && (e => h(chaosMirrorKey(e)));
+    window.onkeydown = flip(window.onkeydown) || window.onkeydown;
+    window.onkeyup   = flip(window.onkeyup)   || window.onkeyup;
+
+    // The on-screen pad is the other direction input. Swapping the two arrow
+    // buttons' behaviour — rather than their labels — keeps ◀ where the eye
+    // expects it while making it do what ▶ would have.
+    const L = document.getElementById('ctrl-left'), R = document.getElementById('ctrl-right');
+    if(L && R){
+      const lc = L.onclick, rc = R.onclick;
+      L.onclick = rc; R.onclick = lc;
+      // A held direction is bound through bindHold, whose listeners are closed
+      // over and cannot be read back — so the swap re-binds each button to the
+      // other's recorded press/release pair. bindHold() clears the old binding
+      // itself, which is why the pairs are captured before either call.
+      const lp = L._holdPair, rp = R._holdPair;
+      if(lp && rp){
+        bindHold(L, rp.down, rp.up);
+        bindHold(R, lp.down, lp.up);
+      }
+    }
+  }
+}
+
+// Returns an event-shaped object whose direction fields are mirrored. Only the
+// fields a game actually reads are overridden; everything else — including
+// preventDefault, which several games call — is delegated to the real event.
+const CHAOS_KEY_SWAP = {
+  ArrowLeft:'ArrowRight', ArrowRight:'ArrowLeft', ArrowUp:'ArrowDown', ArrowDown:'ArrowUp',
+  KeyA:'KeyD', KeyD:'KeyA', KeyW:'KeyS', KeyS:'KeyW',
+  a:'d', d:'a', w:'s', s:'w', A:'D', D:'A', W:'S', S:'W'
+};
+function chaosMirrorKey(e){
+  const code = CHAOS_KEY_SWAP[e.code] || e.code;
+  const key  = CHAOS_KEY_SWAP[e.key]  || e.key;
+  if(code === e.code && key === e.key) return e;   // not a direction — pass it straight through
+  return {
+    code, key,
+    shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, altKey: e.altKey, metaKey: e.metaKey,
+    repeat: e.repeat, type: e.type, target: e.target,
+    preventDefault: () => e.preventDefault(),
+    stopPropagation: () => e.stopPropagation()
+  };
+}
+
+function chaosClear(){
+  chaosInverse = false;
+  chaosSpeedMul = 1;
+  clearInterval(chaos.blindTimer); chaos.blindTimer = 0;
+  clearTimeout(chaos.bannerTimer); chaos.bannerTimer = 0;
+  document.querySelector('.g-area')?.classList.remove('blind-out');
+  const el = document.getElementById('chaos-banner');
+  if(el){ el.style.display = 'none'; el.className = ''; }
+  chaos.last = chaos.active;      // survives into the results card
+  chaos.active = null;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  📈 LEVELS & THE PERK TREE
+// ══════════════════════════════════════════════════════════════════════
+// XP is a flat tenth of every point awarded, and a level is a flat 100 XP — no
+// curve, because the interesting number is already the score and a second
+// curve on top of it would just make the first one harder to read.
+//
+// Levels are DERIVED from lifetime XP rather than stored as a running counter,
+// so they can never drift out of step with it: a profile that syncs XP from
+// two devices lands on the right level by arithmetic instead of by luck.
+const XP_PER_LEVEL = 100;
+const XP_RATE = 0.1;
+
+function xpLevel(xp){
+  const total = Math.max(0, Math.floor(xp || 0));
+  const level = Math.floor(total / XP_PER_LEVEL) + 1;
+  return { level, into: total % XP_PER_LEVEL, need: XP_PER_LEVEL, total };
+}
+// One point per level gained, first level free.
+const perkPointsEarned = xp => xpLevel(xp).level - 1;
+const perkPointsLeft   = () => user ? perkPointsEarned(user.xp) - (user.perkSpent || 0) : 0;
+
+const PERKS = [
+  { id:'perk-score', icon:'📈', name:'Signal Amplifier', cost:1, tier:1,
+    effect:'+5% score on arcade missions',
+    desc:'Every solo mission and Boss Rush chain pays five percent more. Duel awards are untouched — a duel is already paying a win bonus.' },
+  { id:'perk-ram',   icon:'🧠', name:'Accelerated RAM',  cost:1, tier:1,
+    effect:'+25% RAM regen in Battle Bots',
+    desc:'The siege economy fills faster, and the throughput upgrades you buy scale with it.' }
+];
+
+const hasPerk = id => !!(user && user.perks && user.perks[id]);
+
+// 🌳 Perk A. Applied in showResultsCard(), which is the one place a raw score
+// becomes an award — the same seam the stability tier uses.
+function perkScoreMult(gid, opts){
+  if(!hasPerk('perk-score')) return 1;
+  if(opts && opts.internal) return 1;              // a duel card, not an arcade run
+  if(!SOLO_START[gid] && gid !== 'bossrush') return 1;
+  return 1.05;
+}
+// 🌳 Perk B. Read once by startBattleBots().
+const perkRamMult = () => hasPerk('perk-ram') ? 1.25 : 1;
+
+// Granted on every finished round, online or off.
+function awardXp(award){
+  if(!user || !(award > 0)) return;
+  const before = xpLevel(user.xp || 0).level;
+  user.xp = Math.max(0, Math.floor((user.xp || 0) + award * XP_RATE));
+  const after = xpLevel(user.xp).level;
+  user.level = after;
+  saveProfilePatch({ xp: user.xp, level: after });
+  if(after > before){
+    // Held back so it lands on the results card rather than under the death
+    // sting the round is still playing.
+    setTimeout(() => {
+      snd('levelUp');
+      toast(`📈 LEVEL ${after} — +${after - before} PERK POINT${after - before === 1 ? '' : 'S'}`, 3200);
+    }, 1500);
+  }
+  paintXpRail();
+}
+
+function paintXpRail(){
+  if(!user) return;
+  const st = xpLevel(user.xp || 0);
+  const lvl = document.getElementById('xp-lvl');
+  const fill = document.getElementById('xp-fill');
+  const num = document.getElementById('xp-num');
+  const btn = document.getElementById('btn-perks');
+  if(lvl)  lvl.textContent = `LVL ${st.level}`;
+  if(fill) fill.style.width = `${(st.into / st.need) * 100}%`;
+  if(num)  num.textContent = `${st.into} / ${st.need} XP · ${st.total.toLocaleString()} TOTAL`;
+  // The tree button carries the count when there is something to spend, so the
+  // "you have unspent points" nudge and the door to spend them are one control
+  // rather than two competing for the same strip.
+  const left = perkPointsLeft();
+  if(btn){
+    btn.textContent = left > 0 ? `🌳 ${left} PERK POINT${left === 1 ? '' : 'S'}` : '🌳 PERK TREE';
+    btn.classList.toggle('btn-primary', left > 0);
+    btn.classList.toggle('btn-secondary', left === 0);
+    btn.classList.toggle('xp-perk-btn', left > 0);
+  }
+  document.getElementById('xp-rail')?.classList.toggle('has-points', left > 0);
+}
+
+function renderPerkTree(){
+  const wrap = document.getElementById('perk-tree');
+  if(!wrap || !user) return;
+  const left = perkPointsLeft();
+  const sub = document.getElementById('perk-sub');
+  const st = xpLevel(user.xp || 0);
+  if(sub){
+    sub.textContent = left > 0
+      ? `Level ${st.level} · ${left} point${left === 1 ? '' : 's'} to spend`
+      : `Level ${st.level} · ${st.need - st.into} XP to the next point`;
+  }
+  wrap.innerHTML = '';
+  PERKS.forEach(p => {
+    const owned = hasPerk(p.id);
+    const afford = left >= p.cost;
+    const node = document.createElement('div');
+    node.className = 'perk-node' + (owned ? ' owned' : afford ? ' open' : ' locked');
+    node.innerHTML =
+      `<span class="perk-ico">${p.icon}</span>` +
+      `<div class="perk-name">${esc(p.name)}</div>` +
+      `<div class="perk-effect">${esc(p.effect)}</div>` +
+      `<div class="perk-desc">${esc(p.desc)}</div>` +
+      (owned
+        ? `<div class="perk-tag">✔ ACTIVE</div>`
+        : `<button class="btn btn-primary btn-sm perk-buy" data-perk="${p.id}"${afford ? '' : ' disabled'}>` +
+          `${afford ? `Unlock · ${p.cost} PT` : 'Needs a perk point'}</button>`);
+    wrap.appendChild(node);
+  });
+  wrap.querySelectorAll('.perk-buy').forEach(b => {
+    b.onclick = () => buyPerk(b.dataset.perk);
+  });
+}
+
+async function buyPerk(id){
+  const perk = PERKS.find(p => p.id === id);
+  if(!perk || !user || hasPerk(id)) return;
+  if(perkPointsLeft() < perk.cost){ snd('deny'); toast('⚠️ Not enough perk points.'); return; }
+  user.perks[id] = true;
+  user.perkSpent = (user.perkSpent || 0) + perk.cost;
+  await saveProfilePatch({ ['perks/' + id]: true, perkSpent: user.perkSpent });
+  snd('levelUp');
+  toast(`🌳 PERK UNLOCKED — ${perk.name}`, 3000);
+  renderPerkTree();
+  paintXpRail();
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  ⚡ POWER-UPS — the consumable kit
+// ══════════════════════════════════════════════════════════════════════
+// Two consumables, two very different shapes, and the difference is the whole
+// design:
+//
+//   ⏳ TIME DILATOR   is PRESSED. It needs a live clock to add to, and the one
+//                     thing every game with a clock shares is #g-time — so the
+//                     dock reads that element, adds three, and writes it back.
+//                     No game exposes its timer variable and none needs to.
+//
+//   🛡️ SHIELD OVERLAY is not pressed at all. It is armed for the round and
+//                     spent by the crash it absorbs, which is why Grid Snake
+//                     and Flappy Drone call powerConsume() at their collision
+//                     points instead of the dock doing anything.
+const powerHeld = id => (user && user.powerups && +user.powerups[id]) || 0;
+
+// Spends one, if there is one. Returns whether it fired, so a caller can use it
+// directly as the condition on a crash.
+function powerConsume(id, label){
+  if(powerHeld(id) <= 0) return false;
+  user.powerups[id] = powerHeld(id) - 1;
+  saveProfilePatch({ ['powerups/' + id]: user.powerups[id] });
+  const item = findItem('powerups', id);
+  snd('shield');
+  toast(`${item ? item.emoji : '⚡'} ${label || (item && item.name) || 'POWER-UP SPENT'} · ${user.powerups[id]} left`, 2200);
+  flashPowerDock(id);
+  paintPowerDock();
+  return true;
+}
+
+// ── THE IN-GAME DOCK ──
+function showPowerDock(){
+  const dock = document.getElementById('pu-dock');
+  if(!dock) return;
+  // A duel is a fair fight by construction — both boards run the same tier and
+  // the same modifier — so the kit stays out of it.
+  if(mp){ dock.style.display = 'none'; return; }
+  paintPowerDock();
+}
+function hidePowerDock(){
+  const dock = document.getElementById('pu-dock');
+  if(dock){ dock.style.display = 'none'; dock.innerHTML = ''; }
+}
+
+function paintPowerDock(){
+  const dock = document.getElementById('pu-dock');
+  if(!dock || !user || mp) return;
+  const stock = SHOP_ITEMS.powerups.filter(i => powerHeld(i.id) > 0);
+  if(!stock.length){ dock.style.display = 'none'; dock.innerHTML = ''; return; }
+  // The shield is passive, so its button is a READOUT rather than a control —
+  // it says "armed", and the crash that spends it is what presses it.
+  dock.style.display = 'flex';
+  dock.innerHTML = stock.map(i => {
+    const passive = i.id === 'pu-shield';
+    return `<button class="pu-btn${passive ? ' passive' : ''}" data-pu="${i.id}"${passive ? ' disabled' : ''}
+                    title="${esc(i.desc)}">
+              <span class="pu-emoji">${i.emoji}</span>
+              <span class="pu-label">${passive ? 'ARMED' : esc(i.name)}</span>
+              <span class="pu-count">${powerHeld(i.id)}</span>
+            </button>`;
+  }).join('');
+  dock.querySelectorAll('.pu-btn:not(.passive)').forEach(b => {
+    b.onclick = () => usePowerUp(b.dataset.pu);
+  });
+}
+
+function flashPowerDock(id){
+  const btn = document.querySelector(`.pu-btn[data-pu="${id}"]`);
+  if(!btn) return;
+  btn.classList.remove('fired');
+  void btn.offsetWidth;
+  btn.classList.add('fired');
+}
+
+const TIME_DILATOR_SECONDS = 3;
+
+function usePowerUp(id){
+  if(id !== 'pu-dilator') return;
+  const el = document.getElementById('g-time');
+  const raw = el ? el.textContent.trim() : '';
+  const secs = parseClockText(raw);
+  // Nothing to dilate: Flappy and Cyber Arena run on ∞, and a game between
+  // rounds shows a dash. Refusing costs nothing; spending on nothing costs 5 CR.
+  if(secs == null){
+    snd('deny');
+    toast('⏳ No clock to dilate on this mission.', 2400);
+    return;
+  }
+  if(!powerConsume('pu-dilator', `+${TIME_DILATOR_SECONDS}s DILATED`)) return;
+  const next = secs + TIME_DILATOR_SECONDS;
+  // Written back in the format it was read in, so a game that shows m:ss keeps
+  // showing m:ss. The game's own interval decrements from whatever is here on
+  // its next tick, which is what makes this work without touching its state.
+  el.textContent = raw.includes(':') ? fmtTime(next) : String(next);
+  // Its own countdown is the game's business; the progress bar is shared, and
+  // leaving it where it was would show a full bar draining from the wrong place.
+  const bar = document.getElementById('prog-fill');
+  if(bar){
+    const pct = parseFloat(bar.style.width) || 0;
+    bar.style.width = Math.min(100, pct * (next / Math.max(1, secs))) + '%';
+  }
+  document.querySelector('.g-area')?.classList.add('dilated');
+  setTimeout(() => document.querySelector('.g-area')?.classList.remove('dilated'), 700);
+}
+
+// The shared clock element carries three shapes: a plain count of seconds, an
+// m:ss readout from fmtTime(), and the placeholders (∞, —) games without a
+// clock use. Returns seconds, or null when there is no clock to speak of.
+function parseClockText(txt){
+  if(!txt || txt === '∞' || txt === '—') return null;
+  if(txt.includes(':')){
+    const [m, s] = txt.split(':').map(n => parseInt(n, 10));
+    return Number.isFinite(m) && Number.isFinite(s) ? m * 60 + s : null;
+  }
+  const n = parseInt(txt, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+// The kit summary at the top of the market's Power-Ups tab.
+function paintPowerKit(){
+  const el = document.getElementById('pu-kit');
+  if(!el || !user) return;
+  const stock = SHOP_ITEMS.powerups.filter(i => powerHeld(i.id) > 0);
+  el.innerHTML = stock.length
+    ? `<div class="pu-kit-lbl">⚡ IN YOUR KIT</div><div class="pu-kit-row">` +
+      stock.map(i => `<span class="pu-chip">${i.emoji} ${esc(i.name)} <em>×${powerHeld(i.id)}</em></span>`).join('') +
+      `</div>`
+    : `<div class="pu-kit-lbl empty">⚡ KIT EMPTY — consumables carry between runs and are spent the moment they fire.</div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  ⏱️ THE TENSION HOOK — one observer, eighteen clocks
+// ══════════════════════════════════════════════════════════════════════
+// "When any game timer falls below 5 seconds" is a fact about #g-time, which is
+// the one element every game with a clock writes to. Watching it is what lets
+// the soundtrack react without eighteen games learning about the soundtrack —
+// the same trick the score race plays with setLive().
+const TENSION_AT = 5;
+function watchGameClock(){
+  const el = document.getElementById('g-time');
+  if(!el || typeof MutationObserver !== 'function') return;
+  const read = () => {
+    // Off the game screen there is no round, so there is nothing to be tense
+    // about — a card left showing "3" must not keep the hub lifted.
+    if(!document.getElementById('game-screen').classList.contains('active')){
+      musicTension(false);
+      return;
+    }
+    const s = parseClockText(el.textContent.trim());
+    musicTension(s != null && s > 0 && s <= TENSION_AT);
+  };
+  new MutationObserver(read).observe(el, { childList: true, characterData: true, subtree: true });
+  read();
+}
+watchGameClock();
+
+// ══════════════════════════════════════════════════════════════════════
+//  📅 DAILY HACK — one seeded run, the same for everyone
+// ══════════════════════════════════════════════════════════════════════
+// The seed is the UTC day, hashed. Nothing about the challenge is stored
+// anywhere: which mission it is, what tier it runs at and what the board looks
+// like are all DERIVED from that number, so every client picks the same
+// challenge with no server state, no scheduled job, and no way to be handed a
+// different one than the person you are racing. Same reasoning as the market's
+// featured rotation a few thousand lines up, applied to a whole round.
+//
+// The pool is deliberately the two missions whose difficulty lives entirely in
+// their generated content — Math Blitz's questions and Overclock Path's
+// circuit. A canvas game with physics would be "identical" only in layout, and
+// a frame-rate difference would quietly make it a different run.
+const DAILY_POOL = ['math', 'path'];
+const DAILY_TIER = 'overclocked';       // "high-speed": less clock, faster board, ×1.5 pay
+
+// Two separate facts, because a replay of today's hack is still a Daily Hack
+// round — it just does not score. `dailyActive` governs the seeded stream, the
+// fixed tier and the seed row on the results card; `dailyRun` governs whether
+// the number goes on the board.
+let dailyActive = false;
+let dailyRun = false;
+let dailyRng = null;                    // the day's stream while one is running
+let dailyRestoreTier = null;
+
+// mulberry32 — small, fast, and identical across engines, which is the only
+// property that matters here. A shared Math.random would not be: two browsers
+// agree on its distribution and nothing else.
+function makeRng(seed){
+  let a = seed >>> 0;
+  return function(){
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const dailySeed  = (day = dayKey()) => hashStr('daily:' + day);
+const dailyGid   = (day = dayKey()) => DAILY_POOL[dailySeed(day) % DAILY_POOL.length];
+const dailySeedLabel = (day = dayKey()) => `${day} · #${(dailySeed(day) % 100000).toString().padStart(5, '0')}`;
+// Used by the seeded games. Outside a Daily Hack it is plain Math.random, so a
+// game can call it unconditionally and an ordinary round is unaffected.
+const dailyRand  = () => dailyRng ? dailyRng() : Math.random();
+
+// Today's run, if it was set today. A stale day key reads as no run at all,
+// which IS the 24-hour reset — nothing has to be cleaned up on a schedule.
+function dailyMine(day = dayKey()){
+  const d = (user && user.daily) || {};
+  return d.day === day ? d : null;
+}
+
+function startDailyHack(){
+  if(!user) return;
+  const day = dayKey(), gid = dailyGid(day);
+  const done = dailyMine(day);
+  if(done){
+    // Replayable, but only the first run counts — otherwise "identical for all
+    // users" would just mean "identical, best of however many tries you have
+    // time for".
+    toast(`📅 Today's hack is already logged at ${done.pts} PTS — this run is practice.`, 3600);
+  }
+  dailyActive = true;
+  dailyRun = !done;
+  dailyRng = makeRng(dailySeed(day));
+  curGame = gid;
+  // The run is played at a fixed tier for everyone, then the player's own dial
+  // is put back — the same save/restore shape a duel uses for the room's tier,
+  // including its guard: only the FIRST capture counts, or a second daily
+  // started before the first was settled would record Overclock as the tier to
+  // "restore" and strand the player's own dial there for good.
+  if(dailyRestoreTier == null) dailyRestoreTier = currentDifficultyTier;
+  setDifficultyTier(DAILY_TIER);
+
+  document.getElementById('g-title').textContent = `📅 DAILY HACK · ${META[gid].name}`;
+  showScreen('game-screen');
+  snd('success');
+  toast(`📅 DAILY HACK — ${META[gid].emoji} ${META[gid].name} · seed ${dailySeedLabel(day)}`, 3600);
+
+  resetGameStage(gid);
+  countdown(() => {
+    // The board is generated inside the game's start() call, synchronously and
+    // before a single frame renders — so patching Math.random across just that
+    // call is enough to make the LAYOUT identical without the seeded stream
+    // being drained at different rates by whatever else the page is animating.
+    // Math Blitz, whose questions keep coming during play, reads dailyRand()
+    // directly instead.
+    const realRandom = Math.random;
+    Math.random = dailyRand;
+    try{ SOLO_START[gid](); }
+    finally{ Math.random = realRandom; }
+    showPowerDock();
+  });
+}
+
+// Stands the challenge down and gives the player their own dial back. Called
+// from BOTH endings — the results card and the walk-away — because a round that
+// was quit has to release the tier just as much as one that finished.
+function endDailyRun(){
+  const scored = dailyRun;
+  dailyActive = false;
+  dailyRun = false;
+  dailyRng = null;
+  if(dailyRestoreTier != null){ setDifficultyTier(dailyRestoreTier); dailyRestoreTier = null; }
+  return scored;
+}
+
+// Quitting mid-hack. Wired into enterHub() alongside abortBossRush(), which is
+// the one place every "I'm done here" path passes through.
+function abortDailyRun(){
+  if(!dailyActive) return;
+  endDailyRun();
+  paintDailyBanner();
+}
+
+// Called by showResultsCard() when a Daily Hack round lands.
+function settleDailyRun(gid, pts){
+  const day = dayKey();
+  const scored = endDailyRun();
+  paintDailyBanner();
+  // A replay of an already-logged hack is practice: it plays on the same seed
+  // and reads the same, but today's board is not up for a second attempt.
+  if(!scored || !user) return;
+
+  const prev = dailyMine(day);
+  if(prev && prev.pts >= pts) return;
+  user.daily = { day, pts, gid };
+  saveProfilePatch({ daily: user.daily });
+  publishDailyScore(day, pts, gid);
+  paintDailyBanner();
+}
+
+// ── THE BOARD ──
+// Its own node, keyed by day. Nothing prunes it: yesterday's key is simply
+// never read again, which costs a few bytes and saves a scheduled job.
+//
+// ⚠️ DATABASE RULES: if your rules name specific top-level nodes, "daily" needs
+// to be one of them, with an .indexOn of "pts". Without it this degrades to a
+// board showing only your own run — which is why every failure below is caught
+// rather than surfaced as an error.
+function publishDailyScore(day, pts, gid){
+  if(!db || offlineMode || isLocalSession() || !user) return;
+  db.ref(`daily/${day}/${user.uid}`).set({
+    name: user.username || 'Operative',
+    pts: Math.max(0, Math.round(pts)),
+    gid,
+    at: firebase.database.ServerValue.TIMESTAMP
+  }).catch(e => console.warn('Daily board write failed — kept locally:', e));
+}
+
+function loadDailyBoard(){
+  const panel = document.getElementById('dh-lb-panel');
+  if(!panel) return;
+  const day = dayKey();
+  const mine = dailyMine(day);
+
+  // The offline/no-rules fallback: your own run is still a board, and saying so
+  // beats an empty panel that looks broken.
+  const localOnly = () => {
+    panel.innerHTML = mine
+      ? dailyRow({ name: (user && user.username) || 'You', pts: mine.pts }, 1, true) +
+        `<div class="lb-empty dh-note">Grid board unavailable — showing your own run.</div>`
+      : `<div class="lb-empty">No runs logged for today yet.</div>`;
+  };
+
+  if(!db || offlineMode || !user){ localOnly(); return; }
+
+  withTimeout(db.ref('daily/' + day).orderByChild('pts').limitToLast(10).once('value'), NET_WAIT)
+    .then(snap => {
+      const rows = [];
+      snap.forEach(c => { const v = c.val() || {}; rows.push({ uid: c.key, name: v.name, pts: +v.pts || 0 }); });
+      if(!rows.length){ localOnly(); return; }
+      rows.sort((a, b) => b.pts - a.pts);
+      panel.innerHTML = rows.map((r, i) => dailyRow(r, i + 1, r.uid === user.uid)).join('');
+    })
+    .catch(e => { console.warn('Daily board read failed:', e); localOnly(); });
+}
+
+function dailyRow(r, rank, isMe){
+  const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `#${rank}`;
+  // Same row furniture as the live leaderboard — .lb-row already owns the
+  // podium tints and the "that's you" rail, so a second board built out of it
+  // is one board the eye has to learn instead of two.
+  return `<div class="lb-row dh-row${isMe ? ' me' : ''}${rank <= 3 ? ' r' + rank : ''}">` +
+         `<span class="lb-rank">${medal}</span>` +
+         `<span class="lb-name">${esc(r.name || 'Operative')}${isMe ? ' · YOU' : ''}</span>` +
+         `<span class="lb-score">${(+r.pts || 0).toLocaleString()} PTS</span>` +
+         `</div>`;
+}
+
+function paintDailyBanner(){
+  const sub = document.getElementById('dh-banner-sub');
+  const reset = document.getElementById('dh-reset');
+  const day = dayKey(), gid = dailyGid(day), mine = dailyMine(day);
+  if(sub){
+    sub.textContent = mine
+      ? `${META[gid].emoji} ${META[gid].name} · your run is logged at ${mine.pts.toLocaleString()} PTS. Seed ${dailySeedLabel(day)}.`
+      : `${META[gid].emoji} ${META[gid].name} on ${DIFFICULTY_TIERS[DAILY_TIER].label} — the same board for every operative. Seed ${dailySeedLabel(day)}.`;
+  }
+  const btn = document.getElementById('btn-daily-hack');
+  if(btn) btn.textContent = mine ? '📅 REPLAY (PRACTICE)' : '📅 DAILY HACK';
+  if(reset) reset.textContent = `RESETS IN ${rotationLabel()}`;
+  document.getElementById('dh-banner')?.classList.toggle('done', !!mine);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  🏆 ACHIEVEMENT MATRIX — the shelf, opened out
+// ══════════════════════════════════════════════════════════════════════
+// The badge shelf under the leaderboard is a row of icons with a tooltip; this
+// is the same ACHIEVEMENTS table with room to actually read it. Both render
+// from the one array, so an achievement added there appears in both.
+function renderAchievementMatrix(){
+  const grid = document.getElementById('ach-matrix');
+  if(!grid || !user) return;
+  const owned = user.achievements || {};
+  const got = ACHIEVEMENTS.filter(a => owned[a.id]).length;
+  const pct = Math.round((got / ACHIEVEMENTS.length) * 100);
+
+  const sub = document.getElementById('ach-sub');
+  if(sub) sub.textContent = `${got} of ${ACHIEVEMENTS.length} unlocked · ${pct}% of the matrix`;
+  const fill = document.getElementById('ach-progress-fill');
+  if(fill) fill.style.width = pct + '%';
+
+  // Unlocked first: a wall that opens with everything you have not done reads
+  // as a chore list rather than as a trophy case.
+  const sorted = [...ACHIEVEMENTS].sort((a, b) => (owned[b.id] ? 1 : 0) - (owned[a.id] ? 1 : 0));
+  grid.innerHTML = sorted.map(a => {
+    const has = !!owned[a.id];
+    const when = has && typeof owned[a.id] === 'number'
+      ? new Date(owned[a.id]).toISOString().slice(0, 10) : null;
+    return `<div class="ach-cell ${has ? 'unlocked' : 'locked'}">
+              <span class="ach-ico">${a.icon}</span>
+              <div class="ach-name">${esc(a.name)}</div>
+              <div class="ach-desc">${esc(a.desc)}</div>
+              <div class="ach-foot">
+                <span class="ach-cr">💎 ${a.cr} CR</span>
+                <span class="ach-state">${has ? (when || 'UNLOCKED') : 'LOCKED'}</span>
+              </div>
+            </div>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  💀 EXIT STATES — what the screen does on the way out
+// ══════════════════════════════════════════════════════════════════════
+// One host element, three classes. Every style ends by calling `done`, and a
+// hard timeout calls it too — a cosmetic that failed to finish must never be
+// the reason a player never sees their score.
+const EXIT_MS = { bsod: 2200, matrix: 1500, static: 900 };
+
+function playExitFx(gid, pts, opts, done){
+  const stage = document.getElementById('exit-fx');
+  const body  = document.getElementById('exit-fx-body');
+  const item  = user && findItem('exits', user.equipped && user.equipped.exits);
+  const fx    = item && item.fx;
+
+  // No style equipped, no board to cover (a duel writes its own card), or the
+  // element is missing on an older cached page — straight through.
+  if(!fx || !stage || !body || VFX.reducedMotion){ done(); return; }
+
+  let settled = false;
+  const finish = () => {
+    if(settled) return;
+    settled = true;
+    stage.className = '';
+    stage.style.display = 'none';
+    body.innerHTML = '';
+    done();
+  };
+
+  stage.style.display = 'block';
+  stage.className = 'show fx-' + fx;
+
+  if(fx === 'bsod'){
+    // The joke only lands if it reads like the real thing, so it is a real dump:
+    // the mission, the score, the tier and the seed, in the same key/value shape
+    // the results breakdown uses.
+    const m = META[gid] || { name: 'UNKNOWN', emoji: '❔' };
+    const code = '0x' + (hashStr(gid + ':' + pts).toString(16).toUpperCase().padStart(8, '0')).slice(0, 8);
+    body.innerHTML =
+      `<div class="bsod-face">:(</div>` +
+      `<div class="bsod-head">Your run ran into a problem and needs to restart.</div>` +
+      `<div class="bsod-sub">We're just collecting some error info, and then we'll restart for you.</div>` +
+      `<pre class="bsod-dump">` +
+      `STOP CODE: MISSION_TERMINATED_UNEXPECTEDLY\n` +
+      `FAULT MODULE: ${esc(m.name.replace(/\s+/g, '_'))}.SYS\n` +
+      `EXCEPTION:   ${code}\n` +
+      `SCORE:       ${pts} PTS\n` +
+      `STABILITY:   ${(DIFFICULTY_TIERS[currentDifficultyTier] || {}).label || 'STABLE CORE'}\n` +
+      `MODIFIER:    ${chaos.last ? chaos.last.name : 'NONE'}\n` +
+      `OPERATIVE:   ${esc((user && user.username) || 'GUEST')}\n` +
+      `</pre>` +
+      `<div class="bsod-pct" id="bsod-pct">0% complete</div>`;
+    const pctEl = document.getElementById('bsod-pct');
+    let p = 0;
+    const t = setInterval(() => {
+      p = Math.min(100, p + 7 + Math.floor(Math.random() * 11));
+      if(pctEl) pctEl.textContent = p + '% complete';
+      if(p >= 100) clearInterval(t);
+    }, 130);
+    setTimeout(() => { clearInterval(t); finish(); }, EXIT_MS.bsod);
+  }
+  else if(fx === 'matrix'){
+    // Columns of falling glyphs, built as elements with staggered animation
+    // delays rather than a canvas: the board underneath is still a canvas, and
+    // this way the dissolve composites over it without fighting for the context.
+    const CH = 'アイウエオカキクケコサシスセソ0123456789ABCDEF<>/\\|=+*';
+    const cols = Math.max(14, Math.min(48, Math.floor(window.innerWidth / 26)));
+    let html = '';
+    for(let c = 0; c < cols; c++){
+      const glyphs = Array.from({ length: 22 },
+        () => CH[Math.floor(Math.random() * CH.length)]).join('<br>');
+      html += `<span class="mx-col" style="left:${(c / cols) * 100}%;` +
+              `animation-delay:${(Math.random() * 0.5).toFixed(2)}s;` +
+              `animation-duration:${(0.9 + Math.random() * 0.7).toFixed(2)}s">${glyphs}</span>`;
+    }
+    body.innerHTML = html;
+    setTimeout(finish, EXIT_MS.matrix);
+  }
+  else if(fx === 'static'){
+    body.innerHTML = `<div class="crt-flash"></div><div class="crt-noise"></div><div class="crt-roll"></div>`;
+    snd('bigExplode');
+    setTimeout(finish, EXIT_MS.static);
+  }
+  else finish();
+
+  // The backstop. Whatever happens above, the card lands.
+  setTimeout(finish, (EXIT_MS[fx] || 1200) + 900);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  📟 GRID TERMINAL — the arcade's ambient traffic
+// ══════════════════════════════════════════════════════════════════════
+// Wired to the database when there is one, and to a local simulation when there
+// is not. The simulation is not a stub standing in for the real thing: an
+// arcade whose grid is genuinely empty at 3am should still read as a live
+// system, so the ticker publishes the things a system would say — open room
+// codes, leaderboard milestones, the daily seed, stability warnings.
+const CHAT_MAX = 40;
+const CHAT_PATH = 'chat';
+let chatTicker = null, chatBound = false;
+
+const CHAT_SYSTEM = [
+  () => `NODE SWEEP COMPLETE · ${40 + Math.floor(Math.random() * 900)} SECTORS NOMINAL`,
+  () => `⚙️ STABILITY DRIFT DETECTED ON SECTOR ${String.fromCharCode(65 + Math.floor(Math.random() * 26))}${Math.floor(Math.random() * 90) + 10}`,
+  () => `📅 DAILY HACK SEED ${dailySeedLabel()} — ${META[dailyGid()].name} IS LIVE`,
+  () => `🔥 STREAK BONUSES PAID TO ${3 + Math.floor(Math.random() * 40)} OPERATIVES`,
+  () => `🛒 FEATURED STOCK ROTATES IN ${rotationLabel()}`,
+  () => `🌐 ROOM ${mpMakeCode()} OPEN · ${MP_MODES[Object.keys(MP_MODES)[Math.floor(Math.random() * Object.keys(MP_MODES).length)]].name}`,
+  () => `🏆 ${['Vex','Nyx','Cipher','Ronin','Kilo','Static','Halcyon','Zero'][Math.floor(Math.random() * 8)]}_${Math.floor(Math.random() * 900) + 100} BANKED ${(Math.floor(Math.random() * 18) + 3) * 100} PTS`,
+  () => `⚡ POWER-UP MARKET RESTOCKED — TIME DILATORS AT 5 CR`,
+  () => `🤖 ${2 + Math.floor(Math.random() * 9)} TRAINING DROIDS IDLE ON THE GRID`,
+  () => `🌀 CHAOS PROTOCOL ARMED FOR BOSS RUSH AND ARENA ROUNDS`
+];
+
+function chatPush(line, cls){
+  const log = document.getElementById('chat-log');
+  if(!log) return;
+  const row = document.createElement('div');
+  row.className = 'chat-line' + (cls ? ' ' + cls : '');
+  const t = new Date();
+  const stamp = `${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`;
+  row.innerHTML = `<span class="chat-time">${stamp}</span><span class="chat-body">${line}</span>`;
+  log.appendChild(row);
+  while(log.children.length > CHAT_MAX) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+// A message from a player is untrusted text and reaches the DOM escaped; a
+// system line is written by this file and carries its own emphasis.
+const chatSay = (name, text) =>
+  chatPush(`<b class="chat-who">${esc(name)}</b> ${esc(text)}`, 'said');
+const chatSys = text => chatPush(`<span class="chat-sys">${text}</span>`, 'sys');
+
+function startChatTerminal(){
+  const log = document.getElementById('chat-log');
+  if(!log) return;
+  if(!chatBound){
+    chatBound = true;
+    document.getElementById('chat-send')?.addEventListener('click', sendChat);
+    document.getElementById('chat-input')?.addEventListener('keydown', e => {
+      if(e.key === 'Enter') sendChat();
+    });
+  }
+  if(log.children.length === 0){
+    chatSys('◈ GRID TERMINAL ONLINE');
+    chatSys(`◈ OPERATIVE ${esc(((user && user.username) || 'GUEST').toUpperCase())} AUTHENTICATED`);
+  }
+
+  // ── LIVE, when the database allows it ──
+  // limitToLast keeps the client from pulling a day of backlog, and child_added
+  // then delivers each new line as it arrives. A rules rejection is not an
+  // error worth showing — it just means this deploy runs the simulation.
+  if(db && !offlineMode && !chatTicker){
+    try{
+      const ref = db.ref(CHAT_PATH).limitToLast(15);
+      ref.on('child_added', s => {
+        const v = s.val() || {};
+        if(!v.text) return;
+        if(v.uid && user && v.uid === user.uid) return;   // our own echo is already on screen
+        chatSay(v.name || 'Operative', String(v.text).slice(0, 140));
+      }, () => { /* rules said no — the simulation below carries it */ });
+    }catch(e){ /* same */ }
+  }
+
+  // ── THE SIMULATION ──
+  // Runs regardless. On a live grid it is the system voice alongside the
+  // players; on a quiet one it IS the grid.
+  clearInterval(chatTicker);
+  chatTicker = setInterval(() => {
+    if(!document.getElementById('hub-screen').classList.contains('active')) return;
+    chatSys(CHAT_SYSTEM[Math.floor(Math.random() * CHAT_SYSTEM.length)]());
+  }, 11000);
+  chatSys(CHAT_SYSTEM[Math.floor(Math.random() * CHAT_SYSTEM.length)]());
+}
+
+function stopChatTerminal(){
+  clearInterval(chatTicker);
+  chatTicker = null;
+}
+
+function sendChat(){
+  const input = document.getElementById('chat-input');
+  if(!input) return;
+  const text = input.value.trim().slice(0, 140);
+  if(!text) return;
+  input.value = '';
+  chatSay((user && user.username) || 'You', text);
+  snd('tab');
+  if(db && !offlineMode && !isLocalSession() && user){
+    db.ref(CHAT_PATH).push({
+      uid: user.uid,
+      name: user.username || 'Operative',
+      text,
+      at: firebase.database.ServerValue.TIMESTAMP
+    }).catch(() => chatSys('⚠️ TRANSMISSION HELD LOCALLY — GRID RELAY UNAVAILABLE'));
+  }else{
+    chatSys('⚠️ OFFLINE — TRANSMISSION VISIBLE ON THIS TERMINAL ONLY');
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  📋 INSTANT REPLAY — a run as a string
+// ══════════════════════════════════════════════════════════════════════
+// The payload is small and self-describing: version, mission, score, tier,
+// timestamp, seed. It is base64 of a compact JSON object with a checksum, so a
+// code that was mangled in a chat client is REJECTED rather than decoded into a
+// plausible-looking lie. This is a shareable receipt, not a credential — it
+// grants nothing, and nothing reads it back into the profile.
+const REPLAY_PREFIX = 'PIR1.';
+let lastReplay = null;
+
+// btoa only handles latin1, and a username can be anything at all — so the
+// JSON is percent-encoded into ASCII first and decoded back on the way out.
+const b64enc = s => btoa(unescape(encodeURIComponent(s))).replace(/=+$/, '');
+const b64dec = s => decodeURIComponent(escape(atob(s)));
+
+function stampReplay(gid, pts, tierKey){
+  lastReplay = {
+    v: 1,
+    g: gid,
+    p: Math.round(pts),
+    t: tierKey,
+    d: Date.now(),
+    s: dailyActive ? dailySeed() : (chaos.last ? chaos.last.id : null),
+    n: ((user && user.username) || 'Operative').slice(0, 20)
+  };
+  const out = document.getElementById('res-replay');
+  if(out) out.textContent = '';
+  const btn = document.getElementById('btn-replay-export');
+  if(btn) btn.textContent = '📋 Export Replay Code';
+}
+
+function encodeReplay(r){
+  const json = JSON.stringify(r);
+  return REPLAY_PREFIX + b64enc(json) + '.' + hashStr(json).toString(36);
+}
+
+function decodeReplay(code){
+  const raw = String(code || '').trim();
+  if(!raw.startsWith(REPLAY_PREFIX)) throw new Error('That is not a Point Invaders replay code.');
+  const parts = raw.slice(REPLAY_PREFIX.length).split('.');
+  if(parts.length !== 2) throw new Error('Replay code is incomplete — it was cut short somewhere.');
+  let json;
+  try{ json = b64dec(parts[0]); }
+  catch(e){ throw new Error('Replay code is corrupted and cannot be read.'); }
+  if(hashStr(json).toString(36) !== parts[1]) throw new Error('Replay checksum failed — this code was altered in transit.');
+  const r = JSON.parse(json);
+  if(!r || !META[r.g]) throw new Error('That replay names a mission this build does not have.');
+  return r;
+}
+
+async function exportReplay(){
+  if(!lastReplay){ snd('deny'); return; }
+  const code = encodeReplay(lastReplay);
+  const out = document.getElementById('res-replay');
+  const btn = document.getElementById('btn-replay-export');
+  // Shown on screen whatever happens — the clipboard is blocked over plain http
+  // and inside several in-app browsers, and a code you can read is a code you
+  // can retype.
+  if(out) out.innerHTML = `<div class="replay-code" id="replay-code">${esc(code)}</div>` +
+                          `<div class="replay-hint">Paste this into LOAD REPLAY on any grid.</div>`;
+  try{
+    await navigator.clipboard.writeText(code);
+    if(btn) btn.textContent = '✔ Copied to clipboard';
+    snd('coin');
+  }catch(e){
+    if(btn) btn.textContent = '📋 Copy it from below';
+  }
+  setTimeout(() => { if(btn) btn.textContent = '📋 Export Replay Code'; }, 2600);
+}
+
+function loadReplay(){
+  const input = document.getElementById('replay-input');
+  const out = document.getElementById('replay-out');
+  if(!input || !out) return;
+  let r;
+  try{ r = decodeReplay(input.value); }
+  catch(e){
+    snd('error');
+    out.innerHTML = `<div class="replay-err">⚠️ ${esc(e.message)}</div>`;
+    return;
+  }
+  const m = META[r.g];
+  const tier = DIFFICULTY_TIERS[r.t] || DIFFICULTY_TIERS.stable;
+  const when = new Date(r.d);
+  const mine = (user && user.highScores && +user.highScores[r.g]) || 0;
+  const delta = mine ? r.p - mine : null;
+  snd('success');
+  out.innerHTML =
+    `<div class="replay-card">
+       <div class="replay-head"><span class="replay-emoji">${m.emoji}</span>
+         <div><div class="replay-title">${esc(m.name)}</div>
+              <div class="replay-by">by ${esc(r.n || 'Operative')}</div></div>
+         <div class="replay-score">${(+r.p || 0).toLocaleString()}<em>PTS</em></div>
+       </div>
+       <div class="res-row"><span>⚙️ Stability</span><span class="rv">${tier.icon} ${tier.label}</span></div>
+       <div class="res-row"><span>🕒 Logged</span><span class="rv">${when.toISOString().slice(0,16).replace('T',' ')} UTC</span></div>
+       ${r.s ? `<div class="res-row"><span>🔑 Seed / Modifier</span><span class="rv">${esc(String(r.s))}</span></div>` : ''}
+       ${delta == null ? '' :
+         `<div class="res-row"><span>📊 vs Your Best</span><span class="rv ${delta > 0 ? 'worse' : 'better'}">` +
+         `${delta > 0 ? `${delta.toLocaleString()} AHEAD OF YOU` : delta < 0 ? `${Math.abs(delta).toLocaleString()} BEHIND YOU` : 'DEAD LEVEL'}</span></div>`}
+     </div>
+     <button class="btn btn-primary btn-sm replay-try" id="replay-try">▶ Run ${esc(m.name)}</button>`;
+  document.getElementById('replay-try').onclick = () => {
+    curGame = r.g;
+    if(DIFFICULTY_TIERS[r.t]) setDifficultyTier(r.t);   // match the run you are chasing
+    document.getElementById('g-title').textContent = m.name;
+    showScreen('game-screen');
+    prepGame(r.g);
+  };
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  🎵 MUSIC DRIVES — hand the equipped one to the sequencer
+// ══════════════════════════════════════════════════════════════════════
+// A drive is a cosmetic, so it is applied on the same pass as the colour and
+// the pointer (applyEquippedCosmetics). The engine owns everything about what a
+// drive SOUNDS like; this only decides which row of the table it is handed.
+function applyMusicDrive(){
+  if(!window.SFX || !SFX.setDrive) return;
+  const item = (user && findItem('drives', user.equipped && user.equipped.drives)) || SHOP_ITEMS.drives[0];
+  SFX.setDrive({ bpm: item.bpm, chords: item.chords, voice: item.voice });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  🔌 HUB WIRING — the new doors
+// ══════════════════════════════════════════════════════════════════════
+// Every binding is optional-chained for the same reason the originals are: a
+// browser holding a cached older index.html against this app.js should lose one
+// button, not every statement after it.
+
+// ── OVERLAYS ──
+// Both reuse the feedback modal's shell, so they get its backdrop and scroll
+// behaviour; only the open/close wiring is local.
+function openOverlay(id, render){
+  const ov = document.getElementById(id);
+  if(!ov || !user) return;
+  if(render) render();
+  ov.classList.add('show');          // the shell's own open state — see .fb-overlay.show
+  ov.setAttribute('aria-hidden', 'false');
+  snd('tab');
+}
+function closeOverlay(id){
+  const ov = document.getElementById(id);
+  if(!ov) return;
+  ov.classList.remove('show');
+  ov.setAttribute('aria-hidden', 'true');
+  snd('uiBack');
+}
+
+document.getElementById('btn-achievements')?.addEventListener('click',
+  () => openOverlay('ach-overlay', renderAchievementMatrix));
+document.getElementById('ach-close')?.addEventListener('click', () => closeOverlay('ach-overlay'));
+document.getElementById('ach-overlay')?.addEventListener('click', e => {
+  if(e.target.id === 'ach-overlay') closeOverlay('ach-overlay');
+});
+
+document.getElementById('btn-perks')?.addEventListener('click',
+  () => openOverlay('perk-overlay', renderPerkTree));
+document.getElementById('perk-close')?.addEventListener('click', () => closeOverlay('perk-overlay'));
+document.getElementById('perk-overlay')?.addEventListener('click', e => {
+  if(e.target.id === 'perk-overlay') closeOverlay('perk-overlay');
+});
+
+// Escape closes whichever is open — the feedback modal already trains that.
+document.addEventListener('keydown', e => {
+  if(e.key !== 'Escape') return;
+  ['ach-overlay','perk-overlay'].forEach(id => {
+    if(document.getElementById(id)?.classList.contains('show')) closeOverlay(id);
+  });
+});
+
+// ── DAILY HACK ──
+document.getElementById('btn-daily-hack')?.addEventListener('click', () => startDailyHack());
+
+// ── REPLAY ──
+document.getElementById('btn-replay-export')?.addEventListener('click', () => exportReplay());
+document.getElementById('replay-load')?.addEventListener('click', () => loadReplay());
+document.getElementById('replay-input')?.addEventListener('keydown', e => {
+  if(e.key === 'Enter') loadReplay();
+});
 
 showScreen('auth-screen');
 // ══════════════════════════════════════════════════════════════════════
@@ -10209,6 +11690,20 @@ Object.entries(MP_MODES).forEach(([key, m]) => {
 
 let mpMode = 'pongduel';
 let mpFilter = 'all';                       // which kind the picker is showing
+// 👥 The squad size the NEXT room this player opens will run at. It is only a
+// preference until a room is created — once one exists, mp.teamSize is the
+// truth and this is ignored.
+let mpTeamSize = 1;
+
+// The two names on the versus strip. In a duel they are the two operatives; in
+// a squad round they are the two sides, because the number under each one is
+// the side's total rather than any one player's.
+function mpMyLabel(){
+  return (mp && mp.teamSize === 2) ? MP_TEAM_META[mp.myTeam].name : ((user && user.username) || 'YOU');
+}
+function mpOppLabel(){
+  return (mp && mp.teamSize === 2) ? MP_TEAM_META[mp.foeTeam].name : (mp ? mp.oppName : 'RIVAL');
+}
 
 const MP_KINDS = {
   live: { label:'LIVE VERSUS', tag:'◉ LIVE VERSUS', cls:'k-live' },
@@ -10265,8 +11760,8 @@ function mpOff(bucket){
 // deadlock: the host sat on a greyed-out START waiting for a button the guest
 // had no reason to think was mandatory. The toggle stays, as a way to hold the
 // host off for a moment — it just isn't the default state any more.
-function mpCard(role){
-  return {
+function mpCard(role, slot){
+  const card = {
     name:  (user && user.username) || 'Operative',
     color: getEquippedColorHex(),
     skin:  getEquippedSkinEmoji() || '',
@@ -10274,6 +11769,32 @@ function mpCard(role){
     ready: true,
     joinedAt: Date.now()
   };
+  // Only a 2v2 seat carries a slot. In a duel there are two seats and the role
+  // already names them, so writing a slot would be a second answer to a
+  // question that already has one.
+  if(slot){ card.slot = slot; card.team = MP_SEAT_TEAM[slot]; }
+  return card;
+}
+
+// ── 👥 SQUAD SEATING ──
+// Four fixed slots. The claim order is deliberately NOT a0,a1,b0,b1: the second
+// operative through the door goes OPPOSITE the host, so a half-full room is
+// still a playable 1v1 rather than two people on the same team staring at an
+// empty other side. Third fills the host's wing, fourth completes the room.
+const MP_SEATS = ['a0', 'b0', 'a1', 'b1'];
+const MP_SEAT_TEAM = { a0:'alpha', a1:'alpha', b0:'bravo', b1:'bravo' };
+const MP_TEAM_META = {
+  alpha: { name:'TEAM ALPHA', icon:'🔵', color:'#00f5ff' },
+  bravo: { name:'TEAM BRAVO', icon:'🔴', color:'#ff0090' }
+};
+
+// Which squad size a mode can actually be played at. A LIVE duel puts two
+// players inside one simulation — a third paddle has nowhere to go — so 2v2 is
+// offered only on the score races, where each player already has a board of
+// their own and a team is just a sum.
+function mpModeTeamSize(modeKey){
+  const m = MP_MODES[modeKey];
+  return (mpTeamSize === 2 && m && m.kind === 'race') ? 2 : 1;
 }
 
 // A colour arriving over the wire is another player's data, so it never reaches
@@ -10301,6 +11822,11 @@ function mpAttach(code, isHost, net, bot){
     room: null, status: 'waiting',
     startAt: 0, endsAt: 0,
     me: null, opp: null, oppName: 'RIVAL',
+    // 👥 Squad state. All four are recomputed on every room snapshot; the
+    // defaults here are what a duel looks like, so nothing has to special-case
+    // the moment before the first snapshot arrives.
+    teamSize: 1, slot: null, myTeam: 'alpha', foeTeam: 'bravo',
+    mateIds: [], foeIds: [],
     unsub: [], roundUnsub: [],
     inRound: false, cdRaf: 0,
     autoBotAt: 0,                // when an unanswered Quick Match calls a droid in
@@ -10313,6 +11839,9 @@ function mpAttach(code, isHost, net, bot){
 async function mpCreateRoom(modeKey){
   const code = await mpFreeCode();
   const ref = db.ref('rooms/' + code);
+  // 👥 A room is opened at a fixed squad size and keeps it: growing a live 1v1
+  // into a 2v2 would mean re-teaming players who already agreed to a duel.
+  const teamSize = mpModeTeamSize(modeKey);
   await ref.set({
     mode: modeKey,
     game: MP_MODES[modeKey].gid,
@@ -10320,11 +11849,15 @@ async function mpCreateRoom(modeKey){
     hostName: (user && user.username) || 'Operative',
     status: 'waiting',
     open: true,
+    teamSize,
     // The host's stability tier travels with the room so both sides can play
     // the round under ONE set of speed/clock modifiers — see mpBeginRound().
     tier: currentDifficultyTier,
     createdAt: firebase.database.ServerValue.TIMESTAMP,
-    players: { [user.uid]: mpCard('host') }
+    // The host always takes A0. Everything else is claimed a seat at a time by
+    // whoever arrives, in MP_SEATS order.
+    seats: teamSize === 2 ? { a0: user.uid } : null,
+    players: { [user.uid]: mpCard('host', teamSize === 2 ? 'a0' : null) }
   });
   // The host owns the room: if their connection dies the room and its live
   // channel go with it, rather than sitting in Quick Match forever as a trap.
@@ -10353,6 +11886,38 @@ async function mpJoinRoom(rawCode){
   const r = snap.val() || {};
   if(r.host === user.uid) throw new Error('OWN_ROOM');
   if((r.status || 'waiting') !== 'waiting') throw new Error('IN_PROGRESS');
+
+  // ── 👥 2v2: claim one of the four slots ──
+  // Same rule as the duel below — a transaction on a single LEAF, so two people
+  // racing the same code can never both believe they took the same chair. The
+  // slots are simply tried in order until one commits.
+  if(+r.teamSize === 2){
+    const players = r.players || {};
+    const seats = r.seats || {};
+    // Sweep the ghosts first, for the same reason the duel path does.
+    for(const s of MP_SEATS){
+      if(seats[s] && !players[seats[s]]) await ref.child('seats/' + s).remove();
+    }
+    let mine = null;
+    for(const s of MP_SEATS){
+      const res = await ref.child('seats/' + s).transaction(cur => {
+        if(cur && cur !== user.uid) return;    // abort — taken
+        return user.uid;
+      });
+      if(res.committed){ mine = s; break; }
+    }
+    if(!mine) throw new Error('FULL');
+
+    const filled = MP_SEATS.filter(s => s === mine || (seats[s] && players[seats[s]])).length;
+    await ref.update({
+      open: filled < MP_SEATS.length,          // a room with a free chair stays listed
+      ['players/' + user.uid]: mpCard('guest', mine)
+    });
+    ref.child('players/' + user.uid).onDisconnect().remove();
+    ref.child('seats/' + mine).onDisconnect().remove();
+    mpAttach(code, false);
+    return code;
+  }
 
   // A seat marker whose player node is gone is a ghost: onDisconnect can't fire
   // for a tab that was suspended rather than closed, and without this the room
@@ -10399,13 +11964,18 @@ async function mpQuickMatch(modeKey){
     return await mpCreateRoom(modeKey);
   }
 
+  const want = mpModeTeamSize(modeKey);
   const candidates = [];
   snap.forEach(c => {
     const r = c.val() || {};
     if(r.mode !== modeKey) return;
     if((r.status || 'waiting') !== 'waiting') return;
     if(r.host === user.uid) return;
-    if(Object.keys(r.players || {}).length !== 1) return;
+    // Only rooms running the squad size this player asked for: dropping a duel
+    // player into a half-built 2v2 would silently change what they signed up to.
+    if((+r.teamSize || 1) !== want) return;
+    const seated = Object.keys(r.players || {}).length;
+    if(seated < 1 || seated >= (want === 2 ? MP_SEATS.length : 2)) return;
     if(netNow() - (r.createdAt || 0) > 10*60*1000) return;
     candidates.push(c.key);
   });
@@ -10434,6 +12004,14 @@ async function mpLeaveRoom(){
       session.live.onDisconnect().cancel();
       await session.roomRef.remove();
       await session.live.remove();
+    }else if(session.slot){
+      // 👥 A squad seat: hand back the SLOT, not the `guest` leaf. The room is
+      // re-opened because a 2v2 with a hole in it is exactly what Quick Match
+      // should be offering to the next operative through the door.
+      session.roomRef.child('seats/' + session.slot).onDisconnect().cancel();
+      await seat.remove();
+      await session.roomRef.child('seats/' + session.slot).remove();
+      if(session.status === 'waiting') await session.roomRef.update({ open: true });
     }else{
       session.roomRef.child('guest').onDisconnect().cancel();
       await seat.remove();
@@ -10449,13 +12027,28 @@ async function mpLeaveRoom(){
 // Host only: hand the room back to its lobby, ready for a rematch.
 function mpResetRoom(){
   if(!mp || !mp.isHost) return;
-  const upd = { status:'waiting', open:true, startAt:null, endsAt:null };
+  const upd = { status:'waiting', open:true, startAt:null, endsAt:null, chaos:null };
   upd['players/' + mp.myId + '/ready'] = true;
   // A person has to say they want another round. A droid has no opinion, and
   // standing it down would disable START with nobody left to press READY.
-  if(mp.oppId) upd['players/' + mp.oppId + '/ready'] = !!mp.bot;
+  // In a 2v2 that is three seats to stand down, not one.
+  [...mp.mateIds, ...mp.foeIds].forEach(id => {
+    upd['players/' + id + '/ready'] = !!mp.bot;
+  });
   mp.roomRef.update(upd).catch(e => console.warn('Room reset failed:', e));
   mp.live.remove().catch(()=>{});
+}
+
+// Whether the host may press START. A duel needs its one rival ready; a squad
+// round needs at least one operative on each side, and everyone present ready.
+function mpCanStart(){
+  if(!mp || !mp.isHost || mp.status !== 'waiting') return false;
+  const players = (mp.room && mp.room.players) || {};
+  if(mp.teamSize === 2){
+    if(!mp.foeIds.length) return false;                       // nobody to play
+    return [...mp.mateIds, ...mp.foeIds].every(id => players[id] && players[id].ready);
+  }
+  return !!(mp.opp && mp.opp.ready);
 }
 
 // The room record changed: presence, ready flags, the start signal, the result.
@@ -10467,12 +12060,30 @@ function mpOnRoom(s){
   mp.room = r;
   const players = r.players || {};
   const ids = Object.keys(players);
-  mp.oppId   = ids.find(id => id !== mp.myId) || null;
+  mp.teamSize = +r.teamSize || 1;
   mp.me      = players[mp.myId] || null;
-  mp.opp     = mp.oppId ? players[mp.oppId] : null;
-  mp.oppName = (mp.opp && mp.opp.name) || 'RIVAL';
+  mp.slot    = (mp.me && mp.me.slot) || null;
   mp.startAt = r.startAt || 0;
   mp.endsAt  = r.endsAt  || 0;
+
+  // ── SIDES ──
+  // One derivation for both shapes. A duel is simply the squad case with one
+  // seat a side, so everything downstream can read mates/foes and never ask
+  // which kind of room it is in. `oppId`/`opp` stay live for the three live
+  // duels, which genuinely do have exactly one rival.
+  if(mp.teamSize === 2){
+    mp.myTeam  = (mp.me && mp.me.team) || 'alpha';
+    mp.foeTeam = mp.myTeam === 'alpha' ? 'bravo' : 'alpha';
+    mp.mateIds = ids.filter(id => id !== mp.myId && players[id].team === mp.myTeam);
+    mp.foeIds  = ids.filter(id => players[id].team === mp.foeTeam);
+  }else{
+    mp.myTeam = 'alpha'; mp.foeTeam = 'bravo';
+    mp.mateIds = [];
+    mp.foeIds  = ids.filter(id => id !== mp.myId);
+  }
+  mp.oppId   = mp.foeIds[0] || null;
+  mp.opp     = mp.oppId ? players[mp.oppId] : null;
+  mp.oppName = (mp.opp && mp.opp.name) || 'RIVAL';
 
   // Our own seat disappearing means we were removed — same outcome as the room
   // vanishing, and worth handling before anything downstream reads mp.me.
@@ -10485,8 +12096,11 @@ function mpOnRoom(s){
   if(mp.status === 'done' && mp.inRound){ mpRoundResult(r.result || null); return; }
 
   if(mp.inRound){
-    // Mid-duel, the only room change that matters is the other seat emptying.
-    if(!mp.oppId && mp.round && mp.round.onOppLeft) mp.round.onOppLeft();
+    // Mid-round, the only room change that matters is the opposing side going
+    // empty. In a 2v2 one rival dropping is not a walkover — their partner is
+    // still playing — so the round only collapses when the whole side is gone.
+    if(!mp.foeIds.length && mp.round && mp.round.onOppLeft) mp.round.onOppLeft();
+    else if(mp.round && mp.round.onRoster) mp.round.onRoster();
   }else{
     mpPaintRoom();
   }
@@ -10725,10 +12339,46 @@ function mpMetaPts(meta, mult){
   return String(meta || '').replace(/UP TO (\d+) PTS/, (_, n) => `UP TO ${Math.floor(+n * d)} PTS`);
 }
 
+// ── 👥 SQUAD SIZE PICKER ──
+// Delegated once, like the stability dial, so the chips survive every rebuild
+// of the lobby. Flipping to 2v2 while a LIVE duel is selected moves the
+// selection to a race, because a live duel has no second seat a side to give.
+function renderMpTeamSize(){
+  const bar = document.getElementById('mp-teamsize');
+  if(!bar) return;
+  bar.querySelectorAll('.mp-size-btn').forEach(b => b.classList.toggle('on', +b.dataset.size === mpTeamSize));
+  const note = document.getElementById('mp-teamsize-note');
+  if(note){
+    note.textContent = mpTeamSize === 2
+      ? 'Four seats, two squads. Each side\'s boards are added together — score races only.'
+      : 'Head-to-head. First open seat wins it.';
+  }
+  bar.classList.toggle('squad', mpTeamSize === 2);
+}
+
+document.getElementById('mp-teamsize')?.addEventListener('click', e => {
+  const btn = e.target.closest?.('.mp-size-btn');
+  if(!btn) return;
+  const size = +btn.dataset.size;
+  if(size === mpTeamSize) return;
+  mpTeamSize = size;
+  snd('tab');
+  // A 2v2 needs a mode with two boards a side. Pull the selection onto one
+  // rather than letting CREATE ROOM quietly downgrade to a duel.
+  if(size === 2 && MP_MODES[mpMode] && MP_MODES[mpMode].kind !== 'race'){
+    if(mpFilter === 'live') mpFilter = 'race';
+    const first = Object.entries(MP_MODES).find(([, m]) => m.kind === 'race');
+    if(first){ mpMode = first[0]; toast('👥 2v2 runs on score races — switched to ' + MP_MODES[mpMode].name, 2800); }
+  }
+  renderMpTeamSize();
+  renderMpModes();
+});
+
 function renderMpModes(){
   const wrap = document.getElementById('mp-modes');
   if(!wrap) return;
 
+  renderMpTeamSize();
   const entries = Object.entries(MP_MODES);
 
   // ── FILTER CHIPS ──
@@ -10752,16 +12402,22 @@ function renderMpModes(){
   entries.forEach(([key, m]) => {
     if(mpFilter !== 'all' && m.kind !== mpFilter) return;
     const kind = MP_KINDS[m.kind] || MP_KINDS.race;
+    // A live duel puts both players inside ONE simulation — there is no second
+    // paddle to give a teammate — so it is shown greyed rather than hidden while
+    // 2v2 is selected. Hiding it would read as the mode having disappeared.
+    const barred = mpTeamSize === 2 && m.kind !== 'race';
     const card = document.createElement('div');
-    card.className = 'mp-mode' + (key === mpMode ? ' sel' : '');
+    card.className = 'mp-mode' + (key === mpMode && !barred ? ' sel' : '') + (barred ? ' barred' : '');
     card.dataset.mode = key;
     card.innerHTML =
       `<span class="mp-mode-kind ${kind.cls}">${kind.tag}</span>` +
       `<span class="mp-mode-icon">${m.icon}</span>` +
       `<div class="mp-mode-name">${m.name}</div>` +
       `<div class="mp-mode-desc">${m.desc}</div>` +
-      `<span class="mp-mode-meta">${mpMetaPts(m.meta)}</span>`;
-    card.onclick = () => { mpMode = key; snd('tab'); renderMpModes(); };
+      `<span class="mp-mode-meta">${barred ? '👥 1v1 ONLY' : mpMetaPts(m.meta)}</span>`;
+    card.onclick = barred
+      ? () => { snd('deny'); toast('👥 That duel is one board shared by two players — 2v2 runs on score races.', 3000); }
+      : () => { mpMode = key; snd('tab'); renderMpModes(); };
     wrap.appendChild(card);
   });
 
@@ -10803,34 +12459,80 @@ function mpPaintRoom(){
     mode ? `${mode.icon} ${mode.name} · ${mpMetaPts(mode.meta, roomTier.pointMult)}` : '—';
   mpPaintDiff();
 
-  mpSeat(document.getElementById('mp-seat-me'),  mp.me,  true);
-  mpSeat(document.getElementById('mp-seat-opp'), mp.opp, false);
+  // ── SEATS ──
+  // Two layouts, one of which is on screen at a time. The 2v2 grid is not a
+  // wider version of the duel pair: it groups by SIDE, because in a squad round
+  // the number that matters is the team's, not any one operative's.
+  const isSquad = mp.teamSize === 2;
+  const duelWrap = document.querySelector('.mp-seats');
+  const teamWrap = document.getElementById('mp-teams');
+  if(duelWrap) duelWrap.style.display = isSquad ? 'none' : '';
+  if(teamWrap) teamWrap.style.display = isSquad ? '' : 'none';
+
+  if(isSquad){
+    const players = (mp.room && mp.room.players) || {};
+    const seats   = (mp.room && mp.room.seats) || {};
+    [['a0','mp-seat-a0'],['a1','mp-seat-a1'],['b0','mp-seat-b0'],['b1','mp-seat-b1']]
+      .forEach(([slot, id]) => {
+        const uid = seats[slot];
+        mpSeat(document.getElementById(id), uid ? players[uid] : null, uid === mp.myId);
+      });
+    // Which side is yours, said on the headers rather than on each seat — four
+    // "· YOU"-style tags would be four places to look for one fact. The number
+    // beside it is the side's HEADCOUNT: a lobby has no scores yet, and the one
+    // thing a player waiting in it wants to know is whether the sides are even.
+    ['alpha','bravo'].forEach(t => {
+      const el = document.querySelector(`.mp-team[data-team="${t}"]`);
+      if(el) el.classList.toggle('mine', t === mp.myTeam);
+      const manned = MP_SEATS.filter(s => MP_SEAT_TEAM[s] === t && seats[s] && players[seats[s]]).length;
+      const num = document.getElementById('mp-team-score-' + t);
+      if(num){
+        num.textContent = `${manned}/2`;
+        num.classList.toggle('short', manned < 2);
+      }
+    });
+  }else{
+    mpSeat(document.getElementById('mp-seat-me'),  mp.me,  true);
+    mpSeat(document.getElementById('mp-seat-opp'), mp.opp, false);
+  }
 
   const readyBtn = document.getElementById('btn-mp-ready');
   const startBtn = document.getElementById('btn-mp-start');
   const addBotBtn = document.getElementById('btn-mp-addbot');
   const copyBtn = document.getElementById('btn-mp-copy');
   const statusEl = document.getElementById('mp-room-status');
-  const here = !!mp.opp;
+  const here = isSquad ? !!mp.foeIds.length : !!mp.opp;
   const isBotRoom = !!mp.bot;
-  const guestReady = mp.isHost ? !!(mp.opp && mp.opp.ready) : !!(mp.me && mp.me.ready);
+  const guestReady = mp.isHost ? mpCanStart() : !!(mp.me && mp.me.ready);
 
   readyBtn.style.display = mp.isHost ? 'none' : '';
   startBtn.style.display = mp.isHost ? '' : 'none';
   // The code of a droid room is a fiction — there is no grid entry behind it,
   // so there is nothing worth copying and nobody who could join.
   if(copyBtn) copyBtn.style.display = isBotRoom ? 'none' : '';
-  // Hosts sitting on an empty seat can stop waiting and summon a droid.
+  // Hosts sitting on an empty seat can stop waiting and summon a droid. Not
+  // offered in a squad room: a droid fills ONE chair, and the interesting
+  // question there is which of three it should take.
   if(addBotBtn) addBotBtn.style.display =
-    (mp.isHost && !isBotRoom && !here && mp.status === 'waiting') ? '' : 'none';
+    (mp.isHost && !isBotRoom && !isSquad && !here && mp.status === 'waiting') ? '' : 'none';
 
   if(!mp.isHost){
-    readyBtn.textContent = guestReady ? '✔ READY — STAND DOWN' : '✔ READY UP';
-    readyBtn.classList.toggle('btn-mp-unready', guestReady);
+    const meReady = !!(mp.me && mp.me.ready);
+    readyBtn.textContent = meReady ? '✔ READY — STAND DOWN' : '✔ READY UP';
+    readyBtn.classList.toggle('btn-mp-unready', meReady);
   }
-  startBtn.disabled = !(here && guestReady && mp.status === 'waiting');
+  startBtn.disabled = !mpCanStart();
 
-  if(!here){
+  if(isSquad){
+    const seated = 1 + mp.mateIds.length + mp.foeIds.length;
+    statusEl.textContent =
+      mp.status !== 'waiting' ? 'Round in progress…'
+    : !here                   ? `Send code ${mp.code} — ${MP_SEATS.length - seated} seat${MP_SEATS.length - seated === 1 ? '' : 's'} open, and the other side is empty.`
+    : seated < MP_SEATS.length ? `${seated}/4 linked · both sides manned. Start now, or wait for a full grid — code ${mp.code}.`
+    : mpCanStart()            ? 'Full grid, all four locked in — start the round.'
+    :                           'Waiting on the last operative to ready up…';
+  }
+  else if(!here){
     // A Quick Match room that is arming its droid fallback counts down out
     // loud, so the takeover reads as promised rather than as a glitch.
     const left = mp.autoBotAt ? Math.max(0, Math.ceil((mp.autoBotAt - Date.now())/1000)) : 0;
@@ -11007,12 +12709,24 @@ function mpBeginRound(){
 
   document.getElementById('mp-hud').style.display = 'flex';
   document.getElementById('mp-ping-pill').style.display = '';
-  mpHudNames((user && user.username) || 'YOU', mp.oppName);
+  mpHudNames(mpMyLabel(), mpOppLabel());
   mpHudScores(0, 0, 0.5);
   mpPing(null);
   mpHideOverlay();
 
-  mpCountdown(mp.startAt, () => { if(mp && mp.inRound) mode.start(); });
+  // 🌀 The room's modifier, not this tab's. The HOST rolls it into the room
+  // record before it flips to `playing` (mpStartRound), so both clients read the
+  // same id off the same node — a modifier each side rolled locally would be
+  // two different games with one scoreboard, exactly like a mixed tier.
+  const mod = chaosById(mp.room && mp.room.chaos);
+  chaosAnnounce(mod);
+
+  mpCountdown(mp.startAt, () => {
+    if(!mp || !mp.inRound) return;
+    chaosArm(mod);
+    chaosRun(mode.start);
+    showPowerDock();
+  });
 }
 
 // Installed by each duel as it starts. Returns whether the rival already left
@@ -11206,7 +12920,7 @@ document.getElementById('btn-mp-ready').onclick = async () => {
 
 document.getElementById('btn-mp-start').onclick = async () => {
   if(!mp || !mp.isHost) return;
-  if(!mp.opp || !mp.opp.ready) return;
+  if(!mpCanStart()) return;
   const btn = document.getElementById('btn-mp-start');
   btn.disabled = true;
   const mode = MP_MODES[mp.room && mp.room.mode];
@@ -11218,6 +12932,9 @@ document.getElementById('btn-mp-start').onclick = async () => {
       startAt,
       endsAt: startAt + ((mode && mode.seconds) || 60) * 1000,
       tier: currentDifficultyTier,          // re-stamped: the lobby may have sat a while
+      // 🌀 Rolled ONCE, by the host, into the room — the same reason the tier
+      // lives there. Every client reads this id; nobody rolls their own.
+      chaos: (chaosRoll() || {}).id || null,
       result: null
     });
   }catch(e){
@@ -12045,25 +13762,50 @@ function vsWaitBoard(msg, sub){
 function startScoreDuel(modeKey){
   if(!mp) return;
   const mode = MP_MODES[modeKey], gid = mode.gid;
-  const isHost = mp.isHost, myId = mp.myId, oppId = mp.oppId;
-  const oppLabel = mp.oppName.toUpperCase().slice(0, 12);
+  const isHost = mp.isHost, myId = mp.myId;
+  // ── 👥 SIDES, NOT OPPONENTS ──
+  // Everything below reasons about two SIDES. A duel is the squad case with one
+  // operative a side, so the aggregation costs a 1v1 nothing and buys the 2v2
+  // grid its combined scoreline for free: every board already publishes its own
+  // running total to live/score/<uid>, and a Neon Nebula team score genuinely
+  // IS the two operatives' wave kills added together.
+  const squad = mp.teamSize === 2;
+  const mates = mp.mateIds.slice();             // my side, not counting me
+  const foes  = mp.foeIds.slice();
+  const myLabel  = (squad ? MP_TEAM_META[mp.myTeam].name  : 'YOU').toUpperCase();
+  const oppLabel = (squad ? MP_TEAM_META[mp.foeTeam].name : mp.oppName).toUpperCase().slice(0, 14);
   const endsAt = mp.endsAt;                    // captured: outlives the session on walkover paths
   const cap = META[gid].maxPts;
   const forceFin = VS_FORCE_FIN[gid] || (n => Math.min(cap, Math.round(n)));
   // Winner's cut. Sized off the cap but held down for the uncapped games, so
   // Arena's 99999 ceiling doesn't mint a four-figure bonus.
   const winBonus = Math.round(Math.min(cap, 1500) * 0.18);
+  // A side's ceiling scales with how many boards feed it, or a full 2v2 would
+  // be capped at what one player can score and the second seat would be free.
+  const sideCap = cap * (squad ? 2 : 1);
 
-  let myLive = 0, oppLive = 0, myFinal = null, oppFin = null;
+  // Per-seat readouts keyed by uid. `live` is what that board is showing right
+  // now; `fin` is written once, when that run is banked, and is what counts.
+  const live = Object.create(null), fin = Object.create(null);
+  let myLive = 0, myFinal = null;
   let myDone = false, over = false, finalized = false, lastSend = 0, lag = null;
-  let oppBankedTold = false;
+  const bankedTold = Object.create(null);
   const pingTick = mpThrottle(500);
 
+  // A side's number: each seat's FINAL if it has one, otherwise what it is
+  // currently showing.
+  const sumOf   = ids => ids.reduce((s, id) => s + (fin[id] != null ? fin[id] : (live[id] || 0)), 0);
+  const myScore  = () => (myDone ? myFinal : myLive) + sumOf(mates);
+  const foeScore = () => sumOf(foes);
+  const allIn    = ids => ids.every(id => fin[id] != null);
+  // Settle a seat that never reported: its last live number, converted the same
+  // way my own ceilinged run would be.
+  const settle   = ids => ids.reduce((s, id) => s + (fin[id] != null ? fin[id] : forceFin(live[id] || 0)), 0);
+
   function paintHud(){
-    const a = myDone ? myFinal : myLive;
-    const b = oppFin != null ? oppFin : oppLive;
-    mpHudScores(myDone ? myFinal + ' ✔' : myLive,
-                oppFin != null ? oppFin + ' ✔' : oppLive,
+    const a = myScore(), b = foeScore();
+    mpHudScores((myDone && allIn(mates)) ? a + ' ✔' : String(a),
+                (foes.length && allIn(foes)) ? b + ' ✔' : String(b),
                 (a + b) ? a/(a + b) : 0.5);
   }
 
@@ -12084,7 +13826,7 @@ function startScoreDuel(modeKey){
   };
 
   // My solo round ended (or was ceilinged): freeze the board, publish the
-  // number, and wait out the other side.
+  // number, and wait out the rest of the grid.
   function bank(pts, forcedByClock){
     if(myDone || over) return;
     myDone = true;
@@ -12092,74 +13834,111 @@ function startScoreDuel(modeKey){
     vsHaltGame();
     onQuitGame = mpQuitRound;      // Cyber Arena swaps in its own quit — take it back
     if(mp) mp.live.child('fin/' + myId).set({ pts: myFinal, t: netNow() }).catch(()=>{});
+    // In a squad round the wait is for everyone still playing, mates included —
+    // your run is in, but your side's number is not settled until theirs is.
+    const waitingOn = squad
+      ? [...mates, ...foes].filter(id => fin[id] == null).length
+      : foes.filter(id => fin[id] == null).length;
     vsWaitBoard(forcedByClock ? 'TIME CEILING — RUN BANKED' : 'RUN BANKED',
-                myFinal + ' PTS · waiting for ' + oppLabel + '…');
+                myFinal + ' PTS · ' + (waitingOn
+                  ? `waiting on ${waitingOn} board${waitingOn === 1 ? '' : 's'}…`
+                  : 'settling the round…'));
     snd('score');
     paintHud();
     maybeFinalize();
   }
 
-  // Host only: the round settles when both banks are in, or when the ceiling
-  // plus a grace period has passed and the rival's estimate has to stand in.
+  // Host only: the round settles when every board has banked, or when the
+  // ceiling plus a grace period has passed and the stragglers have to be
+  // estimated from their last synced number.
   function maybeFinalize(){
     if(!mp || !isHost || finalized || !myDone) return;
-    if(oppFin == null && netNow() <= endsAt + 4000) return;
+    const everyone = [...mates, ...foes];
+    if(!allIn(everyone) && netNow() <= endsAt + 4000) return;
     finalized = true;
-    const theirs = oppFin != null ? oppFin : forceFin(oppLive);
+    // Published per SEAT, not per side: mpShowDuelResult runs on each client and
+    // each one re-adds its own side, so a guest never has to trust a total it
+    // cannot check against its own board.
     const scores = {};
     scores[myId] = myFinal;
-    scores[oppId] = theirs;
+    everyone.forEach(id => { scores[id] = fin[id] != null ? fin[id] : forceFin(live[id] || 0); });
     mpFinishRound({ scores });
-    gLater(() => report(myFinal, theirs, 'Result write did not land — settled locally'), 4000);
+    gLater(() => report(myScoreSettled(), settle(foes), 'Result write did not land — settled locally'), 4000);
   }
+
+  const myScoreSettled = () => (myFinal == null ? forceFin(myLive) : myFinal) + settle(mates);
 
   // Idempotent: whichever ending gets here first is the one that counts.
   function report(mine, theirs, note, forced){
     if(over) return;
     over = true;
     const outcome = forced || (mine > theirs ? 'win' : (mine < theirs ? 'loss' : 'draw'));
-    const pts = Math.min(cap, Math.round(mine) + (outcome === 'win' ? winBonus : 0));
-    const bd = {
-      '⭐ Your Score': Math.round(mine),
-      ['🎯 ' + oppLabel + ' Score']: Math.round(theirs),
-      '📶 Link Lag': lag == null ? '—' : Math.round(lag) + ' ms',
-      '🏆 Awarded': pts + ' PTS'
-    };
+    const pts = Math.min(sideCap, Math.round(mine) + (outcome === 'win' ? winBonus : 0));
+    const bd = squad
+      ? {
+          ['🔷 ' + myLabel]: Math.round(mine),
+          '⭐ Your Board': Math.round(myFinal == null ? forceFin(myLive) : myFinal),
+          ['🎯 ' + oppLabel]: Math.round(theirs),
+          '📶 Link Lag': lag == null ? '—' : Math.round(lag) + ' ms',
+          '🏆 Awarded': pts + ' PTS'
+        }
+      : {
+          '⭐ Your Score': Math.round(mine),
+          ['🎯 ' + oppLabel + ' Score']: Math.round(theirs),
+          '📶 Link Lag': lag == null ? '—' : Math.round(lag) + ' ms',
+          '🏆 Awarded': pts + ' PTS'
+        };
     if(note) bd['🔌 Note'] = note;
     mpShowDuelResult(gid, pts, outcome, bd);
   }
 
   // ── WIRE ──
-  mpOn(mp.live.child('score/' + oppId), 'value', s => {
-    const v = s.val();
-    if(!v || !mp) return;
-    oppLive = Math.max(oppLive, +v.n || 0);
-    lag = Math.max(0, netNow() - (+v.t || netNow()));
-    paintHud();
-  }, 'round');
-  mpOn(mp.live.child('fin/' + oppId), 'value', s => {
-    const v = s.val();
-    if(!v || !mp) return;
-    oppFin = Math.max(0, Math.round(+v.pts || 0));
-    paintHud();
-    if(!myDone && !oppBankedTold){
-      oppBankedTold = true;
-      toast('🏁 ' + oppLabel + ' banked ' + oppFin + ' PTS — beat it!', 2600);
-    }
-    maybeFinalize();
-  }, 'round');
+  // One pair of listeners per other seat. In a duel that is the single pair it
+  // always was; in a squad round it is three.
+  [...mates, ...foes].forEach(id => {
+    mpOn(mp.live.child('score/' + id), 'value', s => {
+      const v = s.val();
+      if(!v || !mp) return;
+      live[id] = Math.max(live[id] || 0, +v.n || 0);
+      lag = Math.max(0, netNow() - (+v.t || netNow()));
+      paintHud();
+    }, 'round');
+    mpOn(mp.live.child('fin/' + id), 'value', s => {
+      const v = s.val();
+      if(!v || !mp) return;
+      fin[id] = Math.max(0, Math.round(+v.pts || 0));
+      paintHud();
+      if(!myDone && !bankedTold[id]){
+        bankedTold[id] = true;
+        const who = ((mp.room && mp.room.players && mp.room.players[id] || {}).name || 'RIVAL').toUpperCase();
+        const mine = mates.includes(id);
+        toast(`🏁 ${who} banked ${fin[id]} PTS — ${mine ? 'your side is up' : 'beat it!'}`, 2600);
+      }
+      maybeFinalize();
+    }, 'round');
+  });
 
   const droppedEarly = mpInstallRound({
     onOppLeft(){
       mpResetRoom();
       if(!myDone){ myDone = true; myFinal = forceFin(myLive); vsHaltGame(); }
-      report(myFinal, oppFin != null ? oppFin : forceFin(oppLive),
-             'Rival dropped the link — walkover', 'win');
+      report(myScoreSettled(), settle(foes),
+             squad ? 'The other squad left the grid — walkover' : 'Rival dropped the link — walkover', 'win');
+    },
+    // 👥 A single seat emptying in a 2v2 is not the end of the round: the side
+    // plays on a board short. Its last synced number is kept, which is exactly
+    // what settle() already does for a seat with no `fin`.
+    onRoster(){
+      if(over || !mp) return;
+      paintHud();
+      maybeFinalize();
     },
     onResult(result){
       const s = (result && result.scores) || {};
-      report(s[myId]  != null ? +s[myId]  : (myFinal == null ? forceFin(myLive) : myFinal),
-             s[oppId] != null ? +s[oppId] : (oppFin != null ? oppFin : forceFin(oppLive)));
+      const pick = id => s[id] != null ? +s[id] : (fin[id] != null ? fin[id] : forceFin(live[id] || 0));
+      const mine = (s[myId] != null ? +s[myId] : (myFinal == null ? forceFin(myLive) : myFinal))
+                 + mates.reduce((a, id) => a + pick(id), 0);
+      report(mine, foes.reduce((a, id) => a + pick(id), 0));
     }
   });
 
@@ -12172,8 +13951,7 @@ function startScoreDuel(modeKey){
     if(!myDone && now > endsAt) bank(forceFin(myLive), true);
     if(myDone) maybeFinalize();
     if(!isHost && myDone && now > endsAt + 8000){
-      report(myFinal, oppFin != null ? oppFin : forceFin(oppLive),
-             'Host went quiet — settled on the last synced score');
+      report(myScoreSettled(), settle(foes), 'Host went quiet — settled on the last synced score');
       return;
     }
     if(pingTick()) mpPing(lag);

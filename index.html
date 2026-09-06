@@ -80,6 +80,23 @@
     </div>
     <span class="diff-mult" id="diff-mult">×1.0 PTS</span>
   </div>
+  <!-- 📈 OPERATIVE RAIL — the profile's level, its XP bar, and the two doors
+       into what that level bought. Sits under the stability dial because it is
+       the OTHER thing that scales what a round is worth, and the two belong
+       read together.
+
+       The perk and achievement buttons live HERE rather than in the hub bar on
+       purpose: that bar is capped at 1060px and a signed-in session already
+       spends 774 of the ~780px it has, so two more controls would have wrapped
+       it onto a second row for every player. They are also profile state, which
+       is what this rail is. -->
+  <div class="xp-rail" id="xp-rail">
+    <span class="xp-lvl" id="xp-lvl">LVL 1</span>
+    <div class="xp-track"><div class="xp-fill" id="xp-fill" style="width:0%"></div></div>
+    <span class="xp-num" id="xp-num">0 / 100 XP</span>
+    <button class="btn btn-secondary btn-sm" id="btn-perks">🌳 PERK TREE</button>
+    <button class="btn btn-secondary btn-sm" id="btn-achievements">🏆 ACHIEVEMENTS</button>
+  </div>
   <div class="hub-body">
     <div>
       <!-- 🌐 NETWORK ARENA — the door to live head-to-head play. Sits above the
@@ -103,6 +120,17 @@
           <div class="mp-banner-sub">Five random missions back-to-back. One combined score, no breaks — quit and you forfeit the lot.</div>
         </div>
         <button class="btn btn-primary" id="btn-boss-rush">RUN IT →</button>
+      </div>
+      <!-- 📅 DAILY HACK — the same locked layout for everyone, every UTC day.
+           Its own banner rather than a mission card because the mission is not
+           yours to pick: the date picks it, and the seed picks the questions. -->
+      <div class="mp-banner dh-banner" id="dh-banner">
+        <span class="mp-banner-icon">📅</span>
+        <div class="mp-banner-txt">
+          <div class="mp-banner-title">DAILY HACK</div>
+          <div class="mp-banner-sub" id="dh-banner-sub">One seeded run, identical for every operative on the grid. Resets at 00:00 UTC.</div>
+        </div>
+        <button class="btn btn-primary" id="btn-daily-hack">📅 DAILY HACK</button>
       </div>
       <div class="sec-label">⚡ SELECT MISSION</div>
       <div class="games-grid">
@@ -221,6 +249,38 @@
       <div class="lb-panel" id="lb-panel">
         <div class="lb-empty">Loading scores...</div>
       </div>
+
+      <!-- 📅 DAILY LEADERBOARD — its own board because it ranks ONE seeded run
+           rather than a lifetime total, and it empties itself when the UTC day
+           rolls over. -->
+      <div class="sec-label dh-lb-label">📅 DAILY LEADERBOARD <em class="dh-reset" id="dh-reset">—</em></div>
+      <div class="lb-panel dh-lb-panel" id="dh-lb-panel">
+        <div class="lb-empty">No runs logged for today yet.</div>
+      </div>
+
+      <!-- 📟 GRID TERMINAL — the arcade's ambient noise. Wired to Firebase when
+           there is one; otherwise it simulates the traffic locally so an empty
+           grid still reads as a living one. -->
+      <div class="sec-label">📟 GRID TERMINAL</div>
+      <div class="chat-panel" id="chat-panel">
+        <div class="chat-log" id="chat-log"></div>
+        <div class="chat-input-row">
+          <input class="input chat-input" id="chat-input" maxlength="140" placeholder="> transmit to the grid…"
+                 autocomplete="off" spellcheck="false">
+          <button class="btn btn-primary btn-sm" id="chat-send">SEND</button>
+        </div>
+      </div>
+
+      <!-- 📥 REPLAY DECODER — pastes a run back into a readable summary. -->
+      <div class="sec-label">📥 LOAD REPLAY</div>
+      <div class="replay-panel">
+        <div class="replay-row">
+          <input class="input replay-input" id="replay-input" placeholder="PIR1.…"
+                 autocomplete="off" spellcheck="false">
+          <button class="btn btn-secondary btn-sm" id="replay-load">DECODE</button>
+        </div>
+        <div class="replay-out" id="replay-out"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -264,6 +324,15 @@
            and the cards are both built by renderMpModes() from MP_MODES, which
            stays the one source of truth for names, rules and point caps. -->
       <div class="mp-filters" id="mp-filters"></div>
+      <!-- 👥 SQUAD SIZE — the same duel table, run as a 1v1 or as a 2v2. A
+           team round aggregates each side's scores into one number, so the
+           mode itself needs no second implementation. -->
+      <div class="mp-teamsize" id="mp-teamsize">
+        <span class="mp-teamsize-lbl">👥 SQUAD SIZE</span>
+        <button class="mp-size-btn on" data-size="1">1 v 1 · DUEL</button>
+        <button class="mp-size-btn" data-size="2">2 v 2 · CO-OP GRID</button>
+        <span class="mp-teamsize-note" id="mp-teamsize-note">Head-to-head. First open seat wins it.</span>
+      </div>
       <div class="mp-modes" id="mp-modes"></div>
 
       <div class="sec-label mp-sec-2">📡 ESTABLISH LINK</div>
@@ -337,6 +406,29 @@
           <div class="mp-seat" id="mp-seat-opp"></div>
         </div>
 
+        <!-- 👥 2v2 CO-OP GRID — four seats in two columns, shown INSTEAD of the
+             duel pair when the room was opened at team size 2. Both squads see
+             the same layout; the tags say which side each seat belongs to. -->
+        <div class="mp-teams" id="mp-teams" style="display:none">
+          <div class="mp-team" data-team="alpha">
+            <div class="mp-team-hdr">
+              <span class="mp-team-name">🔵 TEAM ALPHA</span>
+              <span class="mp-team-score" id="mp-team-score-alpha">0</span>
+            </div>
+            <div class="mp-seat" id="mp-seat-a0"></div>
+            <div class="mp-seat" id="mp-seat-a1"></div>
+          </div>
+          <div class="mp-vs mp-vs-teams">VS</div>
+          <div class="mp-team" data-team="bravo">
+            <div class="mp-team-hdr">
+              <span class="mp-team-name">🔴 TEAM BRAVO</span>
+              <span class="mp-team-score" id="mp-team-score-bravo">0</span>
+            </div>
+            <div class="mp-seat" id="mp-seat-b0"></div>
+            <div class="mp-seat" id="mp-seat-b1"></div>
+          </div>
+        </div>
+
         <div class="mp-room-status" id="mp-room-status">Waiting for an opponent to link in…</div>
         <div class="mp-room-btns">
           <button class="btn btn-primary" id="btn-mp-ready">✔ READY UP</button>
@@ -364,9 +456,12 @@
   </div>
   <div class="market-tabs">
     <button class="market-tab active" data-tab="convert">🔄 Convert</button>
+    <button class="market-tab" data-tab="powerups">⚡ Power-Ups</button>
     <button class="market-tab" data-tab="colors">🎨 Colors</button>
     <button class="market-tab" data-tab="cursors">🖱️ Cursors</button>
     <button class="market-tab" data-tab="skins">🤖 Skins</button>
+    <button class="market-tab" data-tab="drives">🎵 Music Drives</button>
+    <button class="market-tab" data-tab="exits">💀 Exit States</button>
   </div>
   <div class="market-body">
     <div class="market-panel active" id="panel-convert">
@@ -387,9 +482,18 @@
         </div>
       </div>
     </div>
+    <!-- ⚡ POWER-UPS — the one stock that is CONSUMED rather than equipped, so
+         the panel leads with what is currently in the kit rather than with the
+         shelf. Counts live on the profile beside credits. -->
+    <div class="market-panel" id="panel-powerups">
+      <div class="pu-kit" id="pu-kit"></div>
+      <div class="shop-grid" id="shop-powerups"></div>
+    </div>
     <div class="market-panel" id="panel-colors"><div class="shop-grid" id="shop-colors"></div></div>
     <div class="market-panel" id="panel-cursors"><div class="shop-grid" id="shop-cursors"></div></div>
     <div class="market-panel" id="panel-skins"><div class="shop-grid" id="shop-skins"></div></div>
+    <div class="market-panel" id="panel-drives"><div class="shop-grid" id="shop-drives"></div></div>
+    <div class="market-panel" id="panel-exits"><div class="shop-grid" id="shop-exits"></div></div>
   </div>
 </div>
 
@@ -409,6 +513,21 @@
     </div>
   </div>
   <div class="prog-bar"><div class="prog-fill" id="prog-fill" style="width:100%"></div></div>
+
+  <!-- 🌀 CHAOS BANNER — names the modifier the round is being played under.
+       Announced at the start, then shrinks to a persistent chip so a player
+       who looks up mid-round can still see what is being done to them. -->
+  <div id="chaos-banner" style="display:none">
+    <span class="chaos-icon" id="chaos-icon">🌀</span>
+    <div class="chaos-txt">
+      <div class="chaos-name" id="chaos-name">CHAOS MODIFIER</div>
+      <div class="chaos-desc" id="chaos-desc"></div>
+    </div>
+  </div>
+
+  <!-- ⚡ POWER-UP DOCK — one button per consumable the player actually owns.
+       Built by paintPowerDock(); hidden entirely when the kit is empty. -->
+  <div id="pu-dock" style="display:none"></div>
 
   <!-- 🌐 VERSUS STRIP — shown only in Network Arena rounds. One shared readout
        for all three duels; what the numbers MEAN is the mode's business
@@ -535,9 +654,51 @@
     <div class="res-btns">
       <button class="btn btn-primary" id="btn-again">Play Again</button>
       <button class="btn btn-secondary" id="btn-hub">Hub</button>
+      <!-- 📋 The run, as a string. Sits with the two navigation buttons because
+           it belongs to the run that just ended, not to the hub. -->
+      <button class="btn btn-secondary" id="btn-replay-export">📋 Export Replay Code</button>
     </div>
+    <div class="res-replay" id="res-replay"></div>
   </div>
 </div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     🏆 ACHIEVEMENT MATRIX — overlay grid, reachable from the hub.
+     Reuses the .fb-overlay shell so it inherits the modal behaviour
+     (backdrop, escape-to-close, scroll containment) already tuned there.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay ach-tint" id="ach-overlay" aria-hidden="true">
+  <div class="fb-modal ach-modal" role="dialog" aria-modal="true" aria-labelledby="ach-heading">
+    <button class="fb-close" id="ach-close" aria-label="Close achievements">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="ach-heading">🏆 ACHIEVEMENT MATRIX</div>
+      <div class="fb-sub" id="ach-sub">—</div>
+    </div>
+    <div class="ach-progress"><div class="ach-progress-fill" id="ach-progress-fill"></div></div>
+    <div class="ach-matrix" id="ach-matrix"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     🌳 PERK TREE — spends the points that levelling hands out.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay perk-tint" id="perk-overlay" aria-hidden="true">
+  <div class="fb-modal perk-modal" role="dialog" aria-modal="true" aria-labelledby="perk-heading">
+    <button class="fb-close" id="perk-close" aria-label="Close perk tree">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="perk-heading">🌳 PERK TREE</div>
+      <div class="fb-sub" id="perk-sub">—</div>
+    </div>
+    <div class="perk-tree" id="perk-tree"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     💀 EXIT STATE STAGE — where a custom death animation plays.
+     One host element for all three styles; each is a CSS class on it,
+     so adding a fourth never means adding a fourth element.
+     ══════════════════════════════════════════════════════════════ -->
+<div id="exit-fx" aria-hidden="true"><div id="exit-fx-body"></div></div>
 
 <!-- ══════════════════════════════════════════════════════════════
      💬 FEEDBACK TERMINAL — overlay modal.
