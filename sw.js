@@ -1,17 +1,20 @@
 // Bump this string on every deploy. activate() deletes every cache that isn't
 // the current one, so changing it is what evicts the previous version's files
 // from returning players' devices.
-const CACHE = 'point-invaders-v14';
+const CACHE = 'point-invaders-v15';
 
 // Relative so this works both at the domain root and under /Point-invaders/.
 // Just the three real files — the icon and the manifest are built inside
 // index.html as data: URIs, and the 3D layer (renderer, mode switch, missions)
 // now lives inside app.js, so there is nothing else to fetch or cache.
+// The ?v= stamps must be byte-identical to the ones in index.html: those are
+// the URLs the page actually asks for, and a precache entry under a different
+// URL is simply never read. Bump them together with CACHE above.
 const SHELL = [
   './',
   './index.html',
-  './app.js',
-  './style.css'
+  './app.js?v=15',
+  './style.css?v=15'
 ];
 
 // The Firebase SDK. These are immutable, version-pinned library files, NOT live
@@ -94,7 +97,11 @@ self.addEventListener('fetch', e => {
           }
           return res;
         })
-        .catch(() => caches.match(req))
+        // ignoreSearch so an offline start still finds the file when the ?v=
+        // stamp has moved on. activate() has already deleted every older
+        // cache, so whatever is left in this one belongs to this deploy — the
+        // match cannot reach across versions.
+        .catch(() => caches.match(req, { ignoreSearch: true }))
     );
     return;
   }
