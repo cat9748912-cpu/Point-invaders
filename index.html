@@ -21,6 +21,19 @@
 </head>
 <body>
 
+<!-- 🧊 RENDERER CLASS, BEFORE THE FIRST PAINT.
+     The whole interface has two looks — flat neon in 2D CLASSIC, extruded
+     solids in 3D CYBERPUNK — and style.css picks between them off `mode-3d` on
+     <body>. PI3D sets that class properly once app.js has parsed, but app.js is
+     a megabyte at the end of the document, so a 3D player would watch the hub
+     render flat and then pop into relief. Reading the saved setting here costs
+     one localStorage hit and removes the flash. It is only a guess: if the
+     device turns out to have no WebGL2, wirePicker() takes the class straight
+     back off and the player gets the 2D interface that matches their 2D board. -->
+<script>
+try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList.add('mode-3d'); }catch(e){}
+</script>
+
 <canvas id="bg-canvas"></canvas>
 <div id="cd-ov"><div id="cd-num">3</div></div>
 <div id="toast"></div>
@@ -30,7 +43,26 @@
     <span class="auth-icon">🎮</span>
     <div class="logo">POINT INVADERS</div>
     <div class="tagline">Arcade Hub · Play · Compete · Dominate</div>
-    <br>
+
+    <!-- ── RENDER MODE ──
+         Picked before any account exists, so the choice lives in localStorage
+         rather than on the profile. Both modes play the same missions, score
+         the same points and write to the same leaderboards; only the renderer
+         differs. The 3D layer inside app.js paints the selected state
+         and stores the choice. -->
+    <div class="mode-picker" id="mode-picker" role="group" aria-label="Render mode">
+      <button class="mode-card on" data-mode="2d" type="button" aria-pressed="true">
+        <span class="mode-ico">🕹️</span>
+        <span class="mode-name">2D CLASSIC</span>
+        <span class="mode-note">The original flat neon arcade, board and buttons. Runs anywhere.</span>
+      </button>
+      <button class="mode-card" data-mode="3d" type="button" aria-pressed="false">
+        <span class="mode-ico">🧊</span>
+        <span class="mode-name">3D CYBERPUNK</span>
+        <span class="mode-note">Every mission and every control in real 3D. Depth, bloom, chrome.</span>
+      </button>
+    </div>
+
     <div class="card">
       <div class="auth-tabs">
         <button class="auth-tab active" id="tab-login">Sign In</button>
@@ -800,6 +832,13 @@
   </div>
 </div>
 
+<!-- One script. The 3D layer — the WebGL2 renderer, the mode switch and all
+     eighteen missions' 3D builds — is appended inside app.js rather than loaded
+     beside it: it reads this file's board constants and shared helpers, so it
+     could never have loaded first anyway, and as one file it can never be
+     served at a different version from the code it depends on. In 2D mode
+     nothing in it allocates a GL context — the renderer is built lazily on the
+     first 3D round. -->
 <script src="app.js"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════

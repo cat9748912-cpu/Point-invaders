@@ -1,11 +1,12 @@
 // Bump this string on every deploy. activate() deletes every cache that isn't
 // the current one, so changing it is what evicts the previous version's files
 // from returning players' devices.
-const CACHE = 'point-invaders-v11';
+const CACHE = 'point-invaders-v14';
 
 // Relative so this works both at the domain root and under /Point-invaders/.
 // Just the three real files — the icon and the manifest are built inside
-// index.html as data: URIs, so there is nothing else to fetch or cache.
+// index.html as data: URIs, and the 3D layer (renderer, mode switch, missions)
+// now lives inside app.js, so there is nothing else to fetch or cache.
 const SHELL = [
   './',
   './index.html',

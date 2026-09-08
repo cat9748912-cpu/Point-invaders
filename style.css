@@ -540,6 +540,22 @@ textarea::-webkit-scrollbar-thumb,select::-webkit-scrollbar-thumb,.input::-webki
 .bb-btn.maxed{opacity:.55;border-color:var(--border);box-shadow:none}
 /* Deploy cooldown — a shade that recedes upward as the bay reloads. */
 .bb-btn::after{content:'';position:absolute;left:0;right:0;top:0;height:calc(var(--cd,0) * 100%);background:rgba(4,4,14,.72);pointer-events:none;transition:height .08s linear}
+/* …and the seconds left, over the top of it. The shade says how MUCH of the
+   reload is left; this says how LONG, because "about a third of a bar" is not
+   something you can plan the next deploy around, and the whole skill of the
+   deck is knowing what will be back before the next wave lands.
+
+   An attribute rather than a text node: paintDeck() runs every frame, and the
+   DOM is only touched when the whole second changes. The rule keys off the
+   attribute's presence, so a card that is ready simply has no data-cd. */
+.bb-btn[data-cd]::before{
+  content:attr(data-cd);
+  position:absolute;inset:0;z-index:2;
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--fd);font-weight:900;font-size:1.2rem;letter-spacing:.02em;
+  color:#fff;text-shadow:0 0 4px rgba(4,4,14,.95),0 0 12px rgba(4,4,14,.9);
+  pointer-events:none
+}
 
 /* NEXT-piece preview (was inline styles; moved here so the mobile rules below
    can actually shrink it — inline wins over a stylesheet otherwise). */
@@ -979,6 +995,7 @@ body { overscroll-behavior: none; }
   .bb-ico { font-size: 1.15rem; }
   .bb-name { font-size: .5rem; letter-spacing: .06em; }
   .bb-cost { font-size: .48rem; }
+  .bb-btn[data-cd]::before { font-size: 1rem; }
 }
 
 @media (pointer: coarse) {
@@ -1118,6 +1135,7 @@ body { overscroll-behavior: none; }
      (FIREWALL, RAM SPEED) still fit a seventh of the board. */
   .bb-name { font-size: .48rem; letter-spacing: .04em; }
   .bb-cost { font-size: .44rem; }
+  .bb-btn[data-cd]::before { font-size: .9rem; }
 
   /* The modulator console is a sibling of the holder too, so it also stays a
      full-width row under the scope — just a flatter one, since height is the
@@ -1910,4 +1928,879 @@ html.reduced-motion .g-area.blind-out{opacity:.12}
   #pu-dock{margin-top:4px}
   .pu-btn{padding:4px 9px;font-size:.46rem}
   .xp-rail{display:none}
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   🧊 3D MODE
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── LOGIN-SCREEN RENDER PICKER ──
+   Two cards above the sign-in form. Deliberately sits OUTSIDE .card so it
+   reads as a decision about the whole arcade rather than a field on the
+   login form — you are choosing how the game looks, not how you sign in. */
+.mode-picker{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0 16px}
+.mode-card{
+  display:flex;flex-direction:column;align-items:center;gap:5px;
+  padding:14px 10px;cursor:pointer;text-align:center;
+  background:var(--s1);border:1px solid var(--border);border-radius:var(--r);
+  color:#fff;font-family:var(--fb);
+  transition:border-color .18s,background .18s,transform .12s,box-shadow .18s
+}
+.mode-card:hover{background:var(--s2);border-color:var(--border2);transform:translateY(-2px)}
+.mode-card:active{transform:translateY(0) scale(.98)}
+.mode-ico{font-size:1.7rem;line-height:1}
+.mode-name{font-family:var(--fd);font-weight:700;font-size:.78rem;letter-spacing:.06em}
+.mode-note{font-size:.7rem;opacity:.6;line-height:1.3}
+/* The selected card is lit from its own edge — same visual grammar the
+   difficulty tiers use, so "this one is armed" reads the same everywhere. */
+.mode-card.on{
+  background:rgba(0,245,255,.10);border-color:rgba(0,245,255,.6);
+  box-shadow:0 0 0 1px rgba(0,245,255,.25),0 6px 24px -8px rgba(0,245,255,.5)
+}
+.mode-card.on .mode-name{color:var(--cyan);text-shadow:0 0 14px rgba(0,245,255,.6)}
+.mode-card.on .mode-note{opacity:.8}
+/* No WebGL2 here. Still clickable so the click can explain itself, but it
+   never pretends to be an option. */
+.mode-card.unsupported{opacity:.42;cursor:not-allowed}
+.mode-card.unsupported .mode-note{color:var(--orange);opacity:.9}
+
+/* ── THE GL SURFACE ──
+   Layered exactly over #arcade-canvas inside #board-frame. pointer-events is
+   off so every tap and drag falls through to the 2D canvas underneath, which
+   is what lets bindCanvasDrag() keep serving both renderers with one code
+   path. The border and radius are copied so the two elements occupy the same
+   rectangle to the pixel. */
+#gl-canvas{
+  position:absolute;left:0;top:0;display:none;
+  pointer-events:none;
+  border:2px solid var(--border);border-radius:8px;
+  background:#04040e
+}
+/* Floating combat text, projected from world space each frame. Lives above
+   the GL canvas but below #touch-hint and #mp-overlay. */
+#gl-fx{
+  position:absolute;left:0;top:0;display:none;
+  pointer-events:none;overflow:hidden;border-radius:8px
+}
+/* ── VIRTUAL THUMBSTICK ──
+   Cyber Arena's steering ring. The 2D build paints it straight onto the board
+   with the rest of the frame; in 3D the board is an opaque GL surface, so it
+   rides in the fx layer instead — same ring, same knob, same place under the
+   finger, drawn in the board's own pixel space. `transition:none` for the same
+   reason .gl-label has it: this is repositioned every frame. */
+.gl-stick,.gl-stick-knob{
+  position:absolute;left:0;top:0;border-radius:50%;
+  border:2px solid var(--cyan);
+  box-shadow:0 0 12px rgba(0,245,255,.55);
+  transition:none;pointer-events:none;display:none
+}
+.gl-stick{opacity:.45}
+.gl-stick-knob{opacity:.8;background:rgba(0,245,255,.25)}
+.gl-pop{
+  position:absolute;left:0;top:0;
+  font-family:var(--fd);font-weight:700;font-size:15px;letter-spacing:.04em;
+  white-space:nowrap;text-shadow:0 0 12px currentColor,0 2px 6px rgba(0,0,0,.9);
+  will-change:transform,opacity
+}
+/* The 2D canvas is still the input surface in 3D mode, so it stays in the
+   layout — it just stops painting a visible board behind the GL one. */
+#arcade-canvas.behind-gl{background:transparent;border-color:transparent}
+
+/* ── PERSISTENT WORLD LABELS ──
+   .gl-pop is a firework: it fades and dies. Some 3D missions need a caption
+   PINNED to an object for the whole round — a status line over the mainframe
+   keypad, the match percentage over a scope. Same projected div, no lifetime.
+   `transition:none` matters: these are re-positioned every frame, and a
+   transition on transform would smear them a frame behind the object. */
+.gl-label{transition:none;text-align:center}
+.gl-status{font-size:13px;opacity:.95;letter-spacing:.12em;text-transform:uppercase}
+.gl-big{font-size:26px;font-weight:900;letter-spacing:.06em}
+
+/* 🔢 MATH BLITZ in 3D keeps its console but not its question readout — the sum
+   is an object in the room now, and two of them would be one too many. */
+.math-wrap.math-3d{padding-top:6px}
+.math-wrap.math-3d #math-question{display:none}
+
+/* A quiet badge on the hub so the player can always tell which renderer a
+   session is running, without opening the login screen to check. */
+body.mode-3d .hub-bar::after{
+  content:'🧊 3D';
+  font-family:var(--fd);font-size:.6rem;letter-spacing:.1em;
+  color:var(--cyan);opacity:.75;align-self:center;
+  padding:3px 8px;border:1px solid rgba(0,245,255,.4);border-radius:20px
+}
+
+@media (max-width:420px){
+  .mode-picker{gap:8px}
+  .mode-card{padding:11px 7px}
+  .mode-note{display:none}
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   🧊 3D CHROME — the whole interface as physical objects
+   ══════════════════════════════════════════════════════════════════════
+   ⚠️ EVERY SELECTOR BELOW IS SCOPED TO `body.mode-3d`, and that is not a
+   decoration — it is the point. The renderer the player picks on the login
+   screen is a choice about the WHOLE arcade, not just the board: pick 2D
+   CLASSIC and the interface is the flat neon one the rules above draw, pick
+   3D CYBERPUNK and every control grows a body. A solid button over a flat
+   board was the tell that the setting only reached half the app. PI3D.setMode()
+   owns the class, so the switch is live the moment the card is clicked.
+
+   Nothing here may be written unscoped. An unprefixed rule in this section is
+   a control that stays extruded in 2D mode, which is exactly the bug this
+   scoping exists to prevent.
+
+   Everything below turns the flat neon UI into a set of solids. The rule
+   throughout: depth is GEOMETRY, not a drop shadow. Each control is built as
+
+     · a TOP FACE      — the element itself, lit from above by a gradient
+     · a SIDE WALL     — a stack of 1px solid offsets in the object's own edge
+                         colour. That is the extruded body of the solid, not a
+                         blur: it is opaque, it is the same silhouette as the
+                         face, and it gets SHORTER when the control is pressed,
+                         which is what selling "this moved 6px toward the desk"
+                         actually requires
+     · a BEVEL         — a lit inner top lip and a dark inner bottom lip, so the
+                         edge between face and wall catches light
+     · a SPECULAR      — a fixed highlight across the upper third; it is what
+                         makes a surface read as glossy plastic or brushed metal
+                         rather than as coloured paper
+     · a CONTACT SHADE — the only soft shadow here, and it is doing the one job
+                         a shadow legitimately does: darkening the surface the
+                         object is resting ON
+
+   On top of that geometry, every control lives in a real perspective and moves
+   in three axes: hover lifts it toward the viewer and tilts it, press drives it
+   down into its own wall. Cards tilt TOWARD THE POINTER (wired in app.js), so
+   moving the mouse across the hub visibly rotates the objects — the parallax
+   between a lifted glyph and the plate behind it is the depth cue.
+
+   perspective() is applied per-element inside transform rather than as a
+   `perspective` property on the containers. A perspective container is also a
+   containing block for fixed positioning and a new stacking context, and
+   putting one on .screen — which scrolls — costs a repaint of the whole surface
+   per frame. Per-element, each object gets its own eye point directly in front
+   of it, which is also the projection that keeps a grid of cards from fanning
+   outward at the edges of a wide screen. */
+
+:root{
+  /* Body colours for the extruded walls. Two tones: the upper wall catches a
+     little of the top light, the lower one is in the object's own shade. */
+  --w1:#161c30;
+  --w2:#0a0e1a;
+  --w3:#05070e;
+  --lip-hi:rgba(255,255,255,.26);
+  --lip-lo:rgba(0,0,0,.55);
+  --spec:linear-gradient(180deg,rgba(255,255,255,.16) 0,rgba(255,255,255,.05) 42%,rgba(255,255,255,0) 62%);
+  --eye:820px;                       /* viewing distance for interface solids */
+  --pop-ease:cubic-bezier(.2,.9,.28,1);
+}
+
+/* Every solid gets a 3D context so its raised children — a card's icon, a
+   row's rank — are laid out in the same space as its own face rather than
+   flattened onto it.
+
+   `position` is deliberately NOT set here. Several of these already position
+   themselves and a blanket `position:relative` silently breaks them: #toast is
+   fixed to the bottom of the viewport, #tetris-next-wrap is absolute inside
+   the board frame, .fb-close is absolute in the modal's corner. Only .btn
+   actually needs a positioned box — for its specular pseudo-element — and it
+   is given one on its own rule below. */
+body.mode-3d .btn,
+body.mode-3d .auth-tab,
+body.mode-3d .market-tab,
+body.mode-3d .lb-tab,
+body.mode-3d .mp-filter,
+body.mode-3d .diff-btn,
+body.mode-3d .ctrl-btn,
+body.mode-3d .bb-btn,
+body.mode-3d .fb-node,
+body.mode-3d .mode-card,
+body.mode-3d .game-card,
+body.mode-3d .shop-card,
+body.mode-3d .mp-mode,
+body.mode-3d .card,
+body.mode-3d .lb-row,
+body.mode-3d .stat-pill,
+body.mode-3d .hub-pts,
+body.mode-3d .hub-credits,
+body.mode-3d .gc-pts,
+body.mode-3d .rarity-badge,
+body.mode-3d .mem-card,
+body.mode-3d .hack-node,
+body.mode-3d .path-node,
+body.mode-3d .hub-bar,
+body.mode-3d .market-bar,
+body.mode-3d .mp-bar,
+body.mode-3d .g-hdr,
+body.mode-3d .freq-slider,
+body.mode-3d .hack-readout,
+body.mode-3d .path-readout,
+body.mode-3d .res-bd,
+body.mode-3d .mp-banner,
+body.mode-3d .market-bal span,
+body.mode-3d .hub-guest-tag,
+body.mode-3d .up-carry{
+  transform-style:preserve-3d;
+}
+
+/* ══ BUTTONS — moulded keycaps ══
+   The one control the hand expects to depress, so it gets a deep body and real
+   travel. translateZ on hover is a move toward the viewer: the wall
+   foreshortens and the face grows, which is the difference between a button
+   rising and a button merely getting brighter. */
+body.mode-3d .btn{
+  --wall:var(--w1);
+  --wallb:var(--w3);
+  position:relative;
+  border-radius:10px;
+  transform:perspective(var(--eye)) translateZ(0) rotateX(0deg);
+  transform-origin:50% 100%;
+  transition:transform .16s var(--pop-ease),box-shadow .16s var(--pop-ease),
+             filter .16s ease,background-color .16s ease,border-color .16s ease;
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),
+    0 4px 0 var(--wallb),0 5px 0 var(--wallb),0 6px 0 var(--wallb),0 7px 0 var(--wallb),
+    0 12px 18px -8px rgba(0,0,0,.8),
+    inset 0 1px 0 var(--lip-hi),inset 0 -1px 0 var(--lip-lo);
+}
+body.mode-3d .btn:hover:not(:disabled){
+  transform:perspective(var(--eye)) translateZ(9px) rotateX(6deg);
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wall),
+    0 5px 0 var(--wallb),0 6px 0 var(--wallb),0 7px 0 var(--wallb),
+    0 8px 0 var(--wallb),0 9px 0 var(--wallb),0 10px 0 var(--wallb),
+    0 20px 26px -10px rgba(0,0,0,.85),
+    inset 0 1px 0 var(--lip-hi),inset 0 -1px 0 var(--lip-lo);
+}
+/* Pressed: the face travels DOWN by almost the whole body height and the wall
+   shrinks to match. Both halves are needed — moving the face alone slides the
+   object, shortening the wall alone squashes it. Together it depresses. */
+body.mode-3d .btn:active:not(:disabled){
+  transform:perspective(var(--eye)) translateZ(0) translateY(5px) rotateX(0deg);
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wallb),
+    0 4px 6px -3px rgba(0,0,0,.8),
+    inset 0 2px 5px rgba(0,0,0,.55),inset 0 -1px 0 rgba(255,255,255,.08);
+}
+body.mode-3d .btn:disabled{transform:none;filter:saturate(.35) brightness(.8)}
+/* The specular rides on a pseudo-element rather than background-image, because
+   .btn-primary paints its face with a gradient of its own and a background-image
+   here would replace it — which is a button with no face at all, not a button
+   with a highlight. Absolutely positioned so it is out of flow: a couple of
+   these buttons are flex containers, and an in-flow pseudo becomes a flex item
+   and pushes their label sideways. */
+body.mode-3d .btn::before{
+  content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:linear-gradient(180deg,rgba(255,255,255,.2),rgba(255,255,255,.06) 42%,rgba(255,255,255,0) 62%);
+}
+body.mode-3d .btn:active:not(:disabled)::before{
+  background:linear-gradient(180deg,rgba(0,0,0,.28),rgba(255,255,255,0) 55%);
+}
+
+body.mode-3d .btn-primary{--wall:#0a8f9a;--wallb:#05545c;color:#01131a}
+body.mode-3d .btn-secondary{--wall:#1b2237;--wallb:#0a0e1a}
+body.mode-3d .btn-guest{--wall:#1c7a10;--wallb:#0c3d08}
+body.mode-3d .btn-feedback{--wall:#1c7a10;--wallb:#0c3d08}
+body.mode-3d .btn-sound{--wall:#0a6f7a;--wallb:#053b42}
+body.mode-3d .btn-sound.snd-partial{--wall:#8a6b00;--wallb:#453600}
+body.mode-3d .btn-sound.snd-off{--wall:#1b2237;--wallb:#0a0e1a}
+body.mode-3d .btn-save-acct{--wall:#1c7a10;--wallb:#0c3d08}
+body.mode-3d .btn-lg{border-radius:12px}
+body.mode-3d .btn-sm{border-radius:8px}
+
+/* ══ ARCADE KEYCAPS — the play-surface pad ══
+   The tallest bodies in the interface, because these are hit with a thumb
+   rather than clicked, and because a game pad that visibly bottoms out is the
+   clearest feedback a touch control can give. */
+body.mode-3d .ctrl-btn{
+  --wall:#1b2338;--wallb:#070a14;
+  border-radius:12px;
+  background-image:linear-gradient(180deg,rgba(255,255,255,.13),rgba(255,255,255,.02) 46%,rgba(0,0,0,.22));
+  transform:perspective(600px) translateZ(0);
+  transform-origin:50% 100%;
+  transition:transform .1s var(--pop-ease),box-shadow .1s var(--pop-ease),background-color .12s;
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wall),
+    0 5px 0 var(--wallb),0 6px 0 var(--wallb),0 7px 0 var(--wallb),
+    0 8px 0 var(--wallb),0 9px 0 var(--wallb),0 10px 0 var(--wallb),
+    0 16px 20px -8px rgba(0,0,0,.9),
+    inset 0 1px 0 rgba(255,255,255,.3),inset 0 -2px 0 rgba(0,0,0,.55);
+}
+body.mode-3d .ctrl-btn:active{
+  transform:perspective(600px) translateY(8px);
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wallb),
+    0 3px 5px -2px rgba(0,0,0,.85),
+    inset 0 3px 7px rgba(0,0,0,.6);
+}
+body.mode-3d .ctrl-btn.accent{--wall:#5b21a8;--wallb:#2a0e52}
+body.mode-3d .ctrl-btn.accent:active{transform:perspective(600px) translateY(8px)}
+
+/* ══ DEPLOY DECK ══ Cards standing in a rack, tinted to their unit colour. */
+body.mode-3d .bb-btn{
+  --wall:#141a2c;--wallb:#070a14;
+  border-radius:11px;
+  background-image:linear-gradient(180deg,rgba(255,255,255,.1),rgba(255,255,255,0) 55%);
+  transform:perspective(560px) translateZ(0);
+  transform-origin:50% 100%;
+  transition:transform .14s var(--pop-ease),box-shadow .14s var(--pop-ease),opacity .2s;
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),
+    0 4px 0 var(--wallb),0 5px 0 var(--wallb),0 6px 0 var(--wallb),0 7px 0 var(--wallb),
+    0 12px 16px -8px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.2),inset 0 -1px 0 rgba(0,0,0,.5);
+}
+body.mode-3d .bb-btn:hover:not(.broke):not(.maxed){
+  transform:perspective(560px) translateZ(10px) rotateX(7deg);
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wall),
+    0 5px 0 var(--wallb),0 6px 0 var(--wallb),0 7px 0 var(--wallb),
+    0 8px 0 var(--wallb),0 9px 0 var(--wallb),0 10px 0 var(--wallb),
+    0 20px 26px -10px rgba(0,0,0,.9),0 0 24px -4px var(--bc),
+    inset 0 1px 0 rgba(255,255,255,.24),inset 0 -1px 0 rgba(0,0,0,.5);
+}
+body.mode-3d .bb-btn:active{
+  transform:perspective(560px) translateY(6px);
+  box-shadow:0 1px 0 var(--wall),0 2px 0 var(--wallb),inset 0 3px 6px rgba(0,0,0,.6);
+}
+body.mode-3d .bb-btn.broke,
+body.mode-3d .bb-btn.maxed{
+  transform:perspective(560px) translateY(5px);
+  box-shadow:0 1px 0 var(--wallb),0 2px 0 var(--wallb),inset 0 2px 6px rgba(0,0,0,.55);
+}
+
+/* ══ TABS & PILL SWITCHES ══
+   Shallower bodies than a button — these read as keys on a strip, and the
+   SELECTED one is the one pressed IN, which is how a mechanical tab bank shows
+   its state without needing colour to carry the whole message. */
+body.mode-3d .auth-tab,
+body.mode-3d .market-tab,
+body.mode-3d .lb-tab,
+body.mode-3d .mp-filter,
+body.mode-3d .diff-btn,
+body.mode-3d .fb-node{
+  --wall:#151b2e;--wallb:#080b16;
+  border-radius:9px;
+  background-image:var(--spec);
+  transform:perspective(700px) translateZ(0);
+  transform-origin:50% 100%;
+  transition:transform .15s var(--pop-ease),box-shadow .15s var(--pop-ease),
+             color .15s,border-color .15s,background-color .15s;
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wallb),0 4px 0 var(--wallb),
+    0 9px 12px -6px rgba(0,0,0,.8),
+    inset 0 1px 0 rgba(255,255,255,.16),inset 0 -1px 0 rgba(0,0,0,.45);
+}
+body.mode-3d .auth-tab:hover,
+body.mode-3d .market-tab:hover,
+body.mode-3d .lb-tab:hover,
+body.mode-3d .mp-filter:hover,
+body.mode-3d .diff-btn:hover:not(.active),
+body.mode-3d .fb-node:hover{
+  transform:perspective(700px) translateZ(7px) rotateX(5deg);
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),
+    0 4px 0 var(--wallb),0 5px 0 var(--wallb),0 6px 0 var(--wallb),
+    0 16px 20px -9px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.18),inset 0 -1px 0 rgba(0,0,0,.45);
+}
+body.mode-3d .auth-tab.active,
+body.mode-3d .market-tab.active,
+body.mode-3d .lb-tab.on,
+body.mode-3d .mp-filter.on,
+body.mode-3d .diff-btn.active,
+body.mode-3d .fb-node.lit{
+  transform:perspective(700px) translateY(3px);
+  box-shadow:
+    0 1px 0 var(--wallb),
+    inset 0 3px 7px rgba(0,0,0,.55),inset 0 -1px 0 rgba(255,255,255,.1);
+}
+body.mode-3d .diff-btn.stable-active,
+body.mode-3d .diff-btn.diff-stable.active{--wallb:#0a4a12}
+body.mode-3d .diff-btn.overclock-active,
+body.mode-3d .diff-btn.diff-overclocked.active{--wallb:#4a3a05}
+body.mode-3d .diff-btn.meltdown-active,
+body.mode-3d .diff-btn.diff-meltdown.active{--wallb:#4a0512}
+body.mode-3d .diff-btn.stable-active,
+body.mode-3d .diff-btn.overclock-active,
+body.mode-3d .diff-btn.meltdown-active{
+  transform:perspective(700px) translateY(3px);
+  box-shadow:0 1px 0 var(--wallb),inset 0 3px 7px rgba(0,0,0,.55),
+             inset 0 -1px 0 rgba(255,255,255,.1);
+}
+body.mode-3d .diff-selector.locked .diff-btn:not(.active):hover{transform:perspective(700px) translateZ(0)}
+body.mode-3d .diff-selector.locked .diff-btn:active{transform:perspective(700px) translateZ(0)}
+
+/* ══ CARDS — plates raised off the desk ══
+   The biggest surfaces in the interface, so they get the strongest modelling: a
+   lit top edge, a real body, and a pointer-driven tilt wired up in app.js.
+   --tx/--ty are written per-element by that code; with no pointer near them
+   they are 0 and the card sits square. */
+body.mode-3d .game-card,
+body.mode-3d .shop-card,
+body.mode-3d .card,
+body.mode-3d .mp-mode,
+body.mode-3d .mode-card,
+body.mode-3d .convert-card{
+  --wall:#141a2c;--wallb:#070a14;--tx:0deg;--ty:0deg;--tz:0px;
+  /* overflow MUST stay visible. Any overflow other than visible forces
+     transform-style back to flat, and a flattened card composites its raised
+     icon straight onto its own face — no parallax, no standing off, nothing.
+     Nothing on these cards was ever being clipped: the sparkline strip is in
+     flow, and the one decoration that does need clipping (the legendary
+     shimmer sweep) re-declares overflow on its own rarity class. */
+  overflow:visible;
+  background-image:linear-gradient(170deg,rgba(255,255,255,.07),rgba(255,255,255,0) 46%);
+  transform:perspective(var(--eye)) translateZ(var(--tz)) rotateX(var(--tx)) rotateY(var(--ty));
+  transform-origin:50% 60%;
+  transition:transform .2s var(--pop-ease),box-shadow .2s var(--pop-ease),border-color .2s;
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wall),
+    0 5px 0 var(--wallb),0 6px 0 var(--wallb),0 7px 0 var(--wallb),0 8px 0 var(--wallb),
+    0 18px 26px -12px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.14),inset 0 -1px 0 rgba(0,0,0,.5);
+}
+/* Hover only supplies the LIFT. The rotation arrives as --tx/--ty from the
+   pointer, and a rotate declared here would overwrite it every frame. */
+/* The [data-c] selectors that carry each mission's neon are specificity 0-3-1
+   and were overriding the body on hover — a card that lit up but lost its
+   walls. The accent is folded into the object instead: one variable per colour,
+   and the lift keeps the full wall stack with the glow added on the end. */
+body.mode-3d .game-card[data-c="cyan"],
+body.mode-3d .gc-pts[data-c="cyan"]{--acc:#00f5ff}
+body.mode-3d .game-card[data-c="pink"],
+body.mode-3d .gc-pts[data-c="pink"]{--acc:#ff0090}
+body.mode-3d .game-card[data-c="lime"],
+body.mode-3d .gc-pts[data-c="lime"]{--acc:#39ff14}
+body.mode-3d .game-card[data-c="gold"],
+body.mode-3d .gc-pts[data-c="gold"]{--acc:#ffd700}
+body.mode-3d .game-card[data-c="purple"],
+body.mode-3d .gc-pts[data-c="purple"]{--acc:#a855f7}
+body.mode-3d .game-card[data-c="orange"],
+body.mode-3d .gc-pts[data-c="orange"]{--acc:#ff6600}
+body.mode-3d .game-card[data-c="red"],
+body.mode-3d .gc-pts[data-c="red"]{--acc:#ff2442}
+body.mode-3d .game-card:hover,
+body.mode-3d .game-card[data-c]:hover,
+body.mode-3d .shop-card:hover,
+body.mode-3d .mp-mode:hover,
+body.mode-3d .mode-card:hover{
+  transform:perspective(var(--eye)) translateZ(34px) rotateX(var(--tx)) rotateY(var(--ty));
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wall),
+    0 5px 0 var(--wall),0 6px 0 var(--wallb),0 7px 0 var(--wallb),0 8px 0 var(--wallb),
+    0 9px 0 var(--wallb),0 10px 0 var(--wallb),0 11px 0 var(--wallb),0 12px 0 var(--wallb),
+    0 13px 0 var(--wallb),0 14px 0 var(--wallb),
+    0 40px 50px -18px rgba(0,0,0,.92),
+    0 0 40px -10px var(--acc,rgba(255,255,255,.35)),
+    inset 0 1px 0 rgba(255,255,255,.2),inset 0 -1px 0 rgba(0,0,0,.5);
+}
+body.mode-3d .game-card[data-c]:hover{border-color:var(--acc)}
+body.mode-3d .game-card:active,
+body.mode-3d .game-card[data-c]:active,
+body.mode-3d .shop-card:active,
+body.mode-3d .mp-mode:active,
+body.mode-3d .mode-card:active{
+  transform:perspective(var(--eye)) translateZ(2px) translateY(4px);
+  box-shadow:0 1px 0 var(--wall),0 2px 0 var(--wallb),0 6px 10px -5px rgba(0,0,0,.8),
+             inset 0 3px 8px rgba(0,0,0,.5);
+}
+body.mode-3d .mode-card.on{
+  transform:perspective(var(--eye)) translateZ(10px);
+  box-shadow:
+    0 1px 0 #0a5a63,0 2px 0 #0a5a63,0 3px 0 #063a41,0 4px 0 #063a41,0 5px 0 #063a41,
+    0 20px 30px -12px rgba(0,0,0,.9),0 0 34px -6px rgba(0,245,255,.5),
+    inset 0 1px 0 rgba(255,255,255,.24);
+}
+/* Icons stand OFF their card rather than being printed on it — the parallax
+   between a lifted glyph and the plate behind it is the cheapest and most
+   convincing depth cue a flat panel has. */
+body.mode-3d .gc-icon,
+body.mode-3d .shop-emoji,
+body.mode-3d .res-emoji,
+body.mode-3d .auth-icon,
+body.mode-3d .mp-banner-icon,
+body.mode-3d .bb-ico{
+  transform:translateZ(26px);
+  transform-style:preserve-3d;
+}
+body.mode-3d .gc-name,
+body.mode-3d .gc-pts,
+body.mode-3d .gc-desc,
+body.mode-3d .shop-name{transform:translateZ(10px)}
+
+/* ══ LEADERBOARD ROWS — a stack of physical plates ══ */
+body.mode-3d .lb-row{
+  --wall:#121829;--wallb:#080b16;
+  background-image:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,0) 60%);
+  transform:perspective(760px) translateZ(0);
+  transition:transform .16s var(--pop-ease),box-shadow .16s var(--pop-ease);
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wallb),
+    0 7px 10px -6px rgba(0,0,0,.8),
+    inset 0 1px 0 rgba(255,255,255,.1);
+}
+body.mode-3d .lb-row:hover{
+  transform:perspective(760px) translateZ(8px) translateX(3px);
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wallb),
+    0 5px 0 var(--wallb),0 14px 18px -8px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.14);
+}
+body.mode-3d .lb-row.r1{--wall:#6b5600;--wallb:#3a2f00}
+body.mode-3d .lb-row.r2{--wall:#4a525c;--wallb:#252a30}
+body.mode-3d .lb-row.r3{--wall:#553318;--wallb:#2b190c}
+body.mode-3d .lb-row.me{--wall:#153a72;--wallb:#0a1e3d}
+body.mode-3d .lb-rank{transform:translateZ(12px)}
+
+/* ══ BARS & PANELS — the desk everything else sits on ══
+   Lower and wider than the controls, with the body colour running underneath.
+   These do not move; they are the ground plane, and their job is to give the
+   things standing on them something to be raised ABOVE. */
+body.mode-3d .hub-bar,
+body.mode-3d .market-bar,
+body.mode-3d .mp-bar,
+body.mode-3d .g-hdr,
+body.mode-3d .freq-slider,
+body.mode-3d .hack-readout,
+body.mode-3d .path-readout,
+body.mode-3d .res-bd,
+body.mode-3d .mp-banner,
+body.mode-3d #tetris-next-wrap,
+body.mode-3d .up-carry{
+  background-image:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,0) 70%);
+  box-shadow:
+    0 1px 0 #10162a,0 2px 0 #10162a,0 3px 0 #070a14,0 4px 0 #070a14,
+    0 14px 22px -12px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.11),inset 0 -1px 0 rgba(0,0,0,.5);
+}
+body.mode-3d #bb-deck{
+  border-radius:14px;padding:10px;
+  background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,0));
+  box-shadow:inset 0 2px 6px rgba(0,0,0,.6),inset 0 -1px 0 rgba(255,255,255,.08),
+             0 1px 0 rgba(255,255,255,.05);
+}
+
+/* ══ STATUS PILLS & BADGES — small solids, shallow bodies ══ */
+body.mode-3d .stat-pill,
+body.mode-3d .hub-pts,
+body.mode-3d .hub-credits,
+body.mode-3d .gc-pts,
+body.mode-3d .rarity-badge,
+body.mode-3d .market-bal span,
+body.mode-3d .hub-guest-tag,
+body.mode-3d .shop-tag,
+body.mode-3d .mp-link,
+body.mode-3d .res-bonus{
+  background-image:var(--spec);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.05),0 2px 0 #0b0f1c,0 3px 0 #070a14,
+    0 6px 8px -4px rgba(0,0,0,.75),
+    inset 0 1px 0 rgba(255,255,255,.18),inset 0 -1px 0 rgba(0,0,0,.45);
+}
+
+/* ══ RECESSED WELLS — the inverse solid ══
+   A field you type into is a hole in the panel, not a block on top of it. Same
+   modelling logic run backwards: the lit lip goes on the BOTTOM edge (light
+   from above reaches the far wall of a pit), the dark lip on the top, and the
+   body is an inset gradient rather than an outset stack. */
+body.mode-3d .input,
+body.mode-3d #math-answer,
+body.mode-3d .fb-textarea,
+body.mode-3d .fb-select,
+body.mode-3d input[type=text],
+body.mode-3d input[type=email],
+body.mode-3d input[type=password],
+body.mode-3d input[type=number],
+body.mode-3d textarea,
+body.mode-3d select{
+  border-radius:10px;
+  background-image:linear-gradient(180deg,rgba(0,0,0,.42),rgba(0,0,0,.1) 55%,rgba(255,255,255,.04));
+  box-shadow:
+    inset 0 3px 7px rgba(0,0,0,.65),inset 0 1px 0 rgba(0,0,0,.7),
+    inset 0 -1px 0 rgba(255,255,255,.14),
+    0 1px 0 rgba(255,255,255,.07);
+}
+body.mode-3d .input:focus,
+body.mode-3d #math-answer:focus,
+body.mode-3d .fb-textarea:focus,
+body.mode-3d .fb-select:focus{
+  box-shadow:
+    inset 0 3px 9px rgba(0,0,0,.7),inset 0 1px 0 rgba(0,0,0,.7),
+    inset 0 -1px 0 rgba(0,245,255,.5),
+    0 0 0 3px rgba(0,245,255,.13),0 1px 0 rgba(255,255,255,.07);
+}
+
+/* ══ PROGRESS & METER CHANNELS ══
+   A milled channel with a bar sitting IN it — the fill has its own top light
+   and its own bottom shade, so it reads as a lit rod in a groove. */
+body.mode-3d .prog-bar,
+body.mode-3d .path-meter{
+  height:8px;border-radius:5px;
+  background:linear-gradient(180deg,#03040a,#0b0e1a);
+  box-shadow:
+    inset 0 2px 4px rgba(0,0,0,.85),inset 0 -1px 0 rgba(255,255,255,.1),
+    0 1px 0 rgba(255,255,255,.06);
+}
+body.mode-3d .prog-fill,
+body.mode-3d .path-meter-fill{
+  border-radius:5px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.55),inset 0 -2px 3px rgba(0,0,0,.4);
+}
+
+/* ══ SLIDERS — a knurled knob on a rail ══ */
+body.mode-3d .freq-range{
+  background:linear-gradient(180deg,#03040a,#0d1120);
+  box-shadow:inset 0 2px 5px rgba(0,0,0,.85),inset 0 -1px 0 rgba(255,255,255,.12);
+}
+body.mode-3d .freq-range::-webkit-slider-thumb{
+  background-image:linear-gradient(180deg,#e8faff 0,var(--cyan) 38%,#036c78 100%);
+  box-shadow:
+    0 1px 0 #0a5a63,0 2px 0 #0a5a63,0 3px 0 #063a41,0 4px 0 #063a41,
+    0 8px 12px -5px rgba(0,0,0,.9),
+    inset 0 1px 0 rgba(255,255,255,.85),inset 0 -2px 3px rgba(0,0,0,.4);
+}
+body.mode-3d .freq-range::-moz-range-thumb{
+  background-image:linear-gradient(180deg,#e8faff 0,var(--cyan) 38%,#036c78 100%);
+  box-shadow:0 2px 0 #0a5a63,0 4px 0 #063a41,0 8px 12px -5px rgba(0,0,0,.9),
+             inset 0 1px 0 rgba(255,255,255,.85);
+}
+body.mode-3d .freq-range:active::-webkit-slider-thumb{
+  box-shadow:0 1px 0 #063a41,0 3px 5px -3px rgba(0,0,0,.9),
+             inset 0 2px 4px rgba(0,0,0,.4);
+}
+
+/* ══ 2D-MODE PLAY SURFACES ══
+   Memory tiles, keypad nodes and circuit contacts are objects the player
+   physically presses, so they get the same treatment as the pad. (The 3D
+   missions build their own geometry; these are the classic renderer's.) */
+body.mode-3d .mem-card,
+body.mode-3d .hack-node,
+body.mode-3d .path-node{
+  transform:perspective(620px) translateZ(0);
+  transform-origin:50% 100%;
+  transition:transform .16s var(--pop-ease),box-shadow .16s var(--pop-ease),
+             background-color .16s,border-color .16s;
+  background-image:linear-gradient(180deg,rgba(255,255,255,.1),rgba(255,255,255,0) 55%);
+  box-shadow:
+    0 1px 0 #161d31,0 2px 0 #161d31,0 3px 0 #0a0e1a,0 4px 0 #0a0e1a,0 5px 0 #070a14,
+    0 12px 16px -8px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.2),inset 0 -1px 0 rgba(0,0,0,.5);
+}
+body.mode-3d .mem-card:hover,
+body.mode-3d .hack-node:hover,
+body.mode-3d .path-node:not(.dead):hover{
+  transform:perspective(620px) translateZ(10px) rotateX(6deg);
+}
+body.mode-3d .mem-card.flipped{
+  transform:perspective(620px) translateZ(14px);
+  box-shadow:
+    0 1px 0 #1c6b12,0 2px 0 #1c6b12,0 3px 0 #0d3a08,0 4px 0 #0d3a08,
+    0 18px 22px -10px rgba(0,0,0,.9),0 0 26px -6px rgba(57,255,20,.6),
+    inset 0 1px 0 rgba(255,255,255,.3);
+}
+body.mode-3d .hack-node.lit,
+body.mode-3d .path-node.on{
+  transform:perspective(620px) translateZ(12px);
+  box-shadow:
+    0 1px 0 rgba(0,0,0,.6),0 2px 0 rgba(0,0,0,.6),0 3px 0 rgba(0,0,0,.7),
+    0 18px 22px -10px rgba(0,0,0,.9),
+    0 0 24px var(--nc,var(--pc,#39ff14)),
+    inset 0 1px 0 rgba(255,255,255,.35);
+}
+body.mode-3d .path-node.dead{
+  transform:perspective(620px) translateY(4px);
+  box-shadow:0 1px 0 #2a0a12,inset 0 3px 8px rgba(0,0,0,.7);
+}
+body.mode-3d #click-btn{
+  background-image:radial-gradient(circle at 38% 26%,rgba(255,255,255,.85),rgba(255,255,255,0) 46%),
+                   linear-gradient(135deg,var(--cyan),var(--purple));
+  transform:perspective(700px) translateZ(0);
+  transition:transform .09s var(--pop-ease),box-shadow .09s var(--pop-ease);
+  box-shadow:
+    0 2px 0 #0a5a63,0 4px 0 #0a5a63,0 6px 0 #06414a,0 8px 0 #06414a,
+    0 10px 0 #3a1d6b,0 12px 0 #3a1d6b,0 14px 0 #24114a,
+    0 26px 34px -12px rgba(0,0,0,.9),
+    inset 0 2px 0 rgba(255,255,255,.5),inset 0 -6px 12px rgba(0,0,0,.4);
+}
+body.mode-3d #click-btn:active{
+  transform:perspective(700px) translateY(11px) scale(.985);
+  box-shadow:0 2px 0 #06414a,0 3px 0 #24114a,0 6px 10px -5px rgba(0,0,0,.9),
+             inset 0 5px 12px rgba(0,0,0,.5);
+}
+
+/* ══ MODALS & RESULT CARDS — brought forward off the page ══ */
+body.mode-3d .fb-modal,
+body.mode-3d #results-screen .res-card{
+  transform:perspective(1200px) translateZ(0) rotateX(1.2deg);
+  box-shadow:
+    0 2px 0 #131a2e,0 4px 0 #131a2e,0 6px 0 #080c18,0 8px 0 #080c18,0 10px 0 #05070f,
+    0 44px 70px -22px rgba(0,0,0,.95),
+    inset 0 1px 0 rgba(255,255,255,.16),inset 0 -1px 0 rgba(0,0,0,.6);
+}
+body.mode-3d .fb-overlay.show .fb-modal{transform:perspective(1200px) translateZ(30px) rotateX(1.2deg)}
+body.mode-3d .fb-close{
+  box-shadow:0 1px 0 #171e33,0 2px 0 #0a0e1a,0 4px 6px -3px rgba(0,0,0,.8),
+             inset 0 1px 0 rgba(255,255,255,.18);
+  transition:transform .14s var(--pop-ease),box-shadow .14s var(--pop-ease),color .14s;
+}
+body.mode-3d .fb-close:hover{transform:perspective(500px) translateZ(6px) scale(1.06)}
+body.mode-3d .fb-close:active{transform:translateY(2px)}
+body.mode-3d #toast{
+  box-shadow:
+    0 2px 0 rgba(255,255,255,.06),0 3px 0 #0a0e1a,0 5px 0 #05070f,
+    0 22px 34px -14px rgba(0,0,0,.9),
+    inset 0 1px 0 rgba(255,255,255,.16);
+}
+
+/* ══ TITLES THAT STAND OFF THE PAGE ══
+   Extruded type: a stack of solid offsets under the glyphs is the same body the
+   controls have, applied to letterforms. It is the one place a text-shadow is
+   doing geometry rather than decoration. */
+body.mode-3d .logo{
+  text-shadow:
+    0 1px 0 rgba(0,90,110,.9),0 2px 0 rgba(0,70,90,.85),0 3px 0 rgba(0,52,70,.8),
+    0 4px 0 rgba(0,36,52,.75),0 5px 0 rgba(0,22,36,.7),
+    0 14px 22px rgba(0,0,0,.8);
+}
+body.mode-3d .g-title,
+body.mode-3d .market-title,
+body.mode-3d .mp-title,
+body.mode-3d .fb-title{
+  text-shadow:0 1px 0 rgba(0,0,0,.9),0 2px 0 rgba(0,0,0,.7),0 3px 0 rgba(0,0,0,.5),
+              0 8px 14px rgba(0,0,0,.85);
+}
+body.mode-3d #cd-num{
+  text-shadow:
+    0 2px 0 rgba(120,120,140,.9),0 4px 0 rgba(80,80,100,.85),0 6px 0 rgba(50,50,70,.8),
+    0 8px 0 rgba(28,28,44,.75),0 10px 0 rgba(14,14,26,.7),
+    0 26px 40px rgba(0,0,0,.9);
+}
+body.mode-3d #click-count{transform:perspective(700px) translateZ(20px)}
+
+/* ══ SCROLLBARS — a chrome rod in a milled channel ══
+   Scrollbar pseudo-elements cannot take 3D transforms, so the solidity has to
+   come entirely from shading. A cylinder is a specific and recognisable thing:
+   dark at both edges, a bright specular band a third of the way in, and a
+   softer bounce light near the far edge. Painted across the bar's SHORT axis
+   that reads as a rod you could roll under a finger; the track around it is a
+   channel cut into the panel, so the rod is sitting in something. */
+body.mode-3d::-webkit-scrollbar,body.mode-3d ::-webkit-scrollbar{width:14px;height:14px}
+body.mode-3d::-webkit-scrollbar-track,body.mode-3d ::-webkit-scrollbar-track{
+  background:linear-gradient(90deg,#05070f,#0b0f1c 45%,#05070f);
+  border-radius:10px;
+  box-shadow:
+    inset 2px 0 4px rgba(0,0,0,.9),inset -2px 0 4px rgba(0,0,0,.9),
+    inset 0 1px 0 rgba(0,0,0,.8),inset 0 -1px 0 rgba(255,255,255,.07);
+}
+body.mode-3d::-webkit-scrollbar-thumb,body.mode-3d ::-webkit-scrollbar-thumb{
+  border:3px solid transparent;background-clip:padding-box;border-radius:10px;
+  background-image:linear-gradient(90deg,
+    #024a52 0%,#0798a6 22%,#7ff2ff 38%,#00f5ff 52%,#0a8390 76%,#01323a 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.55),inset 0 -1px 0 rgba(0,0,0,.6),
+    0 0 10px var(--sb-glow);
+}
+body.mode-3d::-webkit-scrollbar-thumb:hover,body.mode-3d ::-webkit-scrollbar-thumb:hover{
+  background-image:linear-gradient(90deg,
+    #4a0230 0%,#c00775 22%,#ff9fd8 38%,#ff0090 52%,#a8085e 76%,#3a0125 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.6),inset 0 -1px 0 rgba(0,0,0,.6),
+    0 0 16px rgba(255,0,144,.55);
+}
+body.mode-3d::-webkit-scrollbar-thumb:active,body.mode-3d ::-webkit-scrollbar-thumb:active{
+  background-image:linear-gradient(90deg,
+    #2a0640 0%,#6b21a8 22%,#d8b4fe 38%,#a855f7 52%,#5b21a8 76%,#1e0733 100%);
+}
+/* A horizontal bar is the same rod lying the other way, so the cylinder shading
+   has to rotate with it or it reads as a flat painted strip. */
+body.mode-3d::-webkit-scrollbar-thumb:horizontal,body.mode-3d ::-webkit-scrollbar-thumb:horizontal{
+  background-image:linear-gradient(180deg,
+    #024a52 0%,#0798a6 22%,#7ff2ff 38%,#00f5ff 52%,#0a8390 76%,#01323a 100%);
+  box-shadow:inset 1px 0 0 rgba(255,255,255,.5),inset -1px 0 0 rgba(0,0,0,.6),
+             0 0 10px var(--sb-glow);
+}
+body.mode-3d::-webkit-scrollbar-track:horizontal,body.mode-3d ::-webkit-scrollbar-track:horizontal{
+  background:linear-gradient(180deg,#05070f,#0b0f1c 45%,#05070f);
+  box-shadow:inset 0 2px 4px rgba(0,0,0,.9),inset 0 -2px 4px rgba(0,0,0,.9);
+}
+body.mode-3d .fb-modal::-webkit-scrollbar-thumb{
+  background-image:linear-gradient(90deg,
+    #0a3a04 0%,#22a80c 22%,#b6ffa1 38%,#39ff14 52%,#1c7a10 76%,#082806 100%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.55),inset 0 -1px 0 rgba(0,0,0,.6),
+             0 0 10px rgba(57,255,20,.4);
+}
+body.mode-3d .fb-modal::-webkit-scrollbar-thumb:hover{
+  background-image:linear-gradient(90deg,
+    #0a3a04 0%,#39ff14 22%,#e6ffdd 38%,#7cffa1 52%,#1c7a10 76%,#082806 100%);
+}
+body.mode-3d textarea::-webkit-scrollbar,
+body.mode-3d select::-webkit-scrollbar,
+body.mode-3d .input::-webkit-scrollbar{width:10px;height:10px}
+body.mode-3d textarea::-webkit-scrollbar-thumb,
+body.mode-3d select::-webkit-scrollbar-thumb,
+body.mode-3d .input::-webkit-scrollbar-thumb{border-width:2px}
+
+/* ══ THE BOARD ITSELF ══
+   The play surface is a screen set into a bezel: a raised frame with a lit
+   inner lip and the panel dropping away behind it. */
+body.mode-3d #arcade-canvas,
+body.mode-3d #gl-canvas{
+  border-radius:10px;
+  box-shadow:
+    0 2px 0 #10162a,0 4px 0 #10162a,0 6px 0 #070a14,0 8px 0 #070a14,
+    0 26px 40px -16px rgba(0,0,0,.95),
+    inset 0 1px 0 rgba(255,255,255,.14);
+}
+body.mode-3d #board-frame{transform-style:preserve-3d}
+
+/* ══ REDUCED MOTION ══
+   The geometry stays — it is what the interface IS now, and a static solid is
+   not motion. Only the travel is removed. */
+@media (prefers-reduced-motion:reduce){
+  body.mode-3d .btn,
+  body.mode-3d .ctrl-btn,
+  body.mode-3d .bb-btn,
+  body.mode-3d .game-card,
+  body.mode-3d .shop-card,
+  body.mode-3d .card,
+  body.mode-3d .mp-mode,
+  body.mode-3d .mode-card,
+  body.mode-3d .lb-row,
+  body.mode-3d .auth-tab,
+  body.mode-3d .market-tab,
+  body.mode-3d .lb-tab,
+  body.mode-3d .mp-filter,
+  body.mode-3d .diff-btn,
+  body.mode-3d .fb-node,
+  body.mode-3d .mem-card,
+  body.mode-3d .hack-node,
+  body.mode-3d .path-node,
+  body.mode-3d #click-btn{transition:box-shadow .12s linear}
+  body.mode-3d .game-card:hover,
+  body.mode-3d .shop-card:hover,
+  body.mode-3d .mp-mode:hover,
+  body.mode-3d .mode-card:hover{
+    transform:perspective(var(--eye)) translateZ(10px)
+  }
+}
+
+/* ══ SMALL SCREENS ══
+   Shallower bodies on a phone: the same object, scaled to a surface held 30cm
+   from the eye rather than 60. Deep walls at this size eat the tap target. */
+@media (max-width:560px){
+  body.mode-3d .ctrl-btn{
+    box-shadow:
+      0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),
+      0 4px 0 var(--wallb),0 5px 0 var(--wallb),0 6px 0 var(--wallb),
+      0 12px 16px -8px rgba(0,0,0,.9),
+      inset 0 1px 0 rgba(255,255,255,.3),inset 0 -2px 0 rgba(0,0,0,.55)
+  }
+  body.mode-3d .ctrl-btn:active{transform:perspective(600px) translateY(5px)}
+  body.mode-3d .gc-icon,
+  body.mode-3d .shop-emoji{transform:translateZ(16px)}
+  body.mode-3d::-webkit-scrollbar,body.mode-3d ::-webkit-scrollbar{width:10px;height:10px}
 }

@@ -1746,12 +1746,20 @@ function fitCanvas(){
   const ctrlH = (ctrlVisible && !beside) ? ctrlBox.height + 10 : 0;   // + #arcade-controls margin-top
   const ctrlW = beside ? ctrlBox.width + 12 : 0;
 
-  // Battle Bots' deploy deck sits under the board and costs it height exactly
-  // the way the control pad does, so it has to be measured too — otherwise the
-  // board sizes itself into the deck and runs off the bottom of the screen.
-  const deck = document.getElementById('bb-deck');
-  const deckH = (deck && getComputedStyle(deck).display !== 'none')
-    ? deck.getBoundingClientRect().height + 10 : 0;   // + #bb-deck margin-top
+  // Consoles that sit UNDER the board cost it height exactly the way the control
+  // pad does, so they have to be measured too — otherwise the board sizes
+  // itself into them and they run off the bottom of the screen. Three of them
+  // can be up: Battle Bots' deploy deck, the Frequency Modulator's two sliders,
+  // and — in 3D mode, where the sum itself is rendered in the world — Math
+  // Blitz's answer field. All are siblings of the holder inside .g-area, and
+  // all carry a 10px top margin.
+  let deckH = 0;
+  for(const id of ['bb-deck', 'g-freq-ctl', 'g-math']){
+    const el = document.getElementById(id);
+    if(el && getComputedStyle(el).display !== 'none'){
+      deckH += el.getBoundingClientRect().height + 10;
+    }
+  }
 
   const availW = area.clientWidth - ctrlW;
   // The header is measured, never assumed, so its exact height (title line,
@@ -1795,6 +1803,11 @@ function fitCanvas(){
     aCanvas.height = pxH;
   }
   aCtx?.setTransform(pxW / BOARD_W, 0, 0, pxH / BOARD_H, 0, 0);
+
+  // 🧊 The 3D surface is layered on this one and must land on exactly the same
+  // rectangle, or taps would map to the wrong world position. Sizing it here
+  // rather than on its own resize listener means one measurement drives both.
+  if(window.PI3D) PI3D.syncSize();
 }
 let _fitRaf = 0;
 function scheduleFit(){ cancelAnimationFrame(_fitRaf); _fitRaf = requestAnimationFrame(fitCanvas); }
@@ -2316,8 +2329,15 @@ function resetGameStage(gid){
   document.getElementById('bb-ram-pill').style.display='none';
   setControls(null);                 // every game re-declares its own pad
   document.getElementById('g-controls').textContent='';   // and its own hint
-  const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','breaker','arena','runner','meteor','battlebots','freq'].includes(gid);
+  // 🧊 A 3D round always plays on the board, including the missions whose 2D
+  // build is pure DOM — so the landscape layout that parks the pad beside the
+  // board has to know about them too.
+  const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','breaker','arena','runner','meteor','battlebots','freq'].includes(gid)
+                  || !!(window.PI3D && PI3D.has(gid));
   document.getElementById('game-screen').classList.toggle('canvas-game', canvasGame);
+  // Whatever the last round left up comes down here, before the next one
+  // decides whether it wants the GL surface at all.
+  if(window.PI3D) PI3D.unmount();
 
   document.getElementById('g-pts').textContent='0';
   document.getElementById('g-time').textContent='—';
@@ -2339,7 +2359,18 @@ function prepGame(gid, mod){
   chaosAnnounce(mod);
   countdown(()=>{
     chaosArm(mod);
-    chaosRun(start);
+    // 🧊 3D MODE. The 3D missions are the same rounds behind a different
+    // renderer, so they run through chaosRun() exactly as the 2D ones do —
+    // that is what keeps the setInterval doubling and the inverted-key wrapper
+    // working in both. startFor() returns false when the player is in 2D mode,
+    // when the mission has no 3D build yet, or when the GL round threw on
+    // startup; each of those falls through to the 2D implementation, which is
+    // always present.
+    let ran = false;
+    chaosRun(() => {
+      ran = !!(window.PI3D && PI3D.startFor(gid));
+      if(!ran) start();
+    });
     showPowerDock();
   });
 }
@@ -8716,6 +8747,9 @@ function startBattleBots(){
   let bots = [], foes = [], parts = [], beams = [];
   let pLane = 0, eLane = 0;         // round-robin, so a deploy spreads your force
   let elapsed = 0, time = TOTAL, waveNo = 0, waveT = BB.wave.first;
+  // Hostiles a wave has called for but that have not found free ground yet, and
+  // the countdown to the next attempt. See spawnWave() / drainQueue().
+  let foeQueue = [], queueT = 0;
   let kills = 0, deployed = 0, empFired = 0, ended = false, outro = null;
   let hurtFlash = 0, hitFlash = 0, empFlash = 0, banner = null, scroll = 0, last = 0;
 
@@ -8748,7 +8782,7 @@ function startBattleBots(){
                   `<span class="bb-cost"></span>`;
     b.onclick = () => buy(i);
     deck.appendChild(b);
-    return { el: b, cost: b.querySelector('.bb-cost'), lastCost: '', lastState: '', lastCd: -1 };
+    return { el: b, cost: b.querySelector('.bb-cost'), lastCost: '', lastState: '', lastCd: -1, lastSecs: '' };
   });
 
   // The deck changes the board's available height, so it has to be in the DOM
@@ -8793,6 +8827,13 @@ function startBattleBots(){
 
   // Only touches the DOM when something actually changed — this runs every
   // frame, and a blind write per card per frame is layout churn for nothing.
+  //
+  // Three separate readouts, and they answer three different questions: the
+  // cost label says what it costs, `broke`/`maxed` say whether you can afford
+  // it AT ALL (a lit card must mean "deployable now" or the deck is lying), and
+  // the cooldown says how long the bay has left — as a receding shade for the
+  // shape of it and as a number of seconds for planning the next push.
+  // The 3D build paints from this same function's rules; keep them in step.
   function paintDeck(){
     cards.forEach((c, i) => {
       const b = btns[i], cost = costOf(i);
@@ -8807,15 +8848,21 @@ function startBattleBots(){
       }
 
       const cool = c.kind === 'unit' ? c.spec.cool : c.kind === 'emp' ? BB.emp.cool : 0;
-      const cd = cool ? Math.max(0, c.cdLeft) / cool : 0;
-      const q = Math.round(cd * 20) / 20;            // quantised — 20 steps is plenty
+      const left = cool ? Math.max(0, c.cdLeft) : 0;
+      const q = cool ? Math.round(left / cool * 20) / 20 : 0;   // 20 steps is plenty
       if(q !== b.lastCd){ b.el.style.setProperty('--cd', q); b.lastCd = q; }
+      // Seconds, rounded UP: a bay showing 1 has not reloaded yet, and a bay
+      // showing nothing is one you can press.
+      const secs = left > 0 ? String(Math.ceil(left / 1000)) : '';
+      if(secs !== b.lastSecs){
+        if(secs) b.el.dataset.cd = secs; else b.el.removeAttribute('data-cd');
+        b.lastSecs = secs;
+      }
     });
   }
 
   // ── SPAWNING ──
-  function mkUnit(spec, side, x, color){
-    const lane = side < 0 ? eLane++ % 3 : pLane++ % 3;
+  function mkUnit(spec, side, x, lane, color){
     return {
       spec, side, x, color, lane,
       hp: spec.hp * (side < 0 ? foeHpScale : 1),
@@ -8826,8 +8873,60 @@ function startBattleBots(){
       flash: 0, bob: Math.random() * 6
     };
   }
-  function spawnBot(spec){ bots.push(mkUnit(spec, +1, BB_P_SPAWN, colorOf[spec.key])); }
-  function spawnFoe(spec){ foes.push(mkUnit(spec, -1, BB_E_SPAWN, spec.color)); }
+
+  // ── THE SPAWN SHELF ──
+  // Nothing arrives on top of something already standing there. allyGap() only
+  // holds units that are ALREADY apart — two bodies at the same x have a
+  // negative edge gap, which does not block — so a body dropped onto another
+  // walks the whole lane inside it, and a wave landing on a held front reads as
+  // one flickering sprite instead of three.
+  //
+  // `shelfX` answers "where can this actually stand": the spawn point, or far
+  // enough behind whatever is sitting on it, stepping back toward our own base
+  // until it finds room or runs out of ground and gives up.
+  function shelfX(list, spec, lane, x, side, wall){
+    let px = x;
+    for(let guard = 0; guard < 5; guard++){
+      let hit = null;
+      for(const u of list){
+        if(u.hp <= 0 || u.lane !== lane) continue;
+        if(Math.abs(u.x - px) < (u.w + spec.w) / 2 + BB.spacing){ hit = u; break; }
+      }
+      if(!hit) return px;
+      px = hit.x - side * ((hit.w + spec.w) / 2 + BB.spacing);
+      if(side > 0 ? px < wall : px > wall) return null;
+    }
+    return null;
+  }
+  // The emptiest lane, scanned from `from` so an unobstructed field still
+  // round-robins and a deploy still spreads across the three fronts.
+  function placeIn(list, spec, from, x, side, wall){
+    for(let i = 0; i < 3; i++){
+      const lane = (from + i) % 3;
+      const px = shelfX(list, spec, lane, x, side, wall);
+      if(px != null) return { lane, x: px };
+    }
+    return null;
+  }
+
+  // The player has already paid, so a blocked shelf must never swallow a
+  // deploy — it falls back to the spawn point in the round-robin lane.
+  function spawnBot(spec){
+    const at = placeIn(bots, spec, pLane, BB_P_SPAWN, +1, BB_P_TOWER + BB_TOWER_W)
+            || { lane: pLane % 3, x: BB_P_SPAWN };
+    pLane = (at.lane + 1) % 3;
+    bots.push(mkUnit(spec, +1, at.x, at.lane, colorOf[spec.key]));
+  }
+  // Returns false when there is nowhere to put it: the wave queue holds onto
+  // the hostile and tries again shortly rather than dropping it on an occupied
+  // square. See the drain in simulate().
+  function spawnFoe(spec){
+    const at = placeIn(foes, spec, eLane, BB_E_SPAWN, -1, BB_E_TOWER);
+    if(!at) return false;
+    eLane = (at.lane + 1) % 3;
+    foes.push(mkUnit(spec, -1, at.x, at.lane, spec.color));
+    return true;
+  }
 
   // ── EMP SURGE ──
   // Whole-field damage, paid in RAM and throttled by the deck's longest
@@ -8858,20 +8957,36 @@ function startBattleBots(){
     return pool[0];
   }
 
+  // A wave is REQUESTED here, not spawned. Its hostiles go into a queue that
+  // drainQueue() empties one at a time onto free ground, and a new wave is not
+  // started at all while the shelf is congested or the last one is still
+  // landing. The old code fired one `gLater` per hostile, and a timer does not
+  // care whether the ground under the spawn point is occupied — a wave arriving
+  // on a stalled column put three bodies inside each other, and the pile then
+  // walked the lane as one.
   function spawnWave(){
+    if(foeQueue.length || !placeIn(foes, BB.foes.bug, eLane, BB_E_SPAWN, -1, BB_E_TOWER)){
+      waveT = 400;                     // shelf busy — look again, don't bank a pile-up
+      return;
+    }
     waveNo++;
     const count = Math.min(3, 1 + Math.floor(elapsed / 70));
-    for(let i = 0; i < count; i++){
-      const f = pickFoe();
-      // Trickled rather than dumped, so a wave arrives as a column you can
-      // watch build instead of four sprites appearing on one pixel.
-      gLater(() => { if(!ended) spawnFoe(f); }, i * BB.wave.burst);
-    }
+    for(let i = 0; i < count; i++) foeQueue.push(pickFoe());
     waveT = Math.max(BB.wave.floor, BB.wave.start - elapsed * BB.wave.tighten) / waveScale;
     if(waveNo % 5 === 0){
       snd('wave');
       banner = { text: `⚠ WAVE ${waveNo} INBOUND`, life: 1700, color: '#ff2442' };
     }
+  }
+
+  // One hostile per burst interval, and only onto ground that is free. A
+  // refusal costs a short re-check, never a lost hostile — so the pressure the
+  // wave table asks for still arrives, just never inside another body.
+  function drainQueue(dt){
+    queueT = Math.max(0, queueT - dt);
+    if(!foeQueue.length || queueT > 0) return;
+    if(spawnFoe(foeQueue[0])){ foeQueue.shift(); queueT = BB.wave.burst; }
+    else queueT = 220;
   }
 
   // ── COMBAT ──
@@ -9019,6 +9134,7 @@ function startBattleBots(){
 
     waveT -= dt;
     if(waveT <= 0) spawnWave();
+    drainQueue(dt);
 
     stepSide(bots, foes, +1, dt);
     stepSide(foes, bots, -1, dt);
@@ -10564,9 +10680,18 @@ function startDailyHack(){
     // being drained at different rates by whatever else the page is animating.
     // Math Blitz, whose questions keep coming during play, reads dailyRand()
     // directly instead.
+    //
+    // 🧊 And the same seam every other mode uses: the 3D build first, the 2D one
+    // as the fallback. The seeded stream is patched around BOTH, so a hack plays
+    // on today's layout whichever renderer the player chose — the two builds
+    // draw from that stream at their own rates, so a 3D board and a 2D board of
+    // the same seed are not pixel-identical, but each is identical for every
+    // operative running that renderer, and the score lands on the same board.
     const realRandom = Math.random;
     Math.random = dailyRand;
-    try{ SOLO_START[gid](); }
+    try{
+      if(!(window.PI3D && PI3D.startFor(gid))) SOLO_START[gid]();
+    }
     finally{ Math.random = realRandom; }
     showPowerDock();
   });
@@ -10601,6 +10726,20 @@ function settleDailyRun(gid, pts){
   // and reads the same, but today's board is not up for a second attempt.
   if(!scored || !user) return;
 
+  // ⚠️ A ZERO DOES NOT CLAIM THE DAY.
+  // The day's attempt is claimed by the first run that FINISHES, and both the
+  // profile record and the board row are effectively write-once — the board's
+  // database rule refuses a second write outright, so a row cannot be improved
+  // or removed once it exists. That combination turned a three-second misclick
+  // into a 24-hour lockout: the run banked 0, the slot was gone, and every
+  // attempt after it played as practice that could never post. Nothing about a
+  // zero is worth ranking anyway, so it is treated as a run that did not
+  // happen — the tier is still handed back, and the player can try again.
+  if(!(pts > 0)){
+    toast('📅 No points banked — today\'s hack is still open. Run it again.', 3600);
+    return;
+  }
+
   const prev = dailyMine(day);
   if(prev && prev.pts >= pts) return;
   user.daily = { day, pts, gid };
@@ -10614,9 +10753,17 @@ function settleDailyRun(gid, pts){
 // never read again, which costs a few bytes and saves a scheduled job.
 //
 // ⚠️ DATABASE RULES: if your rules name specific top-level nodes, "daily" needs
-// to be one of them, with an .indexOn of "pts". Without it this degrades to a
-// board showing only your own run — which is why every failure below is caught
-// rather than surfaced as an error.
+// to be one of them, with an .indexOn of "pts". The rules also decide whether a
+// row can be written twice — this project's refuse a second write to
+// daily/$day/$uid, which is why settleDailyRun() is careful about what it
+// spends the day's one write on.
+//
+// A refused write is REPORTED, not swallowed. It used to be a bare
+// console.warn, and the result was a board that quietly stopped updating with
+// nothing on screen to say so — the failure looked exactly like "my score
+// didn't count", which is the one thing a player will not shrug off. The run
+// itself is never lost: it is already in the profile and on the main
+// leaderboard, and the panel falls back to showing it.
 function publishDailyScore(day, pts, gid){
   if(!db || offlineMode || isLocalSession() || !user) return;
   db.ref(`daily/${day}/${user.uid}`).set({
@@ -10624,7 +10771,19 @@ function publishDailyScore(day, pts, gid){
     pts: Math.max(0, Math.round(pts)),
     gid,
     at: firebase.database.ServerValue.TIMESTAMP
-  }).catch(e => console.warn('Daily board write failed — kept locally:', e));
+  }).then(() => loadDailyBoard())
+    .catch(e => {
+      const denied = String((e && e.code) || e || '').toUpperCase().includes('PERMISSION_DENIED');
+      console.warn('Daily board write failed — kept locally:', e);
+      if(denied){
+        console.warn('[daily] The grid refused the write. Firebase Console → Realtime ' +
+                     'Database → Rules: "daily" must be writable at daily/$day/$uid, and ' +
+                     'a rule that only allows the FIRST write per day will refuse every ' +
+                     'later one, including an improved score.');
+      }
+      toast(denied ? '📅 The grid refused today\'s board entry — your run is saved on this device.'
+                   : '📅 Daily board is unreachable — your run is saved on this device.', 4200);
+    });
 }
 
 function loadDailyBoard(){
@@ -13120,6 +13279,14 @@ function startPongDuel(){
   }
 
   // ── DRAW ──
+  // 🧊 In 3D mode the same frame goes to a view instead of the canvas. The state
+  // handed over is already in VIEW space — my paddle on the left, the rival's on
+  // the right, the ball mirrored for the guest — so the picture the two players
+  // see is the picture they would have seen in 2D, in a room.
+  const view3d = window.PI3D
+    ? PI3D.duelView('pong', { W, H, PAD_W, PAD_H, myCol, oppCol, oppLabel })
+    : null;
+
   function pad(x, y, color){
     aCtx.save();
     aCtx.shadowBlur = 20; aCtx.shadowColor = color;
@@ -13129,6 +13296,14 @@ function startPongDuel(){
   }
   function draw(){
     const b = ballNow();
+    if(view3d){
+      view3d.draw({
+        myY:  isHost ? hostY : guestY,
+        oppY: isHost ? guestY : hostY,
+        bx: vx(b.x), by: b.y
+      });
+      return;
+    }
     aCtx.clearRect(0, 0, W, H);
 
     aCtx.setLineDash([8,12]); aCtx.strokeStyle = 'rgba(255,255,255,0.08)'; aCtx.lineWidth = 2;
@@ -13389,6 +13564,13 @@ function startDodgeDuel(){
   }
 
   // ── DRAW ──
+  // 🧊 The 3D view takes the same frame the canvas would have got: both cores at
+  // their board positions and the shared hazard feed resolved to where it is
+  // right now. Nothing above this line knows which renderer is running.
+  const view3d = window.PI3D
+    ? PI3D.duelView('dodge', { W, H, RAD, myCol, oppCol, oppLabel, oppSkin })
+    : null;
+
   function dot(x, y, color, mine){
     aCtx.save();
     aCtx.shadowBlur = 24; aCtx.shadowColor = color;
@@ -13409,6 +13591,16 @@ function startDodgeDuel(){
     aCtx.restore();
   }
   function draw(now){
+    if(view3d){
+      view3d.draw({
+        me, opp, alive, oppAlive,
+        cores: cores.map(c => {
+          const p = corePos(c, now);
+          return { id: c.id, x: p.x, y: p.y, r: c.r, c: c.c };
+        })
+      });
+      return;
+    }
     aCtx.fillStyle = '#0a0a1a';
     aCtx.fillRect(0, 0, W, H);
     aCtx.strokeStyle = 'rgba(255,255,255,0.04)';
@@ -13556,8 +13748,6 @@ function startDodgeDuel(){
 // rival's number is merely stale, never wrong.
 function startClickDuel(){
   if(!mp) return;
-  document.getElementById('g-click').style.display = 'flex';
-  setControlHint('TAP THE PAD AS FAST AS YOU CAN', 'CLICK THE PAD AS FAST AS YOU CAN');
 
   const DUR = 12;
   const isHost = mp.isHost, myId = mp.myId, oppId = mp.oppId;
@@ -13571,6 +13761,22 @@ function startClickDuel(){
   btn.disabled = false;
   countEl.textContent = '0';
 
+  // 🧊 The only duel whose 3D build replaces the CONTROL as well as the picture.
+  // Its 2D board is a DOM pad; in 3D it becomes two containment cores on the
+  // arcade board — yours and theirs, side by side — and the board itself is the
+  // button, exactly as the solo Click Frenzy mission already works. The view
+  // binds that input and calls straight back into tap(), so the count, the wire
+  // and the settlement below are the same code in both renderers.
+  const myCol  = mpColor(mp.me, getEquippedColorHex());
+  const oppCol = mpColor(mp.opp, '#ff0090');
+  const view3d = window.PI3D
+    ? PI3D.duelView('click', { myCol, oppCol, oppLabel, onStrike: () => tap() })
+    : null;
+  if(!view3d){
+    document.getElementById('g-click').style.display = 'flex';
+    setControlHint('TAP THE PAD AS FAST AS YOU CAN', 'CLICK THE PAD AS FAST AS YOU CAN');
+  }
+
   function paint(){
     countEl.textContent = n;
     mpHudScores(n, oppN, (n + oppN) ? n/(n + oppN) : 0.5);
@@ -13579,12 +13785,18 @@ function startClickDuel(){
 
   // The blip climbs an octave over eight clicks and wraps, so a fast streak
   // sounds like it's accelerating even though the button is doing one thing.
-  btn.onclick = () => {
-    if(ended || !mp) return;
+  function tap(){
+    // `over` as well as `ended`: a walkover reports a result without the clock
+    // ever running out, and the 3D build has no DOM button to disable — its
+    // input is the board, and this is the only thing standing between a
+    // finished duel and a count that keeps climbing under the results card.
+    if(over || ended || !mp) return;
     n++;
     snd('bounce', { semi: (n % 8)*2 });
+    if(view3d) view3d.strike();
     paint();
-  };
+  }
+  btn.onclick = tap;
 
   mpOn(mp.live.child('in/' + oppId), 'value', s => {
     const v = s.val();
@@ -13635,6 +13847,7 @@ function startClickDuel(){
 
   function loop(){
     if(over || !mp) return;
+    if(view3d) view3d.draw({ n, oppN });
     const now = netNow();
     const left = Math.max(0, (mp.endsAt - now)/1000);
     const secs = Math.ceil(left);
@@ -13740,6 +13953,11 @@ function vsHaltGame(){
 // (memory, math, reaction, hacker, click) have nowhere of their own to hang a
 // full-board notice.
 function vsWaitBoard(msg, sub){
+  // 🧊 A 3D round leaves an opaque GL canvas layered over the 2D board, so the
+  // wipe below would be painted underneath a frozen last frame. vsHaltGame()
+  // deliberately does NOT run the round teardown (it is keeping it for the real
+  // ending), which is why the surface has to come down by hand here.
+  if(window.PI3D) PI3D.unmount();
   ['g-click','g-memory','g-math','g-reaction','g-hacker'].forEach(id => {
     const el = document.getElementById(id);
     if(el) el.style.display = 'none';
@@ -13959,7 +14177,14 @@ function startScoreDuel(modeKey){
 
   paintHud();
   if(droppedEarly){ mp.round.onOppLeft(); return; }
-  SOLO_START[gid]();                 // the ordinary solo game, live on this board
+  // 🧊 The ordinary solo round, live on this board — in whichever renderer the
+  // player chose. A race never reaches inside the game it runs: it listens at
+  // setLive() and showResults(), and a 3D mission announces itself through
+  // exactly those two, so the whole engine above is renderer-agnostic and the
+  // scores stay comparable across the wire (a 3D score IS a 2D score). The
+  // fallback is the same one prepGame() uses — 2D mode, no 3D build, or a GL
+  // round that threw on startup all land on the 2D implementation.
+  if(!(window.PI3D && PI3D.startFor(gid))) SOLO_START[gid]();
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -14529,3 +14754,8604 @@ document.getElementById('btn-mp-addbot').onclick = async function(){
   btn.disabled = false;
   btn.textContent = '🤖 Fill Seat With Droid';
 };
+
+// ══════════════════════════════════════════════════════════════════════
+//  🧊 POINTER PARALLAX — the interface's solids turn to face you
+// ══════════════════════════════════════════════════════════════════════
+// The 3D chrome in style.css gives every card a real body: an extruded wall, a
+// bevelled lip, a specular, and icons standing off the face on their own Z.
+// None of that is visible while the object faces the camera dead-on, because a
+// solid seen exactly end-on projects to its own outline. This is what makes it
+// visible: the card rotates toward the pointer, and the parallax between the
+// lifted glyph, the face and the wall behind it is the depth cue.
+//
+// Two custom properties per element and nothing else. The CSS owns the whole
+// transform — including the lift, which is a plain :hover rule — so this file
+// never writes `style.transform` and can never fight a stylesheet state.
+//
+// Deliberately mouse-only. On a touch screen the finger is ON the object it is
+// tilting and hides it, there is no hover to return from, and the extra work
+// lands on exactly the devices least able to afford it.
+//
+// 🕹️ And deliberately 3D-mode-only. The chrome it exists to reveal is scoped to
+// `body.mode-3d`; in 2D CLASSIC the cards are flat plates with no --tx/--ty
+// consumer, so tilting them would be a per-frame style invalidation nothing
+// renders. The class is read per event rather than once at load, because the
+// player can flip renderers on the login screen without a reload.
+(function(){
+'use strict';
+
+const SEL = '.game-card,.shop-card,.mp-mode,.mode-card,.lb-row,.bb-btn';
+const MAX = 9;                      // degrees at the corner of a card
+const flat = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+if(flat || (typeof isTouchDevice !== 'undefined' && isTouchDevice)) return;
+const solid = () => document.body.classList.contains('mode-3d');
+
+let el = null, px = 0, py = 0, queued = false;
+
+// One rAF for the whole surface. A pointermove can fire far faster than the
+// display refreshes, and writing a custom property per event would invalidate
+// style for the same element several times between two frames.
+function apply(){
+  queued = false;
+  if(!el) return;
+  const r = el.getBoundingClientRect();
+  if(!r.width || !r.height) return;
+  // −1..1 from the centre. Y is negated because pushing the pointer DOWN should
+  // tip the far edge up, which is a positive rotateX.
+  const dx = ((px - r.left) / r.width) * 2 - 1;
+  const dy = ((py - r.top) / r.height) * 2 - 1;
+  el.style.setProperty('--ty', (dx * MAX).toFixed(2) + 'deg');
+  el.style.setProperty('--tx', (-dy * MAX).toFixed(2) + 'deg');
+}
+
+function clear(node){
+  if(!node) return;
+  node.style.removeProperty('--tx');
+  node.style.removeProperty('--ty');
+}
+
+// Delegated on the document, so cards built after load — the shop grid, the
+// leaderboard, Battle Bots' deck — are covered without re-binding anything.
+// mousemove rather than pointermove on purpose. A touch drag also emits
+// pointermove, and every automation and remote-control layer in front of this
+// app synthesises mouse events; the touch case is already excluded above, so
+// the older event is simply the one that always arrives.
+document.addEventListener('mousemove', e => {
+  if(!solid()){ if(el){ clear(el); el = null; } return; }
+  const hit = e.target && e.target.closest ? e.target.closest(SEL) : null;
+  if(hit !== el){ clear(el); el = hit; }
+  if(!el) return;
+  px = e.clientX; py = e.clientY;
+  if(!queued){ queued = true; requestAnimationFrame(apply); }
+}, { passive: true });
+
+// A card can leave under a still pointer — a screen change, a re-render, a
+// scroll. Letting go of the reference on any of those is what stops a stale
+// element keeping its tilt forever.
+document.addEventListener('mouseleave', () => { clear(el); el = null; }, true);
+window.addEventListener('blur', () => { clear(el); el = null; });
+document.addEventListener('scroll', () => { clear(el); el = null; }, true);
+
+})();
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ██  3D LAYER — engine, mode switch, and every mission's 3D build
+// ══════════════════════════════════════════════════════════════════════════════
+// These five sections used to be five files loaded after this one. They are
+// appended here rather than merged INTO the code above because the dependency
+// only runs one way: the 3D layer calls this file's helpers (setLive,
+// showResults, bindCanvasDrag, fitCanvas, BOARD_W, the BB balance table), and
+// nothing above it calls anything below. Order still matters at run time — the
+// engine has to exist before PI3D builds a renderer, and PI3D has to exist
+// before a mission can register on PI3D.games — so it is preserved exactly as
+// the <script> tags had it.
+//
+// Each section is a closed IIFE that publishes one global and leaks nothing
+// else (window.PI3D_ENGINE, then window.PI3D), which is why concatenation is
+// safe: there is not one top-level name here that can collide with the arcade
+// code above.
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  § 1/5  RENDERER          engine3d
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════
+//  🧊 POINT INVADERS — REAL-TIME 3D ENGINE (WebGL2, zero dependencies)
+// ══════════════════════════════════════════════════════════════════════
+// This is the renderer behind the arcade's 3D mode. It is deliberately a
+// self-contained IIFE that knows nothing about games, screens or scores — the
+// same rule the audio engine follows — so its only handle on the outside world
+// is `window.PI3D_ENGINE`.
+//
+// What it actually is: a small physically-based forward renderer.
+//   · Cook-Torrance specular (GGX + Smith height-correlated + Schlick) over a
+//     Lambert diffuse, metallic/roughness workflow, energy-conserving.
+//   · Image-based lighting approximated analytically — a three-band procedural
+//     environment (zenith / horizon / ground) sampled for both the diffuse
+//     irradiance and the specular reflection, closed with Lazarov's split-sum
+//     env-BRDF fit. That is what makes chrome read as chrome without shipping a
+//     single cubemap byte.
+//   · HDR throughout: an RGBA16F target, a proper 13-tap/tent bloom pyramid,
+//     ACES filmic tonemapping, then grade → chromatic aberration → grain →
+//     vignette. Neon only looks like neon if the bright parts are allowed to be
+//     brighter than 1.0, which is the whole reason for the float target.
+//
+// ⚠️ NO SHADOWS. There is no shadow map, no depth-from-light pass, no contact
+// shading anywhere in this file, by explicit design request. Depth reads as
+// depth here through perspective, fog, parallax and reflection instead — which
+// is why the fog and the environment terms carry more weight than they would in
+// a shadowed renderer, and why lights are given real falloff radii.
+//
+// The API is IMMEDIATE MODE on purpose. Games in this codebase are closures
+// that rebuild their whole world every frame from plain arrays; handing them a
+// retained scene graph to keep in sync would have been the wrong shape. So:
+//
+//     r.begin();                       // reset the frame
+//     r.camera({eye, target, fov});
+//     r.sun({dir, color, intensity});
+//     r.light({pos, color, intensity, range});
+//     r.draw('box', { pos:[x,y,z], scale:[..], color:[..], metallic, roughness,
+//                     emissive:[..], emissiveStrength });
+//     r.glow([x,y,z], size, color, intensity);   // additive billboard
+//     r.render();
+//
+// Everything submitted between begin() and render() is bucketed by geometry and
+// drawn with ANGLE_instanced_arrays' WebGL2 equivalent, so a thousand blocks is
+// still one draw call.
+
+window.PI3D_ENGINE = (function(){
+'use strict';
+
+// ══════════════════════════════════════════════
+//  📐 MATH — mat4 / vec3, column-major like GLSL
+// ══════════════════════════════════════════════
+// Column-major so a Float32Array can go straight to uniformMatrix4fv with
+// transpose=false, which WebGL requires.
+
+const M4 = {
+  create(){ return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]); },
+
+  identity(o){
+    o[0]=1;o[1]=0;o[2]=0;o[3]=0; o[4]=0;o[5]=1;o[6]=0;o[7]=0;
+    o[8]=0;o[9]=0;o[10]=1;o[11]=0; o[12]=0;o[13]=0;o[14]=0;o[15]=1;
+    return o;
+  },
+
+  mul(o, a, b){
+    const a00=a[0],a01=a[1],a02=a[2],a03=a[3], a10=a[4],a11=a[5],a12=a[6],a13=a[7],
+          a20=a[8],a21=a[9],a22=a[10],a23=a[11], a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+    for(let i=0;i<4;i++){
+      const b0=b[i*4],b1=b[i*4+1],b2=b[i*4+2],b3=b[i*4+3];
+      o[i*4]   = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+      o[i*4+1] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+      o[i*4+2] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+      o[i*4+3] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+    }
+    return o;
+  },
+
+  perspective(o, fovy, aspect, near, far){
+    const f = 1 / Math.tan(fovy/2), nf = 1 / (near - far);
+    o[0]=f/aspect;o[1]=0;o[2]=0;o[3]=0;
+    o[4]=0;o[5]=f;o[6]=0;o[7]=0;
+    o[8]=0;o[9]=0;o[10]=(far+near)*nf;o[11]=-1;
+    o[12]=0;o[13]=0;o[14]=2*far*near*nf;o[15]=0;
+    return o;
+  },
+
+  lookAt(o, eye, center, up){
+    let z0=eye[0]-center[0], z1=eye[1]-center[1], z2=eye[2]-center[2];
+    let len = Math.hypot(z0,z1,z2) || 1;
+    z0/=len; z1/=len; z2/=len;
+    let x0 = up[1]*z2 - up[2]*z1, x1 = up[2]*z0 - up[0]*z2, x2 = up[0]*z1 - up[1]*z0;
+    len = Math.hypot(x0,x1,x2);
+    // Degenerate when the view direction is parallel to `up` — nudge rather
+    // than emit a NaN matrix that would blank the whole frame.
+    if(!len){ x0=1; x1=0; x2=0; } else { x0/=len; x1/=len; x2/=len; }
+    const y0 = z1*x2 - z2*x1, y1 = z2*x0 - z0*x2, y2 = z0*x1 - z1*x0;
+    o[0]=x0;o[1]=y0;o[2]=z0;o[3]=0;
+    o[4]=x1;o[5]=y1;o[6]=z1;o[7]=0;
+    o[8]=x2;o[9]=y2;o[10]=z2;o[11]=0;
+    o[12]=-(x0*eye[0]+x1*eye[1]+x2*eye[2]);
+    o[13]=-(y0*eye[0]+y1*eye[1]+y2*eye[2]);
+    o[14]=-(z0*eye[0]+z1*eye[1]+z2*eye[2]);
+    o[15]=1;
+    return o;
+  },
+
+  // Model matrix from position / XYZ-euler / scale, written straight into a
+  // destination offset inside the big instance buffer — no temporaries per
+  // instance, because this runs a few thousand times a frame.
+  compose(buf, off, p, r, s){
+    const cx=Math.cos(r[0]), sx=Math.sin(r[0]);
+    const cy=Math.cos(r[1]), sy=Math.sin(r[1]);
+    const cz=Math.cos(r[2]), sz=Math.sin(r[2]);
+    // R = Rz * Ry * Rx  (yaw applied about Y, then roll about Z)
+    const m00 = cz*cy,              m01 = sz*cy,              m02 = -sy;
+    const m10 = cz*sy*sx - sz*cx,   m11 = sz*sy*sx + cz*cx,   m12 = cy*sx;
+    const m20 = cz*sy*cx + sz*sx,   m21 = sz*sy*cx - cz*sx,   m22 = cy*cx;
+    buf[off   ]=m00*s[0]; buf[off+1 ]=m01*s[0]; buf[off+2 ]=m02*s[0]; buf[off+3 ]=0;
+    buf[off+4 ]=m10*s[1]; buf[off+5 ]=m11*s[1]; buf[off+6 ]=m12*s[1]; buf[off+7 ]=0;
+    buf[off+8 ]=m20*s[2]; buf[off+9 ]=m21*s[2]; buf[off+10]=m22*s[2]; buf[off+11]=0;
+    buf[off+12]=p[0];     buf[off+13]=p[1];     buf[off+14]=p[2];     buf[off+15]=1;
+  }
+};
+
+const V3 = {
+  sub(a,b){ return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; },
+  len(a){ return Math.hypot(a[0],a[1],a[2]); },
+  norm(a){ const l = Math.hypot(a[0],a[1],a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; },
+  dot(a,b){ return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; },
+  cross(a,b){ return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; },
+  lerp(a,b,t){ return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t]; }
+};
+
+// '#00f5ff' → [0.0, 0.96, 1.0], and then de-gamma'd into linear space.
+// Every colour in the games is authored as an sRGB hex, but the lighting maths
+// is only correct in linear light — skipping this is what makes hand-rolled
+// WebGL look flat and plasticky next to an offline render.
+const _hexCache = Object.create(null);
+function hexToLinear(hex){
+  if(Array.isArray(hex)) return hex;
+  const cached = _hexCache[hex];
+  if(cached) return cached;
+  let h = String(hex).replace('#','').trim();
+  if(h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+  const n = parseInt(h, 16);
+  const srgb = [((n>>16)&255)/255, ((n>>8)&255)/255, (n&255)/255];
+  const lin = srgb.map(c => c <= 0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4));
+  _hexCache[hex] = lin;
+  return lin;
+}
+
+// ══════════════════════════════════════════════
+//  🔺 PROCEDURAL GEOMETRY
+// ══════════════════════════════════════════════
+// Everything in the 3D arcade is generated here at load time. No .obj, .gltf or
+// .blend files are fetched — the site stays a static drop-in that works offline
+// and from file://, which is a hard constraint inherited from the 2D build.
+//
+// Builders return { pos:[...], nrm:[...], uv:[...], idx:[...] } in a
+// right-handed Y-up space, centred on the origin, with CCW front faces.
+
+function emptyMesh(){ return { pos:[], nrm:[], uv:[], idx:[] }; }
+
+// Appends `src` into `dst`, offsetting indices. Lets a hull be assembled out of
+// several primitives and still ship as ONE instanced geometry.
+function mergeMesh(dst, src, xform){
+  const base = dst.pos.length / 3;
+  for(let i=0;i<src.pos.length;i+=3){
+    let x = src.pos[i], y = src.pos[i+1], z = src.pos[i+2];
+    let nx = src.nrm[i], ny = src.nrm[i+1], nz = src.nrm[i+2];
+    if(xform){
+      const s = xform.scale || [1,1,1], t = xform.pos || [0,0,0], r = xform.rot;
+      x*=s[0]; y*=s[1]; z*=s[2];
+      // Normals need the inverse-scale, or a squashed part gets lit as if it
+      // were still round.
+      nx/=s[0]; ny/=s[1]; nz/=s[2];
+      if(r){
+        const cx=Math.cos(r[0]),sx=Math.sin(r[0]),cy=Math.cos(r[1]),sy=Math.sin(r[1]),cz=Math.cos(r[2]),sz=Math.sin(r[2]);
+        const rot = (vx,vy,vz)=>{
+          let y1 = vy*cx - vz*sx, z1 = vy*sx + vz*cx;          // X
+          let x2 = vx*cy + z1*sy, z2 = -vx*sy + z1*cy;          // Y
+          let x3 = x2*cz - y1*sz, y3 = x2*sz + y1*cz;           // Z
+          return [x3, y3, z2];
+        };
+        [x,y,z] = rot(x,y,z);
+        [nx,ny,nz] = rot(nx,ny,nz);
+      }
+      x+=t[0]; y+=t[1]; z+=t[2];
+    }
+    const nl = Math.hypot(nx,ny,nz) || 1;
+    dst.pos.push(x,y,z);
+    dst.nrm.push(nx/nl, ny/nl, nz/nl);
+  }
+  for(let i=0;i<src.uv.length;i++) dst.uv.push(src.uv[i]);
+  for(let i=0;i<src.idx.length;i++) dst.idx.push(src.idx[i] + base);
+  return dst;
+}
+
+// Unit cube, hard-edged. The workhorse: blocks, panels, girders, neon strips.
+function buildBox(){
+  const m = emptyMesh();
+  const faces = [
+    { n:[ 0, 0, 1], u:[1,0,0], v:[0,1,0] },
+    { n:[ 0, 0,-1], u:[-1,0,0],v:[0,1,0] },
+    { n:[ 1, 0, 0], u:[0,0,-1],v:[0,1,0] },
+    { n:[-1, 0, 0], u:[0,0,1], v:[0,1,0] },
+    { n:[ 0, 1, 0], u:[1,0,0], v:[0,0,-1] },
+    { n:[ 0,-1, 0], u:[1,0,0], v:[0,0,1] }
+  ];
+  faces.forEach(f => {
+    const b = m.pos.length/3;
+    for(let j=0;j<4;j++){
+      const su = (j===1||j===2) ? 0.5 : -0.5;
+      const sv = (j>=2) ? 0.5 : -0.5;
+      m.pos.push(f.n[0]*0.5 + f.u[0]*su + f.v[0]*sv,
+                 f.n[1]*0.5 + f.u[1]*su + f.v[1]*sv,
+                 f.n[2]*0.5 + f.u[2]*su + f.v[2]*sv);
+      m.nrm.push(f.n[0], f.n[1], f.n[2]);
+      m.uv.push(su+0.5, sv+0.5);
+    }
+    m.idx.push(b, b+1, b+2, b, b+2, b+3);
+  });
+  return m;
+}
+
+// A cube with rounded, bevelled edges — built by pushing a subdivided cube's
+// vertices out onto the surface of a rounded box. Bevels are the single biggest
+// reason a render looks "real": a perfectly sharp edge catches no specular
+// highlight, so it dies in shadowless lighting. Almost all the hardware in the
+// 3D arcade uses this rather than buildBox.
+function buildRoundedBox(radius, seg){
+  radius = radius == null ? 0.12 : radius;
+  seg = seg || 4;
+  const m = emptyMesh();
+  const half = 0.5 - radius;
+  const faces = [
+    { n:[0,0,1],  u:[1,0,0],  v:[0,1,0] },
+    { n:[0,0,-1], u:[-1,0,0], v:[0,1,0] },
+    { n:[1,0,0],  u:[0,0,-1], v:[0,1,0] },
+    { n:[-1,0,0], u:[0,0,1],  v:[0,1,0] },
+    { n:[0,1,0],  u:[1,0,0],  v:[0,0,-1] },
+    { n:[0,-1,0], u:[1,0,0],  v:[0,0,1] }
+  ];
+  faces.forEach(f => {
+    const base = m.pos.length/3;
+    for(let iy=0; iy<=seg; iy++){
+      for(let ix=0; ix<=seg; ix++){
+        const su = (ix/seg)*2-1, sv = (iy/seg)*2-1;
+        // Clamp to the flat core, then offset along the normalised corner
+        // direction — the classic "rounded box = box core + sphere sweep".
+        const cx = f.n[0]*half + f.u[0]*su*half + f.v[0]*sv*half;
+        const cy = f.n[1]*half + f.u[1]*su*half + f.v[1]*sv*half;
+        const cz = f.n[2]*half + f.u[2]*su*half + f.v[2]*sv*half;
+        const dx = f.n[0] + f.u[0]*su + f.v[0]*sv;
+        const dy = f.n[1] + f.u[1]*su + f.v[1]*sv;
+        const dz = f.n[2] + f.u[2]*su + f.v[2]*sv;
+        const dl = Math.hypot(dx,dy,dz) || 1;
+        const nx = dx/dl, ny = dy/dl, nz = dz/dl;
+        m.pos.push(cx + nx*radius, cy + ny*radius, cz + nz*radius);
+        m.nrm.push(nx, ny, nz);
+        m.uv.push(ix/seg, iy/seg);
+      }
+    }
+    for(let iy=0; iy<seg; iy++){
+      for(let ix=0; ix<seg; ix++){
+        const a = base + iy*(seg+1) + ix, b = a+1, c = a+seg+1, d = c+1;
+        m.idx.push(a, b, d, a, d, c);
+      }
+    }
+  });
+  return m;
+}
+
+// UV sphere, radius 0.5.
+function buildSphere(segU, segV){
+  segU = segU || 32; segV = segV || 20;
+  const m = emptyMesh();
+  for(let iy=0; iy<=segV; iy++){
+    const v = iy/segV, phi = v*Math.PI;
+    for(let ix=0; ix<=segU; ix++){
+      const u = ix/segU, theta = u*Math.PI*2;
+      const nx = Math.sin(phi)*Math.cos(theta), ny = Math.cos(phi), nz = Math.sin(phi)*Math.sin(theta);
+      m.pos.push(nx*0.5, ny*0.5, nz*0.5);
+      m.nrm.push(nx, ny, nz);
+      m.uv.push(u, v);
+    }
+  }
+  for(let iy=0; iy<segV; iy++){
+    for(let ix=0; ix<segU; ix++){
+      const a = iy*(segU+1)+ix, b = a+1, c = a+segU+1, d = c+1;
+      // a=(phi_i,theta_j) b=(phi_i,theta_j+1) c=(phi_i+1,theta_j) d=(phi_i+1,theta_j+1).
+      // Both triangles wind CCW seen from outside. The guards drop the one
+      // triangle per pole row whose two vertices collapse onto the pole.
+      if(iy) m.idx.push(a, b, d);
+      if(iy !== segV-1) m.idx.push(a, d, c);
+    }
+  }
+  return m;
+}
+
+// Cylinder along Y, height 1, radius 0.5, capped.
+function buildCylinder(seg, topR, botR){
+  seg = seg || 24;
+  topR = topR == null ? 0.5 : topR;
+  botR = botR == null ? 0.5 : botR;
+  const m = emptyMesh();
+  const slope = (botR - topR);
+  for(let iy=0; iy<=1; iy++){
+    const r = iy ? topR : botR, y = iy ? 0.5 : -0.5;
+    for(let ix=0; ix<=seg; ix++){
+      const t = ix/seg, a = t*Math.PI*2;
+      const cx = Math.cos(a), cz = Math.sin(a);
+      const nl = Math.hypot(1, slope) || 1;
+      m.pos.push(cx*r, y, cz*r);
+      m.nrm.push(cx/nl, slope/nl, cz/nl);
+      m.uv.push(t, iy);
+    }
+  }
+  for(let ix=0; ix<seg; ix++){
+    const a = ix, b = ix+1, c = ix+seg+1, d = c+1;
+    m.idx.push(a, c, b, b, c, d);
+  }
+  // Caps, each with its own flat-normal ring so the rim stays a hard edge.
+  [[0.5, topR, 1], [-0.5, botR, -1]].forEach(([y, r, dir]) => {
+    if(r <= 0) return;
+    const centre = m.pos.length/3;
+    m.pos.push(0, y, 0); m.nrm.push(0, dir, 0); m.uv.push(0.5, 0.5);
+    for(let ix=0; ix<=seg; ix++){
+      const a = (ix/seg)*Math.PI*2;
+      m.pos.push(Math.cos(a)*r, y, Math.sin(a)*r);
+      m.nrm.push(0, dir, 0);
+      m.uv.push(Math.cos(a)*0.5+0.5, Math.sin(a)*0.5+0.5);
+    }
+    for(let ix=0; ix<seg; ix++){
+      if(dir > 0) m.idx.push(centre, centre+2+ix, centre+1+ix);
+      else        m.idx.push(centre, centre+1+ix, centre+2+ix);
+    }
+  });
+  return m;
+}
+
+// Torus in the XZ plane — the neon rings Flappy Drone flies through, and the
+// halo rings around cores and reactors.
+function buildTorus(R, r, segU, segV){
+  R = R == null ? 0.4 : R; r = r == null ? 0.1 : r;
+  segU = segU || 40; segV = segV || 14;
+  const m = emptyMesh();
+  for(let i=0; i<=segU; i++){
+    const u = i/segU, a = u*Math.PI*2, ca = Math.cos(a), sa = Math.sin(a);
+    for(let j=0; j<=segV; j++){
+      const v = j/segV, b = v*Math.PI*2, cb = Math.cos(b), sb = Math.sin(b);
+      const nx = ca*cb, ny = sb, nz = sa*cb;
+      m.pos.push(ca*(R + r*cb), r*sb, sa*(R + r*cb));
+      m.nrm.push(nx, ny, nz);
+      m.uv.push(u, v);
+    }
+  }
+  for(let i=0; i<segU; i++){
+    for(let j=0; j<segV; j++){
+      const a = i*(segV+1)+j, b = a+1, c = a+segV+1, d = c+1;
+      m.idx.push(a, b, d, a, d, c);
+    }
+  }
+  return m;
+}
+
+// Unit quad in XY, facing +Z. Billboards, floors, holo panels.
+function buildQuad(){
+  return {
+    pos:[-0.5,-0.5,0,  0.5,-0.5,0,  0.5,0.5,0,  -0.5,0.5,0],
+    nrm:[0,0,1, 0,0,1, 0,0,1, 0,0,1],
+    uv: [0,0, 1,0, 1,1, 0,1],
+    idx:[0,1,2, 0,2,3]
+  };
+}
+
+// Subdivided ground plane in XZ. Extra vertices exist so a game can't get
+// gouraud banding across a huge floor lit by nearby point lights.
+function buildGround(seg){
+  seg = seg || 24;
+  const m = emptyMesh();
+  for(let iz=0; iz<=seg; iz++){
+    for(let ix=0; ix<=seg; ix++){
+      m.pos.push(ix/seg - 0.5, 0, iz/seg - 0.5);
+      m.nrm.push(0,1,0);
+      m.uv.push(ix/seg, iz/seg);
+    }
+  }
+  for(let iz=0; iz<seg; iz++){
+    for(let ix=0; ix<seg; ix++){
+      const a = iz*(seg+1)+ix, b = a+1, c = a+seg+1, d = c+1;
+      m.idx.push(a, c, b, b, c, d);
+    }
+  }
+  return m;
+}
+
+// Low-poly faceted rock — flat-shaded, seeded so it is stable across frames.
+// Meteors and destructible cores.
+function buildRock(seed){
+  const base = buildSphere(14, 10);
+  let s = seed || 1;
+  const rnd = () => (s = (s*1664525 + 1013904223) >>> 0) / 4294967296;
+  // Displace along the normal, then rebuild flat normals from the triangles so
+  // the silhouette reads as chipped stone rather than a dented ball.
+  const disp = [];
+  for(let i=0;i<base.pos.length;i+=3){
+    const k = 0.72 + rnd()*0.5;
+    disp.push(base.pos[i]*k, base.pos[i+1]*k, base.pos[i+2]*k);
+  }
+  const m = emptyMesh();
+  for(let i=0;i<base.idx.length;i+=3){
+    const ia=base.idx[i]*3, ib=base.idx[i+1]*3, ic=base.idx[i+2]*3;
+    const ax=disp[ia],ay=disp[ia+1],az=disp[ia+2];
+    const bx=disp[ib],by=disp[ib+1],bz=disp[ib+2];
+    const cx=disp[ic],cy=disp[ic+1],cz=disp[ic+2];
+    const nx = (by-ay)*(cz-az) - (bz-az)*(cy-ay);
+    const ny = (bz-az)*(cx-ax) - (bx-ax)*(cz-az);
+    const nz = (bx-ax)*(cy-ay) - (by-ay)*(cx-ax);
+    const nl = Math.hypot(nx,ny,nz) || 1;
+    const b = m.pos.length/3;
+    m.pos.push(ax,ay,az, bx,by,bz, cx,cy,cz);
+    for(let k=0;k<3;k++) m.nrm.push(nx/nl, ny/nl, nz/nl);
+    m.uv.push(0,0, 1,0, 0,1);
+    m.idx.push(b, b+1, b+2);
+  }
+  return m;
+}
+
+// ── ASSEMBLED HULLS ──
+// Multi-part models built out of the primitives above. Each is one geometry, so
+// a fleet of them is still a single instanced draw call.
+
+// Player interceptor: delta hull, twin nacelles, canopy, engine bells.
+// Nose points at -Z, which is "into the screen" for every 3D game here.
+function buildShip(){
+  const m = emptyMesh();
+  const box = buildBox(), rb = buildRoundedBox(0.2, 3), cyl = buildCylinder(16), sph = buildSphere(18, 12);
+  // Central spine, tapering to the nose.
+  mergeMesh(m, rb,  { pos:[0, 0, 0.05], scale:[0.34, 0.20, 1.05] });
+  mergeMesh(m, cyl, { pos:[0, 0.01, -0.60], scale:[0.30, 0.42, 0.30], rot:[Math.PI/2, 0, 0] });
+  // Swept wings — two thin slabs rolled outward, plus leading-edge strakes.
+  [-1, 1].forEach(s => {
+    mergeMesh(m, rb, { pos:[s*0.42, -0.02, 0.16], scale:[0.62, 0.075, 0.62], rot:[0, s*0.32, -s*0.20] });
+    mergeMesh(m, rb, { pos:[s*0.30, 0.02, -0.26], scale:[0.30, 0.07, 0.55], rot:[0, s*0.18, -s*0.10] });
+    // Nacelle + engine bell.
+    mergeMesh(m, cyl, { pos:[s*0.52, 0.01, 0.30], scale:[0.15, 0.60, 0.15], rot:[Math.PI/2, 0, 0] });
+    mergeMesh(m, buildCylinder(14, 0.5, 0.28), { pos:[s*0.52, 0.01, 0.60], scale:[0.19, 0.18, 0.19], rot:[-Math.PI/2, 0, 0] });
+  });
+  // Canopy blister and dorsal fin.
+  mergeMesh(m, sph, { pos:[0, 0.11, -0.06], scale:[0.20, 0.15, 0.40] });
+  mergeMesh(m, box, { pos:[0, 0.16, 0.36], scale:[0.035, 0.24, 0.34], rot:[0.30, 0, 0] });
+  return m;
+}
+
+// Enemy raider: an inverted, angrier silhouette so it reads instantly as
+// hostile even head-on. Nose points at +Z (it flies toward the player).
+function buildRaider(){
+  const m = emptyMesh();
+  const rb = buildRoundedBox(0.16, 3), cyl = buildCylinder(14), oct = buildSphere(10, 6);
+  mergeMesh(m, oct, { pos:[0,0,0], scale:[0.46, 0.30, 0.72] });
+  [-1, 1].forEach(s => {
+    // Forward-swept claws.
+    mergeMesh(m, rb, { pos:[s*0.40, 0, 0.14], scale:[0.52, 0.10, 0.30], rot:[0, -s*0.55, s*0.28] });
+    mergeMesh(m, rb, { pos:[s*0.60, 0, 0.40], scale:[0.30, 0.08, 0.24], rot:[0, -s*0.90, s*0.40] });
+    mergeMesh(m, cyl,{ pos:[s*0.20, -0.10, -0.24], scale:[0.10, 0.30, 0.10], rot:[Math.PI/2,0,0] });
+  });
+  // Sensor eye — the games light this with a high emissive so it glows.
+  mergeMesh(m, oct, { pos:[0, 0.02, 0.34], scale:[0.22, 0.18, 0.22] });
+  return m;
+}
+
+// A cyberpunk tower block: stacked slabs with a setback and an antenna. Used by
+// the hundred to build the skyline every 3D game sits inside.
+function buildTower(){
+  const m = emptyMesh();
+  const rb = buildRoundedBox(0.06, 2), cyl = buildCylinder(8);
+  mergeMesh(m, rb,  { pos:[0, 0,    0], scale:[1.0, 1.0, 1.0] });
+  mergeMesh(m, rb,  { pos:[0, 0.56, 0], scale:[0.68, 0.16, 0.68] });
+  mergeMesh(m, rb,  { pos:[0, 0.72, 0], scale:[0.42, 0.20, 0.42] });
+  mergeMesh(m, cyl, { pos:[0, 0.98, 0], scale:[0.035, 0.36, 0.035] });
+  return m;
+}
+
+// A drone chassis: body pod plus four rotor booms and rings.
+function buildDrone(){
+  const m = emptyMesh();
+  const rb = buildRoundedBox(0.25, 3), cyl = buildCylinder(12), tor = buildTorus(0.4, 0.06, 18, 8);
+  mergeMesh(m, rb, { pos:[0,0,0], scale:[0.52, 0.34, 0.78] });
+  mergeMesh(m, buildSphere(16,10), { pos:[0, 0.02, -0.32], scale:[0.30, 0.24, 0.34] });
+  [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sz]) => {
+    // Boom laid along X (cylinder is Y-up, so roll it 90 deg) and yawed out
+    // toward its rotor, which is what puts the four rings on the diagonals.
+    mergeMesh(m, cyl, { pos:[sx*0.40, 0.05, sz*0.36], scale:[0.055, 0.40, 0.055],
+                        rot:[0, 0, Math.PI/2], });
+    mergeMesh(m, tor, { pos:[sx*0.52, 0.09, sz*0.44], scale:[0.62, 0.62, 0.62] });
+  });
+  return m;
+}
+
+// ══════════════════════════════════════════════
+//  🎨 SHADERS
+// ══════════════════════════════════════════════
+
+const VS_MESH = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNrm;
+layout(location=2) in vec2 aUV;
+// Instance stream: a full model matrix, then the material.
+layout(location=3) in vec4 aM0;
+layout(location=4) in vec4 aM1;
+layout(location=5) in vec4 aM2;
+layout(location=6) in vec4 aM3;
+layout(location=7) in vec4 aColor;      // rgb albedo, a = opacity
+layout(location=8) in vec4 aEmis;       // rgb emissive tint, a = strength
+layout(location=9) in vec4 aMat;        // metallic, roughness, rim, uvScale
+
+uniform mat4 uView;
+uniform mat4 uProj;
+
+out vec3 vWorld;
+out vec3 vNrm;
+out vec2 vUV;
+out vec4 vColor;
+out vec4 vEmis;
+out vec4 vMat;
+
+void main(){
+  mat4 M = mat4(aM0, aM1, aM2, aM3);
+  vec4 wp = M * vec4(aPos, 1.0);
+  vWorld = wp.xyz;
+  // No shear is ever composed into these matrices (translate·rotate·scale
+  // only), so dividing out the per-axis scale is an exact normal transform and
+  // costs three lengths instead of a 3x3 inverse.
+  vec3 invS = vec3(1.0/length(aM0.xyz), 1.0/length(aM1.xyz), 1.0/length(aM2.xyz));
+  vNrm = normalize(mat3(M) * (aNrm * invS * invS));
+  vUV = aUV;
+  vColor = aColor;
+  vEmis = aEmis;
+  vMat = aMat;
+  gl_Position = uProj * uView * wp;
+}`;
+
+const FS_MESH = `#version 300 es
+precision highp float;
+
+in vec3 vWorld;
+in vec3 vNrm;
+in vec2 vUV;
+in vec4 vColor;
+in vec4 vEmis;
+in vec4 vMat;
+
+#define MAX_LIGHTS 10
+uniform vec3  uCam;
+uniform int   uLightCount;
+uniform vec3  uLightPos[MAX_LIGHTS];
+uniform vec3  uLightCol[MAX_LIGHTS];   // colour * intensity, pre-multiplied
+uniform float uLightRange[MAX_LIGHTS];
+uniform vec3  uSunDir;
+uniform vec3  uSunCol;
+uniform vec3  uZenith;
+uniform vec3  uHorizon;
+uniform vec3  uGround;
+uniform float uEnvInt;
+uniform vec3  uFogCol;
+uniform float uFogDensity;
+uniform float uTime;
+
+out vec4 fragColor;
+
+const float PI = 3.14159265359;
+
+// ── The environment. Three bands blended through the horizon, plus a wide
+// magenta smear low in the sky where a city's light pollution sits. This is the
+// stand-in for an HDRI: cheap, seamless, and tunable per game.
+vec3 envSample(vec3 d){
+  float t = d.y;
+  vec3 up   = mix(uHorizon, uZenith, smoothstep(0.0, 0.55, t));
+  vec3 down = mix(uHorizon, uGround, smoothstep(0.0, -0.45, t));
+  vec3 c = t > 0.0 ? up : down;
+  // Horizon glow band — the brightest part of a night skyline.
+  c += uHorizon * 0.55 * exp(-abs(t) * 9.0);
+  return c * uEnvInt;
+}
+
+// Lazarov's analytic fit to the split-sum environment BRDF. Replaces the
+// precomputed BRDF LUT a full IBL pipeline would sample.
+vec3 envBRDFApprox(vec3 F0, float rough, float NoV){
+  const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+  const vec4 c1 = vec4( 1.0,  0.0425,  1.04,  -0.04);
+  vec4 r = rough * c0 + c1;
+  float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+  vec2 AB = vec2(-1.04, 1.04) * a004 + r.zw;
+  return F0 * AB.x + AB.y;
+}
+
+float distributionGGX(float NoH, float a){
+  float a2 = a * a;
+  float d = NoH * NoH * (a2 - 1.0) + 1.0;
+  return a2 / max(PI * d * d, 1e-7);
+}
+
+// Height-correlated Smith visibility (already divided by the 4·NoL·NoV term).
+float visSmith(float NoV, float NoL, float a){
+  float a2 = a * a;
+  float gv = NoL * sqrt(NoV * NoV * (1.0 - a2) + a2);
+  float gl = NoV * sqrt(NoL * NoL * (1.0 - a2) + a2);
+  return 0.5 / max(gv + gl, 1e-6);
+}
+
+vec3 fresnelSchlick(float u, vec3 F0){
+  float f = pow(1.0 - u, 5.0);
+  return F0 + (1.0 - F0) * f;
+}
+
+void main(){
+  vec3 N = normalize(vNrm);
+  vec3 V = normalize(uCam - vWorld);
+  // Two-sided: thin panels and holo sheets are drawn without culling, and a
+  // back face lit by its front normal goes black.
+  if(!gl_FrontFacing) N = -N;
+  float NoV = clamp(dot(N, V), 1e-4, 1.0);
+
+  vec3  albedo    = vColor.rgb;
+  float metallic  = clamp(vMat.x, 0.0, 1.0);
+  float rough     = clamp(vMat.y, 0.035, 1.0);
+  float a         = rough * rough;
+  vec3  F0        = mix(vec3(0.04), albedo, metallic);
+  vec3  diffCol   = albedo * (1.0 - metallic);
+
+  vec3 direct = vec3(0.0);
+
+  // -- Punctual lights. Inverse-square with a windowed cutoff at uLightRange, so a
+  // light genuinely stops contributing instead of trailing off forever — which
+  // is what keeps 10 lights affordable in one forward pass.
+  for(int i = 0; i < MAX_LIGHTS; i++){
+    if(i >= uLightCount) break;
+    vec3 Lv = uLightPos[i] - vWorld;
+    float dist2 = max(dot(Lv, Lv), 1e-6);
+    float dist = sqrt(dist2);
+    float win = clamp(1.0 - pow(dist / max(uLightRange[i], 1e-3), 4.0), 0.0, 1.0);
+    float atten = win * win / dist2;
+    if(atten <= 0.0) continue;
+    vec3 L = Lv / dist;
+    float NoL = dot(N, L);
+    if(NoL <= 0.0) continue;
+    vec3 H = normalize(L + V);
+    float NoH = clamp(dot(N, H), 0.0, 1.0);
+    float VoH = clamp(dot(V, H), 0.0, 1.0);
+    vec3  F = fresnelSchlick(VoH, F0);
+    float D = distributionGGX(NoH, a);
+    float Vis = visSmith(NoV, NoL, a);
+    vec3 spec = F * (D * Vis);
+    vec3 kd = (1.0 - F);
+    direct += (kd * diffCol / PI + spec) * uLightCol[i] * (NoL * atten);
+  }
+
+  // ── Key directional. One "moon / distant sign" light for overall form.
+  {
+    vec3 L = normalize(-uSunDir);
+    float NoL = clamp(dot(N, L), 0.0, 1.0);
+    if(NoL > 0.0){
+      vec3 H = normalize(L + V);
+      float NoH = clamp(dot(N, H), 0.0, 1.0);
+      float VoH = clamp(dot(V, H), 0.0, 1.0);
+      vec3  F = fresnelSchlick(VoH, F0);
+      float D = distributionGGX(NoH, a);
+      float Vis = visSmith(NoV, NoL, a);
+      direct += ((1.0 - F) * diffCol / PI + F * (D * Vis)) * uSunCol * NoL;
+    }
+  }
+
+  // ── Ambient IBL. Diffuse takes the irradiance from the hemisphere around N;
+  // specular takes a single environment tap along the reflection vector, bent
+  // toward the normal as roughness climbs (a poor man's prefiltered mip chain,
+  // but the environment is smooth enough that nobody can tell).
+  vec3 irradiance = envSample(N) * 0.55 + envSample(vec3(0.0, 1.0, 0.0)) * 0.16;
+  vec3 R = reflect(-V, N);
+  vec3 Rr = normalize(mix(R, N, rough * rough * 0.85));
+  vec3 prefiltered = envSample(Rr) * mix(1.35, 0.55, rough);
+  vec3 ambient = diffCol * irradiance + prefiltered * envBRDFApprox(F0, rough, NoV);
+
+  // ── Fresnel rim. Not physical — a deliberate stylistic edge light, which in a
+  // shadowless render is what stops two dark objects merging into one blob.
+  float rim = pow(1.0 - NoV, 3.5) * vMat.z;
+  vec3 rimCol = mix(uHorizon, vEmis.rgb, 0.6) * rim * 2.4;
+
+  // ── Emission. This is the neon, and it is allowed well past 1.0 — the HDR
+  // target and the bloom pyramid downstream are the entire point.
+  vec3 emissive = vEmis.rgb * vEmis.a;
+
+  vec3 color = direct + ambient + rimCol + emissive;
+
+  // ── Fog. exp2 of the squared distance, i.e. proper exponential-squared haze,
+  // tinted by the environment in the view direction so distant geometry melts
+  // into the sky rather than into a flat grey.
+  float d = length(uCam - vWorld);
+  float fogAmt = 1.0 - exp2(-pow(d * uFogDensity, 2.0));
+  vec3 fogCol = mix(uFogCol, envSample(-V), 0.35);
+  color = mix(color, fogCol, clamp(fogAmt, 0.0, 1.0));
+
+  fragColor = vec4(color, vColor.a);
+}`;
+
+// Additive billboards: sparks, muzzle flare, plasma, light halos. Soft-edged
+// with a radial falloff so nothing has a visible quad boundary.
+const VS_GLOW = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;
+layout(location=2) in vec2 aUV;
+layout(location=3) in vec4 aCentre;   // xyz world, w size
+layout(location=4) in vec4 aTint;     // rgb colour, a intensity
+uniform mat4 uView;
+uniform mat4 uProj;
+out vec2 vUV;
+out vec4 vTint;
+out float vFog;
+uniform vec3 uCam;
+uniform float uFogDensity;
+void main(){
+  // Camera-facing basis pulled straight out of the view matrix's rows, so the
+  // quad is built in view space and always faces the lens.
+  vec3 right = vec3(uView[0][0], uView[1][0], uView[2][0]);
+  vec3 up    = vec3(uView[0][1], uView[1][1], uView[2][1]);
+  vec3 world = aCentre.xyz + (right * aPos.x + up * aPos.y) * aCentre.w;
+  vUV = aUV;
+  vTint = aTint;
+  float d = length(uCam - aCentre.xyz);
+  vFog = exp2(-pow(d * uFogDensity, 2.0));
+  gl_Position = uProj * uView * vec4(world, 1.0);
+}`;
+
+const FS_GLOW = `#version 300 es
+precision highp float;
+in vec2 vUV;
+in vec4 vTint;
+in float vFog;
+out vec4 fragColor;
+void main(){
+  vec2 p = vUV * 2.0 - 1.0;
+  float r = dot(p, p);
+  if(r > 1.0) discard;
+  // Tight core + wide halo. The square term is the visible "spark", the
+  // shallower one is the bloom seed around it.
+  float core = pow(max(0.0, 1.0 - r), 3.0);
+  float halo = pow(max(0.0, 1.0 - r), 1.2) * 0.35;
+  fragColor = vec4(vTint.rgb * vTint.a * (core + halo) * vFog, 1.0);
+}`;
+
+// The background. Clearing to a flat colour left the world sitting in a void:
+// with no shadows to carry depth, a real gradient sky doing the far-field work
+// is not decoration, it is the horizon the fog dissolves into. This evaluates
+// exactly the same envSample() the surface shader uses for its ambient term, so
+// the reflection in a chrome hull and the sky behind it agree.
+const FS_SKY = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform vec3  uRight;
+uniform vec3  uUp;
+uniform vec3  uFwd;
+uniform float uTanHalf;
+uniform float uAspect;
+uniform vec3  uZenith;
+uniform vec3  uHorizon;
+uniform vec3  uGround;
+uniform float uEnvInt;
+uniform float uTime;
+out vec4 fragColor;
+
+vec3 envSample(vec3 d){
+  float t = d.y;
+  vec3 up   = mix(uHorizon, uZenith, smoothstep(0.0, 0.55, t));
+  vec3 down = mix(uHorizon, uGround, smoothstep(0.0, -0.45, t));
+  vec3 c = t > 0.0 ? up : down;
+  c += uHorizon * 0.55 * exp(-abs(t) * 9.0);
+  return c * uEnvInt;
+}
+
+float hash21(vec2 p){
+  p = fract(p * vec2(233.34, 851.73));
+  p += dot(p, p + 23.45);
+  return fract(p.x * p.y);
+}
+
+void main(){
+  vec2 ndc = vUV * 2.0 - 1.0;
+  vec3 dir = normalize(uFwd + uRight * ndc.x * uTanHalf * uAspect + uUp * ndc.y * uTanHalf);
+  vec3 c = envSample(dir);
+
+  // A wide, slow band of light pollution sitting just above the horizon —
+  // the thing that makes a night sky over a city read as a city.
+  float glow = exp(-abs(dir.y - 0.02) * 5.0);
+  c += uHorizon * glow * 0.9 * (0.85 + 0.15 * sin(uTime * 0.35 + dir.x * 3.0));
+
+  // Sparse stars, only in the upper hemisphere, on a stable grid so they do not
+  // crawl when the camera moves. Cheap enough to be free and it stops the
+  // zenith from being a dead flat field.
+  if(dir.y > 0.06){
+    vec2 g = floor(dir.xz / max(dir.y, 0.25) * 90.0);
+    float h = hash21(g);
+    if(h > 0.9955){
+      float tw = 0.55 + 0.45 * sin(uTime * 2.0 + h * 60.0);
+      c += vec3(0.75, 0.85, 1.0) * (h - 0.9955) * 210.0 * tw * smoothstep(0.06, 0.35, dir.y);
+    }
+  }
+  fragColor = vec4(c, 1.0);
+}`;
+
+// Fullscreen triangle — one primitive, no vertex buffer, gl_VertexID only.
+const VS_FULL = `#version 300 es
+precision highp float;
+out vec2 vUV;
+void main(){
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  vUV = p;
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+// Bright pass with a soft knee, plus a firefly clamp. Without the clamp a
+// single very bright pixel flickers across the whole bloom pyramid as the
+// camera moves and reads as noise.
+const FS_BRIGHT = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform float uThreshold;
+uniform float uKnee;
+out vec4 fragColor;
+void main(){
+  vec3 c = texture(uTex, vUV).rgb;
+  c = min(c, vec3(48.0));
+  float br = max(c.r, max(c.g, c.b));
+  float soft = clamp(br - uThreshold + uKnee, 0.0, 2.0 * uKnee);
+  soft = soft * soft / (4.0 * uKnee + 1e-4);
+  float w = max(soft, br - uThreshold) / max(br, 1e-4);
+  fragColor = vec4(c * w, 1.0);
+}`;
+
+// 13-tap downsample (the Call of Duty: Advanced Warfare filter). Stable under
+// motion in a way a naive box filter is not.
+const FS_DOWN = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uTexel;
+out vec4 fragColor;
+void main(){
+  vec2 t = uTexel;
+  vec3 a = texture(uTex, vUV + vec2(-2,  2) * t).rgb;
+  vec3 b = texture(uTex, vUV + vec2( 0,  2) * t).rgb;
+  vec3 c = texture(uTex, vUV + vec2( 2,  2) * t).rgb;
+  vec3 d = texture(uTex, vUV + vec2(-2,  0) * t).rgb;
+  vec3 e = texture(uTex, vUV                    ).rgb;
+  vec3 f = texture(uTex, vUV + vec2( 2,  0) * t).rgb;
+  vec3 g = texture(uTex, vUV + vec2(-2, -2) * t).rgb;
+  vec3 h = texture(uTex, vUV + vec2( 0, -2) * t).rgb;
+  vec3 i = texture(uTex, vUV + vec2( 2, -2) * t).rgb;
+  vec3 j = texture(uTex, vUV + vec2(-1,  1) * t).rgb;
+  vec3 k = texture(uTex, vUV + vec2( 1,  1) * t).rgb;
+  vec3 l = texture(uTex, vUV + vec2(-1, -1) * t).rgb;
+  vec3 m = texture(uTex, vUV + vec2( 1, -1) * t).rgb;
+  vec3 o = e * 0.125;
+  o += (a + c + g + i) * 0.03125;
+  o += (b + d + f + h) * 0.0625;
+  o += (j + k + l + m) * 0.125;
+  fragColor = vec4(o, 1.0);
+}`;
+
+// 3x3 tent upsample, additively blended onto the next mip up.
+const FS_UP = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uTexel;
+uniform float uRadius;
+out vec4 fragColor;
+void main(){
+  vec2 t = uTexel * uRadius;
+  vec3 o = texture(uTex, vUV + vec2(-1,  1) * t).rgb * 1.0;
+  o += texture(uTex, vUV + vec2( 0,  1) * t).rgb * 2.0;
+  o += texture(uTex, vUV + vec2( 1,  1) * t).rgb * 1.0;
+  o += texture(uTex, vUV + vec2(-1,  0) * t).rgb * 2.0;
+  o += texture(uTex, vUV                    ).rgb * 4.0;
+  o += texture(uTex, vUV + vec2( 1,  0) * t).rgb * 2.0;
+  o += texture(uTex, vUV + vec2(-1, -1) * t).rgb * 1.0;
+  o += texture(uTex, vUV + vec2( 0, -1) * t).rgb * 2.0;
+  o += texture(uTex, vUV + vec2( 1, -1) * t).rgb * 1.0;
+  fragColor = vec4(o / 16.0, 1.0);
+}`;
+
+// The finishing pass. Order matters and follows a film pipeline: optical
+// effects that happen in the lens (bloom, aberration) go in linear light BEFORE
+// the tonemap; anything that happens on the display (grain, scanlines,
+// vignette) goes after it.
+const FS_COMPOSITE = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uScene;
+uniform sampler2D uBloom;
+uniform float uBloomAmt;
+uniform float uExposure;
+uniform float uTime;
+uniform float uAberration;
+uniform float uGrain;
+uniform float uScanline;
+uniform float uVignette;
+uniform vec3  uLift;
+uniform vec3  uGain;
+uniform float uSaturation;
+uniform vec2  uRes;
+out vec4 fragColor;
+
+// Narkowicz's fitted ACES curve. Cheap, and it rolls neon highlights off to
+// white instead of clipping them to a flat primary — which is exactly the
+// difference between "glowing" and "blown out".
+vec3 aces(vec3 x){
+  const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+float hash(vec2 p){
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+void main(){
+  vec2 uv = vUV;
+  vec2 d = uv - 0.5;
+  float r2 = dot(d, d);
+
+  // Lateral chromatic aberration — channels sampled at slightly different
+  // radial offsets, scaled by r² so the centre of frame stays clean.
+  vec2 off = d * uAberration * r2;
+  vec3 scene;
+  scene.r = texture(uScene, uv + off).r;
+  scene.g = texture(uScene, uv).g;
+  scene.b = texture(uScene, uv - off).b;
+
+  vec3 bloom;
+  bloom.r = texture(uBloom, uv + off * 1.6).r;
+  bloom.g = texture(uBloom, uv).g;
+  bloom.b = texture(uBloom, uv - off * 1.6).b;
+
+  vec3 color = scene + bloom * uBloomAmt;
+  color *= uExposure;
+  color = aces(color);
+
+  // Grade in display space: lift the blacks toward cyan-indigo, push the
+  // highlights toward magenta. This is the "cyberpunk" in the look.
+  color = color * uGain + uLift * (1.0 - color);
+  float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  color = mix(vec3(luma), color, uSaturation);
+
+  // Fine scanlines, tied to physical pixels so they don't crawl on resize.
+  float scan = 1.0 - uScanline * (0.5 + 0.5 * sin(uv.y * uRes.y * 3.14159));
+  color *= scan;
+
+  // Animated grain, luminance-weighted so it sits in the mids and doesn't
+  // sparkle in the blacks.
+  float n = hash(uv * uRes + fract(uTime) * 137.0) - 0.5;
+  color += n * uGrain * (0.25 + luma * 0.9);
+
+  color *= 1.0 - uVignette * r2 * 1.9;
+
+  // Linear → sRGB for the default framebuffer.
+  color = pow(max(color, 0.0), vec3(1.0 / 2.2));
+  fragColor = vec4(color, 1.0);
+}`;
+
+// ══════════════════════════════════════════════
+//  🖥️ RENDERER
+// ══════════════════════════════════════════════
+
+const MAX_LIGHTS = 10;
+const FLOATS_PER_INSTANCE = 16 + 4 + 4 + 4;   // model, colour, emissive, material
+const FLOATS_PER_GLOW = 8;                    // centre+size, tint+intensity
+
+function compile(gl, type, src){
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
+    const log = gl.getShaderInfoLog(sh);
+    gl.deleteShader(sh);
+    throw new Error('3D shader compile failed: ' + log);
+  }
+  return sh;
+}
+
+function program(gl, vsSrc, fsSrc){
+  const p = gl.createProgram();
+  const vs = compile(gl, gl.VERTEX_SHADER, vsSrc);
+  const fs = compile(gl, gl.FRAGMENT_SHADER, fsSrc);
+  gl.attachShader(p, vs); gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  gl.deleteShader(vs); gl.deleteShader(fs);
+  if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
+    const log = gl.getProgramInfoLog(p);
+    gl.deleteProgram(p);
+    throw new Error('3D program link failed: ' + log);
+  }
+  // Uniform locations are looked up once and cached on the program object; a
+  // getUniformLocation per frame per uniform is a real cost at this call rate.
+  p._u = Object.create(null);
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for(let i=0;i<n;i++){
+    const info = gl.getActiveUniform(p, i);
+    const name = info.name.replace(/\[0\]$/, '');
+    p._u[name] = gl.getUniformLocation(p, name);
+  }
+  return p;
+}
+
+function createRenderer(canvas){
+  const gl = canvas.getContext('webgl2', {
+    alpha: false,
+    antialias: false,          // we resolve with the post chain instead
+    depth: true,
+    stencil: false,
+    powerPreference: 'high-performance',
+    preserveDrawingBuffer: false,
+    desynchronized: false
+  });
+  if(!gl) return null;
+
+  // Float render targets are what make HDR possible. WebGL2 exposes half-float
+  // colour attachments only through this extension; without it we fall back to
+  // RGBA8 and the bloom threshold drops, because there is no headroom above 1.
+  const floatBuf = gl.getExtension('EXT_color_buffer_float')
+                || gl.getExtension('EXT_color_buffer_half_float');
+  gl.getExtension('OES_texture_float_linear');   // linear filtering on the mips
+  const HDR = !!floatBuf;
+
+  let progMesh, progGlow, progBright, progDown, progUp, progComp, progSky;
+  try{
+    progMesh   = program(gl, VS_MESH, FS_MESH);
+    progGlow   = program(gl, VS_GLOW, FS_GLOW);
+    progBright = program(gl, VS_FULL, FS_BRIGHT);
+    progDown   = program(gl, VS_FULL, FS_DOWN);
+    progUp     = program(gl, VS_FULL, FS_UP);
+    progComp   = program(gl, VS_FULL, FS_COMPOSITE);
+    progSky    = program(gl, VS_FULL, FS_SKY);
+  }catch(err){
+    console.warn('[3D] shader build failed, 3D mode unavailable:', err.message);
+    return null;
+  }
+
+  // ── GEOMETRY REGISTRY ──
+  const geos = Object.create(null);
+  function registerGeo(name, mesh){
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+
+    const vbo = gl.createBuffer();
+    // Interleaved pos/nrm/uv — one buffer, one bind, 8 floats a vertex.
+    const count = mesh.pos.length / 3;
+    const inter = new Float32Array(count * 8);
+    for(let i=0;i<count;i++){
+      inter[i*8  ] = mesh.pos[i*3];
+      inter[i*8+1] = mesh.pos[i*3+1];
+      inter[i*8+2] = mesh.pos[i*3+2];
+      inter[i*8+3] = mesh.nrm[i*3];
+      inter[i*8+4] = mesh.nrm[i*3+1];
+      inter[i*8+5] = mesh.nrm[i*3+2];
+      inter[i*8+6] = mesh.uv[i*2]     || 0;
+      inter[i*8+7] = mesh.uv[i*2 + 1] || 0;
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, inter, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+    gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+    gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+
+    const ibo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(mesh.idx), gl.STATIC_DRAW);
+
+    // Per-instance stream. Shared buffer object, re-uploaded per bucket per
+    // frame; the VAO records only the pointer layout, not the contents.
+    const inst = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, inst);
+    const stride = FLOATS_PER_INSTANCE * 4;
+    for(let i=0;i<4;i++){
+      gl.enableVertexAttribArray(3+i);
+      gl.vertexAttribPointer(3+i, 4, gl.FLOAT, false, stride, i*16);
+      gl.vertexAttribDivisor(3+i, 1);
+    }
+    gl.enableVertexAttribArray(7); gl.vertexAttribPointer(7, 4, gl.FLOAT, false, stride, 64); gl.vertexAttribDivisor(7, 1);
+    gl.enableVertexAttribArray(8); gl.vertexAttribPointer(8, 4, gl.FLOAT, false, stride, 80); gl.vertexAttribDivisor(8, 1);
+    gl.enableVertexAttribArray(9); gl.vertexAttribPointer(9, 4, gl.FLOAT, false, stride, 96); gl.vertexAttribDivisor(9, 1);
+
+    gl.bindVertexArray(null);
+    geos[name] = { vao, ibo, inst, count: mesh.idx.length, cap: 0 };
+    return geos[name];
+  }
+
+  registerGeo('box',       buildBox());
+  registerGeo('cube',      buildRoundedBox(0.10, 4));
+  registerGeo('slab',      buildRoundedBox(0.055, 3));
+  registerGeo('pill',      buildRoundedBox(0.42, 5));
+  registerGeo('sphere',    buildSphere(30, 20));
+  registerGeo('lowsphere', buildSphere(14, 10));
+  registerGeo('cylinder',  buildCylinder(26));
+  registerGeo('cone',      buildCylinder(20, 0.001, 0.5));
+  registerGeo('torus',     buildTorus(0.4, 0.09, 44, 16));
+  registerGeo('thintorus', buildTorus(0.45, 0.035, 48, 10));
+  registerGeo('quad',      buildQuad());
+  registerGeo('ground',    buildGround(28));
+  registerGeo('ship',      buildShip());
+  registerGeo('raider',    buildRaider());
+  registerGeo('tower',     buildTower());
+  registerGeo('drone',     buildDrone());
+  registerGeo('rock',      buildRock(7));
+  registerGeo('rock2',     buildRock(1337));
+
+  // ── GLOW BILLBOARD VAO ──
+  const glowVAO = gl.createVertexArray();
+  const glowInst = gl.createBuffer();
+  let glowCap = 0;
+  {
+    gl.bindVertexArray(glowVAO);
+    const q = buildQuad();
+    const vbo = gl.createBuffer();
+    const inter = new Float32Array(4 * 5);
+    for(let i=0;i<4;i++){
+      inter[i*5  ] = q.pos[i*3];
+      inter[i*5+1] = q.pos[i*3+1];
+      inter[i*5+2] = q.pos[i*3+2];
+      inter[i*5+3] = q.uv[i*2];
+      inter[i*5+4] = q.uv[i*2+1];
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, inter, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
+    gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 20, 12);
+    const ibo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(q.idx), gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, glowInst);
+    gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 4, gl.FLOAT, false, 32, 0);  gl.vertexAttribDivisor(3, 1);
+    gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 4, gl.FLOAT, false, 32, 16); gl.vertexAttribDivisor(4, 1);
+    gl.bindVertexArray(null);
+  }
+
+  // ── RENDER TARGETS ──
+  const fmt = HDR ? gl.RGBA16F : gl.RGBA8;
+  const type = HDR ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
+
+  function makeTarget(w, h, withDepth){
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, fmt, w, h, 0, gl.RGBA, type, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    let depth = null;
+    if(withDepth){
+      depth = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { tex, fbo, depth, w, h };
+  }
+
+  function destroyTarget(t){
+    if(!t) return;
+    gl.deleteTexture(t.tex);
+    gl.deleteFramebuffer(t.fbo);
+    if(t.depth) gl.deleteRenderbuffer(t.depth);
+  }
+
+  const BLOOM_MIPS = 5;
+  let scene = null, mips = [];
+  let vpW = 0, vpH = 0;
+
+  function resize(w, h){
+    w = Math.max(2, Math.floor(w)); h = Math.max(2, Math.floor(h));
+    if(w === vpW && h === vpH) return;
+    vpW = w; vpH = h;
+    canvas.width = w; canvas.height = h;
+    destroyTarget(scene);
+    mips.forEach(destroyTarget);
+    scene = makeTarget(w, h, true);
+    mips = [];
+    let mw = w, mh = h;
+    for(let i=0;i<BLOOM_MIPS;i++){
+      mw = Math.max(2, mw >> 1); mh = Math.max(2, mh >> 1);
+      mips.push(makeTarget(mw, mh, false));
+    }
+  }
+
+  // ── FRAME STATE ──
+  // One reusable scratch buffer per bucket, grown geometrically. Nothing is
+  // allocated per frame once a game reaches its steady state.
+  const buckets = Object.create(null);        // opaque, keyed by geometry name
+  const blendList = [];                       // transparent draws, sorted per frame
+  let glowData = new Float32Array(FLOATS_PER_GLOW * 512);
+  let glowCount = 0;
+  let blendBuf = new Float32Array(FLOATS_PER_INSTANCE * 256);
+
+  const view = M4.create(), proj = M4.create();
+  let camPos = [0, 0, 6];
+  const camRight = [1,0,0], camUp = [0,1,0], camFwd = [0,0,-1];
+  let lightPos = new Float32Array(MAX_LIGHTS * 3);
+  let lightCol = new Float32Array(MAX_LIGHTS * 3);
+  let lightRange = new Float32Array(MAX_LIGHTS);
+  let lightCount = 0;
+  let sunDir = [-0.4, -1, -0.35], sunCol = [0.28, 0.34, 0.55];
+  let env = { zenith:[0.012,0.016,0.045], horizon:[0.16,0.05,0.22], ground:[0.008,0.012,0.02], intensity:1 };
+  let sky = true, skyGain = 1;
+  let fog = { color:[0.05,0.03,0.10], density:0.012 };
+  let post = {
+    exposure: 1.0, bloom: 0.85, threshold: 1.05, knee: 0.6, radius: 1.0,
+    aberration: 0.55, grain: 0.035, scanline: 0.018, vignette: 0.42,
+    lift: [0.010, 0.016, 0.034], gain: [1.02, 0.99, 1.06], saturation: 1.10
+  };
+  let time = 0;
+  let fovY = 55 * Math.PI/180, near = 0.1, far = 400;
+
+  function bucketFor(name){
+    let b = buckets[name];
+    if(!b){
+      b = buckets[name] = { data: new Float32Array(FLOATS_PER_INSTANCE * 64), n: 0 };
+    }
+    return b;
+  }
+
+  function growFloat(arr, need){
+    if(arr.length >= need) return arr;
+    let cap = arr.length || 64;
+    while(cap < need) cap *= 2;
+    const next = new Float32Array(cap);
+    next.set(arr);
+    return next;
+  }
+
+  const DEF_POS = [0,0,0], DEF_ROT = [0,0,0], DEF_SCALE1 = [1,1,1];
+  const _s = [1,1,1];
+
+  const api = {
+    gl, canvas, hdr: HDR,
+
+    get width(){ return vpW; },
+    get height(){ return vpH; },
+
+    resize,
+
+    // Adds a geometry at runtime — a game can build its own hull and hand it
+    // over once at startup, then draw it by name like any built-in.
+    addGeometry(name, mesh){ if(!geos[name]) registerGeo(name, mesh); return name; },
+    hasGeometry(name){ return !!geos[name]; },
+
+    // ── FRAME ──
+    begin(dt){
+      time += (dt || 0.016);
+      for(const k in buckets) buckets[k].n = 0;
+      blendList.length = 0;
+      glowCount = 0;
+      lightCount = 0;
+    },
+
+    camera(o){
+      camPos = o.eye || camPos;
+      fovY = (o.fov != null ? o.fov : 55) * Math.PI/180;
+      near = o.near != null ? o.near : 0.1;
+      far  = o.far  != null ? o.far  : 400;
+      M4.lookAt(view, camPos, o.target || [0,0,0], o.up || [0,1,0]);
+      M4.perspective(proj, fovY, Math.max(0.05, vpW / Math.max(1, vpH)), near, far);
+      // The view matrix's rows ARE the camera basis in world space, so the sky
+      // pass gets its ray directions for free rather than inverting anything.
+      camRight[0]=view[0]; camRight[1]=view[4]; camRight[2]=view[8];
+      camUp[0]   =view[1]; camUp[1]   =view[5]; camUp[2]   =view[9];
+      // lookAt's z axis points from target back to eye, so forward is its negation.
+      camFwd[0]  =-view[2]; camFwd[1] =-view[6]; camFwd[2] =-view[10];
+    },
+
+    sun(o){
+      if(o.dir) sunDir = V3.norm(o.dir);
+      const c = hexToLinear(o.color || '#4a5a8a');
+      const i = o.intensity != null ? o.intensity : 1;
+      sunCol = [c[0]*i, c[1]*i, c[2]*i];
+    },
+
+    environment(o){
+      if(o.zenith)  env.zenith  = hexToLinear(o.zenith);
+      if(o.horizon) env.horizon = hexToLinear(o.horizon);
+      if(o.ground)  env.ground  = hexToLinear(o.ground);
+      if(o.intensity != null) env.intensity = o.intensity;
+      // A game with a fully enclosed set (a Tetris well, an arena interior) can
+      // switch the sky off and keep the flat fog clear behind its walls.
+      if(o.sky != null) sky = !!o.sky;
+      if(o.skyGain != null) skyGain = o.skyGain;
+    },
+
+    fog(o){
+      if(o.color) fog.color = hexToLinear(o.color);
+      if(o.density != null) fog.density = o.density;
+    },
+
+    // Post-process dial. Games nudge these for mood — a Meltdown round runs
+    // hotter exposure and heavier aberration, for instance.
+    grade(o){ Object.assign(post, o); },
+
+    // Silently ignored past MAX_LIGHTS rather than throwing: a game spraying
+    // one light per explosion should degrade, not crash.
+    light(o){
+      if(lightCount >= MAX_LIGHTS) return;
+      const i = lightCount++;
+      const p = o.pos || DEF_POS;
+      lightPos[i*3] = p[0]; lightPos[i*3+1] = p[1]; lightPos[i*3+2] = p[2];
+      const c = hexToLinear(o.color || '#ffffff');
+      const k = (o.intensity != null ? o.intensity : 1);
+      lightCol[i*3] = c[0]*k; lightCol[i*3+1] = c[1]*k; lightCol[i*3+2] = c[2]*k;
+      lightRange[i] = o.range != null ? o.range : 20;
+    },
+
+    // The one call every game leans on. `o.blend` routes an instance into the
+    // sorted transparent pass instead of the opaque bucket.
+    draw(geo, o){
+      const g = geos[geo];
+      if(!g) return;
+      const alpha = o.alpha != null ? o.alpha : 1;
+      const blend = o.blend || alpha < 0.999;
+      const col = hexToLinear(o.color || '#ffffff');
+      const emisCol = o.emissive ? hexToLinear(o.emissive) : col;
+      const emisStr = o.emissiveStrength != null ? o.emissiveStrength : (o.emissive ? 1 : 0);
+      const sc = o.scale;
+      if(sc == null){ _s[0] = _s[1] = _s[2] = 1; }
+      else if(typeof sc === 'number'){ _s[0] = _s[1] = _s[2] = sc; }
+      else { _s[0] = sc[0]; _s[1] = sc[1]; _s[2] = sc[2]; }
+
+      if(blend){
+        // Depth-sorted at render(); store a copy because callers reuse arrays.
+        const p = o.pos || DEF_POS;
+        blendList.push({
+          geo,
+          p: [p[0], p[1], p[2]],
+          r: o.rot ? [o.rot[0], o.rot[1], o.rot[2]] : DEF_ROT,
+          s: [_s[0], _s[1], _s[2]],
+          col, alpha, emisCol, emisStr,
+          metallic: o.metallic != null ? o.metallic : 0.1,
+          roughness: o.roughness != null ? o.roughness : 0.55,
+          rim: o.rim != null ? o.rim : 0.6,
+          z: 0
+        });
+        return;
+      }
+
+      const b = bucketFor(geo);
+      const need = (b.n + 1) * FLOATS_PER_INSTANCE;
+      if(need > b.data.length) b.data = growFloat(b.data, need);
+      const off = b.n * FLOATS_PER_INSTANCE;
+      M4.compose(b.data, off, o.pos || DEF_POS, o.rot || DEF_ROT, _s);
+      b.data[off+16] = col[0]; b.data[off+17] = col[1]; b.data[off+18] = col[2]; b.data[off+19] = alpha;
+      b.data[off+20] = emisCol[0]; b.data[off+21] = emisCol[1]; b.data[off+22] = emisCol[2]; b.data[off+23] = emisStr;
+      b.data[off+24] = o.metallic  != null ? o.metallic  : 0.1;
+      b.data[off+25] = o.roughness != null ? o.roughness : 0.55;
+      b.data[off+26] = o.rim       != null ? o.rim       : 0.6;
+      b.data[off+27] = 1;
+      b.n++;
+    },
+
+    // Additive soft billboard. Sparks, plasma, lens halos, star field.
+    glow(pos, size, color, intensity){
+      const need = (glowCount + 1) * FLOATS_PER_GLOW;
+      if(need > glowData.length) glowData = growFloat(glowData, need);
+      const off = glowCount * FLOATS_PER_GLOW;
+      const c = hexToLinear(color || '#ffffff');
+      glowData[off] = pos[0]; glowData[off+1] = pos[1]; glowData[off+2] = pos[2];
+      glowData[off+3] = size == null ? 1 : size;
+      glowData[off+4] = c[0]; glowData[off+5] = c[1]; glowData[off+6] = c[2];
+      glowData[off+7] = intensity == null ? 1 : intensity;
+      glowCount++;
+    },
+
+    // A neon strip / girder between two points, drawn as a stretched box. The
+    // 3D arcade's environments are almost entirely built out of these.
+    beam(a, b, width, o){
+      o = o || {};
+      const dx = b[0]-a[0], dy = b[1]-a[1], dz = b[2]-a[2];
+      const len = Math.hypot(dx, dy, dz);
+      if(len < 1e-5) return;
+      const yaw = Math.atan2(dx, dz);
+      const pitch = -Math.asin(dy / len);
+      api.draw(o.geo || 'box', Object.assign({}, o, {
+        pos: [(a[0]+b[0])/2, (a[1]+b[1])/2, (a[2]+b[2])/2],
+        rot: [pitch, yaw, 0],
+        scale: [width, o.height != null ? o.height : width, len]
+      }));
+    },
+
+    // World → CSS pixel, for DOM overlays (floating score text, lock-on
+    // reticles). Returns null behind the camera or outside the frustum.
+    project(p){
+      const x = p[0], y = p[1], z = p[2];
+      const vx = view[0]*x + view[4]*y + view[8]*z  + view[12];
+      const vy = view[1]*x + view[5]*y + view[9]*z  + view[13];
+      const vz = view[2]*x + view[6]*y + view[10]*z + view[14];
+      const cw = proj[3]*vx + proj[7]*vy + proj[11]*vz + proj[15];
+      if(cw <= 0.0001) return null;
+      const cx = proj[0]*vx + proj[4]*vy + proj[8]*vz  + proj[12];
+      const cy = proj[1]*vx + proj[5]*vy + proj[9]*vz  + proj[13];
+      const ndcX = cx / cw, ndcY = cy / cw;
+      if(ndcX < -1.6 || ndcX > 1.6 || ndcY < -1.6 || ndcY > 1.6) return null;
+      return {
+        x: (ndcX * 0.5 + 0.5) * canvas.clientWidth,
+        y: (1 - (ndcY * 0.5 + 0.5)) * canvas.clientHeight,
+        depth: cw
+      };
+    },
+
+    // ── SUBMIT ──
+    render(){
+      if(!scene) return;
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, scene.fbo);
+      gl.viewport(0, 0, vpW, vpH);
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthMask(true);
+      gl.disable(gl.BLEND);
+      gl.enable(gl.CULL_FACE);
+      gl.cullFace(gl.BACK);
+      // Clearing to the fog colour rather than black means anything that fades
+      // fully into the haze meets a matching background — no visible "edge of
+      // the world" where geometry stops.
+      gl.clearColor(fog.color[0], fog.color[1], fog.color[2], 1);
+      gl.clearDepth(1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+      // ── SKY ──
+      // One fullscreen triangle with depth test and depth write both off, so it
+      // paints the whole frame and every mesh below simply draws over it
+      // against a still-cleared depth buffer. Cheaper than a cube and it never
+      // needs the near/far planes to be right.
+      if(sky){
+        gl.disable(gl.DEPTH_TEST);
+        gl.depthMask(false);
+        gl.useProgram(progSky);
+        const S = progSky._u;
+        gl.uniform3fv(S.uRight, camRight);
+        gl.uniform3fv(S.uUp, camUp);
+        gl.uniform3fv(S.uFwd, camFwd);
+        gl.uniform1f(S.uTanHalf, Math.tan(fovY / 2));
+        gl.uniform1f(S.uAspect, vpW / Math.max(1, vpH));
+        gl.uniform3fv(S.uZenith, env.zenith);
+        gl.uniform3fv(S.uHorizon, env.horizon);
+        gl.uniform3fv(S.uGround, env.ground);
+        gl.uniform1f(S.uEnvInt, env.intensity * skyGain);
+        gl.uniform1f(S.uTime, time);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthMask(true);
+      }
+
+      gl.useProgram(progMesh);
+      const U = progMesh._u;
+      gl.uniformMatrix4fv(U.uView, false, view);
+      gl.uniformMatrix4fv(U.uProj, false, proj);
+      gl.uniform3fv(U.uCam, camPos);
+      gl.uniform1i(U.uLightCount, lightCount);
+      if(lightCount){
+        gl.uniform3fv(U.uLightPos, lightPos.subarray(0, lightCount*3));
+        gl.uniform3fv(U.uLightCol, lightCol.subarray(0, lightCount*3));
+        gl.uniform1fv(U.uLightRange, lightRange.subarray(0, lightCount));
+      }
+      gl.uniform3fv(U.uSunDir, sunDir);
+      gl.uniform3fv(U.uSunCol, sunCol);
+      gl.uniform3fv(U.uZenith, env.zenith);
+      gl.uniform3fv(U.uHorizon, env.horizon);
+      gl.uniform3fv(U.uGround, env.ground);
+      gl.uniform1f(U.uEnvInt, env.intensity);
+      gl.uniform3fv(U.uFogCol, fog.color);
+      gl.uniform1f(U.uFogDensity, fog.density);
+      gl.uniform1f(U.uTime, time);
+
+      // Opaque, one instanced call per geometry.
+      for(const name in buckets){
+        const b = buckets[name];
+        if(!b.n) continue;
+        const g = geos[name];
+        gl.bindVertexArray(g.vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, g.inst);
+        const bytes = b.n * FLOATS_PER_INSTANCE * 4;
+        if(bytes > g.cap){
+          gl.bufferData(gl.ARRAY_BUFFER, b.data.subarray(0, b.n * FLOATS_PER_INSTANCE), gl.DYNAMIC_DRAW);
+          g.cap = bytes;
+        }else{
+          gl.bufferSubData(gl.ARRAY_BUFFER, 0, b.data.subarray(0, b.n * FLOATS_PER_INSTANCE));
+        }
+        gl.drawElementsInstanced(gl.TRIANGLES, g.count, gl.UNSIGNED_SHORT, 0, b.n);
+      }
+
+      // Transparent, back-to-front, depth-tested but not depth-written.
+      // Culling is off here: holo panels and canopies are single-sided sheets
+      // that must survive being seen from behind.
+      if(blendList.length){
+        for(let i=0;i<blendList.length;i++){
+          const it = blendList[i];
+          it.z = (camPos[0]-it.p[0])**2 + (camPos[1]-it.p[1])**2 + (camPos[2]-it.p[2])**2;
+        }
+        blendList.sort((a,b) => b.z - a.z);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
+        gl.disable(gl.CULL_FACE);
+        // Grouped into runs of the same geometry so a wall of glass panels is
+        // still one draw call, while the sort order is preserved.
+        let i = 0;
+        let buf = blendBuf;
+        while(i < blendList.length){
+          const name = blendList[i].geo;
+          let n = 0;
+          const start = i;
+          while(i < blendList.length && blendList[i].geo === name){ i++; n++; }
+          const need = n * FLOATS_PER_INSTANCE;
+          // Grown once and kept, so a steady-state frame allocates nothing.
+          if(need > buf.length) buf = blendBuf = growFloat(buf, need);
+          for(let k=0;k<n;k++){
+            const it = blendList[start+k];
+            const off = k * FLOATS_PER_INSTANCE;
+            M4.compose(buf, off, it.p, it.r, it.s);
+            buf[off+16]=it.col[0]; buf[off+17]=it.col[1]; buf[off+18]=it.col[2]; buf[off+19]=it.alpha;
+            buf[off+20]=it.emisCol[0]; buf[off+21]=it.emisCol[1]; buf[off+22]=it.emisCol[2]; buf[off+23]=it.emisStr;
+            buf[off+24]=it.metallic; buf[off+25]=it.roughness; buf[off+26]=it.rim; buf[off+27]=1;
+          }
+          const g = geos[name];
+          gl.bindVertexArray(g.vao);
+          gl.bindBuffer(gl.ARRAY_BUFFER, g.inst);
+          gl.bufferData(gl.ARRAY_BUFFER, buf.subarray(0, need), gl.DYNAMIC_DRAW);
+          g.cap = need * 4;
+          gl.drawElementsInstanced(gl.TRIANGLES, g.count, gl.UNSIGNED_SHORT, 0, n);
+        }
+        gl.enable(gl.CULL_FACE);
+      }
+
+      // Additive glows last, so they read as light sitting on top of the scene.
+      if(glowCount){
+        gl.useProgram(progGlow);
+        const G = progGlow._u;
+        gl.uniformMatrix4fv(G.uView, false, view);
+        gl.uniformMatrix4fv(G.uProj, false, proj);
+        gl.uniform3fv(G.uCam, camPos);
+        gl.uniform1f(G.uFogDensity, fog.density);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+        gl.depthMask(false);
+        gl.disable(gl.CULL_FACE);
+        gl.bindVertexArray(glowVAO);
+        gl.bindBuffer(gl.ARRAY_BUFFER, glowInst);
+        const bytes = glowCount * FLOATS_PER_GLOW * 4;
+        if(bytes > glowCap){
+          gl.bufferData(gl.ARRAY_BUFFER, glowData.subarray(0, glowCount * FLOATS_PER_GLOW), gl.DYNAMIC_DRAW);
+          glowCap = bytes;
+        }else{
+          gl.bufferSubData(gl.ARRAY_BUFFER, 0, glowData.subarray(0, glowCount * FLOATS_PER_GLOW));
+        }
+        gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0, glowCount);
+        gl.enable(gl.CULL_FACE);
+      }
+
+      gl.bindVertexArray(null);
+      gl.depthMask(true);
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.BLEND);
+
+      // ── BLOOM PYRAMID ──
+      // Bright pass into mip 0, progressive downsample, then progressive
+      // additive upsample back to mip 0. Five octaves is enough to spread a
+      // point light across a third of the screen without it becoming a haze.
+      gl.useProgram(progBright);
+      gl.uniform1i(progBright._u.uTex, 0);
+      // Without a float target there is no headroom above 1.0, so the knee has
+      // to sit below it or nothing ever blooms.
+      gl.uniform1f(progBright._u.uThreshold, HDR ? post.threshold : 0.72);
+      gl.uniform1f(progBright._u.uKnee, post.knee);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, scene.tex);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, mips[0].fbo);
+      gl.viewport(0, 0, mips[0].w, mips[0].h);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      gl.useProgram(progDown);
+      gl.uniform1i(progDown._u.uTex, 0);
+      for(let i=1;i<mips.length;i++){
+        gl.bindTexture(gl.TEXTURE_2D, mips[i-1].tex);
+        gl.uniform2f(progDown._u.uTexel, 1/mips[i-1].w, 1/mips[i-1].h);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, mips[i].fbo);
+        gl.viewport(0, 0, mips[i].w, mips[i].h);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+
+      gl.useProgram(progUp);
+      gl.uniform1i(progUp._u.uTex, 0);
+      gl.uniform1f(progUp._u.uRadius, post.radius);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      for(let i=mips.length-1;i>0;i--){
+        gl.bindTexture(gl.TEXTURE_2D, mips[i].tex);
+        gl.uniform2f(progUp._u.uTexel, 1/mips[i].w, 1/mips[i].h);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, mips[i-1].fbo);
+        gl.viewport(0, 0, mips[i-1].w, mips[i-1].h);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+      gl.disable(gl.BLEND);
+
+      // ── COMPOSITE ──
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, vpW, vpH);
+      gl.useProgram(progComp);
+      const C = progComp._u;
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, scene.tex);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, mips[0].tex);
+      gl.uniform1i(C.uScene, 0);
+      gl.uniform1i(C.uBloom, 1);
+      gl.uniform1f(C.uBloomAmt, post.bloom);
+      gl.uniform1f(C.uExposure, post.exposure);
+      gl.uniform1f(C.uTime, time);
+      gl.uniform1f(C.uAberration, post.aberration * 0.01);
+      gl.uniform1f(C.uGrain, post.grain);
+      gl.uniform1f(C.uScanline, post.scanline);
+      gl.uniform1f(C.uVignette, post.vignette);
+      gl.uniform3fv(C.uLift, post.lift);
+      gl.uniform3fv(C.uGain, post.gain);
+      gl.uniform1f(C.uSaturation, post.saturation);
+      gl.uniform2f(C.uRes, vpW, vpH);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.activeTexture(gl.TEXTURE0);
+    },
+
+    // Frees every GPU object. Called when the player leaves 3D mode, so a long
+    // session doesn't keep two render paths' worth of VRAM alive.
+    dispose(){
+      destroyTarget(scene); scene = null;
+      mips.forEach(destroyTarget); mips = [];
+      for(const k in geos){
+        gl.deleteVertexArray(geos[k].vao);
+        gl.deleteBuffer(geos[k].ibo);
+        gl.deleteBuffer(geos[k].inst);
+        delete geos[k];
+      }
+      [progMesh, progGlow, progBright, progDown, progUp, progComp, progSky].forEach(p => gl.deleteProgram(p));
+      const lose = gl.getExtension('WEBGL_lose_context');
+      if(lose) lose.loseContext();
+    }
+  };
+
+  return api;
+}
+
+// A cheap capability probe used by the login screen, so the 3D card can say
+// "unsupported" instead of the player picking it and hitting a black board.
+function supported(){
+  try{
+    const c = document.createElement('canvas');
+    const gl = c.getContext('webgl2');
+    if(!gl) return false;
+    const lose = gl.getExtension('WEBGL_lose_context');
+    if(lose) lose.loseContext();
+    return true;
+  }catch(e){ return false; }
+}
+
+return {
+  createRenderer, supported,
+  M4, V3, hexToLinear,
+  mesh: {
+    empty: emptyMesh, merge: mergeMesh,
+    box: buildBox, roundedBox: buildRoundedBox, sphere: buildSphere,
+    cylinder: buildCylinder, torus: buildTorus, quad: buildQuad,
+    ground: buildGround, rock: buildRock,
+    ship: buildShip, raider: buildRaider, tower: buildTower, drone: buildDrone
+  }
+};
+
+})();
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  § 2/5  MODE + SCAFFOLD   game3d
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════
+//  🎮 POINT INVADERS — 3D MODE
+// ══════════════════════════════════════════════════════════════════════
+// The arcade now ships two renderers. The player picks one on the login
+// screen, it persists in localStorage, and everything downstream — the hub, the
+// shop, the leaderboards, the Network Arena, scoring, perks, chaos modifiers —
+// is shared. A 3D round is the SAME round: it calls the same setLive(), the
+// same showResults(), the same Ghost recorder, and reads the same difficulty
+// tier. Only the pixels are different.
+//
+// How it plugs in, in three seams and nothing else:
+//   · prepGame()       asks PI3D.startFor(gid) before falling back to SOLO_START
+//   · resetGameStage() asks PI3D whether the round will need the board
+//   · fitCanvas()      calls PI3D.syncSize() so the GL surface tracks the 2D one
+//
+// INPUT IS SHARED, DELIBERATELY. The WebGL canvas is layered over #arcade-canvas
+// with pointer-events:none, so every tap and drag still lands on the 2D canvas
+// underneath and still arrives through bindCanvasDrag() in board coordinates.
+// That means the touch scheme, the mouse/finger split, and the 🔄 INVERSE
+// CONTROLS chaos modifier all work in 3D without a line of new input code.
+//
+// ⚠️ NO SHADOWS ANYWHERE, by request. Depth is carried entirely by perspective,
+// parallax, fog, bevel highlights, reflections and rim light. That is a real
+// constraint on the art direction, not an omission: every environment below is
+// built so the player can read distance without a single cast shadow.
+
+window.PI3D = (function(){
+'use strict';
+
+const E = window.PI3D_ENGINE;
+
+// ══════════════════════════════════════════════
+//  🎛️ MODE — persisted, and honest about support
+// ══════════════════════════════════════════════
+const LS_MODE = 'pi_render_mode';
+let want = '2d';
+try{
+  const v = localStorage.getItem(LS_MODE);
+  if(v === '3d' || v === '2d') want = v;
+}catch(e){}
+
+let supportCache = null;
+function supported(){
+  if(supportCache === null) supportCache = !!(E && E.supported());
+  return supportCache;
+}
+
+// The setting the player chose vs. the mode actually in force. They differ only
+// when 3D was picked on a machine that then turned out to have no WebGL2 —
+// better to quietly render in 2D than to show a black board.
+const wanted = () => want;
+const active = () => (want === '3d' && supported()) ? '3d' : '2d';
+const is3D   = () => active() === '3d';
+
+function setMode(m){
+  want = (m === '3d') ? '3d' : '2d';
+  try{ localStorage.setItem(LS_MODE, want); }catch(e){}
+  paintPicker();
+  document.body.classList.toggle('mode-3d', is3D());
+}
+
+// ══════════════════════════════════════════════
+//  🖥️ THE GL SURFACE
+// ══════════════════════════════════════════════
+// One canvas and one renderer for the whole session, created on the first 3D
+// round and torn down when the player switches back to 2D. Rebuilding a WebGL
+// context per round is the single most expensive thing this file could do —
+// shader compilation alone would stutter the countdown.
+
+let R = null, glCanvas = null, fxLayer = null, mounted = false;
+
+function ensureSurface(){
+  if(glCanvas) return true;
+  const frame = document.getElementById('board-frame');
+  const a2d = document.getElementById('arcade-canvas');
+  if(!frame || !a2d) return false;
+
+  glCanvas = document.createElement('canvas');
+  glCanvas.id = 'gl-canvas';
+  glCanvas.setAttribute('aria-hidden', 'true');
+  fxLayer = document.createElement('div');
+  fxLayer.id = 'gl-fx';
+  fxLayer.setAttribute('aria-hidden', 'true');
+  // Inserted directly after the 2D canvas rather than appended, so #touch-hint
+  // and #mp-overlay — which are later siblings — keep sitting on top of it.
+  frame.insertBefore(glCanvas, a2d.nextSibling);
+  frame.insertBefore(fxLayer, glCanvas.nextSibling);
+  return true;
+}
+
+function ensureRenderer(){
+  if(R) return R;
+  if(!ensureSurface()) return null;
+  R = E.createRenderer(glCanvas);
+  if(!R){
+    // Context creation can fail even where the probe passed (a blocklisted
+    // driver, too many live contexts). Fall back for the rest of the session.
+    supportCache = false;
+    toast('3D unavailable on this device — running in 2D', 3200);
+  }
+  return R;
+}
+
+// Matches the GL surface to whatever fitCanvas() just decided the 2D board
+// should be. Called from fitCanvas(), so a resize, an orientation flip or the
+// control pad appearing all re-fit both canvases as one.
+function syncSize(){
+  const a2d = document.getElementById('arcade-canvas');
+  if(!glCanvas || !a2d) return;
+  // offsetWidth is the border box, which is what the 2D canvas's own CSS width
+  // is under the global box-sizing:border-box — so the two elements land on
+  // exactly the same rectangle and taps map 1:1.
+  glCanvas.style.width  = a2d.offsetWidth + 'px';
+  glCanvas.style.height = a2d.offsetHeight + 'px';
+  fxLayer.style.width   = a2d.offsetWidth + 'px';
+  fxLayer.style.height  = a2d.offsetHeight + 'px';
+  if(!R) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  R.resize(Math.round(glCanvas.clientWidth * dpr), Math.round(glCanvas.clientHeight * dpr));
+}
+
+function mount(){
+  if(!ensureRenderer()) return null;
+  mounted = true;
+  glCanvas.style.display = 'block';
+  fxLayer.style.display = 'block';
+  fxLayer.textContent = '';
+  // The 2D board is still there and still taking the input; wipe it so no
+  // frame of the last 2D round shows through a transparent moment.
+  const a2d = document.getElementById('arcade-canvas');
+  if(a2d && a2d.getContext) {
+    const c = a2d.getContext('2d');
+    if(c) c.clearRect(0, 0, 4000, 4000);
+  }
+  a2d.classList.add('behind-gl');
+  syncSize();
+  return R;
+}
+
+function unmount(){
+  if(!mounted) return;
+  mounted = false;
+  if(glCanvas) glCanvas.style.display = 'none';
+  if(fxLayer){ fxLayer.style.display = 'none'; fxLayer.textContent = ''; }
+  const a2d = document.getElementById('arcade-canvas');
+  if(a2d) a2d.classList.remove('behind-gl');
+}
+
+// ══════════════════════════════════════════════
+//  🌍 WORLD — the scaffolding every 3D game sits on
+// ══════════════════════════════════════════════
+// Camera rig with smoothing and shake, a particle pool, DOM floating text, and
+// three environment pieces (skyline, ground grid, star field) that between them
+// give every game its sense of scale. A game builds one of these, calls step()
+// once a frame, and draws its own contents in between.
+
+const rnd  = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
+
+// Deterministic hash → the skylines and star fields are rebuilt every mount and
+// must not shimmer into a different city each time the player replays.
+function seeded(seed){
+  let s = seed >>> 0;
+  return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
+}
+
+const NEON = ['#00f5ff', '#ff0090', '#a855f7', '#ffd700', '#39ff88', '#ff6600'];
+
+function createWorld(cfg){
+  cfg = cfg || {};
+  const r = R;
+
+  const w = {
+    r, t: 0, dt: 1/60,
+    parts: [],
+    texts: [],
+    // Camera is stored as a target the rig eases toward, which is what keeps a
+    // chase cam from snapping when the player jerks sideways.
+    cam:   { eye:[0, 4, 14], target:[0, 1, 0], fov: 58 },
+    goal:  { eye:[0, 4, 14], target:[0, 1, 0], fov: 58 },
+    ease: cfg.ease != null ? cfg.ease : 0.16,
+    shake: 0,
+    city: null, stars: null
+  };
+
+  const env   = Object.assign({ zenith:'#050716', horizon:'#2a0838', ground:'#04060c', intensity: 1.0 }, cfg.env);
+  const fog   = Object.assign({ color:'#0a0418', density: 0.011 }, cfg.fog);
+  const sun   = Object.assign({ dir:[-0.45, -1, -0.4], color:'#5a6cff', intensity: 0.55 }, cfg.sun);
+  const grade = Object.assign({}, cfg.grade);
+
+  // ── PARTICLES ──
+  // Drawn as additive billboards, so a burst is one instanced draw no matter
+  // how many sparks it holds. Capped hard: a chained explosion in Meltdown can
+  // otherwise ask for thousands and drop the frame the player dies on.
+  const MAX_PARTS = 900;
+  w.burst = function(p, color, n, o){
+    o = o || {};
+    const spd = o.speed != null ? o.speed : 9;
+    const life = o.life != null ? o.life : 0.75;
+    const size = o.size != null ? o.size : 0.34;
+    for(let i = 0; i < n; i++){
+      if(w.parts.length >= MAX_PARTS) break;
+      // Direction sampled on the sphere properly (cos-uniform in z), otherwise
+      // bursts bunch visibly at the poles.
+      const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
+      const s = Math.sqrt(1 - u * u), v = spd * (0.35 + Math.random() * 0.9);
+      w.parts.push({
+        x: p[0], y: p[1], z: p[2],
+        vx: s * Math.cos(th) * v + (o.vx || 0),
+        vy: u * v + (o.vy || 0),
+        vz: s * Math.sin(th) * v + (o.vz || 0),
+        life: life * (0.6 + Math.random() * 0.7), max: life,
+        size: size * (0.5 + Math.random()), color: color || '#00f5ff',
+        grav: o.grav != null ? o.grav : 0, drag: o.drag != null ? o.drag : 2.2
+      });
+    }
+  };
+
+  // A single travelling spark — used for engine trails and bullet wakes, where
+  // a whole burst would be overkill.
+  w.spark = function(p, color, size, life, vel){
+    if(w.parts.length >= MAX_PARTS) return;
+    w.parts.push({
+      x:p[0], y:p[1], z:p[2],
+      vx:(vel && vel[0]) || 0, vy:(vel && vel[1]) || 0, vz:(vel && vel[2]) || 0,
+      life: life || 0.3, max: life || 0.3, size: size || 0.3,
+      color: color || '#00f5ff', grav: 0, drag: 3.0
+    });
+  };
+
+  // ── FLOATING TEXT ──
+  // DOM rather than a texture atlas: the arcade's type is a webfont, the strings
+  // are arbitrary, and projecting a div keeps it pixel-crisp at any board size.
+  const textPool = [];
+  w.pop = function(p, str, color, o){
+    o = o || {};
+    let el = textPool.pop();
+    if(!el){
+      el = document.createElement('div');
+      el.className = 'gl-pop';
+    }
+    el.textContent = str;
+    el.style.color = color || '#fff';
+    el.style.opacity = '1';
+    el.style.fontSize = (o.size || 15) + 'px';
+    fxLayer.appendChild(el);
+    w.texts.push({ el, x:p[0], y:p[1], z:p[2], vy: o.vy != null ? o.vy : 2.6, life: o.life || 1.1, max: o.life || 1.1 });
+  };
+
+  w.kick = function(a){ w.shake = Math.max(w.shake, a); };
+
+  // ── ENVIRONMENT PIECES ──
+
+  // A block of skyline. Towers are placed on a jittered grid with a hole cut in
+  // the middle so the play space is never obstructed, and each keeps two
+  // emissive window strips — enough to read as a lit building at distance
+  // without a thousand extra instances.
+  w.buildCity = function(o){
+    o = o || {};
+    const g = seeded(o.seed || 20260907);
+    const n = o.count || 84;
+    const spread = o.spread || 130;
+    const hole = o.hole || 26;
+    const y0 = o.y != null ? o.y : -10;
+    const list = [];
+    for(let i = 0; i < n; i++){
+      let x, z, guard = 0;
+      do{
+        x = (g() * 2 - 1) * spread;
+        z = -g() * spread * 1.5 - 10;
+      }while(Math.abs(x) < hole && guard++ < 8);
+      const h = 8 + g() * 46;
+      list.push({
+        x, z, y: y0, h,
+        w: 4 + g() * 7, d: 4 + g() * 7,
+        rot: g() * 0.5 - 0.25,
+        neon: NEON[(g() * NEON.length) | 0],
+        lit: g() > 0.45,
+        phase: g() * 6.28
+      });
+    }
+    w.city = { list, y0 };
+    return w.city;
+  };
+
+  w.drawCity = function(scrollZ){
+    if(!w.city) return;
+    const sz = scrollZ || 0;
+    const span = 210;
+    for(let i = 0; i < w.city.list.length; i++){
+      const b = w.city.list[i];
+      // Wrapped in Z so a forward-moving game never runs out of city; the
+      // modulo is done here rather than mutating b.z so the layout stays stable.
+      let z = ((b.z + sz) % span);
+      if(z > 30) z -= span;
+      r.draw('tower', {
+        pos: [b.x, b.y + b.h * 0.5, z],
+        rot: [0, b.rot, 0],
+        scale: [b.w, b.h, b.d],
+        color: '#0b0d18', metallic: 0.55, roughness: 0.52, rim: 0.9
+      });
+      if(!b.lit) continue;
+      // Two vertical light strips, breathing slightly out of phase.
+      const pulse = 0.55 + 0.45 * Math.sin(w.t * 1.3 + b.phase);
+      r.draw('box', {
+        pos: [b.x + b.w * 0.42, b.y + b.h * 0.55, z + b.d * 0.45],
+        rot: [0, b.rot, 0],
+        scale: [0.22, b.h * 0.7, 0.22],
+        color: b.neon, emissive: b.neon, emissiveStrength: 2.6 * pulse,
+        metallic: 0, roughness: 0.4
+      });
+      r.draw('box', {
+        pos: [b.x, b.y + b.h + 0.4, z],
+        scale: [b.w * 0.5, 0.16, 0.5],
+        color: b.neon, emissive: b.neon, emissiveStrength: 3.4 * pulse
+      });
+    }
+  };
+
+  w.buildStars = function(count, radius){
+    const g = seeded(9137);
+    const list = [];
+    const n = count || 150;
+    for(let i = 0; i < n; i++){
+      // Sampled on a hemisphere shell so nothing spawns underfoot.
+      const u = g() * 0.9 + 0.05, th = g() * Math.PI * 2;
+      const s = Math.sqrt(1 - u * u), rr = radius || 180;
+      list.push({
+        x: s * Math.cos(th) * rr,
+        y: u * rr * 0.7 + 12,
+        z: s * Math.sin(th) * rr - 40,
+        s: 0.5 + g() * 1.6,
+        tw: g() * 6.28,
+        c: g() > 0.82 ? NEON[(g() * NEON.length) | 0] : '#cfe4ff'
+      });
+    }
+    w.stars = list;
+    return list;
+  };
+
+  w.drawStars = function(){
+    if(!w.stars) return;
+    for(let i = 0; i < w.stars.length; i++){
+      const s = w.stars[i];
+      r.glow([s.x, s.y, s.z], s.s, s.c, 0.55 + 0.45 * Math.sin(w.t * 2.2 + s.tw));
+    }
+  };
+
+  // The neon floor grid. Beams rather than a textured plane, because a real
+  // extruded strip picks up specular from passing lights and a texture cannot.
+  w.drawGrid = function(o){
+    o = o || {};
+    const y = o.y != null ? o.y : 0;
+    const halfX = o.halfX || 16, halfZ = o.halfZ || 60;
+    const step = o.step || 4;
+    const col = o.color || '#00f5ff';
+    const em = o.emissive != null ? o.emissive : 1.4;
+    const scroll = o.scroll || 0;
+    const wdt = o.width || 0.05;
+    for(let x = -halfX; x <= halfX + 0.001; x += step){
+      r.beam([x, y, -halfZ], [x, y, halfZ], wdt, { color: col, emissive: col, emissiveStrength: em, height: wdt });
+    }
+    // Lateral lines scroll toward the camera, which is most of what sells speed
+    // in the forward-motion games.
+    const off = ((scroll % step) + step) % step;
+    for(let z = -halfZ + off; z <= halfZ + 0.001; z += step){
+      const fade = 1 - clamp((z + halfZ) / (halfZ * 2), 0, 1) * 0.15;
+      r.beam([-halfX, y, z], [halfX, y, z], wdt, { color: col, emissive: col, emissiveStrength: em * fade, height: wdt });
+    }
+    if(o.floor !== false){
+      r.draw('ground', {
+        pos: [0, y - 0.06, o.floorZ || 0],
+        scale: [halfX * 2.4, 1, halfZ * 2.4],
+        color: o.floorColor || '#05060f',
+        metallic: 0.85, roughness: o.floorRough != null ? o.floorRough : 0.30, rim: 0.25
+      });
+    }
+  };
+
+  // ── PER-FRAME ──
+
+  w.step = function(dt){
+    w.dt = dt;
+    w.t += dt;
+
+    for(let i = w.parts.length - 1; i >= 0; i--){
+      const p = w.parts[i];
+      p.life -= dt;
+      if(p.life <= 0){ w.parts.splice(i, 1); continue; }
+      const d = Math.max(0, 1 - p.drag * dt);
+      p.vx *= d; p.vz *= d;
+      p.vy = p.vy * d - p.grav * dt;
+      p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+    }
+
+    for(let i = w.texts.length - 1; i >= 0; i--){
+      const tx = w.texts[i];
+      tx.life -= dt;
+      tx.y += tx.vy * dt;
+      if(tx.life <= 0){
+        tx.el.remove();
+        if(textPool.length < 24) textPool.push(tx.el);
+        w.texts.splice(i, 1);
+        continue;
+      }
+      const sp = r.project([tx.x, tx.y, tx.z]);
+      if(!sp){ tx.el.style.opacity = '0'; continue; }
+      tx.el.style.transform = `translate(-50%,-50%) translate(${sp.x}px,${sp.y}px)`;
+      tx.el.style.opacity = String(clamp(tx.life / tx.max, 0, 1));
+    }
+
+    w.shake *= Math.max(0, 1 - 7 * dt);
+    if(w.shake < 0.001) w.shake = 0;
+
+    // Camera easing is frame-rate independent: an exponential approach, not a
+    // fixed lerp, so a 144Hz display doesn't get a twice-as-stiff camera.
+    const k = 1 - Math.pow(1 - w.ease, dt * 60);
+    for(let i = 0; i < 3; i++){
+      w.cam.eye[i]    += (w.goal.eye[i]    - w.cam.eye[i])    * k;
+      w.cam.target[i] += (w.goal.target[i] - w.cam.target[i]) * k;
+    }
+    w.cam.fov += (w.goal.fov - w.cam.fov) * k;
+  };
+
+  // Opens the frame: clears the renderer, installs the camera (with shake) and
+  // pushes the environment settings.
+  w.begin = function(){
+    r.begin(w.dt);
+    const s = w.shake;
+    const jx = s ? (Math.random() - 0.5) * s * 0.5 : 0;
+    const jy = s ? (Math.random() - 0.5) * s * 0.5 : 0;
+    r.camera({
+      eye:    [w.cam.eye[0] + jx, w.cam.eye[1] + jy, w.cam.eye[2]],
+      target: [w.cam.target[0] + jx * 0.4, w.cam.target[1] + jy * 0.4, w.cam.target[2]],
+      fov: w.cam.fov, near: 0.25, far: 500
+    });
+    r.environment(env);
+    r.fog(fog);
+    r.sun(sun);
+    if(grade) r.grade(grade);
+  };
+
+  // Closes the frame: particles as additive billboards, then submit.
+  w.end = function(){
+    for(let i = 0; i < w.parts.length; i++){
+      const p = w.parts[i];
+      const a = clamp(p.life / p.max, 0, 1);
+      r.glow([p.x, p.y, p.z], p.size * (0.35 + a), p.color, 1.6 * a * a);
+    }
+    r.render();
+  };
+
+  w.env = env; w.fogCfg = fog; w.sunCfg = sun;
+  return w;
+}
+
+// ══════════════════════════════════════════════
+//  🔁 ROUND HARNESS
+// ══════════════════════════════════════════════
+// Every 3D game opens with begin3d() and closes through the shared clock. This
+// is where the delta-time clamp lives — the same 50ms stall clamp the 2D games
+// use, so a tab that was backgrounded resumes instead of teleporting.
+
+function begin3d(cfg){
+  cfg = cfg || {};
+  const r = mount();
+  if(!r) return null;
+  document.getElementById('g-canvas-holder').style.display = 'block';
+  if(typeof fitCanvas === 'function') fitCanvas();
+  syncSize();
+  // ⚙️ The difficulty tier grades the picture too. Meltdown runs a hotter
+  // exposure and heavier lens aberration, so the same corridor reads as an
+  // overloading one — the tier is felt before the first hazard arrives.
+  //
+  // Merged into the config rather than pushed once: the world re-applies its
+  // grade every frame in begin(), so a one-shot R.grade() would be overwritten
+  // on the very next one.
+  const tier = (typeof currentDifficultyTier === 'string') ? currentDifficultyTier : 'stable';
+  const TIER_GRADE = {
+    overclocked: { exposure: 1.06, aberration: 0.95, saturation: 1.20, vignette: 0.50 },
+    meltdown:    { exposure: 1.16, aberration: 1.70, saturation: 1.32, vignette: 0.60, grain: 0.05 }
+  };
+  if(TIER_GRADE[tier]) cfg = Object.assign({}, cfg, { grade: Object.assign({}, cfg.grade, TIER_GRADE[tier]) });
+  const w = createWorld(cfg);
+  // stopGame() runs this on every exit route there is — the clock, a loss, the
+  // Quit button, a duel dropping out — so the surface can never be left up.
+  //
+  // CHAINED, not assigned. A solo round reaches here with onStopGame already
+  // null (resetGameStage → stopGame clears it), so the chain is just unmount and
+  // nothing changes. A NETWORK ARENA round does not: mpBeginRound() installs
+  // mpRoundCleanup before the countdown, and that hook is what takes down the
+  // database listeners, the versus HUD and the borrowed difficulty tier.
+  // Overwriting it left a finished duel holding live listeners on a room that
+  // no longer existed.
+  const prev = onStopGame;
+  onStopGame = () => { unmount(); if(prev && !keepOwnerHook) prev(); };
+  return w;
+}
+
+// Set only while startFor() is unwinding a 3D round that threw during setup.
+// It tells the chain above to stop at the round's own teardown and leave the
+// owner's hook alone — see the note in startFor().
+let keepOwnerHook = false;
+
+// Drives a game's frame callback off requestAnimationFrame with a clamped dt,
+// assigning through the shared `gameLoopId` so stopGame() can cancel it.
+function runLoop(fn){
+  let last = performance.now();
+  const tick = now => {
+    let dt = (now - last) / 1000;
+    last = now;
+    if(!(dt > 0)) dt = 1/60;
+    if(dt > 0.05) dt = 0.05;      // matches the 2D engine's stall clamp
+    if(fn(dt) === false) return;  // a game returns false on its last frame
+    gameLoopId = requestAnimationFrame(tick);
+  };
+  gameLoopId = requestAnimationFrame(tick);
+}
+
+// Colour the player owns from the shop, used for every "this is you" element.
+const mine = () => (typeof getEquippedColorHex === 'function' ? getEquippedColorHex() : '#00f5ff');
+
+// Board coordinates (0..BOARD_W, 0..BOARD_H) → a normalised -1..1 pair. Every
+// 3D game steers through this, so chaos's INVERSE CONTROLS still works: it is
+// applied inside boardPos() before the value ever reaches here.
+const nx = p => (p.x / BOARD_W) * 2 - 1;
+const ny = p => 1 - (p.y / BOARD_H) * 2;
+
+// ══════════════════════════════════════════════
+//  🎚️ LOGIN-SCREEN PICKER
+// ══════════════════════════════════════════════
+// Two cards on the auth screen, above the sign-in form. The choice is stored
+// before any account exists, which is why it lives in localStorage rather than
+// on the player profile — a guest and a signed-in player get the same setting
+// on the same device, and it survives a logout.
+
+function paintPicker(){
+  const wrap = document.getElementById('mode-picker');
+  if(!wrap) return;
+  const on = wanted();
+  wrap.querySelectorAll('.mode-card').forEach(c => {
+    c.classList.toggle('on', c.dataset.mode === on);
+    c.setAttribute('aria-pressed', String(c.dataset.mode === on));
+  });
+}
+
+function wirePicker(){
+  const wrap = document.getElementById('mode-picker');
+  if(!wrap) return;
+  const card3d = wrap.querySelector('.mode-card[data-mode="3d"]');
+  if(card3d && !supported()){
+    // Say so on the card instead of letting the player pick a mode that cannot
+    // run. The setting is still remembered — a different browser may support it.
+    card3d.classList.add('unsupported');
+    const note = card3d.querySelector('.mode-note');
+    if(note) note.textContent = 'Needs WebGL2 — not available in this browser';
+  }
+  wrap.querySelectorAll('.mode-card').forEach(c => {
+    c.addEventListener('click', () => {
+      if(c.dataset.mode === '3d' && !supported()){
+        toast("This browser has no WebGL2 — 3D mode cannot run here", 3200);
+        return;
+      }
+      if(c.dataset.mode === wanted()) return;
+      setMode(c.dataset.mode);
+      snd('tab');
+      // The mode is a choice about the WHOLE arcade — the board AND the
+      // interface around it — so the confirmation says so.
+      toast(c.dataset.mode === '3d'
+        ? '🧊 3D MODE ARMED — realtime renderer, solid controls'
+        : '🕹️ 2D MODE ARMED — classic flat arcade', 2200);
+    });
+  });
+  paintPicker();
+  document.body.classList.toggle('mode-3d', is3D());
+}
+
+const API = {
+  // — mode —
+  supported, wanted, active, is3D, setMode,
+  // — surface —
+  syncSize, unmount,
+  get renderer(){ return R; },
+
+  // Shared scaffolding, consumed by games3d.js.
+  kit: { createWorld, begin3d, runLoop, mine, nx, ny, rnd, clamp, seeded, NEON, mount },
+
+  // Populated by games3d.js: gid → start function.
+  games: Object.create(null),
+
+  // Populated by § 6: duel key → 3D VIEW factory. A live Network Arena duel is
+  // the one thing in the arcade that can't just be re-registered here as a
+  // whole 3D game — two clients are inside ONE simulation, synchronised over
+  // the wire, and re-implementing that per renderer would be two netcodes for
+  // one duel. So a live duel keeps its simulation and its wire exactly as they
+  // are and swaps only the picture: it asks for a view, hands it the same state
+  // it would otherwise have painted onto the 2D canvas, and the view draws that
+  // state as a room.
+  duels: Object.create(null),
+
+  // Null in 2D mode, when the duel has no 3D view, or when building one threw —
+  // and every caller reads null as "draw yourself on the 2D canvas", which is
+  // the path that was always there.
+  duelView(key, cfg){
+    const make = API.duels[key];
+    if(!is3D() || !make) return null;
+    try{
+      return make(cfg || {});
+    }catch(err){
+      // Nothing to unwind but the surface: a view builds no clock, no keys and
+      // no wire of its own, so the duel around it is untouched and simply
+      // carries on in 2D.
+      console.error('[3D] duel view failed to build, falling back to 2D:', err);
+      unmount();
+      return null;
+    }
+  },
+
+  // True when THIS round should be rendered in 3D. prepGame() and
+  // resetGameStage() both ask, so the answer has to be cheap and stable.
+  has(gid){ return is3D() && !!API.games[gid]; },
+
+  startFor(gid){
+    const fn = API.games[gid];
+    if(!is3D() || !fn) return false;
+    // Whatever the round's OWNER installed before handing over. Null for a solo
+    // mission; mpRoundCleanup for a Network Arena round.
+    const owner = onStopGame;
+    try{
+      fn();
+      return true;
+    }catch(err){
+      // A broken 3D round must never strand the player on a dead screen: report
+      // false so the caller falls through to the 2D implementation, which is
+      // always present. stopGame() first, because a round that threw part-way
+      // through setup may already have installed a clock, a key handler or a
+      // drag binding — and those would otherwise run alongside the 2D round
+      // that replaces it.
+      //
+      // keepOwnerHook stops that teardown one link short of the owner's own
+      // hook. Running it would be the wrong kind of thorough in a duel: it
+      // would drop the room's listeners, hide the versus strip and hand back
+      // the borrowed tier, and the 2D round about to start would then be
+      // playing inside a duel that had already been dismantled around it.
+      console.error('[3D] round failed to start, falling back to 2D:', err);
+      keepOwnerHook = true;
+      try{ stopGame(); }catch(e){}
+      keepOwnerHook = false;
+      unmount();
+      onStopGame = owner;
+      return false;
+    }
+  }
+};
+
+// The auth screen is already in the document by the time this script runs (it
+// is loaded at the end of <body>), so there is nothing to wait for.
+wirePicker();
+
+return API;
+
+})();
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  § 3/5  MISSIONS I        games3d
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════
+//  🚀 POINT INVADERS — 3D MISSIONS
+// ══════════════════════════════════════════════════════════════════════
+// The 3D counterparts of the arcade's canvas missions. Each one registers
+// itself on PI3D.games under the SAME game id as its 2D original, which is the
+// whole integration: prepGame() looks the id up here first, and everything that
+// happens after the round — the tier multiplier, the perk multiplier, the XP,
+// the achievements, the leaderboard write — is untouched shared code.
+//
+// Each mission keeps its 2D scoring contract exactly (same clock, same cap,
+// same showResults id) so a 3D score and a 2D score are the same score on the
+// same board. What changes is that the play space is genuinely three
+// dimensional: things have depth, the camera has a position, and the hazards
+// arrive from somewhere rather than from the top of a rectangle.
+//
+// ⚠️ NO SHADOWS. Every environment here reads depth through perspective,
+// parallax scroll, fog density, bevel specular and rim light instead.
+
+(function(){
+'use strict';
+
+const P = window.PI3D;
+if(!P) return;
+const K = P.kit;
+const { begin3d, runLoop, mine, nx, ny, rnd, clamp, seeded, NEON } = K;
+
+// ══════════════════════════════════════════════
+//  🏙️ SHARED SET DRESSING
+// ══════════════════════════════════════════════
+
+// The look every mission inherits: a rain-black city at night, magenta light
+// pollution on the horizon, cyan-indigo shadows. Missions override what they
+// need and keep the rest, so the arcade reads as one place.
+const CITY_NIGHT = {
+  env:  { zenith:'#04061a', horizon:'#3a1050', ground:'#05060f', intensity: 1.35 },
+  fog:  { color:'#0d0722', density: 0.0052 },
+  sun:  { dir:[-0.4, -0.85, -0.5], color:'#6f7dff', intensity: 0.7 },
+  // Bloom is deliberately restrained. Neon wants a halo, not a fog bank: with
+  // the threshold up at 1.6 only genuinely over-range emitters bloom at all,
+  // which is what keeps a chrome hull readable in front of a lit sign.
+  grade:{ exposure: 0.95, bloom: 0.42, threshold: 1.6, knee: 0.5, radius: 0.9,
+          vignette: 0.44, aberration: 0.45, grain: 0.028, scanline: 0.014, saturation: 1.12 }
+};
+
+// A long corridor of neon pylons receding into the fog. This is the single
+// biggest depth cue in the forward-motion missions — with no shadows, a
+// regularly spaced structure streaming past the camera is what tells the eye
+// how fast it is going and how far away things are.
+function drawPylons(w, halfX, scroll, colour, opts){
+  opts = opts || {};
+  const r = w.r;
+  const step = opts.step || 18;
+  const far = opts.far || 190;
+  const y0 = opts.y != null ? opts.y : -6;
+  const h = opts.height || 15;
+  const off = ((scroll % step) + step) % step;
+  for(let z = 10 - off; z > -far; z -= step){
+    const fade = clamp(1 - (10 - z) / far, 0.15, 1);
+    for(const s of [-1, 1]){
+      const x = s * halfX;
+      // Mast.
+      r.draw('cube', {
+        pos: [x, y0 + h * 0.5, z], scale: [0.85, h, 0.85],
+        color: '#0a0c16', metallic: 0.75, roughness: 0.36, rim: 1.1
+      });
+      // Light bar up the inner face — the part that actually lights the scene.
+      r.draw('box', {
+        pos: [x - s * 0.5, y0 + h * 0.55, z], scale: [0.12, h * 0.8, 0.5],
+        color: colour, emissive: colour, emissiveStrength: 2.0 * fade
+      });
+      // Cross-brace out over the play space, and a cap lamp.
+      r.beam([x, y0 + h, z], [x - s * 2.6, y0 + h - 1.1, z], 0.28,
+             { color:'#0c0f1c', metallic: 0.8, roughness: 0.4 });
+      r.glow([x - s * 0.6, y0 + h * 0.9, z], 1.1, colour, 0.55 * fade);
+    }
+  }
+}
+
+// Two lights that follow the player around so the hero object is always lit
+// from somewhere sensible. Cheaper and more controllable than trying to light a
+// moving subject from static sources in a shadowless renderer.
+function keyRig(w, p, colour, o){
+  o = o || {};
+  w.r.light({ pos:[p[0] - 4, p[1] + 4, p[2] + 4], color:'#7d8cff', intensity: o.key || 90, range: 26 });
+  w.r.light({ pos:[p[0] + 3.5, p[1] - 1.5, p[2] + 2], color: colour, intensity: o.fill || 55, range: 20 });
+}
+// Published onto the shared kit so the Network Arena's 3D views (§6) light
+// their heroes the same way the solo missions do. Sections are concatenated in
+// order, so anything below this line can read it.
+K.keyRig = keyRig;
+
+// ══════════════════════════════════════════════
+//  🚀 NEON NEBULA 3D — chase-cam interceptor run
+// ══════════════════════════════════════════════
+// The 2D original is a fixed rectangle with invaders descending. In 3D the
+// rectangle becomes a corridor: the interceptor flies at z=0 and raiders close
+// from 130 units out, so the threat has a real approach and the player reads
+// range by size and fog rather than by height on a board.
+P.games.nebula = function(){
+  const w = begin3d(Object.assign({ ease: 0.22 }, CITY_NIGHT));
+  if(!w) return;
+  const r = w.r;
+
+  setControls({ left:'◀', action: isTouchDevice ? '⚡ FIRE' : 'SHOOT / ABILITY', right:'▶' });
+  setControlHint('HOLD TO FIRE · DRAG TO FLY', '← → ↑ ↓ = FLY · SPACE = FIRE · Q = NOVA');
+  showTouchHint('HOLD ANYWHERE TO FIRE · DRAG TO FLY');
+
+  const diff = getDifficultyModifier();
+  const colour = mine();
+
+  const XL = 11.5, YL = 5.2;                  // the flyable box, in world units
+  const ship = { x: 0, y: -1.2, vx: 0, vy: 0, tx: 0, ty: -1.2, roll: 0, pitch: 0 };
+  let score = 0, time = Math.round(60 * getTimeModifier()), shield = 100, over = false;
+  let orbs = 0, weapon = 1, nova = 0, cool = 0, spawnT = 0, spawnGap = 0.95, scroll = 0;
+  let firing = false, hitFlash = 0, killed = 0, best = 0, chain = 0;
+
+  const bolts = [], foes = [], flak = [], orbsList = [];
+
+  w.buildCity({ seed: 4242, count: 70, spread: 120, hole: 30, y: -26 });
+  w.buildStars(150, 210);
+
+  document.getElementById('g-time').textContent = time;
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#ff0844,#ff4e50)';
+
+  // ── INPUT ──
+  // Board coordinates arrive already mirrored by chaos INVERSE, so steering
+  // needs no knowledge that the modifier exists.
+  const keys = {};
+  window.onkeydown = e => {
+    if(['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS','KeyQ','KeyE'].includes(e.code)) e.preventDefault();
+    keys[e.code] = true;
+    if(e.code === 'KeyQ' || e.code === 'KeyE') fireNova();
+  };
+  window.onkeyup = e => { keys[e.code] = false; };
+
+  let dragging = false, grabX = 0, grabY = 0;
+  bindCanvasDrag({
+    onDown(p){
+      hideTouchHint();
+      firing = true; dragging = true;
+      grabX = ship.tx - nx(p) * XL;
+      grabY = ship.ty - ny(p) * YL;
+    },
+    onMove(p){
+      if(!dragging) return;
+      ship.tx = clamp(nx(p) * XL + grabX, -XL, XL);
+      ship.ty = clamp(ny(p) * YL + grabY, -YL, YL);
+    },
+    onUp(){ firing = false; dragging = false; }
+  });
+
+  bindHold(document.getElementById('ctrl-left'),  () => { dragging = false; keys.padL = true; },  () => keys.padL = false);
+  bindHold(document.getElementById('ctrl-right'), () => { dragging = false; keys.padR = true; },  () => keys.padR = false);
+  document.getElementById('ctrl-action').onclick = () => { if(nova > 0) fireNova(); else shoot(); };
+
+  gTimer = setInterval(() => {
+    if(over) return;
+    time--;
+    document.getElementById('g-time').textContent = time;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end('clock');
+  }, 1000);
+
+  // ── WEAPONS ──
+  function shoot(){
+    if(cool > 0 || over) return;
+    cool = 0.16 - weapon * 0.018;
+    snd('shoot', { semi: weapon * 2 });
+    const spread = weapon === 1 ? [0] : weapon === 2 ? [-0.55, 0.55] : [-0.9, 0, 0.9];
+    for(const dx of spread){
+      bolts.push({ x: ship.x + dx, y: ship.y + 0.1, z: -1.4, vx: dx * 2.4, vz: -96 });
+      w.spark([ship.x + dx, ship.y + 0.1, -1.6], colour, 0.5, 0.12);
+    }
+    w.kick(0.12);
+  }
+
+  function fireNova(){
+    if(nova <= 0 || over) return;
+    nova--;
+    snd('bigExplode');
+    w.kick(1.8);
+    w.pop([ship.x, ship.y + 2.4, -2], '💥 NOVA', '#ff0090', { size: 20 });
+    // Everything in the forward half of the corridor dies at once.
+    for(let i = foes.length - 1; i >= 0; i--){
+      const f = foes[i];
+      if(f.z > -70){ kill(f, i, true); }
+    }
+    flak.length = 0;
+  }
+
+  // ── FOES ──
+  const TYPES = [
+    { key:'grunt', hp: 1, r: 1.15, spd: 20, pts: 40, col:'#ff2442', geo:'raider', sc: 1.5, fire: 0.5 },
+    { key:'dart',  hp: 1, r: 0.95, spd: 33, pts: 65, col:'#ff8a00', geo:'raider', sc: 1.1, fire: 0.2 },
+    { key:'heavy', hp: 3, r: 1.7,  spd: 13, pts: 110,col:'#a855f7', geo:'raider', sc: 2.3, fire: 0.9 }
+  ];
+
+  function spawn(){
+    const roll = Math.random();
+    const t = roll < 0.6 ? TYPES[0] : roll < 0.85 ? TYPES[1] : TYPES[2];
+    foes.push({
+      t, hp: t.hp,
+      x: rnd(-XL, XL), y: rnd(-YL + 1, YL), z: -132,
+      vx: rnd(-2.2, 2.2), vy: rnd(-1.2, 1.2),
+      spd: t.spd * diff, spin: rnd(0, 6.28), fireT: rnd(0.6, 2.4)
+    });
+  }
+
+  function kill(f, i, silent){
+    foes.splice(i, 1);
+    killed++; chain++;
+    best = Math.max(best, chain);
+    const bonus = Math.min(chain, 8) * 5;
+    score += f.t.pts + bonus;
+    setLive(score);
+    w.burst([f.x, f.y, f.z], f.t.col, 26, { speed: 11, life: 0.7, size: 0.42 });
+    w.burst([f.x, f.y, f.z], '#ffffff', 8, { speed: 17, life: 0.3, size: 0.26 });
+    if(!silent){
+      w.pop([f.x, f.y + 1.2, f.z], '+' + (f.t.pts + bonus), f.t.col);
+      snd('explode');
+    }
+    // Every fifth kill drops a plasma orb — the weapon ladder from the 2D game.
+    if(killed % 5 === 0) orbsList.push({ x: f.x, y: f.y, z: f.z, spin: 0 });
+  }
+
+  function takeHit(dmg, at){
+    shield -= dmg;
+    chain = 0;
+    hitFlash = 0.35;
+    w.kick(1.1);
+    bar.style.width = Math.max(0, shield) + '%';
+    snd(shield <= 0 ? 'bigExplode' : 'hurt');
+    w.burst(at, '#ff2442', 16, { speed: 8, life: 0.5 });
+    if(shield <= 0) end('destroyed');
+  }
+
+  // ── FRAME ──
+  runLoop(dt => {
+    if(over) return false;
+    scroll += 42 * dt * diff;
+    cool -= dt;
+    hitFlash = Math.max(0, hitFlash - dt);
+
+    // Steering: pad and keys nudge the target, the drag sets it outright, and
+    // the hull eases toward it so the ship has mass.
+    const kx = (keys.ArrowRight || keys.KeyD || keys.padR ? 1 : 0) - (keys.ArrowLeft || keys.KeyA || keys.padL ? 1 : 0);
+    const ky = (keys.ArrowUp || keys.KeyW ? 1 : 0) - (keys.ArrowDown || keys.KeyS ? 1 : 0);
+    if(kx || ky){
+      dragging = false;
+      ship.tx = clamp(ship.tx + kx * 21 * dt, -XL, XL);
+      ship.ty = clamp(ship.ty + ky * 15 * dt, -YL, YL);
+    }
+    const px = ship.x, py = ship.y;
+    ship.x += (ship.tx - ship.x) * (1 - Math.pow(0.0006, dt));
+    ship.y += (ship.ty - ship.y) * (1 - Math.pow(0.0009, dt));
+    ship.vx = (ship.x - px) / Math.max(dt, 1e-4);
+    ship.vy = (ship.y - py) / Math.max(dt, 1e-4);
+    ship.roll += (clamp(-ship.vx * 0.045, -0.75, 0.75) - ship.roll) * 0.18;
+    ship.pitch += (clamp(ship.vy * 0.02, -0.3, 0.3) - ship.pitch) * 0.18;
+
+    if(firing || keys.Space) shoot();
+
+    // Spawning tightens over the run and with the tier.
+    spawnT -= dt;
+    if(spawnT <= 0){
+      spawn();
+      spawnGap = Math.max(0.28, spawnGap * 0.985);
+      spawnT = spawnGap / diff;
+    }
+
+    // Bolts.
+    for(let i = bolts.length - 1; i >= 0; i--){
+      const b = bolts[i];
+      b.z += b.vz * dt; b.x += b.vx * dt;
+      if(b.z < -140){ bolts.splice(i, 1); continue; }
+      let hit = false;
+      for(let j = foes.length - 1; j >= 0; j--){
+        const f = foes[j];
+        const dx = f.x - b.x, dy = f.y - b.y, dz = f.z - b.z;
+        if(dx*dx + dy*dy + dz*dz < (f.t.r + 0.6) * (f.t.r + 0.6) * 4){
+          hit = true;
+          f.hp--;
+          w.burst([b.x, b.y, b.z], '#ffffff', 5, { speed: 6, life: 0.22, size: 0.22 });
+          if(f.hp <= 0) kill(f, j);
+          else snd('hit', { semi: 4 });
+          break;
+        }
+      }
+      if(hit) bolts.splice(i, 1);
+    }
+
+    // Foes.
+    for(let i = foes.length - 1; i >= 0; i--){
+      const f = foes[i];
+      f.z += f.spd * dt;
+      f.x = clamp(f.x + f.vx * dt, -XL - 1, XL + 1);
+      f.y = clamp(f.y + f.vy * dt, -YL, YL + 1);
+      f.spin += dt * 1.6;
+      if(Math.abs(f.x) >= XL) f.vx *= -1;
+      // Fire at the player once inside effective range.
+      f.fireT -= dt;
+      if(f.fireT <= 0 && f.z > -85 && f.z < -6){
+        f.fireT = rnd(1.2, 3.0) / diff;
+        const dx = ship.x - f.x, dy = ship.y - f.y, dz = -2 - f.z;
+        const l = Math.hypot(dx, dy, dz) || 1;
+        const v = 46 * diff;
+        flak.push({ x: f.x, y: f.y, z: f.z, vx: dx/l*v, vy: dy/l*v, vz: dz/l*v, col: f.t.col });
+        snd('enemyShot', { semi: -4 });
+      }
+      // Collision with the hull, then the fly-past.
+      const dx = f.x - ship.x, dy = f.y - ship.y, dz = f.z + 1;
+      if(dx*dx + dy*dy + dz*dz < (f.t.r + 1.0) * (f.t.r + 1.0)){
+        foes.splice(i, 1);
+        takeHit(18, [f.x, f.y, f.z]);
+        continue;
+      }
+      if(f.z > 16){ foes.splice(i, 1); chain = 0; }
+    }
+
+    // Enemy fire.
+    for(let i = flak.length - 1; i >= 0; i--){
+      const b = flak[i];
+      b.x += b.vx * dt; b.y += b.vy * dt; b.z += b.vz * dt;
+      if(b.z > 14 || Math.abs(b.x) > 24 || Math.abs(b.y) > 16){ flak.splice(i, 1); continue; }
+      const dx = b.x - ship.x, dy = b.y - ship.y, dz = b.z + 1;
+      if(dx*dx + dy*dy + dz*dz < 1.5){
+        flak.splice(i, 1);
+        takeHit(9, [b.x, b.y, b.z]);
+      }
+    }
+
+    // Plasma orbs — three tiers of weapon, then Nova charges.
+    for(let i = orbsList.length - 1; i >= 0; i--){
+      const o = orbsList[i];
+      o.z += 22 * dt; o.spin += dt * 2.4;
+      if(o.z > 14){ orbsList.splice(i, 1); continue; }
+      const dx = o.x - ship.x, dy = o.y - ship.y, dz = o.z + 1;
+      if(dx*dx + dy*dy + dz*dz < 6){
+        orbsList.splice(i, 1);
+        orbs++;
+        if(orbs <= 2){ weapon = Math.min(3, weapon + 1); w.pop([ship.x, ship.y + 2, -2], '⚡ WEAPON ' + weapon, '#ffd700', { size: 18 }); }
+        else { nova++; w.pop([ship.x, ship.y + 2, -2], '💥 NOVA READY', '#ff0090', { size: 18 }); }
+        snd('powerup');
+        score += 25; setLive(score);
+        w.burst([o.x, o.y, o.z], '#ffd700', 18, { speed: 7, life: 0.6 });
+      }
+    }
+
+    // ── CAMERA ──
+    // Behind, above, and pulled back as the ship banks — a wider lens on a hard
+    // turn is what makes the corridor feel like it is rushing past.
+    const lead = Math.abs(ship.vx) * 0.012;
+    w.goal.eye[0]    = ship.x * 0.55;
+    w.goal.eye[1]    = ship.y * 0.4 + 3.1;
+    w.goal.eye[2]    = 10.4;
+    w.goal.target[0] = ship.x * 0.85;
+    w.goal.target[1] = ship.y * 0.85 + 0.4;
+    w.goal.target[2] = -22;
+    w.goal.fov = 58 + clamp(lead, 0, 5);
+    w.step(dt);
+
+    // ── DRAW ──
+    w.begin();
+    w.drawStars();
+    w.drawCity(scroll * 0.25);
+    drawPylons(w, 15.5, scroll, '#00f5ff', { y: -7, height: 16 });
+    w.drawGrid({ y: -7.2, halfX: 15.5, halfZ: 150, step: 8, color:'#12345a',
+                 emissive: 0.8, scroll, floorColor:'#04050c', floorRough: 0.22 });
+
+    keyRig(w, [ship.x, ship.y, 0], colour, { key: 190, fill: 110 });
+    r.light({ pos:[ship.x, ship.y, 2.6], color: hitFlash > 0 ? '#ff2442' : colour,
+              intensity: hitFlash > 0 ? 320 : 130, range: 22 });
+
+    // The interceptor. Chrome hull, emissive trim in the player's colour.
+    r.draw('ship', {
+      pos: [ship.x, ship.y, 0], rot: [ship.pitch, 0, ship.roll], scale: 1.95,
+      color: hitFlash > 0 ? '#ff6a6a' : '#8f9bb5', metallic: 0.95, roughness: 0.24, rim: 1.3
+    });
+    // Engine bells + trail.
+    for(const s of [-1, 1]){
+      const ex = ship.x + s * 0.81, ey = ship.y + 0.02, ez = 0.95;
+      // A small, hot exhaust point plus a short cone of sparks. Sized to the
+      // engine bell rather than to the ship, so the hull stays the subject.
+      r.glow([ex, ey, ez], 0.46 + Math.sin(w.t * 30 + s) * 0.05, colour, 1.9);
+      if(Math.random() < 0.6) w.spark([ex, ey, ez + 0.4], colour, 0.22, 0.20, [0, 0, rnd(16, 26)]);
+    }
+    // Weapon-level ring: a flat halo under the hull, so it reads as a status
+    // indicator on the deck rather than as a bubble around the ship.
+    r.draw('thintorus', {
+      pos: [ship.x, ship.y - 0.55, 0.2], rot: [0, w.t * 1.6, 0], scale: [2.2 + weapon * 0.28, 1, 2.2 + weapon * 0.28],
+      color: colour, emissive: colour, emissiveStrength: 1.1, alpha: 0.42
+    });
+
+    // Bolts as stretched emissive capsules — length is the read on speed.
+    for(const b of bolts){
+      r.draw('pill', { pos: [b.x, b.y, b.z], scale: [0.16, 0.16, 2.2],
+                       color: colour, emissive: colour, emissiveStrength: 3.2 });
+      r.glow([b.x, b.y, b.z], 0.75, colour, 1.1);
+    }
+
+    // ── Raiders ──
+    // With no shadows and no light following THEM, a dark hull 60 units out is
+    // simply not there. So a raider carries its own light: a lit hull tint, a
+    // hot sensor eye, and — for the nearest few only — a real point light. The
+    // renderer has ten light slots and the player's rig owns three, so the list
+    // is sorted by proximity and only the closest handful get one.
+    const nearFoes = foes.slice().sort((a, b) => b.z - a.z);
+    for(let fi = 0; fi < foes.length; fi++){
+      const f = foes[fi];
+      r.draw(f.t.geo, {
+        pos: [f.x, f.y, f.z], rot: [0, Math.sin(f.spin) * 0.25, f.spin * 0.7], scale: f.t.sc,
+        color: '#2f3646', metallic: 0.88, roughness: 0.30, rim: 1.8,
+        emissive: f.t.col, emissiveStrength: 0.55
+      });
+      // Sensor eye — the read on "which way is it facing" and the brightest
+      // thing on the model, so it is what the eye tracks at range.
+      r.draw('sphere', { pos: [f.x, f.y + 0.02, f.z + f.t.sc * 0.34], scale: f.t.sc * 0.34,
+                         color: f.t.col, emissive: f.t.col, emissiveStrength: 4.2 });
+      // Wing tip lamps, which is what makes the silhouette legible head-on.
+      for(const sgn of [-1, 1]){
+        r.draw('box', { pos: [f.x + sgn * f.t.sc * 0.6, f.y, f.z + f.t.sc * 0.2],
+                        scale: [f.t.sc * 0.14, f.t.sc * 0.07, f.t.sc * 0.30],
+                        color: f.t.col, emissive: f.t.col, emissiveStrength: 3.0 });
+      }
+      r.glow([f.x, f.y, f.z + f.t.sc * 0.4], f.t.sc * 0.7, f.t.col, 1.1);
+    }
+    for(let fi = 0; fi < Math.min(4, nearFoes.length); fi++){
+      const f = nearFoes[fi];
+      if(f.z < -95) break;
+      r.light({ pos:[f.x, f.y, f.z + 2], color: f.t.col, intensity: 70, range: 26 });
+    }
+
+    for(const b of flak){
+      r.draw('sphere', { pos: [b.x, b.y, b.z], scale: 0.6, color: b.col, emissive: b.col, emissiveStrength: 6 });
+      r.glow([b.x, b.y, b.z], 1.0, b.col, 1.3);
+    }
+
+    for(const o of orbsList){
+      r.draw('sphere', { pos: [o.x, o.y, o.z], scale: 1.0, color:'#ffd700', emissive:'#ffd700', emissiveStrength: 2.4 });
+      r.draw('torus', { pos: [o.x, o.y, o.z], rot: [o.spin, o.spin * 1.4, 0], scale: 2.6,
+                        color:'#fff3b0', emissive:'#ffd700', emissiveStrength: 3 });
+      r.glow([o.x, o.y, o.z], 1.7, '#ffd700', 1.0);
+      r.light({ pos:[o.x, o.y, o.z], color:'#ffd700', intensity: 30, range: 12 });
+    }
+
+    w.end();
+  });
+
+  function end(reason){
+    if(over) return;
+    over = true;
+    clearCanvasDrag();
+    const pts = Math.min(1000, score);
+    showResults('nebula', pts, {
+      '📡 Run Terminated': reason === 'clock' ? 'MISSION CLOCK EXPIRED' : 'HULL DESTROYED',
+      '💥 Raiders Downed': killed,
+      '🔥 Best Chain': best + '×',
+      '⚡ Weapon Level': weapon + (nova ? ` (+${nova} NOVA)` : ''),
+      '🛡️ Shield Remaining': Math.max(0, Math.round(shield)) + '%',
+      '🏆 Score Accumulation': `${pts} PTS`
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  💥 DODGE CORES 3D — thread a live minefield
+// ══════════════════════════════════════════════
+// The 2D game drops circles down a rectangle. Here the rectangle becomes a lit
+// deck and the circles become tumbling cores rushing at the camera down it, so
+// "how close is that" is answered by size and fog rather than by pixels of gap.
+// Steering keeps the 2D scheme exactly: cursor-follow on a mouse, relative drag
+// on a finger, which is why the two feel identical to play.
+P.games.dodge = function(){
+  const w = begin3d(Object.assign({ ease: 0.3 }, CITY_NIGHT, {
+    fog: { color:'#08031a', density: 0.010 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  setControls(null);
+  setControlHint('DRAG ANYWHERE TO STEER YOUR CORE', 'MOVE THE MOUSE TO STEER YOUR CORE');
+  showTouchHint('DRAG ANYWHERE TO STEER');
+
+  const diff = getDifficultyModifier();
+  const colour = mine();
+  const XL = 12, ZN = 7, ZF = -11;             // the deck the player may occupy
+
+  let score = 0, time = 30, over = false, ended = false, scroll = 0, spawnT = 0, frame = 0;
+  const me = { x: 0, z: -1, r: 0.85, bob: 0 };
+  const cores = [];
+
+  Ghost.begin('dodge');
+  if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
+
+  w.buildCity({ seed: 8181, count: 60, spread: 110, hole: 26, y: -18 });
+  w.buildStars(120, 180);
+  document.getElementById('g-time').textContent = time;
+
+  // Board coords → deck coords. The 2D game's Y axis becomes the deck's Z, so a
+  // drag "down the screen" still moves the core toward the camera.
+  const place = (bx, bz) => {
+    me.x = clamp(bx, -XL + me.r, XL - me.r);
+    me.z = clamp(bz, ZF, ZN);
+  };
+  const toDeck = p => [nx(p) * XL, ZF + (1 - (ny(p) + 1) / 2) * (ZN - ZF)];
+
+  let lastP = null;
+  bindCanvasDrag({
+    onHover(p){ if(!p.touch){ const d = toDeck(p); place(d[0], d[1]); } },
+    onDown(p){
+      hideTouchHint();
+      lastP = p;
+      if(!p.touch){ const d = toDeck(p); place(d[0], d[1]); }
+    },
+    onMove(p){
+      if(p.touch && lastP){
+        const a = toDeck(p), b = toDeck(lastP);
+        place(me.x + (a[0] - b[0]), me.z + (a[1] - b[1]));
+      }else{
+        const d = toDeck(p); place(d[0], d[1]);
+      }
+      lastP = p;
+    },
+    onUp(){ lastP = null; }
+  });
+
+  gTimer = setInterval(() => {
+    if(over) return;
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${time / 30 * 100}%`;
+    score += 25;
+    setLive(score);
+    snd(time <= 5 && time > 0 ? 'tick' : 'score', { semi: -7 });
+    if(time <= 0) end();
+  }, 1000);
+
+  runLoop(dt => {
+    if(over) return false;
+    frame++;
+    scroll += 26 * dt * diff;
+    me.bob += dt * 3;
+    // Ghost records in BOARD space, so a 3D ghost and a 2D ghost of the same
+    // mission are comparable and the stored best carries across modes.
+    Ghost.sample((me.x / XL * 0.5 + 0.5) * BOARD_W, (1 - (me.z - ZF) / (ZN - ZF)) * BOARD_H);
+
+    spawnT -= dt;
+    if(spawnT <= 0){
+      spawnT = rnd(0.10, 0.20) / diff;
+      const col = NEON[(Math.random() * NEON.length) | 0];
+      cores.push({
+        x: rnd(-XL, XL), y: rnd(0.5, 2.4), z: -78,
+        vx: rnd(-3.2, 3.2), vz: rnd(26, 40) * diff,
+        r: rnd(0.7, 1.5), col,
+        sx: rnd(0, 6.3), sy: rnd(0, 6.3), spin: rnd(1.4, 3.6),
+        geo: Math.random() < 0.5 ? 'rock' : 'rock2'
+      });
+    }
+
+    for(let i = cores.length - 1; i >= 0; i--){
+      const c = cores[i];
+      c.z += c.vz * dt; c.x += c.vx * dt;
+      c.sx += c.spin * dt; c.sy += c.spin * 0.7 * dt;
+      if(Math.abs(c.x) > XL) c.vx *= -1;
+      if(c.z > 12){ cores.splice(i, 1); continue; }
+      const dx = c.x - me.x, dz = c.z - me.z, dy = c.y - 1.0;
+      if(dx*dx + dz*dz + dy*dy < (c.r + me.r) * (c.r + me.r)){
+        over = true;
+        snd('bigExplode');
+        w.kick(3.2);
+        w.burst([me.x, 1, me.z], colour, 48, { speed: 15, life: 1.0, size: 0.5 });
+        w.burst([me.x, 1, me.z], '#ffffff', 16, { speed: 22, life: 0.4 });
+        end();
+        return false;
+      }
+    }
+
+    // Camera sits behind and above the deck, drifting with the player so the
+    // whole field stays legible while still reading as a place you are inside.
+    w.goal.eye[0] = me.x * 0.35;
+    w.goal.eye[1] = 9.5;
+    w.goal.eye[2] = 17;
+    w.goal.target[0] = me.x * 0.55;
+    w.goal.target[1] = 1.2;
+    w.goal.target[2] = -14;
+    w.goal.fov = 56;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+    w.drawCity(scroll * 0.3);
+    w.drawGrid({ y: 0, halfX: XL, halfZ: 90, step: 3, color:'#1b3f6b', emissive: 1.1,
+                 scroll, floorColor:'#05070f', floorRough: 0.18 });
+    // Deck rails: two emissive kerbs that make the playable width unambiguous
+    // without a HUD line.
+    for(const s of [-1, 1]){
+      r.beam([s * XL, 0.16, -90], [s * XL, 0.16, 14], 0.3,
+             { color: colour, emissive: colour, emissiveStrength: 1.9, height: 0.3 });
+    }
+
+    keyRig(w, [me.x, 1.6, me.z], colour, { key: 80, fill: 60 });
+    r.light({ pos:[me.x, 2.4, me.z], color: colour, intensity: 150, range: 20 });
+
+    // The player's core: chrome sphere in a spinning gyro cage. The cage is what
+    // gives it readable orientation and scale in a shadowless scene.
+    const bob = Math.sin(me.bob) * 0.09;
+    r.draw('sphere', { pos:[me.x, 1.0 + bob, me.z], scale: me.r * 1.7,
+                       color:'#c9d4e8', metallic: 1.0, roughness: 0.12, rim: 1.6 });
+    r.draw('sphere', { pos:[me.x, 1.0 + bob, me.z], scale: me.r * 0.9,
+                       color: colour, emissive: colour, emissiveStrength: 2.2 });
+    r.draw('thintorus', { pos:[me.x, 1.0 + bob, me.z], rot:[0, w.t * 2.1, 0], scale: me.r * 3.4,
+                          color: colour, emissive: colour, emissiveStrength: 2.4 });
+    r.draw('thintorus', { pos:[me.x, 1.0 + bob, me.z], rot:[Math.PI/2, 0, w.t * 1.5], scale: me.r * 3.1,
+                          color:'#ffffff', emissive: colour, emissiveStrength: 1.6 });
+    r.glow([me.x, 1.0 + bob, me.z], me.r * 1.5, colour, 0.9);
+
+    // Ghost of the personal best, drawn as a hollow marker so it can never be
+    // mistaken for a hazard.
+    const g = Ghost.at(frame);
+    if(g){
+      const gx = (g[0] / BOARD_W - 0.5) * 2 * XL;
+      const gz = ZF + (1 - g[1] / BOARD_H) * (ZN - ZF);
+      r.draw('thintorus', { pos:[gx, 1.0, gz], rot:[Math.PI/2, 0, w.t], scale: me.r * 3.2,
+                            color: colour, emissive: colour, emissiveStrength: 1.4, alpha: 0.35 });
+    }
+
+    for(const c of cores){
+      r.draw(c.geo, {
+        pos:[c.x, c.y + 1.0, c.z], rot:[c.sx, c.sy, c.sx * 0.5], scale: c.r * 2.2,
+        color:'#0e1018', metallic: 0.35, roughness: 0.62, rim: 1.4,
+        emissive: c.col, emissiveStrength: 0.18
+      });
+      r.draw('sphere', { pos:[c.x, c.y + 1.0, c.z], scale: c.r * 1.15,
+                         color: c.col, emissive: c.col, emissiveStrength: 2.0 });
+      r.glow([c.x, c.y + 1.0, c.z], c.r * 1.6, c.col, 0.85);
+      if(c.z > -34) r.light({ pos:[c.x, c.y + 1.0, c.z], color: c.col, intensity: 26, range: 13 });
+    }
+
+    w.end();
+  });
+
+  function end(){
+    if(ended) return;
+    ended = true; over = true;
+    clearCanvasDrag();
+    const earned = Math.min(800, score);
+    const wasRacing = Ghost.racing, target = Ghost.target;
+    const beat = Ghost.finish(earned);
+    showResults('dodge', earned, {
+      '⏱️ Operational Lifespan': score / 25 + 's',
+      ...(wasRacing ? { '👻 Ghost To Beat': `${target} PTS` } : {}),
+      ...(wasRacing && beat ? { '👻 Result': 'GHOST BEATEN' } : {}),
+      '🏆 Score Accumulation': `${earned} PTS`
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🧱 CYBERPUNK TETRIS 3D — a well with real depth
+// ══════════════════════════════════════════════
+// The 2D board is a grid of coloured rectangles. Here it is an actual shaft:
+// bevelled blocks with thickness, stacked in a lit well, seen through a lens
+// that sits slightly above and drifts. Because the blocks are solid, the stack
+// reads as a wall you are building rather than as a pattern — and the landing
+// preview (the translucent piece on the floor of the stack) does the job that
+// a cast shadow would do in a shadowed renderer.
+P.games.tetris = function(){
+  const w = begin3d(Object.assign({ ease: 0.12 }, CITY_NIGHT, {
+    env: { zenith:'#04061a', horizon:'#3a1050', ground:'#05060f', intensity: 1.15 },
+    fog: { color:'#0b0620', density: 0.0075 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  setControls({ left:'◀', action:'⟳', drop:'⬇⬇ DROP', right:'▶', accentDrop:true });
+  setControlHint('DRAG = SLIDE · TAP = ROTATE · ⬇⬇ = SLAM IT DOWN',
+                 '← → = MOVE · ↑ = ROTATE · ↓ = SOFT DROP · SPACE = HARD DROP');
+  showTouchHint('DRAG TO SLIDE · TAP TO ROTATE · ⬇⬇ TO SLAM');
+  document.getElementById('tetris-lvl-pill').style.display = 'block';
+
+  const diff = getDifficultyModifier();
+  const COLS = Math.floor(BOARD_W / 40), ROWS = 20;   // same well the 2D build uses
+  const startTime = 60 / diff;
+  let score = 0, level = 1, lines = 0, time = startTime, over = false;
+  let dropAcc = 0, dropInterval = 0.6 * diff, sway = 0;
+
+  // Tetromino colours, chosen so no two adjacent-in-bag pieces read the same
+  // under bloom — the 2D palette washes out once everything is emissive.
+  const PIECES = {
+    T: { m:[[0,1,0],[1,1,1],[0,0,0]],           c:'#a855f7' },
+    O: { m:[[1,1],[1,1]],                        c:'#ffd700' },
+    L: { m:[[0,0,1],[1,1,1],[0,0,0]],           c:'#ff6600' },
+    J: { m:[[1,0,0],[1,1,1],[0,0,0]],           c:'#2b7bff' },
+    I: { m:[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]], c:'#00f5ff' },
+    S: { m:[[0,1,1],[1,1,0],[0,0,0]],           c:'#39ff88' },
+    Z: { m:[[1,1,0],[0,1,1],[0,0,0]],           c:'#ff2442' }
+  };
+  const BAG = Object.keys(PIECES);
+
+  const grid = [];
+  for(let y = 0; y < ROWS; y++) grid.push(new Array(COLS).fill(null));
+
+  let piece = null, next = null;
+
+  const cellX = cx => cx - COLS / 2 + 0.5;
+  const cellY = cy => ROWS - cy - 0.5;
+
+  function spawn(){
+    piece = next || make();
+    next = make();
+    piece.x = ((COLS / 2) | 0) - ((piece.m[0].length / 2) | 0);
+    piece.y = 0;
+    if(hits(piece.m, piece.x, piece.y)) end();
+  }
+  function make(){
+    const k = BAG[(Math.random() * BAG.length) | 0];
+    return { m: PIECES[k].m.map(row => row.slice()), c: PIECES[k].c, k, x: 0, y: 0 };
+  }
+
+  function hits(m, px, py){
+    for(let y = 0; y < m.length; y++){
+      for(let x = 0; x < m[y].length; x++){
+        if(!m[y][x]) continue;
+        const gx = px + x, gy = py + y;
+        if(gx < 0 || gx >= COLS || gy >= ROWS) return true;
+        if(gy >= 0 && grid[gy][gx]) return true;
+      }
+    }
+    return false;
+  }
+
+  function lock(){
+    for(let y = 0; y < piece.m.length; y++){
+      for(let x = 0; x < piece.m[y].length; x++){
+        if(!piece.m[y][x]) continue;
+        const gy = piece.y + y, gx = piece.x + x;
+        if(gy >= 0) grid[gy][gx] = { c: piece.c, born: w.t };
+      }
+    }
+    snd('land');
+    w.kick(0.35);
+    sweep();
+    spawn();
+  }
+
+  function sweep(){
+    let rowCount = 1, swept = 0;
+    for(let y = ROWS - 1; y >= 0; y--){
+      if(grid[y].some(c => !c)) continue;
+      // Line clear: a burst along the whole row, at the row's own height, which
+      // is what makes a four-line clear feel like it happened somewhere.
+      for(let x = 0; x < COLS; x++){
+        w.burst([cellX(x), cellY(y), 0], grid[y][x].c, 6, { speed: 9, life: 0.65, size: 0.3 });
+      }
+      grid.splice(y, 1);
+      grid.unshift(new Array(COLS).fill(null));
+      y++;
+      score += rowCount * 10; lines++; rowCount *= 2; swept++;
+      if(lines % 10 === 0 && level < 50){
+        level++;
+        dropInterval = Math.max(0.08, dropInterval * 0.88);
+        w.pop([0, ROWS * 0.55, 0], 'LEVEL ' + level, '#ffd700', { size: 22, life: 1.4 });
+        snd('levelUp');
+      }
+    }
+    if(swept){
+      setLive(Math.min(1500, score));
+      document.getElementById('tetris-lvl').textContent = level;
+      w.kick(0.6 + swept * 0.5);
+      snd('lineClear', { semi: swept * 2 });
+      if(swept >= 4) w.pop([0, ROWS * 0.45, 0], '⚡ QUAD CLEAR', '#00f5ff', { size: 24, life: 1.6 });
+    }
+  }
+
+  function move(d){
+    piece.x += d;
+    if(hits(piece.m, piece.x, piece.y)) piece.x -= d;
+    else snd('move', { vol: 0.35 });
+  }
+
+  function rotate(){
+    const m = piece.m;
+    const n = m.length;
+    const out = [];
+    for(let y = 0; y < n; y++){ out.push([]); for(let x = 0; x < n; x++) out[y].push(m[n - 1 - x][y]); }
+    // Wall kicks: try in place, then one and two cells either side, so a piece
+    // against the wall still turns instead of silently refusing.
+    for(const k of [0, 1, -1, 2, -2]){
+      if(!hits(out, piece.x + k, piece.y)){
+        piece.m = out; piece.x += k;
+        snd('rotate');
+        return;
+      }
+    }
+  }
+
+  function step(){
+    piece.y++;
+    if(hits(piece.m, piece.x, piece.y)){ piece.y--; lock(); }
+    dropAcc = 0;
+  }
+
+  function slam(){
+    let d = 0;
+    while(!hits(piece.m, piece.x, piece.y + 1)){ piece.y++; d++; }
+    score += d;
+    setLive(Math.min(1500, score));
+    snd('hardDrop');
+    w.kick(1.0);
+    lock();
+  }
+
+  // Where the piece would come to rest — the depth cue that replaces a shadow.
+  function landing(){
+    let y = piece.y;
+    while(!hits(piece.m, piece.x, y + 1)) y++;
+    return y;
+  }
+
+  window.onkeydown = e => {
+    if(over) return;
+    if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'].includes(e.code)) e.preventDefault();
+    if(e.code === 'ArrowLeft')  move(-1);
+    if(e.code === 'ArrowRight') move(1);
+    if(e.code === 'ArrowUp')    rotate();
+    if(e.code === 'ArrowDown')  step();
+    if(e.code === 'Space')      slam();
+  };
+
+  bindHold(document.getElementById('ctrl-left'),  () => move(-1));
+  bindHold(document.getElementById('ctrl-right'), () => move(1));
+  document.getElementById('ctrl-action').onclick = () => { if(!over) rotate(); };
+  document.getElementById('ctrl-drop').onclick   = () => { if(!over) slam(); };
+
+  // Drag slides by whole columns; a tap that never travelled far enough to be
+  // a slide rotates instead. Same gesture contract as the 2D build.
+  let dragCol = 0, dragged = 0, downX = 0;
+  bindCanvasDrag({
+    onDown(p){ hideTouchHint(); downX = nx(p); dragCol = piece ? piece.x : 0; dragged = 0; },
+    onMove(p){
+      if(over || !piece) return;
+      const cells = Math.round((nx(p) - downX) * (COLS * 0.62));
+      const want = dragCol + cells;
+      while(piece.x < want && !hits(piece.m, piece.x + 1, piece.y)){ piece.x++; dragged++; }
+      while(piece.x > want && !hits(piece.m, piece.x - 1, piece.y)){ piece.x--; dragged++; }
+    },
+    onUp(){ if(!over && piece && dragged === 0) rotate(); }
+  });
+
+  document.getElementById('g-time').textContent = Math.ceil(time);
+  document.getElementById('tetris-lvl').textContent = '1';
+  gTimer = setInterval(() => {
+    if(over) return;
+    time--;
+    document.getElementById('g-time').textContent = Math.max(0, Math.ceil(time));
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time / startTime * 100)}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end();
+  }, 1000);
+
+  spawn();
+
+  // A block, drawn the same way everywhere: a bevelled metal core with an
+  // emissive cage around it. The bevel is what catches the well lights, and in
+  // a shadowless render that highlight is the only thing separating two
+  // touching blocks of the same colour.
+  function block(x, y, colour, o){
+    o = o || {};
+    const a = o.alpha != null ? o.alpha : 1;
+    r.draw('cube', {
+      pos: [x, y, 0], scale: 0.94 * (o.scale || 1),
+      color: colour, metallic: 0.7, roughness: 0.28, rim: 1.1,
+      emissive: colour, emissiveStrength: o.emissive != null ? o.emissive : 0.35,
+      alpha: a
+    });
+    r.draw('box', {
+      pos: [x, y, 0.46], scale: [0.72 * (o.scale || 1), 0.72 * (o.scale || 1), 0.06],
+      color: colour, emissive: colour, emissiveStrength: (o.face != null ? o.face : 1.8),
+      alpha: a
+    });
+  }
+
+  runLoop(dt => {
+    if(over) return false;
+    dropAcc += dt;
+    if(dropAcc > dropInterval) step();
+    sway += dt;
+
+    // A slow lateral drift on the camera. Tiny, but it is what turns a flat
+    // orthographic-looking wall into something the player believes has depth.
+    // Framed so the full 20-row shaft plus the floor plinth and the next-piece
+    // pad all fit at the board's 1.12 aspect, with the drift kept small enough
+    // that nothing ever leaves the frame.
+    w.goal.eye[0] = Math.sin(sway * 0.28) * 2.0;
+    w.goal.eye[1] = ROWS * 0.54 + Math.sin(sway * 0.21) * 0.5;
+    w.goal.eye[2] = 31;
+    w.goal.target[0] = Math.sin(sway * 0.28) * 0.5;
+    w.goal.target[1] = ROWS * 0.50;
+    w.goal.target[2] = 0;
+    w.goal.fov = 44;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+
+    // ── THE WELL ──
+    // Back plate, two girder walls, a floor slab, and a lattice of thin cyan
+    // lines on the back plate to give the empty space a scale.
+    r.draw('box', { pos:[0, ROWS / 2, -1.4], scale:[COLS + 1.2, ROWS + 1.2, 0.6],
+                    color:'#080a14', metallic: 0.6, roughness: 0.55, rim: 0.5 });
+    for(let x = 0; x <= COLS; x++){
+      r.beam([cellX(x) - 0.5, 0, -1.05], [cellX(x) - 0.5, ROWS, -1.05], 0.035,
+             { color:'#0d3a5c', emissive:'#0e4a72', emissiveStrength: 0.9, height: 0.035 });
+    }
+    for(let y = 0; y <= ROWS; y += 2){
+      r.beam([-COLS / 2, y, -1.05], [COLS / 2, y, -1.05], 0.035,
+             { color:'#0d3a5c', emissive:'#0e4a72', emissiveStrength: 0.9, height: 0.035 });
+    }
+    for(const s of [-1, 1]){
+      r.draw('cube', { pos:[s * (COLS / 2 + 0.55), ROWS / 2, 0], scale:[1.0, ROWS + 1.0, 2.2],
+                       color:'#12151f', metallic: 0.85, roughness: 0.3, rim: 1.4 });
+      r.draw('box', { pos:[s * (COLS / 2 + 0.06), ROWS / 2, 1.05], scale:[0.09, ROWS, 0.09],
+                      color:'#00f5ff', emissive:'#00f5ff', emissiveStrength: 2.4 });
+    }
+    r.draw('cube', { pos:[0, -0.7, 0], scale:[COLS + 2.2, 0.9, 2.4],
+                     color:'#12151f', metallic: 0.85, roughness: 0.3, rim: 1.2 });
+    r.draw('box', { pos:[0, -0.22, 1.05], scale:[COLS, 0.09, 0.09],
+                    color:'#ff0090', emissive:'#ff0090', emissiveStrength: 2.6 });
+
+    // Well lighting: four fixed lamps in the corners of the shaft plus one that
+    // rides the live piece, so the falling tetromino always lights its landing.
+    r.light({ pos:[-COLS * 0.95, ROWS * 0.88, 11], color:'#00f5ff', intensity: 260, range: 46 });
+    r.light({ pos:[ COLS * 0.95, ROWS * 0.88, 11], color:'#ff0090', intensity: 240, range: 46 });
+    r.light({ pos:[-COLS * 0.95, ROWS * 0.14, 11], color:'#7a5cff', intensity: 160, range: 38 });
+    r.light({ pos:[ COLS * 0.95, ROWS * 0.14, 11], color:'#ffb35c', intensity: 140, range: 38 });
+
+    // ── STACK ──
+    for(let y = 0; y < ROWS; y++){
+      for(let x = 0; x < COLS; x++){
+        const c = grid[y][x];
+        if(!c) continue;
+        // Freshly locked blocks flare for a beat, so you can see what you did.
+        const age = w.t - c.born;
+        const flare = age < 0.28 ? (1 - age / 0.28) : 0;
+        block(cellX(x), cellY(y), c.c, { emissive: 0.35 + flare * 2.4, face: 1.8 + flare * 4 });
+      }
+    }
+
+    // ── LIVE PIECE + LANDING PREVIEW ──
+    if(piece){
+      const ly = landing();
+      for(let y = 0; y < piece.m.length; y++){
+        for(let x = 0; x < piece.m[y].length; x++){
+          if(!piece.m[y][x]) continue;
+          const gx = piece.x + x;
+          if(ly + y < ROWS && ly !== piece.y){
+            // Hollow preview: alpha low, emission high, no metal — it can never
+            // be mistaken for a real block.
+            r.draw('box', { pos:[cellX(gx), cellY(ly + y), 0], scale: 0.86,
+                            color: piece.c, emissive: piece.c, emissiveStrength: 0.9, alpha: 0.16 });
+          }
+          if(piece.y + y >= 0) block(cellX(gx), cellY(piece.y + y), piece.c, { emissive: 0.85, face: 2.6 });
+        }
+      }
+      const px = cellX(piece.x + piece.m[0].length / 2 - 0.5);
+      const py = cellY(piece.y + piece.m.length / 2 - 0.5);
+      r.light({ pos:[px, py, 3.4], color: piece.c, intensity: 130, range: 20 });
+    }
+
+    // ── NEXT PIECE ──
+    // A holo pad floating outside the well, rotating so it reads as a 3D object
+    // rather than a sprite. Replaces the 2D #nextCanvas, which stays hidden.
+    if(next){
+      const bx = COLS / 2 + 4.3, by = ROWS * 0.70;
+      r.draw('cube', { pos:[bx, by - 2.6, -0.6], scale:[4.4, 0.35, 4.4],
+                       color:'#101422', metallic: 0.8, roughness: 0.3, rim: 1.2 });
+      r.draw('thintorus', { pos:[bx, by - 2.35, -0.6], rot:[0, w.t * 0.8, 0], scale: 4.4,
+                            color: next.c, emissive: next.c, emissiveStrength: 1.6 });
+      const nw = next.m[0].length, nh = next.m.length;
+      for(let y = 0; y < nh; y++){
+        for(let x = 0; x < nw; x++){
+          if(!next.m[y][x]) continue;
+          const ox = bx + (x - nw / 2 + 0.5) * 0.85;
+          const oy = by + (nh / 2 - y - 0.5) * 0.85 + Math.sin(w.t * 1.6) * 0.12;
+          r.draw('cube', { pos:[ox, oy, -0.6], rot:[0, w.t * 0.8, 0], scale: 0.72,
+                           color: next.c, metallic: 0.7, roughness: 0.28,
+                           emissive: next.c, emissiveStrength: 1.2 });
+        }
+      }
+      r.light({ pos:[bx, by, 4], color: next.c, intensity: 60, range: 16 });
+    }
+
+    w.end();
+  });
+
+  function end(){
+    if(over) return;
+    over = true;
+    clearCanvasDrag();
+    snd('gameOver');
+    const pts = Math.min(1500, score);
+    showResults('tetris', pts, {
+      '🧱 Base Core Lines Resolved': lines,
+      '📶 Level Reached': level,
+      '🏆 Final Output Score': `${pts} PTS`
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🏓 CYBER PONG 3D — a rally down a lit court
+// ══════════════════════════════════════════════
+// The 2D table is seen from above; this one is seen from behind your own
+// paddle, which changes the read entirely — the ball's approach is a thing that
+// gets closer rather than a dot that gets lower. Scoring is identical.
+P.games.pong = function(){
+  const w = begin3d(Object.assign({ ease: 0.25 }, CITY_NIGHT, {
+    env: { zenith:'#04061a', horizon:'#123a55', ground:'#04060e', intensity: 1.25 },
+    fog: { color:'#061020', density: 0.0075 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  setControls({ left:'◀ LEFT', right:'RIGHT ▶' });
+  setControlHint('DRAG TO RALLY · OR USE ◀ ▶', '← → OR MOUSE TO MOVE YOUR PADDLE');
+  showTouchHint('DRAG LEFT AND RIGHT TO MOVE YOUR PADDLE');
+
+  const colour = mine();
+  const XL = 8.6, ZP = 4, ZA = -28, PAD_W = 2.9;
+  let me = 0, ai = 0, ballX = 0, ballZ = -12, ballY = 0.75;
+  let vx = rnd(-5, 5), vz = 17 * (Math.random() < 0.5 ? 1 : -1);
+  let myScore = 0, cpuScore = 0, time = 45, over = false, rally = 0, spin = 0, flash = 0;
+
+  const paint = () => setLive(Math.max(0, (myScore - cpuScore) * 50));
+  paint();
+  document.getElementById('g-time').textContent = Math.ceil(time);
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--cyan),var(--purple))';
+
+  const track = p => { me = clamp(nx(p) * XL, -XL + PAD_W / 2, XL - PAD_W / 2); };
+  bindCanvasDrag({ onHover(p){ if(!p.touch) track(p); }, onDown(p){ hideTouchHint(); track(p); }, onMove: track });
+
+  const keys = {};
+  window.onkeydown = e => { keys[e.code] = true; if(['ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault(); };
+  window.onkeyup = e => { keys[e.code] = false; };
+  const NUDGE = 1.5;
+  bindHold(document.getElementById('ctrl-left'),  () => { me = clamp(me - NUDGE, -XL + PAD_W/2, XL - PAD_W/2); keys.padL = true; }, () => keys.padL = false);
+  bindHold(document.getElementById('ctrl-right'), () => { me = clamp(me + NUDGE, -XL + PAD_W/2, XL - PAD_W/2); keys.padR = true; }, () => keys.padR = false);
+
+  gTimer = setInterval(() => {
+    if(over) return;
+    time--;
+    document.getElementById('g-time').textContent = Math.ceil(time);
+    document.getElementById('prog-fill').style.width = `${time / 45 * 100}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end();
+  }, 1000);
+
+  function serve(toward){
+    ballX = 0; ballZ = (ZP + ZA) / 2; ballY = 0.75;
+    vx = rnd(-5, 5); vz = 17 * toward;
+    rally = 0;
+  }
+
+  runLoop(dt => {
+    if(over) return false;
+    flash = Math.max(0, flash - dt * 3);
+    spin += dt * 6;
+
+    const k = (keys.ArrowRight || keys.padR ? 1 : 0) - (keys.ArrowLeft || keys.padL ? 1 : 0);
+    if(k) me = clamp(me + k * 18 * dt, -XL + PAD_W / 2, XL - PAD_W / 2);
+
+    // The droid tracks with a deliberate lag that eases off as the rally grows,
+    // so a long rally is genuinely winnable rather than a war of attrition.
+    const aiSpeed = 9.5 + Math.min(rally, 10) * 0.5;
+    ai += clamp(ballX - ai, -aiSpeed * dt, aiSpeed * dt);
+    ai = clamp(ai, -XL + PAD_W / 2, XL - PAD_W / 2);
+
+    ballX += vx * dt; ballZ += vz * dt;
+    // A shallow bounce off the court. Purely cosmetic, but it puts the ball in
+    // three dimensions instead of sliding along a plane.
+    ballY = 0.75 + Math.abs(Math.sin(w.t * 5.5)) * 0.35;
+
+    if(ballX < -XL + 0.45){ ballX = -XL + 0.45; vx = -vx; snd('bounceWall'); w.kick(0.3); }
+    if(ballX >  XL - 0.45){ ballX =  XL - 0.45; vx = -vx; snd('bounceWall'); w.kick(0.3); }
+
+    // Player paddle.
+    if(vz > 0 && ballZ > ZP - 0.5 && ballZ < ZP + 1.2){
+      if(Math.abs(ballX - me) < PAD_W / 2 + 0.45){
+        vz = -Math.abs(vz) * 1.045;
+        // Hit position sets the angle — the only real skill in the rally.
+        vx += (ballX - me) * 5.2;
+        vx = clamp(vx, -19, 19);
+        ballZ = ZP - 0.5;
+        rally++;
+        snd('bounce', { semi: Math.min(rally, 12) });
+        w.kick(0.6);
+        w.burst([ballX, ballY, ZP], colour, 10, { speed: 7, life: 0.4, size: 0.28 });
+      }
+    }
+    // Droid paddle.
+    if(vz < 0 && ballZ < ZA + 0.5 && ballZ > ZA - 1.2){
+      if(Math.abs(ballX - ai) < PAD_W / 2 + 0.45){
+        vz = Math.abs(vz) * 1.04;
+        vx += (ballX - ai) * 4.4;
+        vx = clamp(vx, -19, 19);
+        ballZ = ZA + 0.5;
+        rally++;
+        snd('bounce', { semi: -4 });
+      }
+    }
+
+    if(ballZ > ZP + 4){
+      cpuScore++; paint(); snd('error'); flash = 1; w.kick(1.6);
+      w.pop([0, 3, ZP - 6], 'DROID SCORES', '#ff2442', { size: 20 });
+      serve(-1);
+    }
+    if(ballZ < ZA - 4){
+      myScore++; paint(); snd('success'); w.kick(1.2);
+      w.pop([0, 3, ZA + 8], '+50', colour, { size: 22 });
+      w.burst([ballX, 1, ZA], colour, 24, { speed: 12, life: 0.8 });
+      serve(1);
+    }
+
+    // Camera sits behind and above your own paddle, drifting with it.
+    w.goal.eye[0] = me * 0.42;
+    w.goal.eye[1] = 6.4;
+    w.goal.eye[2] = ZP + 10.5;
+    w.goal.target[0] = ballX * 0.3;
+    w.goal.target[1] = 0.9;
+    w.goal.target[2] = -12;
+    w.goal.fov = 56;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+
+    // ── COURT ──
+    r.draw('ground', { pos:[0, 0, (ZP + ZA) / 2], scale:[XL * 2.05, 1, Math.abs(ZP - ZA) + 10],
+                       color:'#060a16', metallic: 0.92, roughness: 0.16, rim: 0.4 });
+    // Side walls, centre line and the two goal lines.
+    for(const s of [-1, 1]){
+      r.draw('cube', { pos:[s * (XL + 0.55), 0.9, (ZP + ZA) / 2], scale:[1.1, 1.8, Math.abs(ZP - ZA) + 10],
+                       color:'#0d1120', metallic: 0.85, roughness: 0.32, rim: 1.4 });
+      r.beam([s * XL, 0.06, ZA - 5], [s * XL, 0.06, ZP + 5], 0.10,
+             { color:'#00f5ff', emissive:'#00f5ff', emissiveStrength: 2.4, height: 0.10 });
+    }
+    for(let z = ZA; z <= ZP; z += 3){
+      r.draw('box', { pos:[0, 0.05, z], scale:[0.14, 0.06, 1.4],
+                      color:'#5c6a8c', emissive:'#8fa6ff', emissiveStrength: 0.9 });
+    }
+    r.beam([-XL, 0.07, ZA], [XL, 0.07, ZA], 0.16, { color:'#ff2442', emissive:'#ff2442', emissiveStrength: 2.6, height: 0.16 });
+    r.beam([-XL, 0.07, ZP], [XL, 0.07, ZP], 0.16, { color: colour, emissive: colour, emissiveStrength: 2.6, height: 0.16 });
+
+    // ── PADDLES ──
+    r.draw('cube', { pos:[me, 0.62, ZP], scale:[PAD_W, 1.05, 0.8],
+                     color:'#c3cee2', metallic: 1.0, roughness: 0.14, rim: 1.5 });
+    r.draw('box', { pos:[me, 0.62, ZP - 0.42], scale:[PAD_W * 0.86, 0.5, 0.1],
+                    color: colour, emissive: colour, emissiveStrength: 3.0 });
+    r.draw('cube', { pos:[ai, 0.62, ZA], scale:[PAD_W, 1.05, 0.8],
+                     color:'#9aa3b8', metallic: 1.0, roughness: 0.18, rim: 1.5 });
+    r.draw('box', { pos:[ai, 0.62, ZA + 0.42], scale:[PAD_W * 0.86, 0.5, 0.1],
+                    color:'#ff2442', emissive:'#ff2442', emissiveStrength: 3.0 });
+
+    // ── BALL ──
+    r.draw('sphere', { pos:[ballX, ballY, ballZ], scale: 0.9,
+                       color:'#ffffff', metallic: 0.95, roughness: 0.08,
+                       emissive: colour, emissiveStrength: 1.5 });
+    r.glow([ballX, ballY, ballZ], 0.9, colour, 1.4);
+    r.light({ pos:[ballX, ballY + 1, ballZ], color: colour, intensity: 130, range: 22 });
+    // Motion trail, dropped behind the ball along its own velocity.
+    if(Math.random() < 0.85) w.spark([ballX - vx * dt * 2, ballY, ballZ - vz * dt * 2], colour, 0.4, 0.30);
+
+    r.light({ pos:[me, 3.5, ZP + 3], color: flash > 0 ? '#ff2442' : '#8fa6ff',
+              intensity: flash > 0 ? 320 : 150, range: 26 });
+    r.light({ pos:[ai, 3.5, ZA - 3], color:'#ff2442', intensity: 110, range: 26 });
+
+    w.end();
+  });
+
+  function end(){
+    if(over) return;
+    over = true;
+    clearCanvasDrag();
+    const pts = Math.min(900, Math.max(0, (myScore - cpuScore) * 50));
+    showResults('pong', pts, {
+      '🏓 Your Goals': myScore,
+      '🤖 CPU Goals': cpuScore,
+      '🏆 Final Score': `${pts} PTS`
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🐍 GRID SNAKE 3D — a data worm on a lit deck
+// ══════════════════════════════════════════════
+// Same grid, same rules, same 30-points-per-node scoring. In 3D the body has
+// height, so the snake genuinely occludes the deck behind it and you can read
+// its length as volume instead of counting squares.
+P.games.snake = function(){
+  const w = begin3d(Object.assign({ ease: 0.14 }, CITY_NIGHT, {
+    env: { zenith:'#04071a', horizon:'#132a4e', ground:'#04060f', intensity: 0.95 },
+    fog: { color:'#050a1a', density: 0.006 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  setControls({ left:'←', action:'↑', drop:'↓', right:'→' });
+  setControlHint('SWIPE OR TAP AN ARROW TO STEER', 'ARROW KEYS TO STEER');
+  showTouchHint('SWIPE ANY DIRECTION TO STEER');
+
+  const diff = getDifficultyModifier();
+  const colour = mine();
+  const CELL = 20, COLS = BOARD_W / CELL, ROWS = BOARD_H / CELL;   // 28 × 25, as in 2D
+  const startTime = 60 / diff;
+  let score = 0, time = startTime, over = false, tick = 0, orbit = 0;
+  let dir = { x: 1, y: 0 }, nextDir = { x: 1, y: 0 };
+  let snake = [{ x: 10, y: 12 }, { x: 9, y: 12 }, { x: 8, y: 12 }];
+  let stepEvery = 0.16 / diff, acc = 0, eaten = 0, lastEat = -9;
+
+  const wx = cx => cx - COLS / 2 + 0.5;
+  const wz = cy => cy - ROWS / 2 + 0.5;
+
+  function spawnFood(){
+    let p;
+    do{ p = { x: (Math.random() * COLS) | 0, y: (Math.random() * ROWS) | 0 }; }
+    while(snake.some(s => s.x === p.x && s.y === p.y));
+    return p;
+  }
+  let food = spawnFood();
+
+  Ghost.begin('snake');
+  if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
+
+  document.getElementById('g-time').textContent = Math.ceil(time);
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--lime),var(--cyan))';
+
+  const turn = (x, y) => {
+    // A 180° reversal would eat your own neck on the very next step.
+    if(dir.x === -x && dir.y === -y) return;
+    nextDir = { x, y };
+  };
+  window.onkeydown = e => {
+    if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.code)) e.preventDefault();
+    if(e.code === 'ArrowLeft')  turn(-1, 0);
+    if(e.code === 'ArrowRight') turn(1, 0);
+    if(e.code === 'ArrowUp')    turn(0, -1);
+    if(e.code === 'ArrowDown')  turn(0, 1);
+  };
+  document.getElementById('ctrl-left').onclick   = () => turn(-1, 0);
+  document.getElementById('ctrl-right').onclick  = () => turn(1, 0);
+  document.getElementById('ctrl-action').onclick = () => turn(0, -1);
+  document.getElementById('ctrl-drop').onclick   = () => turn(0, 1);
+
+  // Swipe: the dominant axis of the travel wins, evaluated once per gesture.
+  let sx = 0, sy = 0, swiped = false;
+  bindCanvasDrag({
+    onDown(p){ hideTouchHint(); sx = p.x; sy = p.y; swiped = false; },
+    onMove(p){
+      if(swiped) return;
+      const dx = p.x - sx, dy = p.y - sy;
+      if(Math.abs(dx) < 26 && Math.abs(dy) < 26) return;
+      if(Math.abs(dx) > Math.abs(dy)) turn(dx > 0 ? 1 : -1, 0);
+      else turn(0, dy > 0 ? 1 : -1);
+      swiped = true;
+      sx = p.x; sy = p.y;
+    },
+    onUp(){ swiped = true; }
+  });
+
+  gTimer = setInterval(() => {
+    if(over) return;
+    time--;
+    document.getElementById('g-time').textContent = Math.ceil(time);
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time / startTime * 100)}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end('timeout');
+  }, 1000);
+
+  runLoop(dt => {
+    if(over) return false;
+    orbit += dt;
+    acc += dt;
+    if(acc >= stepEvery){
+      acc = 0; tick++;
+      dir = nextDir;
+      const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+      if(head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS
+         || snake.some(s => s.x === head.x && s.y === head.y)){
+        w.burst([wx(snake[0].x), 0.8, wz(snake[0].y)], '#ff2442', 40, { speed: 13, life: 0.9 });
+        w.kick(2.4);
+        end('crash');
+        return false;
+      }
+      snake.unshift(head);
+      if(head.x === food.x && head.y === food.y){
+        score += 30; eaten++; lastEat = w.t;
+        setLive(Math.min(1200, score));
+        snd('eat', { semi: Math.min(eaten, 12) });
+        w.burst([wx(food.x), 0.9, wz(food.y)], '#39ff88', 22, { speed: 9, life: 0.7 });
+        w.pop([wx(food.x), 2.2, wz(food.y)], '+30', '#39ff88');
+        w.kick(0.45);
+        food = spawnFood();
+      }else{
+        snake.pop();
+      }
+      Ghost.sample(head.x, head.y);
+    }
+
+    // A slow orbit around the deck. It never changes what you can see — the
+    // grid is fully visible from every angle — but it keeps the board reading
+    // as an object in space rather than a picture of one.
+    const a = Math.sin(orbit * 0.19) * 0.32;
+    // Steep enough that the 28x25 deck fills the frame and the sky is a band
+    // at the top, not the subject. The orbit is what keeps it three
+    // dimensional; the tilt is what keeps it playable.
+    // Framed from the geometry rather than by eye: a camera at height H with a
+    // vertical FOV t sees 2*H*tan(t/2)*aspect across. The deck is 28 wide plus
+    // kerbs, the board's aspect is 1.12, so H*tan(t/2) has to be ~14 — H=23
+    // with a 64 degree lens, tilted 25 degrees off vertical for the 3/4 read.
+    w.goal.eye[0] = Math.sin(a) * 7;
+    w.goal.eye[1] = 23;
+    w.goal.eye[2] = Math.cos(a) * 7 + 11;
+    w.goal.target[0] = 0; w.goal.target[1] = 0; w.goal.target[2] = -1;
+    w.goal.fov = 64;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+
+    // ── DECK ──
+    r.draw('ground', { pos:[0, -0.35, 0], scale:[COLS + 3, 1, ROWS + 3],
+                       color:'#04070f', metallic: 0.45, roughness: 0.42, rim: 0.35 });
+    for(let x = 0; x <= COLS; x++){
+      r.beam([wx(x) - 0.5, -0.28, wz(0) - 0.5], [wx(x) - 0.5, -0.28, wz(ROWS) - 0.5], 0.03,
+             { color:'#123a63', emissive:'#134a7a', emissiveStrength: 0.85, height: 0.03 });
+    }
+    for(let y = 0; y <= ROWS; y++){
+      r.beam([wx(0) - 0.5, -0.28, wz(y) - 0.5], [wx(COLS) - 0.5, -0.28, wz(y) - 0.5], 0.03,
+             { color:'#123a63', emissive:'#134a7a', emissiveStrength: 0.85, height: 0.03 });
+    }
+    // Kerb around the deck: the boundary you die on, stated unmistakably.
+    for(const s of [-1, 1]){
+      r.draw('cube', { pos:[s * (COLS / 2 + 0.55), 0.05, 0], scale:[1.0, 0.7, ROWS + 2.2],
+                       color:'#101626', metallic: 0.85, roughness: 0.3, rim: 1.4 });
+      r.draw('cube', { pos:[0, 0.05, s * (ROWS / 2 + 0.55)], scale:[COLS + 2.2, 0.7, 1.0],
+                       color:'#101626', metallic: 0.85, roughness: 0.3, rim: 1.4 });
+    }
+    r.light({ pos:[-12,  16, -12], color:'#4f7dff', intensity: 340, range: 55 });
+    r.light({ pos:[ 12,  16,  12], color:'#ff3fa0', intensity: 260, range: 55 });
+    r.light({ pos:[ 0,   14,   0], color:'#ffffff', intensity: 180, range: 40 });
+
+    // ── SNAKE ──
+    // Height tapers along the body and a swallow bulge travels down it after a
+    // feed, so length is legible at a glance.
+    for(let i = 0; i < snake.length; i++){
+      const s = snake[i];
+      const t = i / Math.max(1, snake.length - 1);
+      const head = i === 0;
+      const bulge = Math.max(0, 1 - Math.abs((w.t - lastEat) * 9 - i)) * 0.45;
+      const h = (head ? 1.15 : 0.78 - t * 0.22) + bulge;
+      r.draw('cube', {
+        pos:[wx(s.x), h * 0.5 - 0.1, wz(s.y)],
+        scale:[0.9 + bulge * 0.3, h, 0.9 + bulge * 0.3],
+        color: head ? '#eaf6ff' : colour,
+        metallic: head ? 0.95 : 0.72, roughness: head ? 0.12 : 0.3, rim: 1.3,
+        emissive: colour, emissiveStrength: head ? 1.4 : (0.35 + (1 - t) * 0.8 + bulge * 2)
+      });
+      if(head){
+        // Eyes, on the face the snake is actually travelling toward.
+        for(const sd of [-1, 1]){
+          r.draw('sphere', {
+            pos:[wx(s.x) + dir.x * 0.42 - dir.y * sd * 0.24,
+                 0.85,
+                 wz(s.y) + dir.y * 0.42 + dir.x * sd * 0.24],
+            scale: 0.24, color:'#00f5ff', emissive:'#00f5ff', emissiveStrength: 4
+          });
+        }
+        r.light({ pos:[wx(s.x), 2.4, wz(s.y)], color: colour, intensity: 90, range: 14 });
+      }
+    }
+
+    // ── FOOD ──
+    const fy = 0.85 + Math.sin(w.t * 3) * 0.16;
+    r.draw('sphere', { pos:[wx(food.x), fy, wz(food.y)], scale: 0.86,
+                       color:'#39ff88', emissive:'#39ff88', emissiveStrength: 3.0 });
+    r.draw('thintorus', { pos:[wx(food.x), fy, wz(food.y)], rot:[w.t * 1.4, w.t * 2.0, 0], scale: 2.0,
+                          color:'#a8ffd0', emissive:'#39ff88', emissiveStrength: 2.2 });
+    r.glow([wx(food.x), fy, wz(food.y)], 0.9, '#39ff88', 1.0);
+    r.light({ pos:[wx(food.x), fy + 1.5, wz(food.y)], color:'#39ff88', intensity: 90, range: 16 });
+
+    // Personal-best ghost: a hollow marker on the cell your best run occupied.
+    const g = Ghost.at(tick);
+    if(g){
+      r.draw('thintorus', { pos:[wx(g[0]), 0.2, wz(g[1])], rot:[0, w.t, 0], scale: 1.6,
+                            color: colour, emissive: colour, emissiveStrength: 1.2, alpha: 0.38 });
+    }
+
+    w.end();
+  });
+
+  function end(reason){
+    if(over) return;
+    over = true;
+    clearCanvasDrag();
+    if(reason !== 'timeout') snd('gameOver');
+    const earned = Math.min(1200, score);
+    const wasRacing = Ghost.racing, target = Ghost.target;
+    const beat = Ghost.finish(earned);
+    showResults('snake', earned, {
+      '🐍 Nodes Consumed': Math.floor(score / 30),
+      '📏 Max Length': snake.length,
+      ...(wasRacing ? { '👻 Ghost To Beat': `${target} PTS` } : {}),
+      ...(wasRacing && beat ? { '👻 Result': 'GHOST BEATEN' } : {}),
+      '🏆 Score Accumulation': `${earned} PTS`
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🚁 FLAPPY DRONE 3D — a run down the canyon
+// ══════════════════════════════════════════════
+// The 2D game scrolls pipes leftward past a fixed drone. Here the drone flies
+// INTO the screen and the firewalls are real gates standing in a canyon, so
+// timing a flap becomes a judgement about distance rather than about a gap on a
+// flat picture. Scoring is unchanged: one point per gate, 50 points each, 1000
+// cap, no clock.
+P.games.flappy = function(){
+  const w = begin3d(Object.assign({ ease: 0.3 }, CITY_NIGHT, {
+    env: { zenith:'#050416', horizon:'#4a1230', ground:'#06040c', intensity: 1.25 },
+    fog: { color:'#140720', density: 0.0062 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  setControls({ action: isTouchDevice ? 'TAP / FLAP' : 'CLICK / FLAP' });
+  setControlHint('TAP ANYWHERE TO FLAP', 'SPACE OR CLICK TO FLAP');
+  showTouchHint('TAP ANYWHERE TO FLAP');
+
+  const diff = getDifficultyModifier();
+  const colour = mine();
+
+  // Same tier curve the 2D build uses: gravity ramps at half the tier rate and
+  // the flap a little faster than its square root, so climb-per-tap never falls
+  // below Stable's. Constants are the 2D ones converted to world units.
+  const gravMod = 1 + (diff - 1) * 0.5;
+  const GRAV = 42 * gravMod;
+  const FLAP = -13.0 * Math.pow(gravMod, 0.65);
+  const YL = 7.2, GAP = 4.4, SPEED = 26 * diff, SPACING = 30;
+
+  let score = 0, over = false, y = 0, vy = 0, tilt = 0, dist = 0, best = 0;
+  const gates = [];
+
+  w.buildCity({ seed: 5150, count: 96, spread: 96, hole: 20, y: -9 });
+  w.buildStars(140, 190);
+
+  document.getElementById('g-time').textContent = '∞';
+  document.getElementById('prog-fill').style.width = '100%';
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--gold),var(--orange))';
+
+  function addGate(z){
+    gates.push({ z, cy: rnd(-YL + GAP * 0.8, YL - GAP * 0.8), scored: false,
+                 col: NEON[(Math.random() * NEON.length) | 0] });
+  }
+  for(let i = 0; i < 6; i++) addGate(-40 - i * SPACING);
+
+  function flap(){
+    if(over) return;
+    vy = FLAP;
+    snd('flap');
+    w.burst([0, y - 0.5, 1.2], colour, 5, { speed: 4, life: 0.28, size: 0.24 });
+  }
+  window.onkeydown = e => { if(e.code === 'Space'){ flap(); e.preventDefault(); } };
+  bindCanvasDrag({ onDown(){ hideTouchHint(); flap(); } });
+  document.getElementById('ctrl-action').onclick = flap;
+
+  Ghost.begin('flappy');
+  if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
+
+  runLoop(dt => {
+    if(over) return false;
+    dist += SPEED * dt;
+    vy += GRAV * dt;
+    y -= vy * dt;                      // vy is screen-down positive, as in 2D
+    tilt += (clamp(-vy * 0.035, -0.55, 0.7) - tilt) * 0.2;
+    Ghost.sample((y / YL * 0.5 + 0.5) * BOARD_H);
+
+    if(y > YL || y < -YL){ die(); return false; }
+
+    for(let i = gates.length - 1; i >= 0; i--){
+      const g = gates[i];
+      g.z += SPEED * dt;
+      if(g.z > 14){
+        gates.splice(i, 1);
+        // Keep six gates in flight, spaced by distance rather than by time, so
+        // the tier's speed does not also change the rhythm.
+        let far = 0;
+        for(const q of gates) far = Math.min(far, q.z);
+        addGate(far - SPACING);
+        continue;
+      }
+      // The drone sits at z = 0 and the gate is 2 units deep.
+      if(!g.scored && g.z > 1.2){
+        g.scored = true;
+        score++;
+        best = Math.max(best, score);
+        setLive(Math.min(1000, score * 50));
+        snd('score', { semi: Math.min(score, 14) });
+        w.pop([0, y + 2.2, -2], '+50', g.col, { size: 18 });
+        w.kick(0.25);
+      }
+      if(Math.abs(g.z) < 1.4 && Math.abs(y - g.cy) > GAP / 2 - 0.55){ die(); return false; }
+    }
+
+    // Chase cam, just behind and level with the drone but lagging its vertical
+    // motion — that lag is what makes a dive read as a dive.
+    w.goal.eye[0] = 0;
+    w.goal.eye[1] = y * 0.55 + 1.2;
+    w.goal.eye[2] = 9.5;
+    w.goal.target[0] = 0;
+    w.goal.target[1] = y * 0.85 - 0.4;
+    w.goal.target[2] = -20;
+    w.goal.fov = 62;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+    w.drawCity(dist * 0.35);
+    drawPylons(w, 13, dist, '#ff0090', { y: -YL - 1.6, height: 2 * YL + 3, step: 15, far: 150 });
+    w.drawGrid({ y: -YL - 1.6, halfX: 13, halfZ: 130, step: 6, color:'#3a1050',
+                 emissive: 1.0, scroll: dist, floorColor:'#06040e', floorRough: 0.2 });
+
+    // ── GATES ──
+    // Two slabs and a lit rim around the opening. The rim is the read: it is the
+    // only part that is bright, so the eye goes straight to the hole.
+    for(const g of gates){
+      const topH = (YL - (g.cy + GAP / 2));
+      const botH = ((g.cy - GAP / 2) + YL);
+      const fade = clamp(1 + g.z / 130, 0.25, 1);
+      if(topH > 0){
+        r.draw('cube', { pos:[0, g.cy + GAP / 2 + topH / 2, g.z], scale:[13, topH, 2.0],
+                         color:'#151827', metallic: 0.8, roughness: 0.35, rim: 1.3,
+                         emissive: g.col, emissiveStrength: 0.22 });
+        r.draw('box', { pos:[0, g.cy + GAP / 2 + 0.1, g.z + 1.05], scale:[12.6, 0.22, 0.12],
+                        color: g.col, emissive: g.col, emissiveStrength: 3.4 * fade });
+        // Ribs. A flat lit plane has no scale; these give the eye something to
+        // measure the gap against as the gate closes in.
+        for(let k = 1; k < 5; k++){
+          const ry = g.cy + GAP / 2 + topH * (k / 5);
+          r.draw('box', { pos:[0, ry, g.z + 1.02], scale:[12.2, 0.08, 0.07],
+                          color:'#05070e', emissive: g.col, emissiveStrength: 0.5 * fade });
+        }
+      }
+      if(botH > 0){
+        r.draw('cube', { pos:[0, g.cy - GAP / 2 - botH / 2, g.z], scale:[13, botH, 2.0],
+                         color:'#151827', metallic: 0.8, roughness: 0.35, rim: 1.3,
+                         emissive: g.col, emissiveStrength: 0.22 });
+        r.draw('box', { pos:[0, g.cy - GAP / 2 - 0.1, g.z + 1.05], scale:[12.6, 0.22, 0.12],
+                        color: g.col, emissive: g.col, emissiveStrength: 3.4 * fade });
+        for(let k = 1; k < 5; k++){
+          const ry = g.cy - GAP / 2 - botH * (k / 5);
+          r.draw('box', { pos:[0, ry, g.z + 1.02], scale:[12.2, 0.08, 0.07],
+                          color:'#05070e', emissive: g.col, emissiveStrength: 0.5 * fade });
+        }
+      }
+      if(g.z > -50) r.light({ pos:[0, g.cy, g.z + 3], color: g.col, intensity: 70, range: 22 });
+    }
+
+    // ── DRONE ──
+    keyRig(w, [0, y, 0], colour, { key: 150, fill: 90 });
+    r.draw('drone', { pos:[0, y, 0], rot:[tilt, 0, Math.sin(w.t * 3) * 0.07], scale: 1.9,
+                      color:'#aab6cc', metallic: 0.95, roughness: 0.22, rim: 1.4 });
+    // Four rotor discs, spinning fast enough to blur into rings.
+    for(const [sx, sz] of [[-1,-1],[1,-1],[-1,1],[1,1]]){
+      const rx = sx * 0.99, rz = sz * 0.84;
+      r.draw('thintorus', { pos:[rx, y + 0.17, rz], rot:[0, w.t * 40 * (sx * sz), 0], scale: 1.3,
+                            color: colour, emissive: colour, emissiveStrength: 1.1, alpha: 0.34 });
+      r.glow([rx, y + 0.17, rz], 0.3, colour, 0.55);
+    }
+    r.glow([0, y, 1.4], 0.6, colour, 1.5);
+    r.light({ pos:[0, y, 2], color: colour, intensity: 120, range: 20 });
+
+    w.end();
+  });
+
+  function die(){
+    if(over) return;
+    over = true;
+    snd('bigExplode');
+    w.kick(3);
+    w.burst([0, y, 0], colour, 46, { speed: 15, life: 1.0, size: 0.5 });
+    end();
+  }
+
+  function end(){
+    clearCanvasDrag();
+    const earned = Math.min(1000, score * 50);
+    const wasRacing = Ghost.racing, target = Ghost.target;
+    const beat = Ghost.finish(earned);
+    showResults('flappy', earned, {
+      '🚧 Firewalls Cleared': score,
+      '🌌 Distance Flown': `${Math.floor(dist)} M`,
+      ...(wasRacing ? { '👻 Ghost To Beat': `${target} PTS` } : {}),
+      ...(wasRacing && beat ? { '👻 Result': 'GHOST BEATEN' } : {}),
+      '🏆 Score Accumulation': `${earned} PTS`
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🧊 ICE BREAKER 3D — break the wall down the deck
+// ══════════════════════════════════════════════
+// The 2D game is a wall at the top of a rectangle. Rotated onto the floor and
+// seen from behind the paddle, the wall becomes something you are shooting
+// *into the distance* at — the ball's return trip has a real approach, and the
+// depth of the remaining stack tells you how much is left without counting.
+P.games.breaker = function(){
+  const w = begin3d(Object.assign({ ease: 0.22 }, CITY_NIGHT, {
+    env: { zenith:'#04061a', horizon:'#0d3350', ground:'#04060e', intensity: 1.3 },
+    fog: { color:'#050c1c', density: 0.0068 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  setControls({ left:'◀', right:'▶' });
+  setControlHint('DRAG TO STEER THE DEFLECTOR', '← → OR MOUSE TO STEER THE DEFLECTOR');
+  showTouchHint('DRAG LEFT AND RIGHT TO STEER');
+
+  const diff = getDifficultyModifier();
+  const colour = mine();
+  const XL = 9.5, ZP = 5, ZBACK = -30;
+  const COLS = 10, ROWS = 5, BW = 1.72, BD = 1.5;
+
+  let score = 0, shields = 3, broken = 0, combo = 0, bestCombo = 0;
+  let time = Math.round(90 * getTimeModifier()), over = false, flash = 0;
+  let pad = 0, ballX = 0, ballZ = ZP - 2, bvx = rnd(-6, 6), bvz = -15 * diff, stuck = true;
+
+  const bricks = [];
+  for(let ry = 0; ry < ROWS; ry++){
+    for(let cx = 0; cx < COLS; cx++){
+      bricks.push({
+        x: (cx - COLS / 2 + 0.5) * (BW + 0.14),
+        z: ZBACK + ry * (BD + 0.2) + 1,
+        hp: ry < 1 ? 2 : 1,
+        col: NEON[ry % NEON.length],
+        alive: true, hit: -9
+      });
+    }
+  }
+
+  document.getElementById('g-time').textContent = time;
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--cyan),var(--lime))';
+
+  const track = p => { pad = clamp(nx(p) * XL, -XL + 1.6, XL - 1.6); };
+  bindCanvasDrag({
+    onHover(p){ if(!p.touch) track(p); },
+    onDown(p){ hideTouchHint(); track(p); stuck = false; },
+    onMove: track
+  });
+  const keys = {};
+  window.onkeydown = e => { keys[e.code] = true; if(['ArrowLeft','ArrowRight','Space'].includes(e.code)){ e.preventDefault(); stuck = false; } };
+  window.onkeyup = e => { keys[e.code] = false; };
+  bindHold(document.getElementById('ctrl-left'),  () => { keys.padL = true; stuck = false; }, () => keys.padL = false);
+  bindHold(document.getElementById('ctrl-right'), () => { keys.padR = true; stuck = false; }, () => keys.padR = false);
+
+  gTimer = setInterval(() => {
+    if(over) return;
+    time--;
+    document.getElementById('g-time').textContent = time;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end('timeout');
+  }, 1000);
+
+  function loseShield(){
+    shields--;
+    combo = 0;
+    flash = 1;
+    snd('shieldHit');
+    w.kick(2.2);
+    w.burst([ballX, 0.8, ZP + 2], '#ff2442', 30, { speed: 12, life: 0.8 });
+    document.getElementById('prog-fill').style.width = `${Math.max(0, shields) / 3 * 100}%`;
+    if(shields <= 0){ end('breached'); return; }
+    ballX = pad; ballZ = ZP - 2; bvx = rnd(-5, 5); bvz = -15 * diff; stuck = true;
+  }
+
+  function hitBrick(b){
+    b.hp--;
+    b.hit = w.t;
+    if(b.hp > 0){ snd('hit', { semi: 2 }); return; }
+    b.alive = false;
+    broken++;
+    combo++;
+    bestCombo = Math.max(bestCombo, combo);
+    score += 15 + Math.min(combo, 10) * 2;
+    setLive(Math.min(1100, score + shields * 40));
+    snd('brick', { semi: Math.min(combo, 12) });
+    w.burst([b.x, 0.75, b.z], b.col, 18, { speed: 9, life: 0.6, size: 0.32 });
+    if(combo > 1) w.pop([b.x, 2.4, b.z], `${combo}× CHAIN`, b.col, { size: 15 });
+    if(!bricks.some(q => q.alive)) end('cleared');
+  }
+
+  runLoop(dt => {
+    if(over) return false;
+    flash = Math.max(0, flash - dt * 2.5);
+    const k = (keys.ArrowRight || keys.padR ? 1 : 0) - (keys.ArrowLeft || keys.padL ? 1 : 0);
+    if(k) pad = clamp(pad + k * 19 * dt, -XL + 1.6, XL - 1.6);
+
+    if(stuck){ ballX = pad; ballZ = ZP - 2; }
+    else{
+      // Stepped in slices so a fast ball cannot tunnel through a brick row
+      // between frames — the failure the 2D build's push-out also guards.
+      const steps = Math.max(1, Math.ceil(Math.hypot(bvx, bvz) * dt / 0.5));
+      const sdt = dt / steps;
+      for(let n = 0; n < steps && !over; n++){
+        ballX += bvx * sdt; ballZ += bvz * sdt;
+        if(ballX < -XL + 0.45){ ballX = -XL + 0.45; bvx = -bvx; snd('bounceWall'); }
+        if(ballX >  XL - 0.45){ ballX =  XL - 0.45; bvx = -bvx; snd('bounceWall'); }
+        if(ballZ < ZBACK - 0.6){ ballZ = ZBACK - 0.6; bvz = -bvz; snd('bounceWall'); }
+        // Deflector.
+        if(bvz > 0 && ballZ > ZP - 0.9 && ballZ < ZP + 0.8 && Math.abs(ballX - pad) < 1.85){
+          ballZ = ZP - 0.9;
+          bvz = -Math.abs(bvz) * 1.015;
+          bvx = clamp(bvx + (ballX - pad) * 6.5, -19, 19);
+          combo = 0;
+          snd('bounce');
+          w.kick(0.4);
+          w.burst([ballX, 0.7, ZP], colour, 8, { speed: 6, life: 0.35, size: 0.24 });
+        }
+        if(ballZ > ZP + 5){ loseShield(); break; }
+        for(const b of bricks){
+          if(!b.alive) continue;
+          const dx = ballX - b.x, dz = ballZ - b.z;
+          if(Math.abs(dx) > BW / 2 + 0.42 || Math.abs(dz) > BD / 2 + 0.42) continue;
+          // Resolve on the shallower axis and push the ball back out, or it
+          // sits inside the brick and random-walks through the wall.
+          const ox = BW / 2 + 0.42 - Math.abs(dx), oz = BD / 2 + 0.42 - Math.abs(dz);
+          if(ox < oz){ bvx = -bvx; ballX += dx < 0 ? -ox : ox; }
+          else       { bvz = -bvz; ballZ += dz < 0 ? -oz : oz; }
+          hitBrick(b);
+          break;
+        }
+      }
+    }
+
+    w.goal.eye[0] = pad * 0.35;
+    w.goal.eye[1] = 8.2;
+    w.goal.eye[2] = ZP + 12;
+    w.goal.target[0] = ballX * 0.25;
+    w.goal.target[1] = 0.6;
+    w.goal.target[2] = -13;
+    w.goal.fov = 56;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+    r.draw('ground', { pos:[0, 0, (ZP + ZBACK) / 2], scale:[XL * 2.05, 1, Math.abs(ZP - ZBACK) + 14],
+                       color:'#050a16', metallic: 0.93, roughness: 0.15, rim: 0.4 });
+    for(const s of [-1, 1]){
+      r.draw('cube', { pos:[s * (XL + 0.55), 0.9, (ZP + ZBACK) / 2], scale:[1.1, 1.8, Math.abs(ZP - ZBACK) + 14],
+                       color:'#0d1120', metallic: 0.85, roughness: 0.3, rim: 1.4 });
+      r.beam([s * XL, 0.07, ZBACK - 7], [s * XL, 0.07, ZP + 6], 0.1,
+             { color:'#00f5ff', emissive:'#00f5ff', emissiveStrength: 2.2, height: 0.1 });
+    }
+    // Back wall the ball rebounds off, and the line you must not let it cross.
+    r.draw('cube', { pos:[0, 1.4, ZBACK - 1.4], scale:[XL * 2.2, 2.8, 1.4],
+                     color:'#0e1322', metallic: 0.85, roughness: 0.3, rim: 1.4 });
+    r.beam([-XL, 0.08, ZP + 3.6], [XL, 0.08, ZP + 3.6], 0.16,
+           { color:'#ff2442', emissive:'#ff2442', emissiveStrength: flash > 0 ? 6 : 2.4, height: 0.16 });
+
+    r.light({ pos:[-XL, 9, ZBACK + 6], color:'#4f7dff', intensity: 320, range: 48 });
+    r.light({ pos:[ XL, 9, ZBACK + 6], color:'#ff3fa0', intensity: 280, range: 48 });
+    r.light({ pos:[ballX, 3, ballZ], color: colour, intensity: 170, range: 24 });
+    r.light({ pos:[pad, 3.4, ZP + 2], color: flash > 0 ? '#ff2442' : colour,
+              intensity: flash > 0 ? 340 : 110, range: 22 });
+
+    // ── ICE WALL ──
+    for(const b of bricks){
+      if(!b.alive) continue;
+      const age = w.t - b.hit;
+      const lit = age < 0.22 ? (1 - age / 0.22) : 0;
+      r.draw('cube', {
+        pos:[b.x, 0.62, b.z], scale:[BW, 1.15, BD],
+        color: b.col, metallic: 0.55, roughness: 0.22, rim: 1.2,
+        emissive: b.col, emissiveStrength: (b.hp > 1 ? 0.85 : 0.4) + lit * 3
+      });
+      // A brighter cap so the top face reads from a low camera.
+      r.draw('box', { pos:[b.x, 1.22, b.z], scale:[BW * 0.8, 0.06, BD * 0.8],
+                      color:'#ffffff', emissive: b.col, emissiveStrength: 1.6 + lit * 3 });
+    }
+
+    // ── DEFLECTOR + BALL ──
+    r.draw('cube', { pos:[pad, 0.5, ZP], scale:[3.6, 0.85, 0.9],
+                     color:'#c3cee2', metallic: 1.0, roughness: 0.12, rim: 1.5 });
+    r.draw('box', { pos:[pad, 0.5, ZP - 0.48], scale:[3.2, 0.4, 0.1],
+                    color: colour, emissive: colour, emissiveStrength: 3.2 });
+    r.draw('sphere', { pos:[ballX, 0.7, ballZ], scale: 0.84,
+                       color:'#ffffff', metallic: 0.95, roughness: 0.07,
+                       emissive: colour, emissiveStrength: 1.6 });
+    r.glow([ballX, 0.7, ballZ], 0.85, colour, 1.5);
+    if(!stuck && Math.random() < 0.8) w.spark([ballX - bvx * dt * 2, 0.7, ballZ - bvz * dt * 2], colour, 0.36, 0.28);
+
+    // Shield pips, floating beside the deflector.
+    for(let i = 0; i < 3; i++){
+      r.draw('thintorus', { pos:[-XL + 0.9 + i * 0.9, 1.6, ZP + 3.2], rot:[Math.PI / 2, 0, w.t], scale: 0.7,
+                            color: i < shields ? colour : '#3a3f52',
+                            emissive: i < shields ? colour : '#3a3f52',
+                            emissiveStrength: i < shields ? 2.6 : 0.2 });
+    }
+
+    w.end();
+  });
+
+  function end(reason){
+    if(over) return;
+    over = true;
+    clearCanvasDrag();
+    const survive = Math.max(0, shields) * 40;
+    const final = Math.min(1100, score + survive);
+    showResults('breaker', final, {
+      '📡 Run Terminated': reason === 'cleared' ? 'ICE WALL CLEARED' : reason === 'timeout' ? 'CLOCK EXPIRED' : 'SHIELDS BREACHED',
+      '🧊 ICE Shattered': `${broken}/${bricks.length}`,
+      '🔥 Longest Chain': `${bestCombo}×`,
+      '🛡️ Shields Intact': `${Math.max(0, shields)} (+${survive})`,
+      '🏆 Score Accumulation': `${final} PTS`
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🌌 CYBER RUNNER 3D — three lanes, one highway
+// ══════════════════════════════════════════════
+// Same three lanes, same hull, same distance-and-cubes scoring as the 2D run.
+// The difference is that the track now has vanishing point: a wall you must
+// jump reads as a wall coming toward you, and the lane you are in is something
+// you can see rather than infer.
+P.games.runner = function(){
+  const w = begin3d(Object.assign({ ease: 0.3 }, CITY_NIGHT, {
+    env: { zenith:'#04041a', horizon:'#48104a', ground:'#05040c', intensity: 1.3 },
+    fog: { color:'#12062a', density: 0.0058 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  setControls({ left:'◀', action:'⤒ JUMP', right:'▶' });
+  setControlHint('SWIPE ◀ ▶ TO SHIFT LANE · TAP TO JUMP',
+                 '← → / A D = SHIFT LANE · SPACE / ↑ / W = JUMP');
+  showTouchHint('SWIPE LEFT / RIGHT TO SHIFT LANE · TAP TO JUMP');
+
+  const diff = getDifficultyModifier();
+  const colour = mine();
+  const LANE = 3.1, laneX = i => (i - 1) * LANE;
+  const BASE = 26 * diff, MAX = BASE * 1.9, RAMP = 0.55 * diff;
+
+  let speed = BASE, dist = 0, cubes = 0, hull = 3, elapsed = 0, over = false;
+  let lane = 1, x = 0, jumpT = 0, invuln = 0, spawnZ = -60, run = 0;
+  const items = [];
+
+  const score = () => Math.floor(dist / 1.3) + cubes * 30;
+
+  w.buildCity({ seed: 3113, count: 90, spread: 105, hole: 22, y: -6 });
+  w.buildStars(150, 200);
+
+  Ghost.begin('runner');
+  if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
+
+  document.getElementById('g-time').textContent = '0';
+  document.getElementById('prog-fill').style.width = '100%';
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--pink),var(--purple))';
+
+  const shift = d => {
+    const n = clamp(lane + d, 0, 2);
+    if(n === lane) return;
+    lane = n;
+    snd('dash');
+  };
+  const jump = () => { if(jumpT <= 0){ jumpT = 0.62; snd('jump'); } };
+
+  window.onkeydown = e => {
+    if(['ArrowLeft','ArrowRight','ArrowUp','Space','KeyA','KeyD','KeyW'].includes(e.code)) e.preventDefault();
+    if(e.code === 'ArrowLeft'  || e.code === 'KeyA') shift(-1);
+    if(e.code === 'ArrowRight' || e.code === 'KeyD') shift(1);
+    if(e.code === 'ArrowUp' || e.code === 'Space' || e.code === 'KeyW') jump();
+  };
+  document.getElementById('ctrl-left').onclick   = () => shift(-1);
+  document.getElementById('ctrl-right').onclick  = () => shift(1);
+  document.getElementById('ctrl-action').onclick = jump;
+
+  // Swipe left/right to shift, tap to jump — the 2D contract exactly.
+  let sx = 0, moved = false;
+  bindCanvasDrag({
+    onDown(p){ hideTouchHint(); sx = p.x; moved = false; },
+    onMove(p){
+      if(moved) return;
+      const dx = p.x - sx;
+      if(Math.abs(dx) < 34) return;
+      shift(dx > 0 ? 1 : -1);
+      moved = true;
+    },
+    onUp(){ if(!moved) jump(); }
+  });
+
+  gTimer = setInterval(() => { if(!over){ elapsed++; document.getElementById('g-time').textContent = elapsed; } }, 1000);
+
+  function spawnRow(z){
+    // Every row leaves at least one clean lane, so no arrangement is unwinnable.
+    const free = (Math.random() * 3) | 0;
+    for(let i = 0; i < 3; i++){
+      if(i === free) continue;
+      const q = Math.random();
+      if(q < 0.68) items.push({ kind: Math.random() < 0.45 ? 'spike' : 'wall', lane: i, z, spin: rnd(0, 6.3) });
+      else if(q < 0.86) items.push({ kind: 'cube', lane: i, z, spin: rnd(0, 6.3) });
+    }
+  }
+
+  function takeHit(){
+    hull--;
+    invuln = 1.1;
+    w.kick(2.6);
+    snd(hull <= 0 ? 'bigExplode' : 'hurt');
+    w.burst([x, 1.2, 0], '#ff2442', 24, { speed: 11, life: 0.7 });
+    w.pop([x, 3.2, 0], 'HULL BREACH', '#ff2442', { size: 18 });
+    document.getElementById('prog-fill').style.width = `${Math.max(0, hull) / 3 * 100}%`;
+    if(hull <= 0) end();
+  }
+
+  runLoop(dt => {
+    if(over) return false;
+    run += dt;
+    speed = Math.min(MAX, speed + RAMP * dt);
+    dist += speed * dt;
+    invuln = Math.max(0, invuln - dt);
+    if(jumpT > 0) jumpT = Math.max(0, jumpT - dt);
+    x += (laneX(lane) - x) * (1 - Math.pow(0.0002, dt));
+    // A clean arc: sin over the jump window, so take-off and landing both ease.
+    const air = jumpT > 0 ? Math.sin((1 - jumpT / 0.62) * Math.PI) * 2.9 : 0;
+    setLive(Math.min(1200, score()));
+    Ghost.sample((x / (LANE * 1.5) * 0.5 + 0.5) * BOARD_W);
+
+    // Rows are spaced by DISTANCE, so a faster run does not become a denser one.
+    spawnZ += speed * dt;
+    if(spawnZ > 0){ spawnRow(-150); spawnZ -= rnd(15, 24); }
+
+    for(let i = items.length - 1; i >= 0; i--){
+      const it = items[i];
+      it.z += speed * dt;
+      it.spin += dt * 2.5;
+      if(it.z > 12){ items.splice(i, 1); continue; }
+      if(Math.abs(it.z) > 1.3) continue;
+      if(Math.abs(laneX(it.lane) - x) > 1.5) continue;
+      if(it.kind === 'cube'){
+        items.splice(i, 1);
+        cubes++;
+        snd('pickup', { semi: Math.min(cubes, 12) });
+        w.burst([laneX(it.lane), 1.4, it.z], '#00f5ff', 14, { speed: 8, life: 0.5 });
+        w.pop([laneX(it.lane), 3, it.z], '+30', '#00f5ff');
+        continue;
+      }
+      // A spike is jumpable; a wall is not.
+      if(it.kind === 'spike' && air > 1.4) continue;
+      if(invuln > 0) continue;
+      items.splice(i, 1);
+      takeHit();
+      if(over) return false;
+    }
+
+    w.goal.eye[0] = x * 0.5;
+    w.goal.eye[1] = 4.4 + air * 0.35;
+    w.goal.eye[2] = 10.5;
+    w.goal.target[0] = x * 0.8;
+    w.goal.target[1] = 1.4 + air * 0.5;
+    w.goal.target[2] = -20;
+    w.goal.fov = 62 + (speed - BASE) / (MAX - BASE) * 8;   // speed opens the lens
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+    w.drawCity(dist * 0.3);
+    drawPylons(w, 8.6, dist, '#a855f7', { y: -0.4, height: 11, step: 16, far: 170 });
+    w.drawGrid({ y: 0, halfX: 4.9, halfZ: 150, step: LANE, color:'#00f5ff',
+                 emissive: 1.5, scroll: dist, floor: false });
+    r.draw('ground', { pos:[0, -0.08, -60], scale:[13, 1, 330],
+                       color:'#06060f', metallic: 0.92, roughness: 0.16, rim: 0.3 });
+    // Lane kerbs.
+    for(const s of [-1, 1]){
+      r.draw('cube', { pos:[s * 5.4, 0.28, -60], scale:[1.0, 0.6, 330],
+                       color:'#121422', metallic: 0.85, roughness: 0.32, rim: 1.3 });
+      r.beam([s * 4.95, 0.6, -210], [s * 4.95, 0.6, 12], 0.09,
+             { color:'#ff0090', emissive:'#ff0090', emissiveStrength: 2.6, height: 0.09 });
+    }
+
+    for(const it of items){
+      const ix = laneX(it.lane);
+      const fade = clamp(1 + it.z / 150, 0.3, 1);
+      if(it.kind === 'cube'){
+        r.draw('cube', { pos:[ix, 1.4 + Math.sin(w.t * 2.4 + it.spin) * 0.22, it.z],
+                         rot:[it.spin, it.spin * 1.3, 0], scale: 0.95,
+                         color:'#00f5ff', metallic: 0.6, roughness: 0.2,
+                         emissive:'#00f5ff', emissiveStrength: 2.4 });
+        r.glow([ix, 1.4, it.z], 0.8, '#00f5ff', 1.1 * fade);
+      }else if(it.kind === 'spike'){
+        r.draw('cone', { pos:[ix, 0.75, it.z], scale:[1.5, 1.5, 1.5],
+                         color:'#ff6600', metallic: 0.8, roughness: 0.3, rim: 1.5,
+                         emissive:'#ff6600', emissiveStrength: 0.9 });
+        r.draw('box', { pos:[ix, 0.06, it.z], scale:[1.7, 0.08, 1.7],
+                        color:'#ff6600', emissive:'#ff6600', emissiveStrength: 2.2 * fade });
+      }else{
+        r.draw('cube', { pos:[ix, 1.5, it.z], scale:[2.6, 3.0, 0.7],
+                         color:'#1a1020', metallic: 0.8, roughness: 0.33, rim: 1.6,
+                         emissive:'#ff2442', emissiveStrength: 0.45 });
+        r.draw('box', { pos:[ix, 1.5, it.z + 0.4], scale:[2.3, 0.22, 0.1],
+                        color:'#ff2442', emissive:'#ff2442', emissiveStrength: 3.4 * fade });
+      }
+      if(it.z > -45) r.light({ pos:[ix, 1.6, it.z], color: it.kind === 'cube' ? '#00f5ff' : it.kind === 'spike' ? '#ff6600' : '#ff2442',
+                               intensity: 45, range: 14 });
+    }
+
+    // ── THE RUNNER ──
+    // A hovering sled rather than a figure: it can bank into a lane change,
+    // which is the clearest possible read on which lane you are committing to.
+    const bank = clamp((laneX(lane) - x) * -0.35, -0.5, 0.5);
+    const blink = invuln > 0 && Math.floor(run * 18) % 2 === 0;
+    keyRig(w, [x, 1.2 + air, 0], colour, { key: 170, fill: 100 });
+    if(!blink){
+      r.draw('ship', { pos:[x, 1.1 + air, 0], rot:[0.12, Math.PI, bank], scale: 1.5,
+                       color:'#b6c2d8', metallic: 0.95, roughness: 0.2, rim: 1.4 });
+      r.draw('thintorus', { pos:[x, 0.35 + air * 0.4, 0], rot:[0, w.t * 2, 0], scale: [3.0, 1, 3.0],
+                            color: colour, emissive: colour, emissiveStrength: 1.6, alpha: 0.45 });
+      for(const s of [-1, 1]){
+        r.glow([x + s * 0.62, 1.1 + air, -0.75], 0.4, colour, 1.8);
+        if(Math.random() < 0.6) w.spark([x + s * 0.62, 1.1 + air, -0.9], colour, 0.24, 0.22, [0, 0, -rnd(10, 18)]);
+      }
+    }
+    r.light({ pos:[x, 2.4 + air, 1.5], color: colour, intensity: 130, range: 20 });
+
+    // Hull pips.
+    for(let i = 0; i < 3; i++){
+      r.draw('thintorus', { pos:[-3.5 + i * 0.8, 3.5, 6.2], rot:[Math.PI / 2, 0, w.t], scale: 0.55,
+                            color: i < hull ? '#39ff88' : '#3a3f52',
+                            emissive: i < hull ? '#39ff88' : '#3a3f52',
+                            emissiveStrength: i < hull ? 2.6 : 0.2 });
+    }
+
+    w.end();
+  });
+
+  function end(){
+    if(over) return;
+    over = true;
+    clearCanvasDrag();
+    const final = Math.min(1200, score());
+    const wasRacing = Ghost.racing, target = Ghost.target;
+    const beat = Ghost.finish(final);
+    showResults('runner', final, {
+      '🌌 Distance Run': `${Math.floor(dist)} M`,
+      '💠 Data Cubes': cubes,
+      '⚡ Top Velocity': `${(speed / BASE).toFixed(2)}×`,
+      '⏱️ Uptime': `${elapsed}s`,
+      ...(wasRacing ? { '👻 Ghost To Beat': `${target} PTS` } : {}),
+      ...(wasRacing && beat ? { '👻 Result': 'GHOST BEATEN' } : {}),
+      '🏆 Score Accumulation': `${final} PTS`
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  ☄️ METEOR SHIELD 3D — defend the server cluster
+// ══════════════════════════════════════════════
+// The 2D game fires up a rectangle at falling rocks. In 3D the servers stand on
+// a plate and the fragments come down out of the sky around them, so aiming is
+// a real bearing rather than a screen position — and the tumbling rock geometry
+// gives each fragment a readable size at range.
+P.games.meteor = function(){
+  const w = begin3d(Object.assign({ ease: 0.2 }, CITY_NIGHT, {
+    env: { zenith:'#050318', horizon:'#4a1024', ground:'#06040c', intensity: 1.25 },
+    fog: { color:'#14061c', density: 0.0060 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  setControls({ action: isTouchDevice ? '🎯 FIRE' : 'FIRE' });
+  setControlHint('TAP A FRAGMENT TO LOCK AND FIRE', 'MOVE TO AIM · CLICK OR SPACE TO FIRE');
+  showTouchHint('TAP THE INCOMING FRAGMENTS');
+
+  const diff = getDifficultyModifier();
+  const colour = mine();
+  const XL = 13, TOP = 26;
+  const time0 = Math.round(75 * getTimeModifier());
+  let time = time0, score = 0, killed = 0, wave = 1, chain = 0, bestChain = 0;
+  let over = false, cool = 0, aimX = 0, aimY = 6, spawnT = 0, waveT = 0;
+
+  const rocks = [], shots = [];
+  // Four servers on a plate. Losing all four ends the run; each survivor is
+  // worth 70 on the way out, exactly as in the 2D build.
+  const bases = [-9, -3, 3, 9].map(x => ({ x, alive: true, hp: 2, hit: -9 }));
+
+  w.buildCity({ seed: 7007, count: 76, spread: 110, hole: 30, y: -12 });
+  w.buildStars(170, 210);
+
+  document.getElementById('g-time').textContent = time;
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--orange),var(--red))';
+
+  // Aim in the vertical plane the rocks fall through, so a tap maps to a point
+  // in the sky rather than to a direction.
+  const aimAt = p => { aimX = clamp(nx(p) * XL, -XL, XL); aimY = clamp(6 + ny(p) * 11, 0.5, TOP - 2); };
+  bindCanvasDrag({
+    onHover(p){ if(!p.touch) aimAt(p); },
+    onDown(p){ hideTouchHint(); aimAt(p); fire(); },
+    onMove(p){ aimAt(p); },
+  });
+  window.onkeydown = e => {
+    if(e.code === 'Space' || e.code === 'Enter'){ e.preventDefault(); fire(); }
+  };
+  document.getElementById('ctrl-action').onclick = fire;
+
+  gTimer = setInterval(() => {
+    if(over) return;
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${time / time0 * 100}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end('timeout');
+  }, 1000);
+
+  function fire(){
+    if(over || cool > 0) return;
+    cool = 0.17;
+    snd('shoot');
+    const from = [0, 1.6, 2];
+    const to = [aimX, aimY, 0];
+    const d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    const l = Math.hypot(d[0], d[1], d[2]) || 1;
+    const v = 62;
+    shots.push({ x: from[0], y: from[1], z: from[2], vx: d[0]/l*v, vy: d[1]/l*v, vz: d[2]/l*v, life: 1.4 });
+    w.kick(0.15);
+  }
+
+  function spawn(){
+    const big = Math.random() < 0.22;
+    rocks.push({
+      x: rnd(-XL, XL), y: TOP + rnd(0, 8), z: rnd(-3, 3),
+      vy: -(3.4 + Math.random() * 2.6) * diff * (big ? 0.72 : 1),
+      vx: rnd(-1.1, 1.1),
+      r: big ? 1.5 : 0.95, hp: big ? 2 : 1,
+      sx: rnd(0, 6.3), sy: rnd(0, 6.3), spin: rnd(0.8, 2.2),
+      geo: Math.random() < 0.5 ? 'rock' : 'rock2',
+      col: big ? '#ff2442' : '#ff8a00'
+    });
+  }
+
+  function shatter(k, i){
+    rocks.splice(i, 1);
+    killed++; chain++;
+    bestChain = Math.max(bestChain, chain);
+    const pts = (k.r > 1.2 ? 55 : 30) + Math.min(chain, 8) * 4;
+    score += pts;
+    setLive(Math.min(1100, score + bases.filter(b => b.alive).length * 70));
+    snd('explode', { semi: Math.min(chain, 10) });
+    w.burst([k.x, k.y, k.z], k.col, 24, { speed: 10, life: 0.7, size: 0.4, grav: 5 });
+    w.pop([k.x, k.y + 1.4, k.z], '+' + pts, k.col);
+    w.kick(0.5);
+  }
+
+  function hitBase(b, k){
+    b.hp--; b.hit = w.t; chain = 0;
+    w.kick(2.0);
+    w.burst([b.x, 1.4, 0], '#ff2442', 26, { speed: 10, life: 0.8 });
+    snd(b.hp <= 0 ? 'bigExplode' : 'shieldHit');
+    if(b.hp <= 0){
+      b.alive = false;
+      w.pop([b.x, 4, 0], 'SERVER DOWN', '#ff2442', { size: 18 });
+      if(!bases.some(q => q.alive)) end('overrun');
+    }
+  }
+
+  runLoop(dt => {
+    if(over) return false;
+    cool -= dt;
+    waveT += dt;
+    if(waveT > 12){ waveT = 0; wave++; w.pop([0, 14, 0], 'WAVE ' + wave, '#ffd700', { size: 24, life: 1.6 }); snd('wave'); }
+
+    spawnT -= dt;
+    if(spawnT <= 0){ spawn(); spawnT = Math.max(0.22, (0.95 - wave * 0.06)) / diff; }
+
+    for(let i = shots.length - 1; i >= 0; i--){
+      const s = shots[i];
+      s.x += s.vx * dt; s.y += s.vy * dt; s.z += s.vz * dt;
+      s.life -= dt;
+      if(s.life <= 0 || s.y > TOP + 12){ shots.splice(i, 1); continue; }
+      let done = false;
+      for(let j = rocks.length - 1; j >= 0; j--){
+        const k = rocks[j];
+        const dx = k.x - s.x, dy = k.y - s.y, dz = k.z - s.z;
+        if(dx*dx + dy*dy + dz*dz < (k.r + 0.8) * (k.r + 0.8)){
+          done = true;
+          k.hp--;
+          w.burst([s.x, s.y, s.z], '#ffffff', 6, { speed: 6, life: 0.22, size: 0.2 });
+          if(k.hp <= 0) shatter(k, j);
+          else snd('hit');
+          break;
+        }
+      }
+      if(done) shots.splice(i, 1);
+    }
+
+    for(let i = rocks.length - 1; i >= 0; i--){
+      const k = rocks[i];
+      k.y += k.vy * dt; k.x += k.vx * dt;
+      k.sx += k.spin * dt; k.sy += k.spin * 0.7 * dt;
+      if(k.y < 1.2){
+        rocks.splice(i, 1);
+        // Nearest surviving server takes the hit; a fragment that lands clear
+        // of every server is a near miss and costs only the chain.
+        let target = null, bestD = 4.2;
+        for(const b of bases){ if(!b.alive) continue; const d = Math.abs(b.x - k.x); if(d < bestD){ bestD = d; target = b; } }
+        if(target) hitBase(target, k);
+        else { chain = 0; w.burst([k.x, 0.6, k.z], '#5a5f70', 12, { speed: 6, life: 0.5, grav: 6 }); snd('land'); }
+        if(over) return false;
+      }
+    }
+
+    const aliveN = bases.filter(b => b.alive).length;
+    document.getElementById('prog-fill').style.width = `${time / time0 * 100}%`;
+
+    w.goal.eye[0] = aimX * 0.12;
+    w.goal.eye[1] = 9.5;
+    w.goal.eye[2] = 25;
+    w.goal.target[0] = aimX * 0.22;
+    w.goal.target[1] = 8.5;
+    w.goal.target[2] = 0;
+    w.goal.fov = 58;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+    w.drawCity(0);
+    w.drawGrid({ y: 0, halfX: XL + 3, halfZ: 20, step: 3.2, color:'#2a2050',
+                 emissive: 0.9, floorColor:'#07060f', floorRough: 0.2 });
+
+    r.light({ pos:[-XL, 12, 12], color:'#4f7dff', intensity: 300, range: 48 });
+    r.light({ pos:[ XL, 12, 12], color:'#ff5a30', intensity: 260, range: 48 });
+
+    // ── SERVERS ──
+    for(const b of bases){
+      const hurt = w.t - b.hit < 0.3 ? 1 : 0;
+      if(b.alive){
+        r.draw('cube', { pos:[b.x, 1.5, 0], scale:[2.5, 3.0, 2.0],
+                         color: hurt ? '#ff9a9a' : '#161b2b', metallic: 0.85, roughness: 0.3, rim: 1.5 });
+        // Rack lights — three strips that go dark when the server does.
+        for(let s = 0; s < 3; s++){
+          r.draw('box', { pos:[b.x, 0.7 + s * 0.8, 1.02], scale:[1.9, 0.16, 0.08],
+                          color: b.hp > 1 ? '#39ff88' : '#ffd700',
+                          emissive: b.hp > 1 ? '#39ff88' : '#ffd700',
+                          emissiveStrength: 2.6 + hurt * 4 });
+        }
+        r.light({ pos:[b.x, 3.4, 2], color: b.hp > 1 ? '#39ff88' : '#ffd700', intensity: 40, range: 10 });
+      }else{
+        r.draw('cube', { pos:[b.x, 0.55, 0], rot:[0.1, 0.3, 0.12], scale:[2.4, 1.1, 2.0],
+                         color:'#0a0c14', metallic: 0.5, roughness: 0.7, rim: 0.8 });
+      }
+    }
+
+    // ── FRAGMENTS ──
+    for(const k of rocks){
+      r.draw(k.geo, { pos:[k.x, k.y, k.z], rot:[k.sx, k.sy, k.sx * 0.6], scale: k.r * 2.1,
+                      color:'#22242e', metallic: 0.3, roughness: 0.7, rim: 1.5,
+                      emissive: k.col, emissiveStrength: 0.55 });
+      // Entry heat on the leading face plus a trail of embers.
+      r.glow([k.x, k.y - k.r * 0.7, k.z], k.r * 0.9, k.col, 1.4);
+      if(Math.random() < 0.5) w.spark([k.x, k.y + k.r, k.z], k.col, 0.3, 0.45, [rnd(-1,1), rnd(2,5), rnd(-1,1)]);
+      if(k.y < 16) r.light({ pos:[k.x, k.y, k.z], color: k.col, intensity: 45, range: 15 });
+    }
+
+    for(const s of shots){
+      r.draw('pill', { pos:[s.x, s.y, s.z], rot:[Math.atan2(-s.vy, Math.hypot(s.vx, s.vz)) , Math.atan2(s.vx, s.vz), 0],
+                       scale:[0.18, 0.18, 1.9],
+                       color: colour, emissive: colour, emissiveStrength: 3.4 });
+      r.glow([s.x, s.y, s.z], 0.7, colour, 1.2);
+    }
+
+    // ── TURRET + RETICLE ──
+    r.draw('cube', { pos:[0, 0.7, 3.2], scale:[3.0, 1.4, 2.2],
+                     color:'#c3cee2', metallic: 1.0, roughness: 0.15, rim: 1.5 });
+    const yaw = Math.atan2(aimX, 3.2), pitch = -Math.atan2(aimY - 1.6, Math.hypot(aimX, 3.2));
+    r.draw('cylinder', { pos:[Math.sin(yaw) * 0.9, 1.7 - Math.sin(pitch) * 0.6, 3.2 - Math.cos(yaw) * 0.9],
+                         rot:[pitch + Math.PI / 2, yaw, 0], scale:[0.42, 2.6, 0.42],
+                         color:'#8f9bb5', metallic: 0.95, roughness: 0.22, rim: 1.4 });
+    r.draw('thintorus', { pos:[aimX, aimY, 0], rot:[Math.PI / 2, 0, w.t * 2.4], scale: 2.2,
+                          color: colour, emissive: colour, emissiveStrength: 2.6, alpha: 0.75 });
+    r.draw('thintorus', { pos:[aimX, aimY, 0], rot:[Math.PI / 2, 0, -w.t * 1.6], scale: 1.3,
+                          color:'#ffffff', emissive: colour, emissiveStrength: 2.0, alpha: 0.6 });
+    r.light({ pos:[0, 3, 6], color: colour, intensity: 90, range: 16 });
+
+    w.end();
+  });
+
+  function end(reason){
+    if(over) return;
+    over = true;
+    clearCanvasDrag();
+    const aliveN = bases.filter(b => b.alive).length;
+    const survive = aliveN * 70;
+    const final = Math.min(1100, score + survive);
+    showResults('meteor', final, {
+      '📡 Run Terminated': reason === 'overrun' ? 'ALL SERVERS DOWN' : 'MISSION CLOCK EXPIRED',
+      '☄️ Fragments Purged': killed,
+      '🌊 Wave Reached': wave,
+      '💥 Best Chain': `${bestChain}×`,
+      '🖥️ Servers Intact': `${aliveN} (+${survive})`,
+      '🏆 Score Accumulation': `${final} PTS`
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🖱️ CLICK FRENZY 3D — overload the reactor core
+// ══════════════════════════════════════════════
+// The 2D version is a button. Here it is an object in a room: a suspended core
+// inside a spinning containment cage that you strike, and which visibly
+// destabilises as the count climbs. Identical scoring — 8 points a hit, 500 cap,
+// ten seconds.
+P.games.click = function(){
+  const w = begin3d(Object.assign({ ease: 0.3 }, CITY_NIGHT, {
+    env: { zenith:'#050718', horizon:'#2a1050', ground:'#05060f', intensity: 1.5 },
+    fog: { color:'#0a0620', density: 0.008 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  setControls({ action: isTouchDevice ? '💥 STRIKE' : 'STRIKE' });
+  setControlHint('TAP THE CORE AS FAST AS YOU CAN', 'CLICK OR PRESS SPACE AS FAST AS YOU CAN');
+  showTouchHint('TAP ANYWHERE — FAST');
+
+  const colour = mine();
+  let clicks = 0, t = 10, over = false, punch = 0, spinRate = 1, heat = 0;
+
+  document.getElementById('g-time').textContent = '10';
+
+  function strike(){
+    if(over) return;
+    clicks++;
+    punch = 1;
+    heat = Math.min(1, heat + 0.045);
+    spinRate = 1 + heat * 5;
+    snd('bounce', { semi: (clicks % 8) * 2 });
+    setLive(Math.min(500, clicks * 8));
+    w.kick(0.55 + heat * 0.7);
+    w.burst([0, 1.2, 0], heat > 0.7 ? '#ff2442' : colour, 10 + (heat * 14) | 0,
+            { speed: 9 + heat * 8, life: 0.5, size: 0.3 });
+    if(clicks % 25 === 0) w.pop([0, 4.6, 0], clicks + ' STRIKES', '#ffd700', { size: 22, life: 1.2 });
+  }
+
+  bindCanvasDrag({ onDown(){ hideTouchHint(); strike(); } });
+  window.onkeydown = e => { if(e.code === 'Space' || e.code === 'Enter'){ e.preventDefault(); strike(); } };
+  document.getElementById('ctrl-action').onclick = strike;
+
+  gTimer = setInterval(() => {
+    t--;
+    document.getElementById('g-time').textContent = t;
+    document.getElementById('prog-fill').style.width = `${t / 10 * 100}%`;
+    if(t <= 3 && t > 0) snd('tick');
+    if(t <= 0){
+      clearInterval(gTimer); gTimer = null;
+      over = true;
+      const pts = Math.min(500, clicks * 8);
+      w.burst([0, 1.2, 0], '#ffffff', 60, { speed: 20, life: 1.1, size: 0.55 });
+      w.kick(4);
+      snd('bigExplode');
+      gLater(() => {
+        clearCanvasDrag();
+        showResults('click', pts, {
+          '🖱️ Structural Actions': clicks,
+          ...(pts >= 500 ? { '⚡ Threshold': 'MAXIMUM SCORE REACHED' } : {}),
+          '🏆 Final Score': `${pts} PTS`
+        }, { maxed: pts >= 500 });
+      }, 700);
+    }
+  }, 1000);
+
+  runLoop(dt => {
+    punch = Math.max(0, punch - dt * 5);
+    heat = Math.max(0, heat - dt * 0.06);
+
+    w.goal.eye[0] = Math.sin(w.t * 0.4) * 1.4;
+    w.goal.eye[1] = 2.4;
+    w.goal.eye[2] = 8.2 - punch * 0.5;
+    w.goal.target[0] = 0; w.goal.target[1] = 1.2; w.goal.target[2] = 0;
+    w.goal.fov = 52 + punch * 4;
+    w.step(dt);
+
+    w.begin();
+
+    // ── CHAMBER ──
+    // A ring of pillars and a mirror floor, so the core has something to be
+    // reflected in — the reflection is what places it in a room.
+    r.draw('ground', { pos:[0, -1.6, 0], scale:[26, 1, 26],
+                       color:'#05070f', metallic: 0.96, roughness: 0.08, rim: 0.3 });
+    for(let i = 0; i < 10; i++){
+      const a = (i / 10) * Math.PI * 2 + w.t * 0.06;
+      const px = Math.cos(a) * 8.5, pz = Math.sin(a) * 8.5;
+      r.draw('cube', { pos:[px, 1.6, pz], scale:[0.9, 6.4, 0.9],
+                       color:'#0e1120', metallic: 0.85, roughness: 0.28, rim: 1.5 });
+      r.draw('box', { pos:[px * 0.9, 1.6, pz * 0.9], scale:[0.14, 5.2, 0.14],
+                      color: colour, emissive: colour, emissiveStrength: 1.4 + heat * 2.5 });
+    }
+    r.beam([-11, -1.5, 0], [11, -1.5, 0], 0.07, { color:'#ff0090', emissive:'#ff0090', emissiveStrength: 2 });
+    r.beam([0, -1.5, -11], [0, -1.5, 11], 0.07, { color:'#ff0090', emissive:'#ff0090', emissiveStrength: 2 });
+
+    // ── THE CORE ──
+    const hot = heat > 0.6;
+    const coreCol = hot ? '#ff2442' : (heat > 0.3 ? '#ff8a00' : colour);
+    const scale = 2.0 + Math.sin(w.t * 3) * 0.06 + punch * 0.5;
+    r.draw('sphere', { pos:[0, 1.2, 0], scale,
+                       color: coreCol, emissive: coreCol,
+                       emissiveStrength: 1.6 + punch * 4 + heat * 2 });
+    r.draw('sphere', { pos:[0, 1.2, 0], scale: scale * 1.35,
+                       color:'#ffffff', emissive: coreCol, emissiveStrength: 0.8,
+                       metallic: 0.2, roughness: 0.05, alpha: 0.18 });
+    // Containment cage — three rings on different axes, spinning faster as the
+    // core heats, which is the whole read on how well you are doing.
+    const sp = w.t * spinRate;
+    r.draw('thintorus', { pos:[0, 1.2, 0], rot:[0, sp, 0],                 scale: scale * 1.75,
+                          color:'#d8e2f5', metallic: 1, roughness: 0.1, emissive: coreCol, emissiveStrength: 0.9 });
+    r.draw('thintorus', { pos:[0, 1.2, 0], rot:[Math.PI / 2, 0, sp * 1.3], scale: scale * 1.75,
+                          color:'#d8e2f5', metallic: 1, roughness: 0.1, emissive: coreCol, emissiveStrength: 0.9 });
+    r.draw('thintorus', { pos:[0, 1.2, 0], rot:[sp * 0.8, 0, Math.PI / 2],  scale: scale * 1.75,
+                          color:'#d8e2f5', metallic: 1, roughness: 0.1, emissive: coreCol, emissiveStrength: 0.9 });
+    r.glow([0, 1.2, 0], scale * 0.75, coreCol, 1.2 + punch * 2);
+    r.light({ pos:[0, 1.2, 0], color: coreCol, intensity: 260 + punch * 700 + heat * 300, range: 30 });
+    r.light({ pos:[0, 6, 4], color:'#8fa6ff', intensity: 140, range: 24 });
+
+    w.end();
+  });
+};
+
+// ══════════════════════════════════════════════
+//  ⚡ REACTION TIME 3D — the ignition window
+// ══════════════════════════════════════════════
+// Same test, same maths: the earlier you strike after the light changes, the
+// more it is worth, 400 minus your milliseconds, floor of 10, 15 second clock,
+// 400 cap. The 3D staging matters because the colour change now happens to a
+// lit object in a room — the whole chamber changes state, which is a far
+// stronger signal than a rectangle changing fill.
+P.games.reaction = function(){
+  const w = begin3d(Object.assign({ ease: 0.35 }, CITY_NIGHT, {
+    env: { zenith:'#050718', horizon:'#2a0a2c', ground:'#05060f', intensity: 1.3 },
+    fog: { color:'#0a0518', density: 0.009 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  // --rx-* resolve through the cb-safe palette, where "go" is bright yellow —
+  // red to green is exactly the switch a deutan player cannot see.
+  const cbSafe = !!(window.VFX && VFX.cbSafe);
+  const GO_COL = cbSafe ? '#f0e442' : '#39ff88';
+  const WAIT_COL = cbSafe ? '#0072b2' : '#ff2442';
+  const EARLY_COL = '#ff6600';
+  const goWord = cbSafe ? 'YELLOW' : 'GREEN';
+
+  setControls({ action: isTouchDevice ? 'STRIKE' : 'STRIKE' });
+  setControlHint(`TAP THE INSTANT IT TURNS ${goWord}`, `CLICK THE INSTANT IT TURNS ${goWord}`);
+
+  let state = 'wait', startT = 0, time = 15, score = 0, over = false;
+  let flash = 0, best = 0, reads = 0, spin = 0, trigger = null;
+
+  document.getElementById('g-time').textContent = time;
+
+  // Re-arms go through gLater() so stopGame() kills them on a quit — left
+  // running, one of these repaints the chamber under the NEXT round.
+  const later = (fn, ms) => gLater(() => { if(!over) fn(); }, ms);
+
+  function arm(minMs, spread){
+    trigger = later(() => {
+      if(state !== 'wait') return;
+      state = 'go';
+      startT = performance.now();
+      flash = 1;
+      snd('go');
+    }, Math.random() * spread + minMs);
+  }
+  arm(1500, 2500);
+
+  function strike(){
+    if(over) return;
+    if(state === 'wait'){
+      clearTimeout(trigger);
+      state = 'hold';
+      snd('wrong');
+      w.kick(1.2);
+      w.pop([0, 4.2, 0], 'TOO FAST — RESETTING', EARLY_COL, { size: 18, life: 1.2 });
+      later(() => { if(time > 0){ state = 'wait'; arm(1000, 2000); } }, 1200);
+    }else if(state === 'go'){
+      const ms = Math.round(performance.now() - startT);
+      const earned = Math.max(10, 400 - ms);
+      score += earned; reads++;
+      best = best ? Math.min(best, ms) : ms;
+      setLive(Math.min(400, score));
+      snd('correct', { semi: clamp(8 - ms / 40, -6, 10) });
+      w.kick(1.0);
+      w.burst([0, 1.4, 0], GO_COL, 34, { speed: 13, life: 0.8, size: 0.4 });
+      w.pop([0, 4.2, 0], `${ms} ms · +${earned}`, GO_COL, { size: 20, life: 1.3 });
+      state = 'hold';
+      later(() => { if(time > 0){ state = 'wait'; arm(1200, 2200); } }, 900);
+    }
+  }
+
+  bindCanvasDrag({ onDown(){ hideTouchHint(); strike(); } });
+  window.onkeydown = e => { if(e.code === 'Space' || e.code === 'Enter'){ e.preventDefault(); strike(); } };
+  document.getElementById('ctrl-action').onclick = strike;
+
+  gTimer = setInterval(() => {
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${time / 15 * 100}%`;
+    if(time <= 0) end();
+  }, 1000);
+
+  runLoop(dt => {
+    if(over) return false;
+    flash = Math.max(0, flash - dt * 2.2);
+    spin += dt * (state === 'go' ? 5 : 0.8);
+
+    const col = state === 'go' ? GO_COL : state === 'hold' ? EARLY_COL : WAIT_COL;
+
+    w.goal.eye[0] = Math.sin(w.t * 0.3) * 0.9;
+    w.goal.eye[1] = 2.6;
+    w.goal.eye[2] = 9;
+    w.goal.target[0] = 0; w.goal.target[1] = 1.4; w.goal.target[2] = 0;
+    w.goal.fov = state === 'go' ? 50 : 54;
+    w.step(dt);
+
+    w.begin();
+    r.draw('ground', { pos:[0, -1.8, 0], scale:[30, 1, 30],
+                       color:'#05070f', metallic: 0.96, roughness: 0.07, rim: 0.3 });
+    // The chamber wall. Its light IS the signal, so the whole room changes
+    // colour at the moment of truth rather than just one panel.
+    for(let i = 0; i < 14; i++){
+      const a = (i / 14) * Math.PI * 2;
+      const px = Math.cos(a) * 9.5, pz = Math.sin(a) * 9.5;
+      r.draw('cube', { pos:[px, 2, pz], rot:[0, -a, 0], scale:[2.2, 8, 0.7],
+                       color:'#0c0f1c', metallic: 0.85, roughness: 0.3, rim: 1.4 });
+      r.draw('box', { pos:[px * 0.93, 2, pz * 0.93], rot:[0, -a, 0], scale:[1.5, 0.2, 0.1],
+                      color: col, emissive: col, emissiveStrength: 1.6 + flash * 5 });
+    }
+
+    // ── THE LAMP ──
+    const s = 2.4 + (state === 'go' ? 0.25 + flash * 0.5 : 0);
+    r.draw('sphere', { pos:[0, 1.4, 0], scale: s,
+                       color: col, emissive: col, emissiveStrength: state === 'go' ? 3.2 + flash * 5 : 1.0 });
+    r.draw('thintorus', { pos:[0, 1.4, 0], rot:[Math.PI / 2, 0, spin], scale: s * 1.7,
+                          color:'#d8e2f5', metallic: 1, roughness: 0.1, emissive: col, emissiveStrength: 1.2 });
+    r.draw('thintorus', { pos:[0, 1.4, 0], rot:[0, spin * 1.4, 0], scale: s * 1.7,
+                          color:'#d8e2f5', metallic: 1, roughness: 0.1, emissive: col, emissiveStrength: 1.2 });
+    r.glow([0, 1.4, 0], s * 0.7, col, state === 'go' ? 2.2 : 0.8);
+    r.light({ pos:[0, 1.4, 0], color: col, intensity: state === 'go' ? 900 + flash * 900 : 200, range: 34 });
+    r.light({ pos:[0, 7, 5], color:'#8fa6ff', intensity: 90, range: 22 });
+
+    // The instruction, held in world space above the lamp so it lives in the
+    // same room as everything else rather than floating on a HUD.
+    w.end();
+  });
+
+  function end(){
+    if(over) return;
+    over = true;
+    clearTimeout(trigger);
+    clearCanvasDrag();
+    const pts = Math.min(400, score);
+    showResults('reaction', pts, {
+      '⚡ Reads Landed': reads,
+      ...(best ? { '🏁 Fastest Read': `${best} ms` } : {}),
+      '🏆 Final Sync Score': pts
+    });
+  }
+};
+
+})();
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  § 4/5  MISSIONS II       games3d_b
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════
+//  🚀 POINT INVADERS — 3D MISSIONS, PART II
+// ══════════════════════════════════════════════════════════════════════
+// The seven missions that had no 3D build: the four that were pure DOM
+// (Memory Match, Math Blitz, Node Hacker, Overclock Path), the two-scope signal
+// bench (Frequency Modulator), the survival arena (Cyber Arena) and the lane
+// siege (Battle Bots). With these registered every mission in the hub renders
+// in 3D, so the mode switch on the login screen is now a whole-arcade choice
+// rather than a partial one.
+//
+// Same contract as part I: each registers on PI3D.games under its 2D id, keeps
+// that game's clock, cap and showResults() payload, and changes nothing
+// downstream. A 3D score is the same score on the same board.
+//
+// ⚠️ NO SHADOWS. Depth here comes from perspective, parallax, fog, bevel
+// specular, rim light and — new in this file — real physical staging: cards
+// that rotate on their own axis, pillars that rise out of a floor, a current
+// that is a lit tube lying on a board.
+
+(function(){
+'use strict';
+
+const P = window.PI3D;
+if(!P) return;
+const K = P.kit;
+const { begin3d, runLoop, mine, nx, ny, rnd, clamp, seeded, NEON } = K;
+
+// ══════════════════════════════════════════════
+//  🏙️ SHARED LOOK
+// ══════════════════════════════════════════════
+// The same rain-black city night part I established, so a mission from this
+// file and a mission from that one read as the same arcade.
+const CITY_NIGHT = {
+  env:  { zenith:'#04061a', horizon:'#3a1050', ground:'#05060f', intensity: 1.35 },
+  fog:  { color:'#0d0722', density: 0.0052 },
+  sun:  { dir:[-0.4, -0.85, -0.5], color:'#6f7dff', intensity: 0.7 },
+  grade:{ exposure: 0.95, bloom: 0.42, threshold: 1.6, knee: 0.5, radius: 0.9,
+          vignette: 0.44, aberration: 0.45, grain: 0.028, scanline: 0.014, saturation: 1.12 }
+};
+
+// ══════════════════════════════════════════════
+//  🎯 SCREEN PICKING
+// ══════════════════════════════════════════════
+// Input arrives in board coordinates (see bindCanvasDrag), and the GL canvas is
+// laid over the 2D one on exactly the same rectangle — so a board coordinate
+// scales straight into the CSS pixel space r.project() reports in. Picking is
+// then "which of these world points projects nearest the finger", which needs
+// no inverse matrix and works whatever the camera is doing.
+function screenOf(w, p){
+  const c = w.r.canvas;
+  return { x: p.x / BOARD_W * c.clientWidth, y: p.y / BOARD_H * c.clientHeight };
+}
+// `radius` is in CSS pixels at a nominal 500px-tall board and is scaled with the
+// real one, so the hit target stays the same size on a phone as on a desktop.
+function pickNearest(w, p, points, radius){
+  const s = screenOf(w, p);
+  const scale = (w.r.canvas.clientHeight || 500) / 500;
+  const max = (radius || 60) * scale;
+  let best = -1, bd = max;
+  for(let i = 0; i < points.length; i++){
+    const q = points[i];
+    if(!q) continue;
+    const sp = w.r.project(q);
+    if(!sp) continue;
+    const d = Math.hypot(sp.x - s.x, sp.y - s.y);
+    if(d < bd){ bd = d; best = i; }
+  }
+  return best;
+}
+
+// ══════════════════════════════════════════════
+//  🔤 BLOCK TYPE — real geometry, not a texture
+// ══════════════════════════════════════════════
+// A 5×7 cell font drawn as instanced cubes. Every glyph is ~18 instances in the
+// SAME bucket as everything else made of cubes, so a whole equation costs no
+// extra draw call. It exists because Math Blitz needs its sum to be an OBJECT in
+// the room — something that can be lit, orbited and blown apart — rather than a
+// caption floating on a HUD.
+// Seven-segment shapes rather than a typewriter face, on purpose: every stroke
+// is a solid orthogonal bar, so a digit assembled out of cubes reads as a digit
+// instead of a scatter of dots. A diagonal stroke at this cell size loses the
+// eye completely once bloom rounds each cube off.
+const FONT = {
+  '0':['11111','10001','10001','10001','10001','10001','11111'],
+  '1':['00110','01110','00110','00110','00110','00110','01111'],
+  '2':['11111','00001','00001','11111','10000','10000','11111'],
+  '3':['11111','00001','00001','11111','00001','00001','11111'],
+  '4':['10001','10001','10001','11111','00001','00001','00001'],
+  '5':['11111','10000','10000','11111','00001','00001','11111'],
+  '6':['11111','10000','10000','11111','10001','10001','11111'],
+  '7':['11111','00001','00001','00001','00001','00001','00001'],
+  '8':['11111','10001','10001','11111','10001','10001','11111'],
+  '9':['11111','10001','10001','11111','00001','00001','11111'],
+  '+':['00000','00100','00100','11111','00100','00100','00000'],
+  '-':['00000','00000','00000','11111','00000','00000','00000'],
+  '*':['00000','10001','01110','11111','01110','10001','00000'],
+  '=':['00000','11111','00000','00000','00000','11111','00000'],
+  '?':['11111','10001','00001','00111','00100','00000','00100'],
+  '/':['00001','00011','00110','01100','11000','10000','00000'],
+  ' ':['00000','00000','00000','00000','00000','00000','00000']
+};
+const GLYPH_W = 5, GLYPH_H = 7;
+
+// Width of a string in cell units, including the one-cell gutter between
+// glyphs — used to centre a line without measuring it twice.
+function textCells(str){ return str.length * (GLYPH_W + 1) - 1; }
+
+// Draws `str` centred on `pos`, in the XY plane, one cube per lit cell. `cell`
+// is the size of one cell in world units; `depth` is how far the type stands
+// off its backing plate, which is the whole reason it reads as carved rather
+// than printed.
+function drawText3D(r, str, pos, cell, o){
+  o = o || {};
+  const col = o.color || '#ffffff';
+  const em = o.emissiveStrength != null ? o.emissiveStrength : 1.5;
+  const depth = o.depth || cell * 1.6;
+  const rot = o.rot || null;
+  const w = textCells(str) * cell;
+  const x0 = pos[0] - w / 2 + cell / 2;
+  const y0 = pos[1] + (GLYPH_H - 1) * cell / 2;
+  const jitter = o.jitter || 0;
+  for(let i = 0; i < str.length; i++){
+    const g = FONT[str[i]] || FONT['?'];
+    const gx = x0 + i * (GLYPH_W + 1) * cell;
+    for(let row = 0; row < GLYPH_H; row++){
+      const line = g[row];
+      for(let c = 0; c < GLYPH_W; c++){
+        if(line[c] !== '1') continue;
+        const jz = jitter ? (Math.sin((i * 31 + row * 7 + c) * 1.7 + (o.t || 0) * 3) * jitter) : 0;
+        r.draw('cube', {
+          pos: [gx + c * cell, y0 - row * cell, pos[2] + jz],
+          rot: rot,
+          scale: [cell * 1.16, cell * 1.16, depth],
+          color: col, emissive: o.emissive || col, emissiveStrength: em,
+          metallic: o.metallic != null ? o.metallic : 0.35,
+          roughness: o.roughness != null ? o.roughness : 0.3
+        });
+      }
+    }
+  }
+}
+
+// The plate a line of type is carved into — a bevelled slab with a lit edge.
+// Sized off the string so it always frames it.
+function typePlate(r, str, pos, cell, colour, o){
+  o = o || {};
+  const w = textCells(str) * cell + cell * 2.4;
+  const h = GLYPH_H * cell + cell * 2;
+  r.draw('slab', { pos:[pos[0], pos[1], pos[2] - cell * 1.4],
+                   scale:[w, h, cell * 1.1],
+                   color:'#0a0d1a', metallic: 0.9, roughness: 0.24, rim: 1.5 });
+  const eo = o.edge != null ? o.edge : 1.8;
+  r.beam([pos[0] - w / 2, pos[1] + h / 2, pos[2] - cell * 0.9],
+         [pos[0] + w / 2, pos[1] + h / 2, pos[2] - cell * 0.9], cell * 0.22,
+         { color: colour, emissive: colour, emissiveStrength: eo });
+  r.beam([pos[0] - w / 2, pos[1] - h / 2, pos[2] - cell * 0.9],
+         [pos[0] + w / 2, pos[1] - h / 2, pos[2] - cell * 0.9], cell * 0.22,
+         { color: colour, emissive: colour, emissiveStrength: eo });
+  return { w, h };
+}
+
+// ══════════════════════════════════════════════
+//  🧷 CLEANUP CHAINING
+// ══════════════════════════════════════════════
+// begin3d() claims onStopGame for unmount(). A mission that also owns DOM — a
+// slider console, a set of projected labels — chains onto it rather than
+// replacing it, or quitting mid-round leaves the GL surface up.
+function onQuit(fn){
+  const prev = onStopGame;
+  onStopGame = () => { try{ fn(); }catch(e){} if(prev) prev(); };
+}
+
+// ══════════════════════════════════════════════
+//  🏷️ PERSISTENT WORLD LABELS
+// ══════════════════════════════════════════════
+// w.pop() is a firework — it fades and dies. Some of these missions need a
+// caption that STAYS pinned to an object (a status line over a keypad, the
+// match percentage over a scope). Same trick, no lifetime: a div in the GL fx
+// layer, re-projected every frame.
+function labelRig(){
+  const layer = document.getElementById('gl-fx');
+  const list = [];
+  return {
+    add(cls){
+      const el = document.createElement('div');
+      el.className = 'gl-pop gl-label' + (cls ? ' ' + cls : '');
+      el.style.opacity = '1';
+      if(layer) layer.appendChild(el);
+      const o = { el, pos:[0,0,0], show: true,
+        set(str, color, size){
+          if(str != null && el.textContent !== str) el.textContent = str;
+          if(color) el.style.color = color;
+          if(size) el.style.fontSize = size + 'px';
+          return o;
+        },
+        at(x, y, z){ o.pos[0] = x; o.pos[1] = y; o.pos[2] = z; return o; },
+        vis(v){ o.show = v; return o; }
+      };
+      list.push(o);
+      return o;
+    },
+    sync(r){
+      for(let i = 0; i < list.length; i++){
+        const o = list[i];
+        const sp = o.show ? r.project(o.pos) : null;
+        if(!sp){ o.el.style.opacity = '0'; continue; }
+        o.el.style.opacity = '1';
+        o.el.style.transform = `translate(-50%,-50%) translate(${sp.x}px,${sp.y}px)`;
+      }
+    },
+    destroy(){ list.forEach(o => o.el.remove()); list.length = 0; }
+  };
+}
+// Published onto the shared kit for the Network Arena's 3D views (§6), which
+// need exactly this to pin a rival's name over their core.
+K.labelRig = labelRig;
+
+// ══════════════════════════════════════════════
+//  🧠 MEMORY MATCH 3D — the pair vault
+// ══════════════════════════════════════════════
+// Sixteen slabs stood on end in a mirrored vault. A card does not "flip" by
+// swapping a character: it ROTATES on its own Y axis through 180°, and what is
+// on the far side is a lit object in a niche — a real shape in a real colour,
+// which is a far better memory hook than a glyph and the reason this reads at a
+// glance in a way the 2D grid never could.
+//
+// Scoring is untouched: 75 a pair, eight pairs, a 25 second clock, 600 cap.
+P.games.memory = function(){
+  const w = begin3d(Object.assign({ ease: 0.2 }, CITY_NIGHT, {
+    env: { zenith:'#04061c', horizon:'#331050', ground:'#05060f', intensity: 1.4 },
+    fog: { color:'#0a0620', density: 0.0075 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  setControls(null);
+  setControlHint('TAP A SLAB TO TURN IT · FIND THE EIGHT PAIRS',
+                 'CLICK A SLAB TO TURN IT · FIND THE EIGHT PAIRS');
+  showTouchHint('TAP THE SLABS TO TURN THEM');
+
+  // Eight tokens. Shape AND colour differ on every one, so a pair is
+  // identifiable from either cue alone — which is what keeps this playable for
+  // a colourblind player without a separate palette.
+  const TOKENS = [
+    { geo:'sphere',    col:'#00f5ff', s:[1,1,1],       spin:[0,1,0] },
+    { geo:'cube',      col:'#ff0090', s:[1,1,1],       spin:[1,1,0] },
+    { geo:'torus',     col:'#39ff88', s:[1.25,1.25,1.25], spin:[1,0,0] },
+    { geo:'cone',      col:'#ffd700', s:[1.1,1.2,1.1], spin:[0,1,0] },
+    { geo:'pill',      col:'#a855f7', s:[0.8,1.3,0.8], spin:[0,0,1] },
+    { geo:'rock',      col:'#ff6600', s:[1.1,1.1,1.1], spin:[1,1,1] },
+    { geo:'drone',     col:'#56b4e9', s:[1,1,1],       spin:[0,1,0] },
+    { geo:'thintorus', col:'#ff2442', s:[1.35,1.35,1.35], spin:[1,1,0] }
+  ];
+
+  const COLS = 4, ROWS = 4, GAPX = 3.4, GAPZ = 4.3;
+  const deck = [];
+  for(let i = 0; i < 8; i++){ deck.push(i, i); }
+  for(let i = deck.length - 1; i > 0; i--){
+    const j = (Math.random() * (i + 1)) | 0;
+    const t = deck[i]; deck[i] = deck[j]; deck[j] = t;
+  }
+
+  const cards = deck.map((tok, i) => {
+    const cx = (i % COLS - (COLS - 1) / 2) * GAPX;
+    const cz = ((i / COLS) | 0) - (ROWS - 1) / 2;
+    return {
+      tok, i,
+      // The rows step UP as they recede. Sixteen upright slabs on one flat
+      // plane hide each other; raked like seating, every card in the far rows
+      // is visible over the shoulders of the near ones, and the rake itself is
+      // a depth cue.
+      pos: [cx, 0.4 + (1.5 - cz) * 0.9, cz * GAPZ],
+      turn: 0,        // 0 = face down, 1 = face up (drives the Y rotation)
+      goal: 0,
+      gone: 0,        // 1 = matched and dissolving
+      lift: 0, glow: 0, wob: Math.random() * 6.28
+    };
+  });
+  const centres = cards.map(c => c.pos);
+
+  let flipped = [], matched = 0, score = 0, time = 25, ended = false, busy = false;
+  document.getElementById('g-time').textContent = time;
+
+  const colour = mine();
+
+  function tap(p){
+    if(ended || busy) return;
+    const idx = pickNearest(w, p, centres, 64);
+    if(idx < 0) return;
+    const c = cards[idx];
+    if(c.gone || c.goal === 1) return;
+    hideTouchHint();
+    c.goal = 1;
+    c.glow = 1;
+    snd('flip', { semi: c.tok });
+    flipped.push(c);
+    if(flipped.length < 2) return;
+
+    busy = true;
+    const [a, b] = flipped;
+    if(a.tok === b.tok){
+      score += 75; matched++;
+      setLive(Math.min(600, score));
+      snd('match', { semi: matched * 2 });
+      w.kick(0.6);
+      const T = TOKENS[a.tok];
+      [a, b].forEach(c => {
+        c.gone = 1;
+        w.burst([c.pos[0], c.pos[1] + 1.6, c.pos[2]], T.col, 26, { speed: 10, life: 0.9, size: 0.32 });
+      });
+      w.pop([0, 6.4, 0], `PAIR ${matched} / 8 · +75`, T.col, { size: 20, life: 1.1 });
+      flipped = [];
+      busy = false;
+      if(matched === 8){
+        w.kick(2.4);
+        snd('victory');
+        gLater(() => end(), 900);
+      }
+    } else {
+      snd('wrong');
+      gLater(() => {
+        a.goal = 0; b.goal = 0;
+        flipped = []; busy = false;
+      }, 700);
+    }
+  }
+
+  bindCanvasDrag({ onDown: tap });
+
+  gTimer = setInterval(() => {
+    if(ended) return;
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${time / 25 * 100}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end();
+  }, 1000);
+
+  runLoop(dt => {
+    if(ended) return false;
+
+    for(const c of cards){
+      c.turn += (c.goal - c.turn) * Math.min(1, dt * 9);
+      c.glow = Math.max(0, c.glow - dt * 1.6);
+      if(c.gone) c.lift = Math.min(1, c.lift + dt * 0.9);
+    }
+
+    // Low and level rather than looking down: the rake already separates the
+    // rows vertically, so a high camera only re-flattens them and pushes the
+    // front row out of frame.
+    w.goal.eye[0] = Math.sin(w.t * 0.22) * 0.9;
+    w.goal.eye[1] = 5.6;
+    w.goal.eye[2] = 17.5;
+    w.goal.target[0] = 0; w.goal.target[1] = 0.85; w.goal.target[2] = 0;
+    w.goal.fov = 46;
+    w.step(dt);
+
+    w.begin();
+
+    // ── THE VAULT ──
+    r.draw('ground', { pos:[0, -3.65, 0], scale:[40, 1, 40],
+                       color:'#04060e', metallic: 0.95, roughness: 0.09, rim: 0.3 });
+    w.drawGrid({ y: -3.6, halfX: 15, halfZ: 15, step: 3, color:'#1b2a6a', emissive: 0.5, width: 0.03, floor: false });
+    // Four wall pillars with a lamp each. They are the room, and they are what
+    // the mirror floor has something to reflect.
+    for(let i = 0; i < 4; i++){
+      const a = i / 4 * Math.PI * 2 + Math.PI / 4;
+      const px = Math.cos(a) * 12, pz = Math.sin(a) * 12;
+      r.draw('cube', { pos:[px, 2.4, pz], scale:[1.5, 12, 1.5],
+                       color:'#0b0e1c', metallic: 0.88, roughness: 0.3, rim: 1.4 });
+      r.draw('box', { pos:[px * 0.92, 2.4, pz * 0.92], scale:[0.2, 9.5, 0.2],
+                      color: colour, emissive: colour, emissiveStrength: 1.5 });
+      r.glow([px * 0.9, 7.6, pz * 0.9], 1.4, colour, 0.7);
+    }
+    r.light({ pos:[0, 10, 6], color:'#93a6ff', intensity: 260, range: 40 });
+
+    // ── THE SLABS ──
+    for(const c of cards){
+      const T = TOKENS[c.tok];
+      const y = c.pos[1] + c.lift * 7;
+      const a = c.turn * Math.PI;          // the physical turn
+      const fade = 1 - c.lift;
+      if(fade <= 0.02) continue;
+      const bob = Math.sin(w.t * 1.4 + c.wob) * 0.06;
+
+      // The slab itself. Rotating it is what shows the far side — there is no
+      // "flipped" state to paint, only an angle.
+      // Body: a dark chrome slab. The bevel comes from a second, slightly
+      // smaller face plate standing proud of it — a real step in the surface,
+      // which is what catches the specular and reads as machined.
+      const HW = 1.1, HH = 1.35;
+      r.draw('slab', { pos:[c.pos[0], y + bob, c.pos[2]], rot:[0, a, 0],
+                       scale:[HW * 2 * fade, HH * 2 * fade, 0.4],
+                       color:'#11162a', metallic: 0.94, roughness: 0.18,
+                       rim: 2.0, alpha: fade, blend: fade < 0.999 });
+      r.draw('slab', { pos:[c.pos[0], y + bob, c.pos[2]], rot:[0, a, 0],
+                       scale:[HW * 1.76 * fade, HH * 1.8 * fade, 0.48],
+                       color:'#080b16', metallic: 0.88, roughness: 0.3,
+                       rim: 1.2, alpha: fade, blend: fade < 0.999 });
+      // One lit rail along the bottom edge only. An outline on all four sides
+      // fought the tokens for attention; a single base light says "this is a
+      // panel standing in a rack" and gets out of the way.
+      const ex = Math.cos(a), ez = -Math.sin(a);
+      const edge = 0.55 + c.glow * 3.5;
+      r.beam([c.pos[0] - ex * HW * fade, y + bob - HH * fade, c.pos[2] - ez * HW * fade],
+             [c.pos[0] + ex * HW * fade, y + bob - HH * fade, c.pos[2] + ez * HW * fade],
+             0.055, { color: colour, emissive: colour, emissiveStrength: edge, height: 0.055 });
+      // A plinth, so a slab is standing on something rather than hovering.
+      r.draw('cube', { pos:[c.pos[0], y + bob - (HH + 0.2) * fade, c.pos[2]],
+                       scale:[HW * 1.5 * fade, 0.3, 1.1],
+                       color:'#0a0e1a', metallic: 0.9, roughness: 0.3, rim: 1.4 });
+
+      // ── FACE DOWN: an etched sigil on the front plate ──
+      if(c.turn < 0.5){
+        const s = Math.cos(a);            // the face's own foreshortening
+        for(const sy of [0.5, 0, -0.5]){
+          r.draw('box', { pos:[c.pos[0] + Math.sin(a) * 0.26, y + bob + sy, c.pos[2] + Math.cos(a) * 0.26],
+                          rot:[0, a, 0], scale:[1.5 * s * fade, 0.14, 0.07],
+                          color:'#3f57a0', emissive:'#3f57a0', emissiveStrength: 0.8 });
+        }
+      }
+
+      // ── FACE UP: the token in its niche ──
+      // Drawn once the slab is more than half turned, so it appears from behind
+      // the edge exactly when a real card's face would.
+      if(c.turn > 0.5){
+        const s = -Math.cos(a);           // 0 at the edge-on moment, 1 fully round
+        const tp = [c.pos[0] - Math.sin(a) * 0.5, y + bob, c.pos[2] - Math.cos(a) * 0.5];
+        r.draw(T.geo, { pos: tp,
+                        rot:[w.t * T.spin[0], w.t * T.spin[1] * 1.2, w.t * T.spin[2] * 0.8],
+                        scale:[T.s[0] * 0.95 * s * fade, T.s[1] * 0.95 * fade, T.s[2] * 0.95 * fade],
+                        color: T.col, emissive: T.col, emissiveStrength: 1.1 + c.glow * 2,
+                        metallic: 0.6, roughness: 0.2 });
+        r.glow(tp, 1.2 * s * fade, T.col, 0.85 + c.glow);
+      }
+    }
+
+    // The two turned cards get their own lamps — the pair being judged is lit
+    // brighter than the rest of the board, so the eye is on the right place.
+    for(const c of flipped){
+      r.light({ pos:[c.pos[0], c.pos[1] + 2.4, c.pos[2] + 1.4],
+                color: TOKENS[c.tok].col, intensity: 130, range: 12 });
+    }
+
+    w.end();
+  });
+
+  let scored = false;
+  function end(){
+    if(scored) return; scored = true; ended = true;
+    clearInterval(gTimer); gTimer = null;
+    clearCanvasDrag();
+    showResults('memory', Math.min(600, score), {
+      '🧩 Clusters Unified': matched,
+      '🏆 Score Accumulation': `${score} PTS`
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🔢 MATH BLITZ 3D — the solver core
+// ══════════════════════════════════════════════
+// The sum is built out of cubes and hung in a reactor, and the number you type
+// materialises below it in the same block type — so the two things you are
+// comparing are two objects in one room rather than a caption and a text field.
+// A correct answer detonates the equation and the next one assembles out of the
+// debris.
+//
+// The 2D console (input + Submit) stays, because typing is typing; only the
+// question moves into the world. dailyRand() is still the generator, so a Daily
+// Hack still hands every operative the same twenty sums in the same order.
+P.games.math = function(){
+  // The console rides along, minus its own question readout — the sum is in the
+  // world now, and two of them would be one too many. It goes up BEFORE the
+  // board is measured: begin3d() runs fitCanvas(), and a panel that appears
+  // afterwards steals height the board has already been sized into.
+  const panel = document.getElementById('g-math');
+  const qEl = document.getElementById('math-question');
+  const ansEl = document.getElementById('math-answer');
+  panel.style.display = 'block';
+  panel.classList.add('math-3d');
+  qEl.style.display = 'none';
+
+  const w = begin3d(Object.assign({ ease: 0.24 }, CITY_NIGHT, {
+    env: { zenith:'#050a1e', horizon:'#2a1a55', ground:'#05060f', intensity: 1.45 },
+    fog: { color:'#0a0722', density: 0.0068 }
+  }));
+  if(!w){
+    panel.style.display = 'none';
+    panel.classList.remove('math-3d');
+    qEl.style.display = '';
+    return;
+  }
+  const r = w.r;
+
+  setControls(null);
+  setControlHint('TYPE THE ANSWER · TAP SUBMIT',
+                 'TYPE THE ANSWER · ENTER TO SUBMIT');
+
+  const colour = mine();
+  let score = 0, time = 20, curAns = 0, solved = 0, streak = 0, best = 0;
+  let qStr = '', shatter = 0, assemble = 1, pulse = 0, ended = false;
+  document.getElementById('g-time').textContent = time;
+
+  function gen(){
+    const a = Math.floor(dailyRand() * 12) + 2;
+    const b = Math.floor(dailyRand() * 12) + 2;
+    const ops = ['+', '-', '*'];
+    const op = ops[Math.floor(dailyRand() * 3)];
+    qStr = `${a}${op}${b}`;
+    qEl.textContent = `${a} ${op} ${b}`;   // kept in sync for screen readers
+    curAns = op === '+' ? a + b : op === '-' ? a - b : a * b;
+    ansEl.value = '';
+    ansEl.focus();
+    assemble = 0;
+  }
+  gen();
+
+  function check(){
+    if(ended) return;
+    const input = parseInt(ansEl.value, 10);
+    if(input === curAns){
+      score += 50; solved++; streak++; best = Math.max(best, streak);
+      setLive(Math.min(750, score));
+      snd('correct', { semi: Math.min(12, streak * 2) });
+      shatter = 1; pulse = 1;
+      w.kick(0.7 + Math.min(1, streak * 0.12));
+      w.burst([0, 4.0, 0], colour, 34, { speed: 13, life: 0.8, size: 0.34 });
+      if(streak >= 3) w.pop([0, 7.2, 0], `×${streak} STREAK`, '#ffd700', { size: 20, life: 1 });
+    } else {
+      streak = 0;
+      snd('wrong');
+      w.kick(0.9);
+      w.burst([0, 4.0, 0], '#ff2442', 18, { speed: 8, life: 0.5, size: 0.3 });
+    }
+    gen();
+  }
+  document.getElementById('math-submit').onclick = check;
+  ansEl.onkeydown = e => { if(e.code === 'Enter'){ e.preventDefault(); check(); } };
+
+  gTimer = setInterval(() => {
+    if(ended) return;
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${time / 20 * 100}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end();
+  }, 1000);
+
+  onQuit(() => {
+    ended = true;
+    ansEl.onkeydown = null;
+    document.getElementById('math-submit').onclick = null;
+    panel.classList.remove('math-3d');
+    qEl.style.display = '';
+    panel.style.display = 'none';
+  });
+
+  runLoop(dt => {
+    if(ended) return false;
+    shatter = Math.max(0, shatter - dt * 2.2);
+    assemble = Math.min(1, assemble + dt * 6);
+    pulse = Math.max(0, pulse - dt * 1.8);
+
+    w.goal.eye[0] = Math.sin(w.t * 0.28) * 1.6;
+    w.goal.eye[1] = 3.4 + Math.sin(w.t * 0.4) * 0.2;
+    w.goal.eye[2] = 16.5 - pulse * 0.8;
+    w.goal.target[0] = 0; w.goal.target[1] = 2.4; w.goal.target[2] = 0;
+    w.goal.fov = 52 + pulse * 3;
+    w.step(dt);
+
+    w.begin();
+
+    // ── REACTOR ──
+    r.draw('ground', { pos:[0, -2.4, 0], scale:[44, 1, 44],
+                       color:'#05070f', metallic: 0.95, roughness: 0.1, rim: 0.3 });
+    w.drawGrid({ y: -2.35, halfX: 16, halfZ: 22, step: 4, color:'#122a7a',
+                 emissive: 0.55, width: 0.035, scroll: w.t * 3, floor: false });
+    // An arc of data columns BEHIND the equation, receding — the depth cue that
+    // stops the sum reading as a flat card. Deliberately only the far arc: a
+    // full ring puts a thirteen-unit column between the camera and the sum, and
+    // one of those blocks the entire question.
+    for(let i = 0; i < 12; i++){
+      // Angle measured off the −Z axis, so every column is BEHIND the plate by
+      // construction rather than by luck: pz is −cos(th)·rr and can never be
+      // positive over this range.
+      const th = (i / 11 - 0.5) * 2.0 + Math.sin(w.t * 0.05) * 0.05;
+      const rr = 23;
+      const px = Math.sin(th) * rr, pz = -Math.cos(th) * rr - 3;
+      const h = 9 + Math.sin(i * 2.1) * 4;
+      r.draw('cube', { pos:[px, -2.4 + h / 2, pz], scale:[1.6, h, 1.6],
+                       color:'#0a0d1a', metallic: 0.8, roughness: 0.34, rim: 1.2 });
+      const lit = 0.6 + 0.4 * Math.sin(w.t * 2 + i);
+      r.draw('box', { pos:[px * 0.9, -2.4 + h * 0.55, pz * 0.9], scale:[0.18, h * 0.7, 0.18],
+                      color: NEON[i % NEON.length], emissive: NEON[i % NEON.length],
+                      emissiveStrength: 1.8 * lit });
+    }
+
+    // ── THE EQUATION ──
+    // `assemble` flies the blocks in from depth; `shatter` throws them out
+    // again. Both ride the same per-cube z jitter, which is why a solve reads
+    // as the sum physically coming apart.
+    // The cell size is derived from the string, not fixed: the plate then spans
+    // the same 13 world units whatever the sum is, so "3+2=" is rendered in big
+    // chunky type and "12*11=" merely in smaller type — rather than a constant
+    // cell size that makes the long sums overflow the frame and the short ones
+    // rattle around inside an oversized plate.
+    const line = qStr + '=';
+    const cell = 13 / (textCells(line) + 2.4);
+    typePlate(r, line, [0, 4.0, 0], cell, colour, { edge: 1.4 + pulse * 3 });
+    drawText3D(r, line, [0, 4.0, 0], cell, {
+      color: shatter > 0 ? '#ffffff' : '#e8f4ff',
+      emissive: shatter > 0 ? colour : '#9fd8ff',
+      // Bloom threshold sits at 1.6 and anything much past 3 blows out into a
+      // white ball that eats the type — the solve reads as a detonation
+      // through the DEPTH and the jitter, not through raw emissive.
+      emissiveStrength: 1.2 + shatter * 1.6 + pulse * 0.7,
+      depth: cell * (1.6 + shatter * 9),
+      jitter: shatter * 2.2 + (1 - assemble) * 2.2,
+      t: w.t, metallic: 0.5, roughness: 0.22
+    });
+
+    // ── YOUR ANSWER, MATERIALISED ──
+    // Whatever is in the field, in the same type, on a plinth below. It is the
+    // feedback loop the 2D game did not have: you watch your answer take shape
+    // in the same room as the question.
+    const typed = (ansEl.value || '').replace(/[^0-9-]/g, '').slice(0, 5) || '?';
+    const good = parseInt(typed, 10) === curAns;
+    const ac = good ? '#39ff88' : '#7d8cff';
+    r.draw('cube', { pos:[0, -1.5, 0], scale:[9, 0.5, 3.2],
+                     color:'#0b0f1e', metallic: 0.9, roughness: 0.25, rim: 1.5 });
+    r.beam([-4.5, -1.22, 1.6], [4.5, -1.22, 1.6], 0.1,
+           { color: ac, emissive: ac, emissiveStrength: good ? 3 : 1.2 });
+    drawText3D(r, typed, [0, 0.15, 0], Math.min(0.42, 2.6 / Math.max(2, textCells(typed) * 0.34)), {
+      color: ac, emissive: ac, emissiveStrength: good ? 2.6 : 1.0,
+      depth: cell, metallic: 0.6, roughness: 0.25
+    });
+    r.glow([0, 0.15, 0.6], good ? 3.0 : 2.0, ac, good ? 0.9 : 0.3);
+
+    r.light({ pos:[0, 5.0, 6], color: colour, intensity: 200 + pulse * 700, range: 26 });
+    r.light({ pos:[0, 0.15, 5], color: ac, intensity: good ? 320 : 90, range: 18 });
+    r.light({ pos:[-7, 7, 4], color:'#8fa6ff', intensity: 130, range: 30 });
+
+    w.end();
+  });
+
+  let scored = false;
+  function end(){
+    if(scored) return; scored = true; ended = true;
+    clearInterval(gTimer); gTimer = null;
+    ansEl.onkeydown = null;
+    document.getElementById('math-submit').onclick = null;
+    const pts = Math.min(750, score);
+    showResults('math', pts, {
+      '🔢 Nodes Resolved': solved,
+      ...(best > 1 ? { '🔥 Best Streak': `${best} IN A ROW` } : {}),
+      '🏆 Score Accumulation': `${score} PTS`
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🔓 NODE HACKER 3D — the mainframe floor
+// ══════════════════════════════════════════════
+// Sixteen server pillars in a 4×4 array on a raised deck. A broadcast is a
+// pillar RISING and firing a column of light at the ceiling; a replay is you
+// hitting the same ones back. The keypad's four rows keep their four colours,
+// so a long key is still memorable by colour as well as by place.
+//
+// Same numbers as the 2D build: three nodes to start, +1 a level, 5 a press,
+// 40 + 12·level a clear, a 90 second trace clock and an 800 cap.
+P.games.hacker = function(){
+  const w = begin3d(Object.assign({ ease: 0.2 }, CITY_NIGHT, {
+    env: { zenith:'#040818', horizon:'#1d0c4a', ground:'#04060e', intensity: 1.3 },
+    fog: { color:'#080518', density: 0.0075 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  setControls(null);
+  setControlHint('TAP THE NODES IN THE ORDER THEY PULSED',
+                 'CLICK NODES · OR THE 1234 / QWER / ASDF / ZXCV KEYPAD');
+  showTouchHint('WATCH THE PILLARS — THEN TAP THEM BACK');
+
+  const lab = labelRig();
+  const status = lab.add('gl-status');
+  onQuit(() => lab.destroy());
+
+  const diffMod = getDifficultyModifier();
+  const KEYS = ['1','2','3','4','Q','W','E','R','A','S','D','F','Z','X','C','V'];
+  const ROW_COLORS = [0, 144, -72, -132].map(d => shiftHue(getEquippedColorHex(), d));
+  const START_LEN = 3;
+  const FLASH = Math.round(400 / diffMod), GAP = Math.round(170 / diffMod);
+  const time0 = Math.round(90 * getTimeModifier());
+
+  const SP = 2.7;
+  const nodes = KEYS.map((k, i) => {
+    const col = i % 4, row = (i / 4) | 0;
+    return {
+      k, i,
+      col: ROW_COLORS[row],
+      pos: [(col - 1.5) * SP, 0, (row - 1.5) * SP],
+      lit: 0, err: 0, hit: 0, rise: 0, phase: Math.random() * 6.28
+    };
+  });
+  const tops = nodes.map(n => [n.pos[0], 2.4, n.pos[2]]);
+
+  let level = 1, score = 0, seq = [], inputIdx = 0, phase = 'play';
+  let cleared = 0, best = 0, time = time0, ended = false;
+
+  document.getElementById('g-time').textContent = time;
+  document.getElementById('prog-fill').style.width = '100%';
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--lime),var(--cyan))';
+
+  const rndIdx = () => Math.floor(Math.random() * 16);
+  function setStatus(txt, col){ status.set(txt, col || '#cfe4ff', 15); }
+
+  function flash(i, ms){
+    const n = nodes[i];
+    n.lit = 1;
+    snd('node', { semi: i });
+    w.burst([n.pos[0], 2.8, n.pos[2]], n.col, 8, { speed: 5, life: 0.5, size: 0.22, vy: 3 });
+    gLater(() => { n.lit = 0; }, ms);
+  }
+
+  function playback(){
+    phase = 'play';
+    inputIdx = 0;
+    setStatus(`▶ BROADCASTING ${seq.length}-NODE KEY…`, '#00f5ff');
+    let t = 420;
+    seq.forEach(idx => {
+      gLater(() => { if(!ended) flash(idx, FLASH); }, t);
+      t += FLASH + GAP;
+    });
+    gLater(() => {
+      if(ended) return;
+      phase = 'input';
+      setStatus('◀ REPLICATE THE SEQUENCE', '#39ff88');
+    }, t + 120);
+  }
+
+  function nextLevel(){
+    if(ended) return;
+    if(!seq.length) for(let i = 0; i < START_LEN; i++) seq.push(rndIdx());
+    else seq.push(rndIdx());
+    best = Math.max(best, seq.length);
+    playback();
+  }
+
+  function press(i){
+    if(ended || phase !== 'input') return;
+    if(seq[inputIdx] === i){
+      flash(i, 190);
+      nodes[i].hit = 1;
+      inputIdx++; score += 5; setLive(Math.min(800, score));
+      if(inputIdx === seq.length){
+        phase = 'clear';
+        cleared++;
+        const bonus = 40 + level * 12;
+        score += bonus; setLive(Math.min(800, score));
+        snd('success');
+        w.kick(1.1);
+        w.pop([0, 7, 0], `NODE DECRYPTED · +${bonus}`, '#39ff88', { size: 22, life: 1.3 });
+        seq.forEach(idx => w.burst([nodes[idx].pos[0], 3, nodes[idx].pos[2]], '#39ff88', 14,
+                                   { speed: 8, life: 0.7, size: 0.28, vy: 4 }));
+        setStatus(`✅ NODE DECRYPTED · +${bonus} PTS`, '#39ff88');
+        level++;
+        gLater(nextLevel, 950);
+      }
+    } else {
+      systemLock(i);
+    }
+  }
+
+  function systemLock(i){
+    phase = 'lock';
+    nodes[i].err = 1;
+    snd('error');
+    w.kick(1.8);
+    setStatus('⛔ SYSTEM LOCK — INTRUSION TRACED', '#ff2442');
+    gLater(() => { if(!ended) flash(seq[inputIdx], 700); }, 430);
+    gLater(() => end('locked'), 1550);
+  }
+
+  bindCanvasDrag({ onDown(p){
+    hideTouchHint();
+    const idx = pickNearest(w, p, tops, 62);
+    if(idx >= 0) press(idx);
+  }});
+
+  window.onkeydown = e => {
+    if(e.ctrlKey || e.metaKey || e.altKey) return;
+    if(e.code === 'Space' || e.code === 'Enter') e.preventDefault();
+    const idx = KEYS.indexOf(String(e.key).toUpperCase());
+    if(idx < 0) return;
+    e.preventDefault();
+    press(idx);
+  };
+
+  gTimer = setInterval(() => {
+    if(ended) return;
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${time / time0 * 100}%`;
+    if(time <= 8 && time > 0 && phase === 'input'){
+      setStatus('⚠️ TRACE INCOMING — HURRY', '#ffd700');
+      if(time <= 5) snd('tick');
+    }
+    if(time <= 0) end('timeout');
+  }, 1000);
+
+  runLoop(dt => {
+    if(ended) return false;
+    for(const n of nodes){
+      n.rise += ((n.lit ? 1 : 0) - n.rise) * Math.min(1, dt * 12);
+      n.hit = Math.max(0, n.hit - dt * 2.4);
+      n.err = Math.max(0, n.err - dt * 0.8);
+    }
+
+    w.goal.eye[0] = Math.sin(w.t * 0.18) * 1.5;
+    w.goal.eye[1] = 11.2;
+    w.goal.eye[2] = 17.5;
+    w.goal.target[0] = 0; w.goal.target[1] = 1.1; w.goal.target[2] = -0.6;
+    w.goal.fov = 50;
+    w.step(dt);
+
+    w.begin();
+
+    // ── SERVER HALL ──
+    r.draw('ground', { pos:[0, -1.2, 0], scale:[46, 1, 46],
+                       color:'#04060e', metallic: 0.96, roughness: 0.08, rim: 0.3 });
+    // The raised deck the array stands on — a real plinth, so the pillars have
+    // somewhere to come out of.
+    r.draw('cube', { pos:[0, -0.75, 0], scale:[12.4, 0.9, 12.4],
+                     color:'#0a0d1a', metallic: 0.85, roughness: 0.3, rim: 1.6 });
+    for(const s of [-1, 1]){
+      r.beam([-6.2, -0.28, s * 6.2], [6.2, -0.28, s * 6.2], 0.09,
+             { color:'#2a3f8f', emissive:'#2a3f8f', emissiveStrength: 1.6 });
+      r.beam([s * 6.2, -0.28, -6.2], [s * 6.2, -0.28, 6.2], 0.09,
+             { color:'#2a3f8f', emissive:'#2a3f8f', emissiveStrength: 1.6 });
+    }
+    // Racks around the walls, feeding the hall its ambient colour.
+    for(let i = 0; i < 16; i++){
+      const a = (i / 16) * Math.PI * 2;
+      const px = Math.cos(a) * 17, pz = Math.sin(a) * 17;
+      r.draw('cube', { pos:[px, 3.4, pz], rot:[0, -a, 0], scale:[3.2, 9, 1.6],
+                       color:'#080b16', metallic: 0.82, roughness: 0.34, rim: 1.1 });
+      for(let j = 0; j < 4; j++){
+        const on = 0.35 + 0.65 * Math.abs(Math.sin(w.t * 3 + i * 1.3 + j));
+        r.draw('box', { pos:[px * 0.94, 1 + j * 1.7, pz * 0.94], rot:[0, -a, 0],
+                        scale:[2.2, 0.11, 0.1],
+                        color: ROW_COLORS[j], emissive: ROW_COLORS[j], emissiveStrength: 0.9 * on });
+      }
+    }
+
+    // ── THE ARRAY ──
+    for(const n of nodes){
+      const rise = n.rise;
+      const h = 2.0 + rise * 1.5;
+      const bob = Math.sin(w.t * 1.6 + n.phase) * 0.05;
+      const col = n.err > 0.02 ? '#ff2442' : n.col;
+      const heat = rise * 3 + n.hit * 2 + n.err * 4;
+
+      // Housing.
+      r.draw('cube', { pos:[n.pos[0], -0.3 + h / 2 + bob, n.pos[2]],
+                       scale:[1.5, h, 1.5],
+                       color:'#0c1020', metallic: 0.9, roughness: 0.24, rim: 1.7 });
+      // Four corner light rails up the housing — the bevel that makes it a
+      // machined block rather than a box.
+      for(const sx of [-1, 1]) for(const sz of [-1, 1]){
+        r.draw('box', { pos:[n.pos[0] + sx * 0.72, -0.3 + h / 2 + bob, n.pos[2] + sz * 0.72],
+                        scale:[0.1, h * 0.86, 0.1],
+                        color: col, emissive: col, emissiveStrength: 0.7 + heat });
+      }
+      // The lamp on top, and the beam it fires when it broadcasts.
+      const ty = -0.3 + h + bob;
+      r.draw('cylinder', { pos:[n.pos[0], ty + 0.16, n.pos[2]], scale:[1.2, 0.3, 1.2],
+                           color: col, emissive: col, emissiveStrength: 0.9 + heat * 1.4,
+                           metallic: 0.4, roughness: 0.2 });
+      r.draw('box', { pos:[n.pos[0], ty + 0.3, n.pos[2]], scale:[0.42, 0.08, 0.42],
+                      color:'#ffffff', emissive: col, emissiveStrength: 1.2 + heat });
+      if(rise > 0.03){
+        r.draw('cylinder', { pos:[n.pos[0], ty + 7 * rise, n.pos[2]],
+                             scale:[0.55 * rise, 14 * rise, 0.55 * rise],
+                             color: col, emissive: col, emissiveStrength: 2.4,
+                             alpha: 0.20 * rise, blend: true });
+        r.glow([n.pos[0], ty + 1.2, n.pos[2]], 2.2 * rise, col, 1.6 * rise);
+      }
+      r.glow([n.pos[0], ty + 0.3, n.pos[2]], 0.85, col, 0.35 + heat * 0.5);
+    }
+
+    // MAX_LIGHTS is ten and the room already spends some — only the pillars
+    // actually doing something get one.
+    let budget = 5;
+    for(const n of nodes){
+      if(budget <= 0) break;
+      const e = n.rise + n.hit + n.err;
+      if(e < 0.06) continue;
+      budget--;
+      r.light({ pos:[n.pos[0], 3.4, n.pos[2]],
+                color: n.err > 0.02 ? '#ff2442' : n.col,
+                intensity: 120 + e * 340, range: 14 });
+    }
+    r.light({ pos:[0, 12, 5], color:'#7d8cff', intensity: 220, range: 40 });
+
+    // ── SEQUENCE PIPS ──
+    // A row of markers above the deck: how long the key is and how far in you
+    // are, as physical beads rather than a progress bar.
+    const n0 = seq.length;
+    for(let i = 0; i < n0; i++){
+      const x = (i - (n0 - 1) / 2) * 0.62;
+      const done = i < inputIdx;
+      const c = done ? '#39ff88' : '#3b4a80';
+      r.draw('sphere', { pos:[x, 6.2, -5.4], scale: done ? 0.3 : 0.22,
+                         color: c, emissive: c, emissiveStrength: done ? 2.2 : 0.7 });
+    }
+
+    status.at(0, 7.6, -5.4);
+    lab.sync(r);
+    w.end();
+  });
+
+  setStatus('⚡ UPLINK ESTABLISHED — WATCH THE NODES', '#00f5ff');
+  nextLevel();
+
+  let scored = false;
+  function end(reason){
+    if(scored) return; scored = true; ended = true;
+    clearInterval(gTimer); gTimer = null;
+    clearCanvasDrag();
+    const final = Math.min(800, score);
+    showResults('hacker', final, {
+      '📡 Run Terminated': reason === 'timeout' ? 'TRACE TIMEOUT' : 'SYSTEM LOCK',
+      '🔓 Mainframes Decrypted': cleared,
+      '🧠 Longest Key': `${best} NODES`,
+      '🏆 Score Accumulation': `${final} PTS`
+    });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🔌 OVERCLOCK PATH 3D — the board
+// ══════════════════════════════════════════════
+// The 5×5 puzzle laid on an actual printed circuit board, seen at a low angle.
+// Contacts stand proud of the substrate, dead nodes are cracked and unlit, and
+// the current is a lit tube that is physically LAID between contacts as you
+// drag — with a charge pulse running its length so a long route reads as live
+// rather than drawn.
+//
+// Generation, rules and scoring are the 2D build's, unchanged: a carved
+// self-avoiding route, a 15 second clock scaled by the tier, 700 for the route,
+// 250 for a clear, 15 a second left, 1100 cap.
+P.games.path = function(){
+  const w = begin3d(Object.assign({ ease: 0.22 }, CITY_NIGHT, {
+    env: { zenith:'#04081a', horizon:'#2b1250', ground:'#04060e', intensity: 1.35 },
+    fog: { color:'#090620', density: 0.007 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  setControls(null);
+  setControlHint('DRAG FROM NODE A THROUGH EVERY LIVE NODE',
+                 'CLICK OR DRAG NODE TO NODE · ARROWS / WASD ALSO STEER THE CURRENT');
+  showTouchHint('DRAG THE CURRENT THROUGH EVERY NODE');
+
+  const lab = labelRig();
+  const status = lab.add('gl-status');
+  onQuit(() => lab.destroy());
+
+  const NEONC = getEquippedColorHex();
+  const diffMod = getDifficultyModifier();
+  const N = 5, CELLS = N * N;
+  const DEAD_COUNT = Math.min(9, 4 + Math.round((diffMod - 1) * 2));
+  const OPEN = CELLS - DEAD_COUNT;
+  const time0 = Math.max(10, Math.round(15 * getTimeModifier()));
+  const ROUTE_PTS = 700, CLEAR_BONUS = 250, SPEED_PTS = 15;
+
+  const rc = i => [Math.floor(i / N), i % N];
+  const neighbours = i => {
+    const [row, c] = rc(i), out = [];
+    if(row > 0)     out.push(i - N);
+    if(row < N - 1) out.push(i + N);
+    if(c > 0)       out.push(i - 1);
+    if(c < N - 1)   out.push(i + 1);
+    return out;
+  };
+  const shuffle = a => {
+    for(let i = a.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  };
+  function carve(){
+    for(let attempt = 0; attempt < 40; attempt++){
+      const seen = new Array(CELLS).fill(false), route = [];
+      let budget = 20000;
+      const walk = i => {
+        if(budget-- <= 0) return false;
+        seen[i] = true; route.push(i);
+        if(route.length === OPEN) return true;
+        for(const n of shuffle(neighbours(i))) if(!seen[n] && walk(n)) return true;
+        seen[i] = false; route.pop();
+        return false;
+      };
+      if(walk(Math.floor(Math.random() * CELLS))) return route;
+    }
+    return null;
+  }
+  function fallback(){
+    const p = [];
+    for(let row = 0; row < N; row++) for(let k = 0; k < N; k++) p.push(row * N + (row % 2 ? N - 1 - k : k));
+    return p.slice(0, OPEN);
+  }
+  const solution = carve() || fallback();
+  const dead = new Set();
+  for(let i = 0; i < CELLS; i++) dead.add(i);
+  solution.forEach(i => dead.delete(i));
+  const START = solution[0];
+
+  const SPAN = 2.9;
+  const world = [];
+  for(let i = 0; i < CELLS; i++){
+    const [row, c] = rc(i);
+    world.push([(c - (N - 1) / 2) * SPAN, 0.34, (row - (N - 1) / 2) * SPAN]);
+  }
+
+  let time = time0, route = [], best = 0, resets = 0;
+  let ended = false, scored = false, locked = false, dragging = false;
+  let recal = 0, win = 0, pulse = 0;
+  const heat = new Float32Array(CELLS);
+
+  document.getElementById('g-time').textContent = time;
+  document.getElementById('prog-fill').style.width = '100%';
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--purple),var(--cyan))';
+
+  const routeScore = len => Math.round(Math.max(0, len - 1) / (OPEN - 1) * ROUTE_PTS);
+  function setStatus(txt, col){ status.set(txt, col || '#cfe4ff', 15); }
+
+  function straightRun(from, to){
+    const [r0, c0] = rc(from), [r1, c1] = rc(to);
+    if(r0 !== r1 && c0 !== c1) return null;
+    const dr = Math.sign(r1 - r0), dc = Math.sign(c1 - c0), out = [];
+    let row = r0, c = c0;
+    while(row !== r1 || c !== c1){ row += dr; c += dc; out.push(row * N + c); }
+    return out.length ? out : null;
+  }
+
+  function tryEnter(i){
+    if(ended || locked || !Number.isFinite(i) || i < 0) return;
+    if(!route.length){
+      if(i === START){
+        route = [START]; heat[START] = 1;
+        snd('node', { semi: 0 });
+        setStatus('▶ CURRENT LIVE — ROUTE EVERY NODE', NEONC);
+      } else if(!dead.has(i)) setStatus('◀ BEGIN AT NODE A', '#ffd700');
+      return;
+    }
+    const head = route[route.length - 1];
+    if(i === head) return;
+    if(route.length > 1 && i === route[route.length - 2]){
+      route.pop(); snd('move'); return;
+    }
+    let steps;
+    if(neighbours(head).includes(i)) steps = [i];
+    else steps = straightRun(head, i);
+    if(!steps) return fail('⛔ BROKEN LINK');
+    for(const s of steps){
+      if(dead.has(s))       return fail('⛔ DEAD CODE NODE');
+      if(route.includes(s)) return fail('⛔ TRACE CROSSED ITSELF');
+    }
+    steps.forEach(s => { route.push(s); heat[s] = 1; });
+    best = Math.max(best, route.length);
+    setLive(Math.min(1100, routeScore(best)));
+    snd('node', { semi: (route.length % 8) * 2 });
+    pulse = 1;
+    if(route.length === OPEN) complete();
+    else setStatus(`▶ ${route.length} / ${OPEN} NODES ENERGISED`, NEONC);
+  }
+
+  function fail(why){
+    if(ended || locked) return;
+    locked = true; resets++;
+    snd('error');
+    w.kick(1.4);
+    recal = 1;
+    setStatus(`${why} — RECALIBRATING…`, '#ff2442');
+    route.forEach(i => w.burst([world[i][0], 0.7, world[i][2]], '#ff2442', 5,
+                               { speed: 5, life: 0.5, size: 0.2, vy: 2 }));
+    route = [];
+    gLater(() => {
+      if(ended) return;
+      locked = false;
+      setStatus('▶ RESTART FROM NODE A', '#ffd700');
+    }, 700);
+  }
+
+  function complete(){
+    if(ended) return;
+    ended = true; locked = true; win = 1;
+    snd('victory');
+    w.kick(2.6);
+    setStatus('✅ CIRCUIT OVERCLOCKED — FULL CURRENT', '#39ff88');
+    route.forEach((i, k) => gLater(() => {
+      if(!scored) w.burst([world[i][0], 0.7, world[i][2]], '#39ff88', 12,
+                          { speed: 8, life: 0.7, size: 0.26, vy: 5 });
+    }, k * 45));
+    gLater(() => end('complete'), 950);
+  }
+
+  bindCanvasDrag({
+    onDown(p){ hideTouchHint(); dragging = true; tryEnter(pickNearest(w, p, world, 54)); },
+    onMove(p){ if(dragging) tryEnter(pickNearest(w, p, world, 46)); },
+    onUp(){ dragging = false; }
+  });
+
+  const STEP = { ArrowUp:-N, ArrowDown:N, ArrowLeft:-1, ArrowRight:1, W:-N, S:N, A:-1, D:1 };
+  window.onkeydown = e => {
+    if(e.ctrlKey || e.metaKey || e.altKey || ended) return;
+    if(e.code === 'Space' || e.code === 'Enter'){
+      e.preventDefault();
+      if(!route.length) tryEnter(START);
+      return;
+    }
+    const key = String(e.key).length === 1 ? String(e.key).toUpperCase() : e.key;
+    const d = STEP[key];
+    if(d === undefined) return;
+    e.preventDefault();
+    if(!route.length) return tryEnter(START);
+    const head = route[route.length - 1], [row, c] = rc(head);
+    if((d === -1 && c === 0) || (d === 1 && c === N - 1) ||
+       (d === -N && row === 0) || (d === N && row === N - 1)) return;
+    tryEnter(head + d);
+  };
+
+  gTimer = setInterval(() => {
+    if(ended) return;
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time / time0 * 100)}%`;
+    if(time <= 5 && time > 0){ snd('tick'); if(!locked) setStatus('⚠️ POWER DRAIN CRITICAL', '#ffd700'); }
+    if(time <= 0) end('timeout');
+  }, 1000);
+
+  runLoop(dt => {
+    if(scored) return false;
+    recal = Math.max(0, recal - dt * 1.4);
+    pulse = Math.max(0, pulse - dt * 2);
+    for(let i = 0; i < CELLS; i++) heat[i] = Math.max(0, heat[i] - dt * 2);
+
+    const tilt = Math.sin(w.t * 0.25) * 0.45;
+    w.goal.eye[0] = tilt;
+    w.goal.eye[1] = 14.6 - win * 1.6;
+    w.goal.eye[2] = 12.8 - win * 1.0;
+    w.goal.target[0] = 0; w.goal.target[1] = 0.2; w.goal.target[2] = -0.6;
+    w.goal.fov = 47;
+    w.step(dt);
+
+    w.begin();
+
+    // ── SUBSTRATE ──
+    r.draw('ground', { pos:[0, -3.4, 0], scale:[46, 1, 46],
+                       color:'#04060e', metallic: 0.95, roughness: 0.1, rim: 0.25 });
+    // The board itself: a green-black slab with a machined bevel and a lit trim.
+    r.draw('cube', { pos:[0, -0.3, 0], scale:[16, 0.6, 16],
+                     color:'#06140f', metallic: 0.55, roughness: 0.42, rim: 1.5 });
+    r.draw('cube', { pos:[0, -0.02, 0], scale:[15.2, 0.1, 15.2],
+                     color:'#08201a', metallic: 0.5, roughness: 0.5, rim: 1.1 });
+    for(const s of [-1, 1]){
+      r.beam([-8, 0.06, s * 8], [8, 0.06, s * 8], 0.1,
+             { color:'#1e6f52', emissive:'#1e6f52', emissiveStrength: 1.4 });
+      r.beam([s * 8, 0.06, -8], [s * 8, 0.06, 8], 0.1,
+             { color:'#1e6f52', emissive:'#1e6f52', emissiveStrength: 1.4 });
+    }
+    // Decorative etched traces heading off the board — set dressing that makes
+    // the puzzle part of a larger circuit.
+    for(let i = 0; i < 9; i++){
+      const x = -7 + i * 1.75;
+      r.beam([x, 0.07, -7.6], [x, 0.07, -6.2], 0.05,
+             { color:'#0f4a38', emissive:'#0f4a38', emissiveStrength: 0.8 });
+      r.beam([x, 0.07, 7.6], [x, 0.07, 6.2], 0.05,
+             { color:'#0f4a38', emissive:'#0f4a38', emissiveStrength: 0.8 });
+    }
+
+    // ── CONTACTS ──
+    const live = new Set(route);
+    const head = route.length ? route[route.length - 1] : -1;
+    for(let i = 0; i < CELLS; i++){
+      const p = world[i];
+      const isDead = dead.has(i);
+      const on = live.has(i);
+      const isHead = i === head;
+      const h = heat[i];
+
+      // Solder pad.
+      r.draw('cylinder', { pos:[p[0], 0.09, p[2]], scale:[1.5, 0.14, 1.5],
+                           color: isDead ? '#141722' : '#1a2436',
+                           metallic: 0.9, roughness: isDead ? 0.6 : 0.24, rim: 1.2 });
+
+      if(isDead){
+        // A blown node: a cracked slug and two crossed bars where the contact
+        // should be. Unlit on purpose — it is the one thing on the board that
+        // gives off nothing.
+        r.draw('rock2', { pos:[p[0], 0.28, p[2]], rot:[0.4, i * 1.7, 0.2], scale: 0.62,
+                          color:'#191d2b', metallic: 0.6, roughness: 0.75, rim: 0.9 });
+        for(const sgn of [1, -1]){
+          r.draw('box', { pos:[p[0], 0.62, p[2]], rot:[0, sgn * Math.PI / 4, 0],
+                          scale:[1.35, 0.14, 0.14],
+                          color:'#8a1b2e', emissive:'#8a1b2e', emissiveStrength: 1.3 });
+        }
+        continue;
+      }
+
+      const col = i === START ? '#ffd700' : NEONC;
+      const lift = on ? 0.3 : 0;
+      const em = on ? (2.0 + h * 3) : (0.55 + 0.25 * Math.sin(w.t * 2 + i));
+
+      // Contact post — it physically rises when the current reaches it.
+      r.draw('cylinder', { pos:[p[0], 0.22 + lift / 2, p[2]], scale:[0.85, 0.44 + lift, 0.85],
+                           color: on ? col : '#26304a', emissive: col,
+                           emissiveStrength: on ? 1.1 + h * 2 : 0.25,
+                           metallic: 0.85, roughness: 0.2 });
+      r.draw('sphere', { pos:[p[0], 0.52 + lift, p[2]], scale: isHead ? 0.42 : 0.3,
+                         color: col, emissive: col, emissiveStrength: em + (isHead ? 2 : 0) });
+      r.glow([p[0], 0.55 + lift, p[2]], isHead ? 1.3 : 0.7, col,
+             on ? (0.9 + h) : 0.28);
+
+      if(i === START && !on){
+        // Node A wears a ring so it is findable before anything is lit.
+        r.draw('thintorus', { pos:[p[0], 0.14, p[2]], rot:[Math.PI / 2, 0, w.t],
+                              scale: 1.5 + Math.sin(w.t * 3) * 0.06,
+                              color:'#ffd700', emissive:'#ffd700', emissiveStrength: 1.6 });
+      }
+    }
+
+    // ── THE CURRENT ──
+    // Laid as real tube segments between contact tops, with a bright charge
+    // travelling the whole run — that travelling dot is what makes a finished
+    // route read as CARRYING something.
+    if(route.length > 1){
+      const segs = route.length - 1;
+      const wave = (w.t * 1.4) % 1;
+      for(let k = 0; k < segs; k++){
+        const a = world[route[k]], b = world[route[k + 1]];
+        const t0 = k / segs;
+        const near = 1 - Math.min(1, Math.abs(((t0 - wave) + 1) % 1) * 6);
+        const em = 1.8 + near * 5 + win * 3;
+        r.beam([a[0], 0.72, a[2]], [b[0], 0.72, b[2]], 0.2,
+               { color: NEONC, emissive: NEONC, emissiveStrength: em, height: 0.2 });
+        if(near > 0.5) r.glow([(a[0] + b[0]) / 2, 0.78, (a[2] + b[2]) / 2], 1.1, '#ffffff', near * 1.4);
+      }
+      const hp = world[head];
+      r.light({ pos:[hp[0], 1.6, hp[2]], color: NEONC, intensity: 200 + pulse * 400, range: 12 });
+    }
+
+    // ── PROGRESS RAIL ──
+    // A physical bar along the near edge of the board. Same information as the
+    // 2D meter, but it lives on the object it describes.
+    const frac = route.length / OPEN;
+    r.beam([-7, 0.5, 8.6], [7, 0.5, 8.6], 0.16,
+           { color:'#141a2c', metallic: 0.9, roughness: 0.3 });
+    if(frac > 0.001){
+      r.beam([-7, 0.55, 8.6], [-7 + 14 * frac, 0.55, 8.6], 0.2,
+             { color: win ? '#39ff88' : NEONC, emissive: win ? '#39ff88' : NEONC,
+               emissiveStrength: 2.4, height: 0.2 });
+    }
+
+    if(recal > 0.01){
+      r.light({ pos:[0, 4, 0], color:'#ff2442', intensity: 600 * recal, range: 26 });
+    }
+    r.light({ pos:[-6, 9, 6], color:'#8fa6ff', intensity: 200, range: 34 });
+    r.light({ pos:[6, 7, -4], color: NEONC, intensity: 90, range: 26 });
+
+    status.at(0, 3.6, -8.6);
+    lab.sync(r);
+    w.end();
+  });
+
+  setStatus('⚡ BOARD ENERGISED — BEGIN AT NODE A', '#00f5ff');
+
+  function end(reason){
+    if(scored) return; scored = true;
+    ended = true; locked = true;
+    clearInterval(gTimer); gTimer = null;
+    clearCanvasDrag();
+    const cleared = reason === 'complete';
+    const left = Math.max(0, time);
+    const final = Math.min(1100, routeScore(best) + (cleared ? CLEAR_BONUS + left * SPEED_PTS : 0));
+    showResults('path', final, {
+      '🔌 Circuit Status': cleared ? 'FULLY OVERCLOCKED' : 'POWER DRAINED',
+      '🧩 Nodes Routed': `${best} / ${OPEN}`,
+      '💀 Dead Code Bypassed': DEAD_COUNT,
+      '♻️ Recalibrations': resets,
+      ...(cleared ? { '⏱️ Current To Spare': `${left}s` } : {}),
+      '🏆 Score Accumulation': `${final} PTS`
+    }, cleared ? undefined : { sound:'gameOver' });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🎚️ FREQUENCY MODULATOR 3D — the signal bench
+// ══════════════════════════════════════════════
+// Two waveforms as physical ribbons hung one above the other in an anechoic
+// bay: the array's target on top, your output below with the target ghosted
+// through it. A ribbon is a chain of lit segments, so a wave is an OBJECT with
+// a length and a thickness — you can see the two shapes converge in depth as
+// well as in height, which is the read the flat scopes never gave.
+//
+// Everything numeric is the 2D build's: amplitude and wavelength ranges, the
+// worse-of-two match, the 95% margin, the 1.5s hold, drift above STABLE, 85 +
+// speed a stage, a 45 second clock scaled by the tier, 950 cap.
+P.games.freq = function(){
+  // Console up first: begin3d() measures the board, and the two sliders take
+  // height off it.
+  const panel = document.getElementById('g-freq-ctl');
+  panel.style.display = 'flex';
+
+  const w = begin3d(Object.assign({ ease: 0.26 }, CITY_NIGHT, {
+    env: { zenith:'#04071a', horizon:'#2a0d4e', ground:'#04060e', intensity: 1.3 },
+    fog: { color:'#080520', density: 0.0068 }
+  }));
+  if(!w){ panel.style.display = 'none'; return; }
+  const r = w.r;
+  setControls(null);
+  setControlHint('DRAG THE TWO SLIDERS UNTIL BOTH RIBBONS AGREE',
+                 '↑/↓ AMPLITUDE · ←/→ WAVELENGTH · HOLD SHIFT FOR FINE TRIM');
+  showTouchHint('MATCH THE TOP SIGNAL WITH THE SLIDERS');
+
+  const lab = labelRig();
+  const pctLab = lab.add('gl-big');
+  const hintLab = lab.add('gl-status');
+  onQuit(() => { lab.destroy(); panel.style.display = 'none'; });
+
+  const A_MIN = 16, A_MAX = 90, L_MIN = 40, L_MAX = 180;
+  const A_SPAN = A_MAX - A_MIN, L_SPAN = L_MAX - L_MIN;
+  const LOCK_AT = 0.95, HOLD_MS = 1500;
+  const A_TOL = (1 - LOCK_AT) * A_SPAN, L_TOL = (1 - LOCK_AT) * L_SPAN;
+
+  const FORMS = [
+    { name:'SINE',     f:t => Math.sin(t) },
+    { name:'HARMONIC', f:t => (Math.sin(t) + 0.5 * Math.sin(2 * t)) / 1.5 },
+    { name:'SAWTOOTH', f:t => { const p = ((t / (Math.PI * 2)) % 1 + 1) % 1; return 2 * p - 1; } },
+    { name:'TRIANGLE', f:t => { const p = ((t / (Math.PI * 2)) % 1 + 1) % 1; return 4 * Math.abs(p - 0.5) - 1; } },
+    { name:'SQUARE',   f:t => Math.tanh(Math.sin(t) * 4) }
+  ];
+
+  const diffMod = getDifficultyModifier();
+  const time0 = Math.round(45 * getTimeModifier());
+  const TARGET_C = '#ff0090', OUT_C = getEquippedColorHex(), LOCK_C = '#39ff14';
+
+  let time = time0, score = 0, stage = 1, cleared = 0, ended = false, scored = false;
+  let amp = 52, len = 110, tAmp = 0, tLen = 0, form = FORMS[0], drift = { a:0, l:0 };
+  let held = 0, stageT = 0, bestMatch = 0, phase = 0, flash = 0;
+  let firstTryClean = true, perfectSync = false;
+
+  document.getElementById('g-time').textContent = time;
+  document.getElementById('prog-fill').style.width = '100%';
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--cyan),var(--pink))';
+
+  const ampEl = document.getElementById('freq-amp');
+  const lenEl = document.getElementById('freq-len');
+  const ampVal = document.getElementById('freq-amp-val');
+  const lenVal = document.getElementById('freq-len-val');
+  ampEl.min = A_MIN; ampEl.max = A_MAX; ampEl.value = amp;
+  lenEl.min = L_MIN; lenEl.max = L_MAX; lenEl.value = len;
+  const syncConsole = () => {
+    ampEl.value = Math.round(amp); lenEl.value = Math.round(len);
+    ampVal.textContent = Math.round(amp); lenVal.textContent = Math.round(len);
+  };
+  ampEl.oninput = () => { if(ended) return; hideTouchHint(); amp = parseFloat(ampEl.value); syncConsole(); snd('move'); };
+  lenEl.oninput = () => { if(ended) return; hideTouchHint(); len = parseFloat(lenEl.value); syncConsole(); snd('move'); };
+  syncConsole();
+
+  function newStage(){
+    form = FORMS[(stage - 1) % FORMS.length];
+    do{ tAmp = A_MIN + Math.random() * A_SPAN; } while(Math.abs(tAmp - amp) < A_SPAN * 0.2);
+    do{ tLen = L_MIN + Math.random() * L_SPAN; } while(Math.abs(tLen - len) < L_SPAN * 0.2);
+    const wander = (diffMod - 1) * 0.6;
+    drift = { a:(Math.random() < .5 ? -1 : 1) * wander * 3.2, l:(Math.random() < .5 ? -1 : 1) * wander * 3.6 };
+    held = 0; stageT = 0;
+  }
+  newStage();
+
+  const matchPct = () => Math.max(0, Math.min(
+    1 - Math.abs(amp - tAmp) / A_SPAN,
+    1 - Math.abs(len - tLen) / L_SPAN
+  ));
+
+  function stageClear(){
+    const speed = Math.max(0, Math.round(70 - stageT / 1000 * 9));
+    const gained = 85 + speed;
+    if(stage === 1 && firstTryClean) perfectSync = true;
+    score += gained; cleared++; stage++;
+    setLive(Math.min(950, score));
+    snd('levelUp');
+    flash = 1;
+    w.kick(1.3);
+    w.pop([0, 7.6, 0], `NODE STABILISED · +${gained}`, LOCK_C, { size: 22, life: 1.2 });
+    w.burst([0, 1.2, 0], LOCK_C, 44, { speed: 16, life: 0.9, size: 0.34 });
+    newStage();
+  }
+
+  gTimer = setInterval(() => {
+    if(ended) return;
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time / time0 * 100)}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end();
+  }, 1000);
+
+  window.onkeydown = e => {
+    if(e.ctrlKey || e.metaKey || e.altKey || ended) return;
+    const step = e.shiftKey ? 0.5 : 2;
+    const k = String(e.key).length === 1 ? String(e.key).toUpperCase() : e.key;
+    let used = true;
+    if(k === 'ArrowUp'         || k === 'W') amp = Math.min(A_MAX, amp + step);
+    else if(k === 'ArrowDown'  || k === 'S') amp = Math.max(A_MIN, amp - step);
+    else if(k === 'ArrowRight' || k === 'D') len = Math.min(L_MAX, len + step);
+    else if(k === 'ArrowLeft'  || k === 'A') len = Math.max(L_MIN, len - step);
+    else used = false;
+    if(!used) return;
+    e.preventDefault();
+    syncConsole();
+  };
+
+  // A ribbon: `SEGS` short beams laid end to end along X, each one pitched to
+  // follow the curve. Board units divided by 40 puts the whole 560-wide scope
+  // into 14 world units, so the amplitude and wavelength numbers on the sliders
+  // still mean what they meant.
+  // 96 segments across, and the amplitude scale is chosen so a maxed-out wave
+  // (A_MAX = 90 board units) is exactly 2.0 world units tall — the bay's inner
+  // half-height. A ribbon can therefore never climb out of its own scope, which
+  // is what keeps the two of them separable when both are near full swing.
+  const SEGS = 96, SPAN_X = 14, SCALE = 2.0 / 90;
+  // The two bays are 5.6 apart with a half-height of 2.3, which leaves a clear
+  // 1.0-unit band between them for the match readout — the one number the
+  // player actually plays off, so it must never sit on top of a wave.
+  const TOP_Y = 5.0, BOT_Y = -0.6, MID_Y = (TOP_Y + BOT_Y) / 2;
+  function ribbon(cy, a, l, colour, o){
+    o = o || {};
+    const em = o.emissive != null ? o.emissive : 2.0;
+    const th = o.width || 0.16;
+    const alpha = o.alpha != null ? o.alpha : 1;
+    const z = o.z || 0;
+    let px = -SPAN_X / 2;
+    let py = cy + a * SCALE * form.f((0 / 560) * 560 / l * Math.PI * 2 + phase);
+    for(let i = 1; i <= SEGS; i++){
+      const bx = -SPAN_X / 2 + (i / SEGS) * SPAN_X;
+      const boardX = (i / SEGS) * 560;
+      const by = cy + a * SCALE * form.f(boardX / l * Math.PI * 2 + phase);
+      r.beam([px, py, z], [bx, by, z], th,
+             { color: colour, emissive: colour, emissiveStrength: em,
+               height: th, alpha, blend: alpha < 0.999, metallic: 0.3, roughness: 0.25 });
+      px = bx; py = by;
+    }
+  }
+
+  // The bay a ribbon hangs in: a machined frame with a lit centre-line and a
+  // graticule of thin posts, so a wave has something to be measured against.
+  function bay(cy, colour, lit){
+    r.draw('cube', { pos:[0, cy, -1.5], scale:[15.4, 4.6, 0.5],
+                     color:'#080b16', metallic: 0.9, roughness: 0.3, rim: 1.5 });
+    for(const s of [-1, 1]){
+      r.beam([-7.5, cy + s * 2.3, -1.2], [7.5, cy + s * 2.3, -1.2], 0.09,
+             { color: colour, emissive: colour, emissiveStrength: lit ? 2.6 : 1.2 });
+      r.beam([s * 7.5, cy - 2.3, -1.2], [s * 7.5, cy + 2.3, -1.2], 0.09,
+             { color: colour, emissive: colour, emissiveStrength: lit ? 2.6 : 1.2 });
+    }
+    r.beam([-7.2, cy, -1.1], [7.2, cy, -1.1], 0.03,
+           { color:'#5b6a99', emissive:'#5b6a99', emissiveStrength: 0.7 });
+    for(let i = 0; i <= 14; i++){
+      const x = -7 + i;
+      r.draw('box', { pos:[x, cy, -1.1], scale:[0.03, 0.34, 0.03],
+                      color:'#4a5a88', emissive:'#4a5a88', emissiveStrength: 0.6 });
+    }
+  }
+
+  let lastT = performance.now();
+  runLoop(dtRaw => {
+    if(scored) return false;
+    const now = performance.now();
+    const dt = Math.min(50, now - lastT); lastT = now;
+    phase += dt / 1000 * 1.6;
+    flash = Math.max(0, flash - dtRaw * 1.6);
+
+    if(drift.a || drift.l){
+      tAmp += drift.a * dt / 1000;
+      tLen += drift.l * dt / 1000;
+      if(tAmp < A_MIN || tAmp > A_MAX){ tAmp = Math.max(A_MIN, Math.min(A_MAX, tAmp)); drift.a *= -1; }
+      if(tLen < L_MIN || tLen > L_MAX){ tLen = Math.max(L_MIN, Math.min(L_MAX, tLen)); drift.l *= -1; }
+    }
+
+    const m = matchPct();
+    const locking = m >= LOCK_AT;
+    bestMatch = Math.max(bestMatch, m);
+    stageT += dt;
+    if(locking) held += dt;
+    else{
+      if(held > HOLD_MS * 0.4) snd('deny');
+      if(held > 0 && stage === 1) firstTryClean = false;
+      held = 0;
+    }
+    if(!ended && held >= HOLD_MS) stageClear();
+
+    const outC = locking ? LOCK_C : OUT_C;
+
+    w.goal.eye[0] = Math.sin(w.t * 0.2) * 0.7;
+    w.goal.eye[1] = 2.4;
+    w.goal.eye[2] = 17.0 - flash * 0.6;
+    w.goal.target[0] = 0; w.goal.target[1] = 1.9; w.goal.target[2] = -0.6;
+    w.goal.fov = 55;
+    w.step(dtRaw);
+
+    w.begin();
+
+    // ── THE BAY ──
+    r.draw('ground', { pos:[0, -6.5, 0], scale:[42, 1, 42],
+                       color:'#04060e', metallic: 0.95, roughness: 0.1, rim: 0.3 });
+    // Absorber wedges on the back wall, which is what makes this an anechoic
+    // room rather than an empty void — and gives the ribbons a surface to be in
+    // front of.
+    for(let i = 0; i < 22; i++){
+      for(let j = 0; j < 7; j++){
+        const x = -13 + i * 1.24, y = -5.4 + j * 1.6;
+        r.draw('cone', { pos:[x, y, -6.4], rot:[Math.PI / 2, 0, 0], scale:[1.1, 1.4, 1.1],
+                         color:'#0a0d1a', metallic: 0.2, roughness: 0.85, rim: 0.7 });
+      }
+    }
+
+    bay(TOP_Y, TARGET_C, false);
+    bay(BOT_Y, outC, locking);
+
+    // Target on top.
+    ribbon(TOP_Y, tAmp, tLen, TARGET_C, { emissive: 2.2, width: 0.135 });
+    // Output below, target ghosted through it — the comparison is in one place.
+    ribbon(BOT_Y, tAmp, tLen, TARGET_C, { emissive: 0.7, width: 0.075, alpha: 0.42, z: -0.5 });
+    ribbon(BOT_Y, amp, len, outC, { emissive: locking ? 3.4 : 2.2, width: 0.155, z: 0.25 });
+
+    // ── HOLD METER ──
+    // A physical rail under the output bay that fills as the lock is held.
+    const hf = Math.min(1, held / HOLD_MS);
+    r.beam([-4.6, -4.1, 0], [4.6, -4.1, 0], 0.16,
+           { color:'#121828', metallic: 0.9, roughness: 0.3 });
+    if(hf > 0.001){
+      r.beam([-4.6, -4.05, 0.1], [-4.6 + 9.2 * hf, -4.05, 0.1], 0.22,
+             { color: LOCK_C, emissive: LOCK_C, emissiveStrength: 2.8, height: 0.22 });
+      r.glow([-4.6 + 9.2 * hf, -4.05, 0.3], 0.7, LOCK_C, 1.2);
+    }
+    // Trim indicators: two arrows that physically point the way each dial has
+    // to move, sitting at the ends of the rail.
+    const dA = tAmp - amp, dL = tLen - len;
+    const aOk = Math.abs(dA) <= A_TOL, lOk = Math.abs(dL) <= L_TOL;
+    r.draw('cone', { pos:[-6.2, -4.05, 0], rot:[0, 0, dA > 0 ? 0 : Math.PI], scale: aOk ? 0.34 : 0.46,
+                     color: aOk ? LOCK_C : '#ffd700', emissive: aOk ? LOCK_C : '#ffd700',
+                     emissiveStrength: aOk ? 2.4 : 1.4 + Math.abs(dA) / A_SPAN * 2 });
+    r.draw('cone', { pos:[6.2, -4.05, 0], rot:[0, 0, dL > 0 ? -Math.PI / 2 : Math.PI / 2], scale: lOk ? 0.34 : 0.46,
+                     color: lOk ? LOCK_C : '#ffd700', emissive: lOk ? LOCK_C : '#ffd700',
+                     emissiveStrength: lOk ? 2.4 : 1.4 + Math.abs(dL) / L_SPAN * 2 });
+
+    r.light({ pos:[0, TOP_Y, 4], color: TARGET_C, intensity: 160, range: 22 });
+    r.light({ pos:[0, BOT_Y, 4], color: outC, intensity: locking ? 420 : 180, range: 24 });
+    r.light({ pos:[0, -4, 3], color: LOCK_C, intensity: 60 + hf * 240, range: 16 });
+    r.light({ pos:[-8, 6, 6], color:'#8fa6ff', intensity: 110, range: 30 });
+
+    const pct = Math.round(m * 100);
+    pctLab.set(`${pct}% MATCH`, locking ? LOCK_C : (m > 0.85 ? '#ffd700' : '#ff2442'), 26)
+          .at(0, MID_Y, 0.6);
+    hintLab.set(`${form.name} · STAGE ${stage}${drift.a || drift.l ? ' · DRIFTING' : ''}`,
+                '#9fb4e8', 13).at(0, 8.1, 0);
+    lab.sync(r);
+
+    w.end();
+  });
+
+  function end(){
+    if(scored) return; scored = true; ended = true;
+    clearInterval(gTimer); gTimer = null;
+    const final = Math.min(950, score);
+    showResults('freq', final, {
+      '📡 Node Array': cleared ? `${cleared} NODE${cleared === 1 ? '' : 'S'} STABILISED` : 'ARRAY UNSTABLE',
+      '🎚️ Stages Cleared': cleared,
+      '🎯 Peak Correlation': `${Math.round(bestMatch * 100)}%`,
+      ...(perfectSync ? { '🎯 First Lock':'PERFECT — NO MISS' } : {}),
+      '📶 Last Waveform': form.name,
+      '🏆 Score Accumulation': `${final} PTS`
+    });
+  }
+};
+
+})();
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  § 5/5  MISSIONS III      games3d_c
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════
+//  🚀 POINT INVADERS — 3D MISSIONS, PART III
+// ══════════════════════════════════════════════════════════════════════
+// The two simulation-heavy missions: Cyber Arena (survival, free movement in a
+// walled grid) and Battle Bots (a three-lane siege). Both are full ports rather
+// than reskins — the 2D versions are one closure each and share nothing — but
+// every number that reaches the scoreboard is the original's, including Battle
+// Bots' entire BB balance table, which is read straight out of app.js rather
+// than copied here.
+//
+// ⚠️ NO SHADOWS. Arena reads depth off the wall height, the floor grid and a
+// ground ring under every bot; Battle Bots off the lane separation, the tower
+// scale and a receding skyline.
+
+(function(){
+'use strict';
+
+const P = window.PI3D;
+if(!P) return;
+const K = P.kit;
+const { begin3d, runLoop, mine, nx, ny, rnd, clamp, seeded, NEON } = K;
+
+const CITY_NIGHT = {
+  env:  { zenith:'#04061a', horizon:'#3a1050', ground:'#05060f', intensity: 1.35 },
+  fog:  { color:'#0d0722', density: 0.0052 },
+  sun:  { dir:[-0.4, -0.85, -0.5], color:'#6f7dff', intensity: 0.7 },
+  grade:{ exposure: 0.95, bloom: 0.42, threshold: 1.6, knee: 0.5, radius: 0.9,
+          vignette: 0.44, aberration: 0.45, grain: 0.028, scanline: 0.014, saturation: 1.12 }
+};
+
+function onQuit(fn){
+  const prev = onStopGame;
+  onStopGame = () => { try{ fn(); }catch(e){} if(prev) prev(); };
+}
+
+// ══════════════════════════════════════════════
+//  ⚔️ CYBER ARENA 3D — the grid pit
+// ══════════════════════════════════════════════
+// A walled arena you fight inside rather than look down on: the camera rides
+// behind and above the player, close enough that the wall panels, the pillars
+// and the bots have real height and really occlude each other.
+//
+// 🧭 THE CAMERA DOES NOT TURN WITH THE PLAYER, and that is a control decision
+// rather than an art one. It used to swing round to the facing, which looks
+// wonderful and makes the mission unplayable: the drag that was "go right" a
+// moment ago becomes "go up" as soon as the camera has rotated a quarter turn
+// behind you, and there is nothing on screen telling you it happened. The 2D
+// arena's board is a fixed, axis-aligned window that merely PANS with the
+// player, so a drag direction means the same thing for the whole round. This
+// camera does exactly that in three dimensions — it tracks the player's
+// position and never its yaw — so screen-right is +X and screen-up is −Z from
+// the first frame to the last, and every scheme below can be a straight copy of
+// the 2D one instead of an approximation of it.
+//
+// Kept from the 2D build: 100 HP with +20 a level, XP thresholds ×1.45, a slash
+// on a cooldown, a dash, data nodes that grant buffs and queue abilities, five
+// ability types, combo scaling and waves that follow the player's level. The
+// results card is byte-for-byte the original's — and so, now, is the control
+// scheme: same virtual stick with the same dead zone and the same trailing
+// anchor, same mouse free-aim, same tap-to-aim-and-slash, same double-tap.
+P.games.arena = function(){
+  const w = begin3d(Object.assign({ ease: 0.13 }, CITY_NIGHT, {
+    env: { zenith:'#04061a', horizon:'#3d0f4e', ground:'#05060f', intensity: 1.3 },
+    fog: { color:'#0b0620', density: 0.0075 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  // Pad, hints and touch prompt are the 2D build's, word for word. A player who
+  // switches renderers mid-session must not have to re-learn the mission.
+  setControls(isTouchDevice ? { left:'◀', action:'⚔ SLASH', drop:'✦ ABIL', right:'▶' }
+                            : { left:'◀', action:'⚔ SLASH', right:'▶' });
+  setControlHint('DRAG = MOVE · TAP = SLASH · DOUBLE-TAP = ABILITY · ⚡ = DASH',
+                 'WASD/ARROWS=MOVE · SPACE=SLASH · SHIFT=DASH · E=ABILITY · AIM WITH MOUSE');
+  showTouchHint('DRAG TO MOVE · TAP TO SLASH · DOUBLE-TAP = ABILITY', 4200);
+
+  const diffMod = getDifficultyModifier();
+  const R_ARENA = 30;                      // half-extent of the pit, in world units
+  const colour = mine();
+
+  // ── CAMERA RIG (fixed yaw) ──
+  // Behind and above, looking down the −Z axis. CAM_BACK/CAM_HIGH set the tilt;
+  // they are also the two numbers the aim solver below reads, so the pointer
+  // and the picture can never disagree about where the ground is.
+  const CAM_BACK = 21, CAM_HIGH = 24, CAM_AHEAD = 4, AIM_Y = 0.9;
+
+  // ── STATE ──
+  let score = 0, isOver = false, scored = false;
+  let particlesOff = 0, shake = 0;
+  let bots = [], nodes = [], orbs = [];
+  let level = 1, xp = 0, xpNext = 100;
+  let dashCd = 0, dashT = 0, dashing = false;
+  let slashT = 0, slashCd = 0;
+  let invT = 0, combo = 0, comboT = 0;
+  let hasteT = 0, shieldT = 0, overT = 0;
+  let abilities = [], lastTap = 0, wave = 1, spawnT = 0, killed = 0, collected = 0;
+  const keys = Object.create(null);
+  let padL = false, padR = false;
+
+  const player = {
+    x: 0, z: 0, vx: 0, vz: 0, ang: 0,
+    hp: 100, maxHp: 100, speed: 12.5, atk: 35, r: 1.1
+  };
+
+  const ABILS = [
+    { id:'NOVA',       label:'NOVA BLAST',   color:'#ffd700' },
+    { id:'FREEZE',     label:'TIME FREEZE',  color:'#00f5ff' },
+    { id:'HEAL',       label:'REPAIR PULSE', color:'#39ff14' },
+    { id:'OVERCHARGE', label:'OVERCHARGE',   color:'#ff2442' },
+    { id:'SHIELD',     label:'AEGIS SHIELD', color:'#a855f7' }
+  ];
+  const BOT_KINDS = [
+    { key:'drone',  geo:'drone',  hp: 40, spd: 5.2, dmg: 8,  col:'#ff0090', sc: 0.9, worth: 20, xp: 22 },
+    { key:'brute',  geo:'raider', hp: 95, spd: 3.6, dmg: 15, col:'#ff2442', sc: 1.35, worth: 35, xp: 40 },
+    { key:'spike',  geo:'rock',   hp: 26, spd: 7.4, dmg: 6,  col:'#c8ff00', sc: 0.7, worth: 15, xp: 16 }
+  ];
+
+  // Pillars, placed once. They are cover, they are a distance cue, and they are
+  // what stops the pit reading as an empty disc.
+  const pillars = (() => {
+    const g = seeded(48151);
+    const out = [];
+    for(let i = 0; i < 11; i++){
+      const a = g() * Math.PI * 2, d = 8 + g() * 17;
+      out.push({ x: Math.cos(a) * d, z: Math.sin(a) * d,
+                 h: 5 + g() * 6, w: 1.6 + g() * 1.4, c: NEON[(g() * NEON.length) | 0] });
+    }
+    return out;
+  })();
+
+  const hpBar = () => {
+    document.getElementById('prog-fill').style.width = `${Math.max(0, player.hp / player.maxHp) * 100}%`;
+  };
+  document.getElementById('g-time').textContent = '∞';
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--red),var(--lime))';
+  hpBar();
+
+  function addScore(n){
+    const mult = 1 + Math.min(1.5, combo * 0.08);
+    score += Math.round(n * mult);
+    setLive(score);
+  }
+
+  // ── SPAWNING ──
+  function spawnBot(){
+    const pool = wave >= 5 ? BOT_KINDS : (wave >= 3 ? BOT_KINDS.slice(0, 2) : [BOT_KINDS[0]]);
+    const k = pool[(Math.random() * pool.length) | 0];
+    // Arrive at the wall, never on top of the player.
+    const a = Math.random() * Math.PI * 2;
+    const d = 12 + Math.random() * (R_ARENA - 14);
+    const hpS = 1 + (wave - 1) * 0.16;
+    bots.push({
+      k, x: Math.cos(a) * d, z: Math.sin(a) * d,
+      vx: 0, vz: 0, ang: 0,
+      hp: k.hp * hpS * diffMod, max: k.hp * hpS * diffMod,
+      hit: 0, stun: 0, dead: 0, bob: Math.random() * 6.28
+    });
+  }
+  function spawnNode(){
+    const a = Math.random() * Math.PI * 2, d = Math.random() * (R_ARENA - 6);
+    const core = Math.random() < 0.28;
+    nodes.push({ x: Math.cos(a) * d, z: Math.sin(a) * d, core, spin: Math.random() * 6.28, t: 0 });
+  }
+  for(let i = 0; i < 4; i++) spawnNode();
+  for(let i = 0; i < 3; i++) spawnBot();
+
+  // ── COMBAT ──
+  function doSlash(){
+    if(isOver || slashCd > 0 || dashing) return;
+    slashCd = 0.42; slashT = 0.26;
+    snd('slash');
+    let hitAny = 0;
+    const reach = 5.4;
+    const dmg = Math.round((player.atk + (level - 1) * 5) * (overT > 0 ? 1.6 : 1));
+    for(const b of bots){
+      if(b.dead) continue;
+      const dx = b.x - player.x, dz = b.z - player.z;
+      const d = Math.hypot(dx, dz);
+      if(d > reach + b.k.sc) continue;
+      // A 150° arc in front — a slash is a swing, not a bubble.
+      const a = Math.atan2(dx, dz);
+      let diff = a - player.ang;
+      while(diff > Math.PI) diff -= Math.PI * 2;
+      while(diff < -Math.PI) diff += Math.PI * 2;
+      if(Math.abs(diff) > 1.35) continue;
+      damage(b, dmg);
+      b.vx += dx / (d || 1) * 9; b.vz += dz / (d || 1) * 9;
+      hitAny++;
+    }
+    if(hitAny){
+      combo++; comboT = 2.2;
+      w.kick(0.5 + hitAny * 0.2);
+      if(combo > 1 && combo % 3 === 0) w.pop([player.x, 3.4, player.z], `×${combo} COMBO`, '#ffd700', { size: 19 });
+    }
+  }
+
+  function damage(b, dmg){
+    b.hp -= dmg; b.hit = 1;
+    snd('hit');
+    w.burst([b.x, 1.2, b.z], b.k.col, 7, { speed: 7, life: 0.4, size: 0.22 });
+    w.pop([b.x, 2.4, b.z], `-${dmg}`, b.k.col, { size: 13, life: 0.7 });
+    if(b.hp <= 0 && !b.dead){
+      b.dead = 1; killed++;
+      addScore(b.k.worth);
+      snd('explode');
+      w.burst([b.x, 1.2, b.z], b.k.col, 22, { speed: 12, life: 0.8, size: 0.34 });
+      orbs.push({ x: b.x, z: b.z, v: b.k.xp, t: 0 });
+      if(Math.random() < 0.22) spawnNode();
+    }
+  }
+
+  function gainXP(n){
+    xp += n;
+    if(xp < xpNext) return;
+    xp -= xpNext; level++;
+    xpNext = Math.round(xpNext * 1.45);
+    player.maxHp += 20;
+    player.hp = Math.min(player.maxHp, player.hp + 30);
+    player.atk += 8;
+    player.speed = Math.min(18, player.speed + 0.5);
+    wave = level;
+    shake = 1.8;
+    snd('levelUp');
+    w.pop([player.x, 4, player.z], `⬆ LEVEL ${level}`, '#ffd700', { size: 24, life: 1.4 });
+    w.burst([player.x, 1.2, player.z], '#ffd700', 40, { speed: 15, life: 1, size: 0.4 });
+    toast(`⬆ LEVEL UP! Now Level ${level}`, 2000);
+    hpBar();
+  }
+
+  function deploy(){
+    if(isOver || !abilities.length) return;
+    const a = abilities.shift();
+    shake = 1.6;
+    snd(a.id === 'NOVA' ? 'bigExplode' : a.id === 'HEAL' ? 'heal' : 'ability');
+    w.pop([player.x, 4, player.z], a.label + '!', a.color, { size: 22, life: 1.3 });
+    if(a.id === 'NOVA'){
+      for(const b of bots){
+        if(b.dead) continue;
+        const dx = b.x - player.x, dz = b.z - player.z, d = Math.hypot(dx, dz);
+        if(d > 13) continue;
+        b.vx += dx / (d || 1) * 16; b.vz += dz / (d || 1) * 16;
+        b.stun = 0.6;
+        damage(b, Math.round((player.atk + (level - 1) * 5) * 1.3));
+      }
+      w.burst([player.x, 1, player.z], a.color, 60, { speed: 24, life: 1, size: 0.45 });
+    } else if(a.id === 'FREEZE'){
+      bots.forEach(b => { if(!b.dead) b.stun = 2.6; });
+    } else if(a.id === 'HEAL'){
+      player.hp = Math.min(player.maxHp, player.hp + 55); hpBar();
+    } else if(a.id === 'OVERCHARGE'){
+      overT = 6;
+    } else {
+      shieldT = 5; invT = Math.max(invT, 5);
+    }
+  }
+
+  function hurt(n){
+    if(invT > 0 || shieldT > 0 || isOver) return;
+    player.hp -= n; invT = 0.55;
+    combo = 0;
+    snd('hurt');
+    shake = Math.max(shake, 1.1);
+    w.burst([player.x, 1.2, player.z], '#ff2442', 12, { speed: 8, life: 0.5, size: 0.3 });
+    hpBar();
+    if(player.hp <= 0) end();
+  }
+
+  function doDash(){
+    if(isOver || dashCd > 0) return;
+    dashCd = 1.5; dashT = 0.2; dashing = true; invT = Math.max(invT, 0.25);
+    snd('dash');
+    const s = Math.sin(player.ang), c = Math.cos(player.ang);
+    player.vx = s * 42; player.vz = c * 42;
+  }
+
+  // ── AIMING: BOARD POINT → GROUND POINT ──
+  // The 2D arena aims at the world position under the pointer — free-aim on the
+  // mouse, aim-at-what-you-tapped on a finger. Doing the same here needs the
+  // inverse of the projection, and there isn't one to hand; but this camera has
+  // NO YAW, which collapses the whole problem to a ray cast against a plane.
+  //
+  // With the eye directly behind the target on Z, the camera's right vector is
+  // exactly (1,0,0) and its up vector lies in the YZ plane, so a ray through a
+  // board point is three cheap terms — and the intersection with the y=AIM_Y
+  // plane (the height the player's chest sits at) is where the pointer really
+  // is. Exact, ten lines, and no matrix inverse.
+  const board = document.getElementById('arcade-canvas');
+  function aimAt(p){
+    const cam = w.cam;                                // the eased camera, not the goal
+    const fy = cam.target[1] - cam.eye[1];
+    const fz = cam.target[2] - cam.eye[2];
+    const fl = Math.hypot(fy, fz) || 1;
+    const uy = fy / fl, uz = fz / fl;                 // forward, normalised (x is 0)
+    const tanV = Math.tan(cam.fov * Math.PI / 360);
+    // Measured rather than assumed to be BOARD_W/BOARD_H: fitCanvas() rounds the
+    // element to whole pixels, and the projection uses the real drawing buffer.
+    const aspect = (board && board.clientHeight) ? board.clientWidth / board.clientHeight
+                                                 : BOARD_W / BOARD_H;
+    // Board coords → normalised device coords. nx()/ny() are the shared helpers
+    // every 3D mission steers through, so INVERSE CONTROLS still applies here.
+    const sx = nx(p) * tanV * aspect, sy = ny(p) * tanV;
+    // dir = right*sx + up*sy + forward, with right=(1,0,0) and up=(0,-uz,uy).
+    const dx = sx, dy = uy - uz * sy, dz = uz + uy * sy;
+    if(Math.abs(dy) < 1e-4) return null;              // ray parallel to the deck
+    const t = (AIM_Y - cam.eye[1]) / dy;
+    if(t <= 0) return null;                           // pointing at the sky
+    return { x: cam.eye[0] + dx * t, z: cam.eye[2] + dz * t };
+  }
+  // Face a board point, unless it IS the player — tapping yourself keeps your
+  // current facing rather than spinning you to a random angle.
+  function faceBoard(p, minWorld){
+    const g = aimAt(p);
+    if(!g) return false;
+    const dx = g.x - player.x, dz = g.z - player.z;
+    if(Math.hypot(dx, dz) <= (minWorld || 0)) return false;
+    player.ang = Math.atan2(dx, dz);
+    return true;
+  }
+
+  // ── INPUT ──
+  // A line-for-line port of the 2D arena's scheme, because a player who flips
+  // renderers is playing the same mission and must not have to relearn it:
+  //
+  //   · hover (mouse only)  free-aim — the avatar faces the cursor
+  //   · drag                virtual stick planted where the finger landed, with
+  //                         the same 14px dead zone, the same 46px throw and the
+  //                         same trailing anchor, and you face where you run
+  //   · tap                 aim at the point you tapped, then slash
+  //   · double-tap          deploy the queued ability, same as KeyE
+  //
+  // The thresholds are the 2D ones to the millisecond and the pixel: a gesture
+  // that reads as a slash on one board has to read as a slash on the other.
+  const STICK_R = 46, STICK_DEAD = 14;
+  let stickActive = false, stickX = 0, stickY = 0, stickOX = 0, stickOY = 0;
+  let tapT = 0, tapX = 0, tapY = 0;
+  bindCanvasDrag({
+    // Mouse hover keeps free aiming; a coarse pointer has no hover to speak of.
+    onHover(p){
+      if(isTouchDevice) return;
+      faceBoard(p, 0);
+    },
+    onDown(p){
+      hideTouchHint();
+      tapT = performance.now(); tapX = p.x; tapY = p.y;
+      stickOX = p.x; stickOY = p.y; stickActive = false; stickX = stickY = 0;
+    },
+    onMove(p){
+      const dx = p.x - stickOX, dy = p.y - stickOY;
+      const dist = Math.hypot(dx, dy);
+      if(dist < STICK_DEAD){
+        if(!stickActive) return;             // still inside the tap dead zone
+        stickX = stickY = 0;
+        return;
+      }
+      stickActive = true;
+      stickX = dx / dist; stickY = dy / dist;
+      // You face where you're running. Screen right is +X and screen down is
+      // +Z under this camera, which is what makes that one atan2.
+      player.ang = Math.atan2(stickX, stickY);
+      // Let the anchor trail the finger so the stick never runs out of throw
+      // on a long drag across the board.
+      if(dist > STICK_R){
+        stickOX = p.x - stickX * STICK_R;
+        stickOY = p.y - stickY * STICK_R;
+      }
+    },
+    onUp(p){
+      const wasStick = stickActive;
+      stickActive = false; stickX = stickY = 0;
+      if(wasStick) return;                   // that was steering, not a tap
+      if(performance.now() - tapT > 320) return;
+      if(Math.hypot(p.x - tapX, p.y - tapY) > STICK_DEAD) return;
+
+      const now = Date.now();
+      if(now - lastTap < 320){ deploy(); lastTap = 0; return; }
+      lastTap = now;
+      // Aim at what you tapped, unless you tapped yourself — then keep facing.
+      faceBoard(p, player.r * 1.6);
+      doSlash();
+    }
+  });
+
+  window.onkeydown = e => {
+    keys[e.code] = true;
+    if(e.code === 'Space'){ e.preventDefault(); doSlash(); }
+    if(e.code === 'ShiftLeft' || e.code === 'ShiftRight'){ e.preventDefault(); doDash(); }
+    if(e.code === 'KeyE'){ e.preventDefault(); deploy(); }
+    if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.code)) e.preventDefault();
+  };
+  window.onkeyup = e => { keys[e.code] = false; };
+
+  // Pad controls, same as 2D: hold to strafe, tap to slash, and the spare slot
+  // carries the ability on touch. Pressing a direction clears any stale stick
+  // claim so a gesture the browser cut off can't jam the buttons.
+  bindHold(document.getElementById('ctrl-left'),
+           ()=>{ stickActive=false; stickX=stickY=0; padL=true; },  ()=>padL=false);
+  bindHold(document.getElementById('ctrl-right'),
+           ()=>{ stickActive=false; stickX=stickY=0; padR=true; }, ()=>padR=false);
+  const ca = document.getElementById('ctrl-action');
+  if(ca) ca.onclick = () => doSlash();
+  const cd = document.getElementById('ctrl-drop');
+  if(cd) cd.onclick = () => deploy();
+
+  // ── VIRTUAL STICK OVERLAY ──
+  // The 2D build draws the ring and its knob onto the board while a finger is
+  // steering, and without it a drag has no visible anchor at all. The GL canvas
+  // is opaque, so it goes in the fx layer above it instead — positioned in the
+  // board's pixel space, which is the same space the gesture arrives in.
+  const stickUI = (() => {
+    const layer = document.getElementById('gl-fx');
+    if(!layer) return { sync(){}, destroy(){} };
+    const ring = document.createElement('div'); ring.className = 'gl-stick';
+    const knob = document.createElement('div'); knob.className = 'gl-stick-knob';
+    layer.appendChild(ring); layer.appendChild(knob);
+    const box = (el, cx, cy, r) => {
+      el.style.width = el.style.height = (r * 2) + 'px';
+      el.style.transform = `translate(${cx - r}px,${cy - r}px)`;
+    };
+    return {
+      sync(){
+        if(!stickActive){
+          if(ring.style.display !== 'none') ring.style.display = knob.style.display = 'none';
+          return;
+        }
+        // Board units → the layer's CSS pixels. One scale, because the board
+        // keeps its aspect ratio at every size fitCanvas() picks.
+        const k = (layer.clientWidth || BOARD_W) / BOARD_W;
+        ring.style.display = knob.style.display = 'block';
+        box(ring, stickOX * k, stickOY * k, STICK_R * k);
+        box(knob, (stickOX + stickX * STICK_R) * k, (stickOY + stickY * STICK_R) * k, 15 * k);
+      },
+      destroy(){ ring.remove(); knob.remove(); }
+    };
+  })();
+  onQuit(() => stickUI.destroy());
+
+  // ── FRAME ──
+  runLoop(dt => {
+    if(scored) return false;
+
+    // Timers.
+    slashCd = Math.max(0, slashCd - dt);
+    slashT = Math.max(0, slashT - dt);
+    dashCd = Math.max(0, dashCd - dt);
+    invT = Math.max(0, invT - dt);
+    hasteT = Math.max(0, hasteT - dt);
+    shieldT = Math.max(0, shieldT - dt);
+    overT = Math.max(0, overT - dt);
+    if(dashT > 0){ dashT -= dt; if(dashT <= 0) dashing = false; }
+    if(comboT > 0){ comboT -= dt; if(comboT <= 0) combo = 0; }
+    shake = Math.max(0, shake - dt * 3);
+    if(shake > 0.01) w.kick(shake);
+
+    // ── PLAYER MOVEMENT ──
+    if(!isOver){
+      // Exactly the 2D arena's mix: the stick contributes a unit vector once it
+      // has cleared the dead zone, the keys and the pad contribute ±1 each, and
+      // the sum is normalised — so holding a direction and pushing the stick the
+      // same way is one movement, not a double one.
+      let mx = 0, mz = 0;
+      if(stickActive){ mx += stickX; mz += stickY; }
+      if(keys['ArrowLeft']  || keys['KeyA'] || padL) mx -= 1;
+      if(keys['ArrowRight'] || keys['KeyD'] || padR) mx += 1;
+      if(keys['ArrowUp']    || keys['KeyW']) mz -= 1;
+      if(keys['ArrowDown']  || keys['KeyS']) mz += 1;
+      const ml = Math.hypot(mx, mz);
+      if(ml > 1){ mx /= ml; mz /= ml; }
+
+      if(!dashing){
+        const spd = player.speed * (hasteT > 0 ? 1.5 : 1) * (overT > 0 ? 1.25 : 1);
+        // Screen up is -Z in world, which keeps the drag direction and the
+        // world direction the same thing.
+        player.vx += (mx * spd - player.vx) * Math.min(1, dt * 12);
+        player.vz += (mz * spd - player.vz) * Math.min(1, dt * 12);
+      } else {
+        player.vx *= Math.max(0, 1 - dt * 4);
+        player.vz *= Math.max(0, 1 - dt * 4);
+      }
+      // Facing is NOT taken from the movement vector. The 2D build aims with
+      // the pointer and leaves the keys to steering alone — walking left while
+      // slashing right is a real and useful thing to do in this mission — so
+      // player.ang is written only by the hover, the drag and the tap.
+      // On a touch device the drag is the only aim there is, and onMove already
+      // sets it there.
+    } else {
+      player.vx *= Math.max(0, 1 - dt * 6);
+      player.vz *= Math.max(0, 1 - dt * 6);
+    }
+    player.x += player.vx * dt;
+    player.z += player.vz * dt;
+    // Wall. The pit is round, so the clamp is one length check.
+    const pd = Math.hypot(player.x, player.z);
+    if(pd > R_ARENA - 1.5){
+      const k = (R_ARENA - 1.5) / pd;
+      player.x *= k; player.z *= k;
+      player.vx *= 0.4; player.vz *= 0.4;
+    }
+    if(dashing) w.spark([player.x, 0.6, player.z], colour, 0.4, 0.4, [0, 1, 0]);
+
+    // ── WAVES ──
+    if(!isOver){
+      spawnT -= dt;
+      if(spawnT <= 0){
+        spawnT = Math.max(0.55, (2.4 - wave * 0.12)) / diffMod;
+        const n = 1 + ((wave / 4) | 0);
+        for(let i = 0; i < n && bots.filter(b => !b.dead).length < 22; i++) spawnBot();
+      }
+      if(nodes.length < 3 && Math.random() < dt * 0.6) spawnNode();
+    }
+
+    // ── BOTS ──
+    for(let i = bots.length - 1; i >= 0; i--){
+      const b = bots[i];
+      b.hit = Math.max(0, b.hit - dt * 4);
+      if(b.dead){
+        b.vx *= Math.max(0, 1 - dt * 5); b.vz *= Math.max(0, 1 - dt * 5);
+        b.dead += dt;
+        if(b.dead > 0.5) bots.splice(i, 1);
+        continue;
+      }
+      if(b.stun > 0){ b.stun -= dt; }
+      const dx = player.x - b.x, dz = player.z - b.z;
+      const d = Math.hypot(dx, dz) || 1;
+      b.ang = Math.atan2(dx, dz);
+      if(b.stun <= 0 && !isOver){
+        const spd = b.k.spd * diffMod;
+        b.vx += (dx / d * spd - b.vx) * Math.min(1, dt * 4);
+        b.vz += (dz / d * spd - b.vz) * Math.min(1, dt * 4);
+      } else {
+        b.vx *= Math.max(0, 1 - dt * 3); b.vz *= Math.max(0, 1 - dt * 3);
+      }
+      b.x += b.vx * dt; b.z += b.vz * dt;
+      const bd = Math.hypot(b.x, b.z);
+      if(bd > R_ARENA - 1){ const k = (R_ARENA - 1) / bd; b.x *= k; b.z *= k; }
+      // Contact damage.
+      if(d < b.k.sc + player.r + 0.4) hurt(Math.round(b.k.dmg * diffMod));
+    }
+
+    // ── NODES & ORBS ──
+    for(let i = nodes.length - 1; i >= 0; i--){
+      const n = nodes[i];
+      n.t += dt; n.spin += dt * 2;
+      const d = Math.hypot(n.x - player.x, n.z - player.z);
+      if(d > 2.2) continue;
+      nodes.splice(i, 1); collected++;
+      addScore(20);
+      snd('pickup');
+      w.burst([n.x, 1.4, n.z], n.core ? '#ffd700' : '#00f5ff', 20, { speed: 10, life: 0.7, size: 0.3 });
+      if(n.core){
+        const a = ABILS[(Math.random() * ABILS.length) | 0];
+        abilities.push(a);
+        snd('powerup');
+        w.pop([player.x, 4, player.z], `✦ ${a.label} READY`, a.color, { size: 20, life: 1.5 });
+      } else {
+        const roll = Math.random();
+        if(roll < 0.34){ hasteT = 6; w.pop([player.x, 3.4, player.z], '⚡ HASTE', '#00f5ff', { size: 17 }); }
+        else if(roll < 0.67){ shieldT = 4; w.pop([player.x, 3.4, player.z], '🛡 SHIELD', '#a855f7', { size: 17 }); }
+        else { player.hp = Math.min(player.maxHp, player.hp + 18); hpBar(); w.pop([player.x, 3.4, player.z], '+18 HP', '#39ff14', { size: 17 }); }
+      }
+    }
+    for(let i = orbs.length - 1; i >= 0; i--){
+      const o = orbs[i];
+      o.t += dt;
+      const dx = player.x - o.x, dz = player.z - o.z;
+      const d = Math.hypot(dx, dz) || 1;
+      if(d < 8){ o.x += dx / d * dt * 14; o.z += dz / d * dt * 14; }
+      if(d < 1.4){ orbs.splice(i, 1); gainXP(o.v); snd('coin'); }
+      else if(o.t > 14) orbs.splice(i, 1);
+    }
+
+    // ── CAMERA ──
+    // Tracks the player's POSITION and nothing else — no yaw, ever. That is
+    // what keeps a drag meaning the same thing all round (see the note at the
+    // top of this mission), and it is the 3D equivalent of the 2D build's
+    // panning window. The eased rig still gives it the lag that makes a dodge
+    // feel physical; a dash merely pulls the eye back and widens the lens.
+    //
+    // eye.x and target.x are the SAME number on purpose: that is what makes the
+    // camera's right vector exactly (1,0,0), which is the one assumption
+    // aimAt() rests on. They start equal and ease at the same rate, so they stay
+    // equal — do not give either of them an offset of its own.
+    const back = CAM_BACK + (dashing ? 3 : 0);
+    w.goal.eye[0] = player.x;
+    w.goal.eye[1] = CAM_HIGH;
+    w.goal.eye[2] = player.z + back;
+    w.goal.target[0] = w.goal.eye[0];
+    w.goal.target[1] = 0.8;
+    w.goal.target[2] = player.z - CAM_AHEAD;
+    w.goal.fov = 58 + (dashing ? 8 : 0) + (overT > 0 ? 3 : 0);
+    w.step(dt);
+
+    w.begin();
+
+    // ── THE PIT ──
+    r.draw('ground', { pos:[0, -0.05, 0], scale:[R_ARENA * 2.4, 1, R_ARENA * 2.4],
+                       color:'#05070f', metallic: 0.88, roughness: 0.22, rim: 0.3 });
+    w.drawGrid({ y: 0.02, halfX: R_ARENA, halfZ: R_ARENA, step: 5,
+                 color:'#2450c8', emissive: 1.0, width: 0.045, floor: false });
+    // Wall: a ring of lit panels. Height is the depth cue that tells you how
+    // far the far side is.
+    for(let i = 0; i < 40; i++){
+      const a = (i / 40) * Math.PI * 2;
+      const px = Math.cos(a) * R_ARENA, pz = Math.sin(a) * R_ARENA;
+      r.draw('cube', { pos:[px, 2.6, pz], rot:[0, -a, 0], scale:[4.9, 5.2, 0.8],
+                       color:'#0c1020', metallic: 0.85, roughness: 0.32, rim: 2.0 });
+      const c = NEON[i % NEON.length];
+      r.draw('box', { pos:[px * 0.985, 4.9, pz * 0.985], rot:[0, -a, 0], scale:[4.2, 0.16, 0.18],
+                      color: c, emissive: c, emissiveStrength: 2.3 + 0.6 * Math.sin(w.t * 2 + i) });
+      // A skirt light at floor level: it washes the deck by the wall, so the
+      // boundary reads as a lit edge you can judge distance against.
+      r.draw('box', { pos:[px * 0.96, 0.16, pz * 0.96], rot:[0, -a, 0], scale:[4.4, 0.1, 0.14],
+                      color: c, emissive: c, emissiveStrength: 1.5 });
+    }
+    for(const p of pillars){
+      r.draw('cube', { pos:[p.x, p.h / 2, p.z], scale:[p.w, p.h, p.w],
+                       color:'#0b0e1c', metallic: 0.86, roughness: 0.3, rim: 1.3 });
+      for(const f of [[0, p.w * 0.52], [0, -p.w * 0.52]]){
+        r.draw('box', { pos:[p.x + f[0], p.h * 0.55, p.z + f[1]], scale:[p.w * 0.42, p.h * 0.62, 0.08],
+                        color: p.c, emissive: p.c, emissiveStrength: 1.9 });
+      }
+      r.draw('thintorus', { pos:[p.x, 0.06, p.z], rot:[Math.PI / 2, 0, 0], scale: p.w * 1.9,
+                            color: p.c, emissive: p.c, emissiveStrength: 0.9, alpha: 0.4, blend: true });
+      r.glow([p.x, p.h + 0.4, p.z], 1.1, p.c, 0.5);
+    }
+
+    // ── DATA NODES ──
+    for(const n of nodes){
+      const c = n.core ? '#ffd700' : '#00f5ff';
+      const y = 1.3 + Math.sin(n.t * 2.2) * 0.28;
+      r.draw(n.core ? 'cube' : 'sphere', { pos:[n.x, y, n.z],
+             rot:[n.spin * 0.7, n.spin, 0], scale: n.core ? 0.85 : 0.62,
+             color: c, emissive: c, emissiveStrength: 1.4 });
+      r.draw('thintorus', { pos:[n.x, y, n.z], rot:[Math.PI / 2, 0, n.spin * 1.6], scale: 1.5,
+                            color:'#d8e2f5', metallic: 1, roughness: 0.12,
+                            emissive: c, emissiveStrength: 1.0 });
+      // Ground ring — the no-shadow substitute that says where it actually is.
+      r.draw('thintorus', { pos:[n.x, 0.06, n.z], rot:[Math.PI / 2, 0, 0], scale: 1.7,
+                            color: c, emissive: c, emissiveStrength: 0.9, alpha: 0.5, blend: true });
+      r.glow([n.x, y, n.z], 0.9, c, 0.5);
+    }
+    for(const o of orbs){
+      r.draw('sphere', { pos:[o.x, 0.7 + Math.sin(o.t * 5) * 0.14, o.z], scale: 0.28,
+                         color:'#a855f7', emissive:'#a855f7', emissiveStrength: 1.8 });
+      r.glow([o.x, 0.7, o.z], 0.45, '#a855f7', 0.55);
+    }
+
+    // ── BOTS ──
+    for(const b of bots){
+      const dying = b.dead ? clamp(1 - b.dead * 2, 0, 1) : 1;
+      if(dying <= 0.02) continue;
+      const bob = Math.sin(w.t * 5 + b.bob) * 0.1;
+      const col = b.hit > 0.05 ? '#ffffff' : b.k.col;
+      const s = b.k.sc * dying;
+      r.draw(b.k.geo, { pos:[b.x, 1.0 + bob, b.z], rot:[0, b.ang + Math.PI, 0], scale: s * 1.3,
+                        color: col, emissive: b.k.col,
+                        emissiveStrength: 0.8 + b.hit * 4 + (b.stun > 0 ? 1.2 : 0),
+                        metallic: 0.5, roughness: 0.42, rim: 2.0 });
+      // Ground ring: how the eye places a flying thing with no shadow to help.
+      r.draw('thintorus', { pos:[b.x, 0.06, b.z], rot:[Math.PI / 2, 0, 0], scale: s * 2.1,
+                            color: b.k.col, emissive: b.k.col, emissiveStrength: 0.8,
+                            alpha: 0.45 * dying, blend: true });
+      if(b.stun > 0) r.glow([b.x, 2.4, b.z], 0.7, '#00f5ff', 1.2);
+      // A health pip only while hurt, so a healthy field stays clean.
+      if(b.hp < b.max && !b.dead){
+        const f = clamp(b.hp / b.max, 0, 1);
+        r.beam([b.x - 0.8, 2.5, b.z], [b.x + 0.8, 2.5, b.z], 0.07,
+               { color:'#20263a', metallic: 0.5, roughness: 0.5 });
+        r.beam([b.x - 0.8, 2.52, b.z], [b.x - 0.8 + 1.6 * f, 2.52, b.z], 0.09,
+               { color:'#ff2442', emissive:'#ff2442', emissiveStrength: 1.8, height: 0.09 });
+      }
+    }
+
+    // ── THE PLAYER ──
+    const flick = invT > 0 && ((w.t * 22) | 0) % 2 === 0;
+    const pcol = overT > 0 ? '#ff6600' : colour;
+    if(!flick){
+      r.draw('ship', { pos:[player.x, 1.0, player.z], rot:[0, player.ang + Math.PI, 0], scale: 1.15,
+                       color:'#8f9ec4', metallic: 0.55, roughness: 0.42, rim: 2.2,
+                       emissive: pcol, emissiveStrength: 0.18 });
+      // Engine bloom behind the hull, brighter under thrust.
+      const sp = Math.hypot(player.vx, player.vz) / 20;
+      r.glow([player.x - Math.sin(player.ang) * 1.6, 0.9, player.z - Math.cos(player.ang) * 1.6],
+             0.42 + sp * 0.3, pcol, 0.55 + sp * 0.6);
+    }
+    r.draw('thintorus', { pos:[player.x, 0.06, player.z], rot:[Math.PI / 2, 0, 0], scale: 2.6,
+                          color: pcol, emissive: pcol, emissiveStrength: 1.2, alpha: 0.55, blend: true });
+    if(shieldT > 0){
+      r.draw('sphere', { pos:[player.x, 1.1, player.z], scale: 2.6 + Math.sin(w.t * 8) * 0.06,
+                         color:'#a855f7', emissive:'#a855f7', emissiveStrength: 1.1,
+                         alpha: 0.2, blend: true, metallic: 0.3, roughness: 0.05 });
+    }
+    // The slash: a real arc of blades swept in front, not a flash.
+    if(slashT > 0){
+      const k = 1 - slashT / 0.26;
+      for(let i = 0; i < 9; i++){
+        const a = player.ang + (-1.3 + (i / 8) * 2.6) + k * 0.5;
+        const d = 2.4 + k * 3.2;
+        r.draw('box', { pos:[player.x + Math.sin(a) * d, 1.1, player.z + Math.cos(a) * d],
+                        rot:[0, a, 0], scale:[0.16, 1.5 * (1 - k * 0.4), 0.9],
+                        color:'#ffffff', emissive: pcol, emissiveStrength: 3.4 * (1 - k),
+                        alpha: 1 - k, blend: true });
+      }
+    }
+    // Ability charges, orbiting overhead — inventory as objects.
+    abilities.slice(0, 4).forEach((a, i) => {
+      const ang = w.t * 1.6 + i * (Math.PI * 2 / Math.max(1, abilities.length));
+      r.draw('cube', { pos:[player.x + Math.cos(ang) * 1.9, 3.1, player.z + Math.sin(ang) * 1.9],
+                       rot:[ang, ang * 1.3, 0], scale: 0.34,
+                       color: a.color, emissive: a.color, emissiveStrength: 2.4 });
+    });
+
+    // ── LIGHTS ──
+    // MAX_LIGHTS is 10 and the rig takes three, so only the nearest hazards
+    // are lit; sorting by distance is what keeps the important ones chosen.
+    r.light({ pos:[player.x - 7, 8, player.z + 7], color:'#8fa6ff', intensity: 110, range: 30 });
+    r.light({ pos:[player.x + 5, 3, player.z - 4], color: pcol, intensity: 45 + (slashT > 0 ? 480 : 0), range: 16 });
+    r.light({ pos:[player.x, 20, player.z - 10], color:'#5f6cff', intensity: 260, range: 60 });
+    const near = bots.filter(b => !b.dead)
+      .map(b => ({ b, d: Math.hypot(b.x - player.x, b.z - player.z) }))
+      .sort((a, c) => a.d - c.d).slice(0, 4);
+    for(const { b } of near){
+      r.light({ pos:[b.x, 1.6, b.z], color: b.k.col, intensity: 70 + b.hit * 400, range: 11 });
+    }
+
+    w.end();
+    stickUI.sync();
+  });
+
+  onQuit(() => { isOver = true; });
+
+  // ⏹️ QUITTING AN ENDLESS RUN BANKS IT, exactly as the 2D arena does.
+  // Cyber Arena is the one mission with no clock and no finish line — it ends
+  // when you die — so Quit is a legitimate way to END a run rather than to
+  // abandon one, and dropping the player on the hub with nothing to show for it
+  // silently deletes points they had already earned and were watching climb.
+  // btn-quit hands over to this INSTEAD of its own teardown, so everything from
+  // here is the ordinary ending.
+  onQuitGame = () => { if(!isOver) end(true); };
+
+  function bank(){
+    if(scored) return; scored = true;
+    clearCanvasDrag();
+    showResults('arena', score, {
+      '⚔️ Bots Eliminated': killed,
+      '📡 Data Nodes Collected': collected,
+      '🎖️ Arena Level Reached': level,
+      '🏆 Final Score': `${score} PTS`
+    });
+  }
+
+  function end(quit){
+    if(isOver) return;
+    isOver = true;
+    // Straight to the card on a quit. The delay below exists to let the death
+    // explosion play, and a quit has none to watch — worse, it opens a window in
+    // which a second press of Quit runs the ordinary teardown, and stopGame()
+    // clears the very timeout the score is riding on.
+    if(quit){ bank(); return; }
+    snd('gameOver');
+    w.kick(3);
+    w.burst([player.x, 1.2, player.z], '#ff2442', 60, { speed: 20, life: 1.2, size: 0.5 });
+    gLater(bank, 750);
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🤖 BATTLE BOTS 3D — the siege lane
+// ══════════════════════════════════════════════
+// The lane battle seen down the length of the corridor rather than side-on:
+// three lanes running away along X, the Mainframe near, the Glitch far, and a
+// city burning behind both. Depth is what the 2D build could only imply — a bot
+// at the far tower is genuinely small, and the front line walking toward you is
+// the whole read on how the siege is going.
+//
+// The simulation is a faithful port and reads the SAME BB table app.js defines:
+// unit stats, foe stats, spawn ramp, siege fraction, queue spacing, RAM economy
+// and the 550/400/250 scoring split all come from there, so a balance change in
+// one file changes both renderers.
+P.games.battlebots = function(){
+  const w = begin3d(Object.assign({ ease: 0.1 }, CITY_NIGHT, {
+    env: { zenith:'#050418', horizon:'#4a0f2e', ground:'#05060f', intensity: 1.35 },
+    fog: { color:'#0d0518', density: 0.0075 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  const deck = document.getElementById('bb-deck');
+  const ramPill = document.getElementById('bb-ram-pill');
+  const ramEl = document.getElementById('bb-ram');
+  const progEl = document.getElementById('prog-fill');
+  const timeEl = document.getElementById('g-time');
+  deck.style.display = 'flex';
+  ramPill.style.display = '';
+  setControls(null);
+  setControlHint('TAP A CARD TO DEPLOY · YOUR BOTS ADVANCE ON THEIR OWN',
+                 'CLICK A CARD OR PRESS 1–7 · YOUR BOTS ADVANCE ON THEIR OWN');
+  showTouchHint('TAP THE CARDS BELOW TO DEPLOY');
+
+  const diffMod = getDifficultyModifier();
+  const foeHpScale = 1 + (diffMod - 1) * 0.16;
+  const foeAtkScale = 1 + (diffMod - 1) * 0.16;
+  const waveScale = 1 + (diffMod - 1) * 0.16;
+  const TOTAL = BB.seconds;
+
+  // ── WORLD LAYOUT ──
+  // The 2D board is 560 units wide; the corridor is 120 world units long, so a
+  // board-space speed converts once here and every unit stat stays comparable.
+  const LEN = 120, K_ = LEN / 560;
+  const P_END = -LEN / 2, E_END = LEN / 2;      // player tower ← → glitch tower
+  const P_LINE = P_END + 12, E_LINE = E_END - 12;
+  const P_SPAWN = P_END + 10, E_SPAWN = E_END - 10;
+  const LANE_Z = [-4.6, 0, 4.6];
+
+  const pColor = getEquippedColorHex();
+  const colorOf = {
+    scout:  pColor,
+    wall:   shiftHue(pColor, -26),
+    zapper: shiftHue(pColor, 20),
+    tank:   shiftHue(pColor, 42),
+    titan:  shiftHue(pColor, 64)
+  };
+  // Each unit gets its own silhouette. Reading a lane at a glance is the whole
+  // skill of this game, and in 3D shape does that job better than an emoji.
+  const GEO = { scout:'drone', wall:'cube', zapper:'raider', tank:'cube', titan:'tower',
+                bug:'rock', virus:'sphere', adware:'raider', worm:'pill', spyware:'rock2', trojan:'tower' };
+
+  const ramPerk = perkRamMult();
+  let ram = BB.ram.start, ramRate = BB.ram.rate * ramPerk, upgIdx = 0;
+  if(ramPerk > 1) toast(`🌳 ACCELERATED RAM — throughput ×${ramPerk.toFixed(2)}`, 2600);
+  let mainHP = BB.baseHP, glitchHP = BB.baseHP;
+  let bots = [], foes = [], beams = [];
+  let pLane = 0, eLane = 0;
+  let elapsed = 0, time = TOTAL, waveNo = 0, waveT = BB.wave.first;
+  // Hostiles a wave has called for but that have not found free ground yet, and
+  // the countdown to the next attempt. See the wave block in the frame loop.
+  let foeQueue = [], queueT = 0;
+  let kills = 0, deployed = 0, empFired = 0, ended = false, scored = false;
+  let hurtFlash = 0, hitFlash = 0, empFlash = 0, outro = null;
+
+  timeEl.textContent = fmtTime(time);
+  progEl.style.width = '100%';
+  progEl.style.background = 'linear-gradient(90deg,var(--red),var(--gold))';
+  setLive(0);
+
+  // ── DECK ──
+  const cards = [
+    { kind:'unit', spec: BB.units.scout,  color: colorOf.scout,  cdLeft: 0 },
+    { kind:'unit', spec: BB.units.wall,   color: colorOf.wall,   cdLeft: 0 },
+    { kind:'unit', spec: BB.units.zapper, color: colorOf.zapper, cdLeft: 0 },
+    { kind:'unit', spec: BB.units.tank,   color: colorOf.tank,   cdLeft: 0 },
+    { kind:'unit', spec: BB.units.titan,  color: colorOf.titan,  cdLeft: 0 },
+    { kind:'emp',  icon:'💥', name:'EMP',       color:'#ffffff', cdLeft: 0 },
+    { kind:'upg',  icon:'⚡', name:'RAM SPEED', color:'#ffd700', cdLeft: 0 }
+  ];
+  deck.innerHTML = '';
+  const btns = cards.map((c, i) => {
+    const b = document.createElement('button');
+    b.className = 'bb-btn';
+    b.style.setProperty('--bc', c.color);
+    b.innerHTML = `<span class="bb-ico">${c.kind === 'unit' ? c.spec.icon : c.icon}</span>` +
+                  `<span class="bb-name">${c.kind === 'unit' ? c.spec.name : c.name}</span>` +
+                  `<span class="bb-cost"></span>`;
+    b.onclick = () => buy(i);
+    deck.appendChild(b);
+    return { el: b, cost: b.querySelector('.bb-cost'), lastCost:'', lastState:'', lastCd:-1, lastSecs:'' };
+  });
+  if(typeof fitCanvas === 'function') fitCanvas();
+  P.syncSize();
+
+  function costOf(i){
+    const c = cards[i];
+    if(c.kind === 'unit') return c.spec.cost;
+    if(c.kind === 'emp')  return BB.emp.cost;
+    return upgIdx < BB.ram.tiers.length ? BB.ram.tiers[upgIdx] : Infinity;
+  }
+
+  // The 2D build's deck painter, line for line. It used to emit its own
+  // `cool` / `ok` / `poor` state classes, and style.css has rules for none of
+  // them — so in 3D a card you could not afford stayed fully lit and a card on
+  // cooldown showed nothing at all. The deck is the whole control surface of
+  // this mission; it has to answer "can I press this, and if not, when?" the
+  // same way in both renderers.
+  function paintDeck(){
+    for(let i = 0; i < cards.length; i++){
+      const c = cards[i], b = btns[i];
+      const cost = costOf(i);
+      const label = Number.isFinite(cost) ? `${cost} RAM` : 'MAXED';
+      if(label !== b.lastCost){ b.cost.textContent = label; b.lastCost = label; }
+
+      // A lit card means DEPLOYABLE NOW. Out of RAM, or the siege over, dims it.
+      const state = !Number.isFinite(cost) ? 'maxed' : ((ended || ram < cost) ? 'broke' : '');
+      if(state !== b.lastState){
+        b.el.classList.toggle('broke', state === 'broke');
+        b.el.classList.toggle('maxed', state === 'maxed');
+        b.lastState = state;
+      }
+
+      const cool = c.kind === 'unit' ? c.spec.cool : c.kind === 'emp' ? BB.emp.cool : 0;
+      const left = cool ? Math.max(0, c.cdLeft) : 0;
+      const q = cool ? Math.round(left / cool * 20) / 20 : 0;
+      if(q !== b.lastCd){ b.el.style.setProperty('--cd', q); b.lastCd = q; }
+      const secs = left > 0 ? String(Math.ceil(left / 1000)) : '';
+      if(secs !== b.lastSecs){
+        if(secs) b.el.dataset.cd = secs; else b.el.removeAttribute('data-cd');
+        b.lastSecs = secs;
+      }
+    }
+    ramEl.textContent = Math.floor(ram);
+  }
+  paintDeck();
+
+  function buy(i){
+    if(ended) return;
+    const c = cards[i], cost = costOf(i);
+    // Same three refusals, with the same words, as the 2D deck: a dimmed card is
+    // still clickable, and the toast is how you find out what it is waiting for.
+    if(!Number.isFinite(cost)){ snd('deny'); toast('⚡ RAM THROUGHPUT ALREADY MAXED'); return; }
+    if(c.cdLeft > 0){ snd('deny'); return; }
+    if(ram < cost){ snd('deny'); toast(`⚠️ INSUFFICIENT RAM — NEED ${Math.ceil(cost - ram)} MORE`); return; }
+    ram -= cost;
+    hideTouchHint();
+    if(c.kind === 'unit'){
+      spawnUnit(c.spec, c.color);
+      c.cdLeft = c.spec.cool;
+      deployed++;
+      snd('powerup');
+    } else if(c.kind === 'emp'){
+      c.cdLeft = BB.emp.cool;
+      empFired++; empFlash = 1;
+      snd('bigExplode');
+      w.kick(2.4);
+      for(const f of foes){
+        f.hp -= BB.emp.dmg;
+        w.burst([f.x, 1.2, LANE_Z[f.lane]], '#ffffff', 8, { speed: 7, life: 0.5, size: 0.26 });
+      }
+      reapFoes();
+    } else {
+      upgIdx++;
+      ramRate = (BB.ram.rate + BB.ram.step * upgIdx) * ramPerk;
+      snd('levelUp');
+      w.pop([0, 9, 0], `RAM ${Math.round(ramRate)}/s`, '#ffd700', { size: 20, life: 1.2 });
+    }
+    paintDeck();
+  }
+
+  window.onkeydown = e => {
+    if(e.ctrlKey || e.metaKey || e.altKey) return;
+    const n = parseInt(e.key, 10);
+    if(n >= 1 && n <= 7){ e.preventDefault(); buy(n - 1); }
+  };
+
+  // ── THE SPAWN SHELF ──
+  // Nothing may arrive on top of something already standing there. The queue
+  // rule in stepSide() only holds units that are ALREADY apart — two bodies at
+  // the same x have a negative edge gap, which does not block — so a body
+  // dropped onto another walks the whole corridor inside it, and a wave landing
+  // on a held front reads as one flickering unit rather than four.
+  //
+  // `shelfX` answers "where can this actually stand": the spawn point, or far
+  // enough behind whatever is sitting on it, stepping back toward our own base
+  // until it either finds room or runs out of corridor and gives up.
+  const SHELF = 2.4;                   // clearance a fresh body needs, world units
+  function shelfX(list, lane, x, side, wall){
+    let px = x;
+    for(let guard = 0; guard < 5; guard++){
+      let hit = null;
+      for(const u of list){
+        if(u.hp <= 0 || u.lane !== lane) continue;
+        if(Math.abs(u.x - px) < SHELF){ hit = u; break; }
+      }
+      if(!hit) return px;
+      px = hit.x - side * SHELF;
+      if(side > 0 ? px < wall : px > wall) return null;
+    }
+    return null;
+  }
+  // The emptiest lane, scanned from `from` so an unobstructed field still
+  // round-robins and a deploy still spreads across the three fronts.
+  function placeIn(list, from, x, side, wall){
+    for(let i = 0; i < 3; i++){
+      const lane = (from + i) % 3;
+      const px = shelfX(list, lane, x, side, wall);
+      if(px != null) return { lane, x: px };
+    }
+    return null;
+  }
+
+  function spawnUnit(spec, color){
+    // The player has already paid, so a blocked shelf must never swallow the
+    // deploy: it falls back to the spawn point in the round-robin lane.
+    const at = placeIn(bots, pLane, P_SPAWN, 1, P_END + 2) || { lane: pLane, x: P_SPAWN };
+    pLane = (at.lane + 1) % 3;
+    bots.push({
+      side: 1, spec, color, lane: at.lane,
+      x: at.x, hp: spec.hp, max: spec.hp,
+      cd: 0, hit: 0, dead: 0, bob: Math.random() * 6.28,
+      geo: GEO[spec.key] || 'cube',
+      sc: spec.key === 'titan' ? 1.5 : spec.key === 'tank' ? 1.2 : 0.95
+    });
+    w.burst([at.x, 1, LANE_Z[at.lane]], color, 14, { speed: 7, life: 0.6, size: 0.28, vy: 3 });
+  }
+
+  // Returns false when there is nowhere to put it. The wave queue holds onto
+  // the hostile and tries again in a moment rather than dropping it on a
+  // occupied square — see the drain step in the frame loop.
+  function spawnFoe(spec){
+    const at = placeIn(foes, eLane, E_SPAWN, -1, E_END - 2);
+    if(!at) return false;
+    eLane = (at.lane + 1) % 3;
+    foes.push({
+      side: -1, spec, color: spec.color, lane: at.lane,
+      x: at.x, hp: spec.hp * foeHpScale, max: spec.hp * foeHpScale,
+      cd: 0, hit: 0, dead: 0, bob: Math.random() * 6.28,
+      geo: GEO[spec.key] || 'rock',
+      sc: spec.key === 'trojan' ? 1.6 : spec.key === 'worm' ? 1.25 : 0.9
+    });
+    return true;
+  }
+
+  function reapFoes(){
+    for(let i = foes.length - 1; i >= 0; i--){
+      const f = foes[i];
+      if(f.hp > 0) continue;
+      kills++;
+      ram = Math.min(BB.ram.cap, ram + f.spec.bounty);
+      w.burst([f.x, 1.1, LANE_Z[f.lane]], f.color, 18, { speed: 10, life: 0.7, size: 0.3 });
+      snd('explode');
+      foes.splice(i, 1);
+    }
+  }
+
+  // ── SIMULATION ──
+  // One routine drives both armies. `side` is +1 for the player (walking toward
+  // +X) and -1 for the glitch, and everything below reads off it — which is why
+  // there is one attrition model here rather than two that can drift apart.
+  //
+  // ⚠️ THREE LANES, THREE SEPARATE DUELS — the same contract the 2D build has
+  // had all along, and the thing this port originally got wrong. Both the
+  // targeting and the ally queue used to scan the WHOLE list regardless of lane,
+  // which broke the mission in two ways at once: every bot on the field piled
+  // its damage onto one front hostile (so army size multiplied damage instead of
+  // adding depth), and a single unit standing at the front of lane 0 held up the
+  // columns in lanes 1 and 2, which had nothing in front of them at all. Filter
+  // by lane and the field resolves as three independent fronts, which is what
+  // the staggered art has always been showing.
+  //
+  // Gaps are EDGE gaps, like 2D's — measured off the MODEL, not off the table's
+  // sprite width. `reach` and `spacing` still convert through K_ so the balance
+  // is the shared table's, but the bodies these gaps are measured from are the
+  // ones actually on screen, so "stopped just short of it" looks like it.
+  const halfW = u => u.sc * (u.geo === 'tower' ? 0.55 : 0.75);
+
+  function stepSide(list, enemies, side, dt, dtMs){
+    const line = side > 0 ? E_LINE : P_LINE;
+    for(let i = list.length - 1; i >= 0; i--){
+      const u = list[i];
+      u.hit = Math.max(0, u.hit - dt * 4);
+      if(u.hp <= 0){ list.splice(i, 1); continue; }
+      u.cd = Math.max(0, u.cd - dtMs);
+
+      const reach = u.spec.reach * K_;
+      // Frontmost live enemy IN THIS UNIT'S LANE.
+      let target = null, bestD = Infinity;
+      for(const e of enemies){
+        if(e.hp <= 0 || e.lane !== u.lane) continue;
+        const d = (e.x - u.x) * side - halfW(u) - halfW(e);
+        if(d < -9) continue;               // long past each other — don't moonwalk back
+        if(d < bestD){ bestD = d; target = e; }
+      }
+
+      // In reach → swing, and a shooter fires over whoever is in front.
+      if(target && bestD <= reach){
+        if(u.cd <= 0){
+          u.cd = u.spec.rate;
+          const atk = u.spec.atk * (side > 0 ? 1 : foeAtkScale);
+          target.hp -= atk;
+          target.hit = 1;
+          if(u.spec.reach >= BB_RANGED){
+            beams.push({ a:[u.x + side * 0.9, 1.3, LANE_Z[u.lane]],
+                         b:[target.x, 1.3, LANE_Z[target.lane]], t: 0.14, c: u.color });
+            snd('shoot');
+          } else {
+            w.burst([target.x - side * 0.6, 1.2, LANE_Z[target.lane]], u.color, 4,
+                    { speed: 5, life: 0.3, size: 0.18 });
+          }
+        }
+        continue;
+      }
+
+      // At the enemy base → siege it.
+      const atBase = side > 0 ? u.x >= line : u.x <= line;
+      if(atBase){
+        if(u.cd <= 0){
+          u.cd = u.spec.rate;
+          const dmg = u.spec.atk * BB.siege * (side > 0 ? 1 : foeAtkScale);
+          if(side > 0){ glitchHP -= dmg; hitFlash = 1; }
+          else { mainHP -= dmg; hurtFlash = 1; snd('hurt'); }
+          w.burst([line + side * 1.5, 2.5, LANE_Z[u.lane]], side > 0 ? '#ff2442' : pColor, 6,
+                  { speed: 6, life: 0.4, size: 0.24 });
+        }
+        continue;
+      }
+
+      // Queue behind the ally in front rather than stacking on them — again, in
+      // THIS LANE only. A column that queues across lanes is three columns that
+      // move at the speed of the slowest one.
+      const gap = BB.spacing * K_;
+      let blocked = false;
+      for(const a of list){
+        if(a === u || a.hp <= 0 || a.lane !== u.lane) continue;
+        const d = (a.x - u.x) * side - halfW(u) - halfW(a);
+        if(d >= 0 && d <= gap){ blocked = true; break; }
+      }
+      if(blocked) continue;
+
+      u.x += side * u.spec.speed * K_ * dt;
+    }
+  }
+
+  // ── CLOCK ──
+  gTimer = setInterval(() => {
+    if(ended) return;
+    time--;
+    timeEl.textContent = fmtTime(time);
+    progEl.style.width = `${Math.max(0, time / TOTAL * 100)}%`;
+    if(time <= 10 && time > 0) snd('tick');
+    if(time <= 0) finish('timeout');
+  }, 1000);
+
+  onQuit(() => {
+    ended = true;
+    deck.innerHTML = '';
+    deck.style.display = 'none';
+    ramPill.style.display = 'none';
+  });
+
+  let lastMs = performance.now();
+  runLoop(dt => {
+    if(scored) return false;
+    const nowMs = performance.now();
+    const dtMs = Math.min(60, nowMs - lastMs); lastMs = nowMs;
+
+    hurtFlash = Math.max(0, hurtFlash - dt * 2.4);
+    hitFlash = Math.max(0, hitFlash - dt * 2.4);
+    empFlash = Math.max(0, empFlash - dt * 1.6);
+
+    if(!ended){
+      elapsed += dt;
+      ram = Math.min(BB.ram.cap, ram + ramRate * dt);
+      for(const c of cards) c.cdLeft = Math.max(0, c.cdLeft - dtMs);
+
+      // ── WAVES ──
+      // Waves tighten with the clock, exactly as the 2D build's do — but a wave
+      // is REQUESTED here, not spawned. Its hostiles go into a queue that the
+      // drain below empties one at a time onto free ground, and a new wave is
+      // not even started while the shelf is still congested or the last one has
+      // not finished landing. Firing four `gLater`s at a held front was what
+      // stacked them: the timers do not care whether the ground under the spawn
+      // point is occupied, so a wave arriving on a stalled column put four
+      // bodies inside each other and the pile then walked the corridor as one.
+      waveT -= dtMs;
+      if(waveT <= 0){
+        if(foeQueue.length || !placeIn(foes, eLane, E_SPAWN, -1, E_END - 2)){
+          waveT = 400;                  // shelf busy — look again, don't bank a pile-up
+        } else {
+          waveNo++;
+          const pool = Object.values(BB.foes).filter(f => elapsed >= f.from);
+          const n = Math.min(4, 1 + Math.floor(waveNo / 5) + (Math.random() < 0.35 ? 1 : 0));
+          for(let i = 0; i < n; i++) foeQueue.push(pool[(Math.random() * pool.length) | 0]);
+          const base = Math.max(BB.wave.floor, BB.wave.start - waveNo * BB.wave.tighten * 10);
+          waveT = base / waveScale;
+          if(waveNo % 5 === 0){
+            snd('alarm');
+            w.pop([E_END - 6, 10, 0], `WAVE ${waveNo}`, '#ff2442', { size: 22, life: 1.4 });
+          }
+        }
+      }
+      // Drain: one hostile per burst interval, and only onto ground that is
+      // free. A refusal costs a short re-check, never a lost hostile.
+      queueT = Math.max(0, queueT - dtMs);
+      if(foeQueue.length && queueT <= 0){
+        if(spawnFoe(foeQueue[0])){ foeQueue.shift(); queueT = BB.wave.burst; }
+        else queueT = 220;
+      }
+
+      stepSide(bots, foes, 1, dt, dtMs);
+      stepSide(foes, bots, -1, dt, dtMs);
+      reapFoes();
+      for(let i = bots.length - 1; i >= 0; i--) if(bots[i].hp <= 0){
+        w.burst([bots[i].x, 1.1, LANE_Z[bots[i].lane]], bots[i].color, 14, { speed: 9, life: 0.6, size: 0.28 });
+        bots.splice(i, 1);
+      }
+
+      // Live score tracks the damage put through, so the HUD number means
+      // something before the siege resolves.
+      setLive(Math.round(BB.score.lossMax * (1 - Math.max(0, glitchHP) / BB.baseHP)));
+
+      if(glitchHP <= 0) finish('win');
+      else if(mainHP <= 0) finish('loss');
+      paintDeck();
+    }
+
+    for(let i = beams.length - 1; i >= 0; i--){
+      beams[i].t -= dt;
+      if(beams[i].t <= 0) beams.splice(i, 1);
+    }
+
+    // ── CAMERA ──
+    // Parked behind the Mainframe looking down the corridor, drifting with the
+    // front line so the fight stays in frame as it moves.
+    // WHERE THE FIGHT IS, not where the units average out to. An average is
+    // pulled to the middle by a hostile that has only just spawned sixty units
+    // away, which parks the shot on empty deck while the actual line is off the
+    // left edge. The meeting point — leading bot to leading hostile — is the
+    // thing worth looking at, and with one side empty it is that side's lead.
+    let pFront = -Infinity, eFront = Infinity;
+    for(const b of bots) if(b.x > pFront) pFront = b.x;
+    for(const f of foes) if(f.x < eFront) eFront = f.x;
+    let front;
+    if(pFront > -Infinity && eFront < Infinity) front = (pFront + eFront) / 2;
+    else if(pFront > -Infinity)                 front = pFront + 6;
+    else if(eFront < Infinity)                  front = eFront - 6;
+    else                                        front = P_END + 12;
+    front = clamp(front, P_END + 8, E_END - 8);
+    // The shot brackets the front line: parked six units behind it and aimed
+    // six ahead, so whatever is actually fighting is in the middle of frame and
+    // whichever tower the line is near comes into shot on its own.
+    // The look-at IS the front line and the eye is a fixed offset from it, so
+    // whatever is actually fighting sits dead centre however far up the lane it
+    // has walked. A three-quarter offset rather than a pure side-on one: the
+    // lane still recedes, which is what a flat side view could never show.
+    w.goal.target[0] = front;
+    w.goal.target[1] = 1.6;
+    w.goal.target[2] = 0;
+    w.goal.eye[0] = front - 13;
+    w.goal.eye[1] = 11 + empFlash * 2;
+    w.goal.eye[2] = 23;
+    w.goal.fov = 52;
+    w.step(dt);
+
+    w.begin();
+
+    // ── THE CORRIDOR ──
+    r.draw('ground', { pos:[0, -0.05, 0], scale:[LEN * 2, 1, 70],
+                       color:'#06070f', metallic: 0.86, roughness: 0.28, rim: 0.3 });
+    w.drawGrid({ y: 0.02, halfX: LEN / 2 + 6, halfZ: 14, step: 6,
+                 color:'#3b30b8', emissive: 0.9, width: 0.05, floor: false });
+    // Lane rails — the thing that makes three lanes read as three lanes.
+    for(const z of [-7, -2.3, 2.3, 7]){
+      r.beam([P_END, 0.06, z], [E_END, 0.06, z], 0.08,
+             { color:'#4a63e0', emissive:'#4a63e0', emissiveStrength: 1.8 });
+    }
+    // Pylons down the FAR side only. The camera sits outside the near lane
+    // wall, so a matching row there would stand between it and the fight — the
+    // near side gets a low crash rail instead, which reads as the same corridor
+    // without ever occluding it.
+    for(let x = P_END; x <= E_END; x += 10){
+      const mixT = (x - P_END) / LEN;
+      const c = mixT < 0.5 ? pColor : '#ff2442';
+      r.draw('cube', { pos:[x, 4, -12], scale:[0.9, 8, 0.9],
+                       color:'#0a0d1a', metallic: 0.8, roughness: 0.34, rim: 1.2 });
+      r.draw('box', { pos:[x, 4.4, -11.5], scale:[0.16, 6, 0.16],
+                      color: c, emissive: c, emissiveStrength: 1.8 });
+      r.draw('cube', { pos:[x, 0.5, 12], scale:[0.8, 1, 0.8],
+                       color:'#0a0d1a', metallic: 0.8, roughness: 0.34, rim: 1.2 });
+    }
+    r.beam([P_END, 1.05, 12], [E_END, 1.05, 12], 0.12,
+           { color:'#2b3a86', emissive:'#2b3a86', emissiveStrength: 1.3 });
+    // A skyline behind the corridor, on both flanks.
+    if(!w.city) w.buildCity({ seed: 771, count: 60, spread: 90, hole: 20, y: -6 });
+    w.drawCity(0);
+
+    // ── TOWERS ──
+    // `flash` brightens the core rather than whitening the whole building: a
+    // colour swap to #fff turned a hit into a floodlit white slab that read as
+    // a bug, not as damage.
+    function tower(x, hp, color, flash){
+      const f = clamp(hp / BB.baseHP, 0, 1);
+      const H = 16;
+      flash = flash || 0;
+      r.draw('tower', { pos:[x, H / 2, 0], scale:[9, H, 9],
+                        color:'#0a0e1c', metallic: 0.8, roughness: 0.3, rim: 1.5 });
+      // The integrity bar is the building's own lit core, so the tower visibly
+      // goes dark as it is chewed down — no HUD needed.
+      for(const face of [[0, 4.7], [0, -4.7], [4.7, 0], [-4.7, 0]]){
+        r.draw('box', { pos:[x + face[0], (H * f) / 2, face[1]],
+                        scale: face[0] ? [0.4, H * f, 3.4] : [3.4, H * f, 0.4],
+                        color, emissive: color, emissiveStrength: 1.2 + flash * 2.2 });
+      }
+      // A dark bar above the lit core marks the integrity already lost, so the
+      // building itself is the health bar.
+      if(f < 0.99){
+        r.draw('box', { pos:[x, H * f + H * (1 - f) / 2, 4.7], scale:[3.4, H * (1 - f), 0.4],
+                        color:'#151a2b', metallic: 0.7, roughness: 0.5, rim: 1.2 });
+      }
+      r.draw('cube', { pos:[x, H + 0.8, 0], scale:[10, 1.2, 10],
+                       color:'#0d1226', metallic: 0.9, roughness: 0.25, rim: 1.7 });
+      r.draw('sphere', { pos:[x, H + 2.4, 0], scale: 1.4 + Math.sin(w.t * 2) * 0.06 + flash * 0.3,
+                         color, emissive: color, emissiveStrength: 2.0 + flash * 2 });
+      r.glow([x, H + 2.4, 0], 2.2, color, 0.7 + flash);
+      r.light({ pos:[x, H * 0.6, 8], color, intensity: 150 * (0.35 + f) + flash * 300, range: 30 });
+      return f;
+    }
+    tower(P_END - 5, mainHP, pColor, hurtFlash);
+    tower(E_END + 5, glitchHP, '#ff2442', hitFlash);
+
+    // ── ARMIES ──
+    function drawArmy(list, side){
+      for(const u of list){
+        const z = LANE_Z[u.lane];
+        const bob = Math.sin(w.t * 6 + u.bob) * 0.09;
+        const col = u.hit > 0.05 ? '#ffffff' : u.color;
+        const s = u.sc;
+        r.draw(u.geo, { pos:[u.x, 1.0 + bob, z], rot:[0, side > 0 ? Math.PI / 2 : -Math.PI / 2, 0],
+                        scale: u.geo === 'tower' ? [s * 1.1, s * 2.1, s * 1.1] : s * 1.5,
+                        color: col, emissive: u.color, emissiveStrength: 0.45 + u.hit * 4,
+                        metallic: 0.78, roughness: 0.28, rim: 1.7 });
+        r.draw('thintorus', { pos:[u.x, 0.05, z], rot:[Math.PI / 2, 0, 0], scale: s * 2.4,
+                              color: u.color, emissive: u.color, emissiveStrength: 0.8,
+                              alpha: 0.4, blend: true });
+        if(u.hp < u.max){
+          const f = clamp(u.hp / u.max, 0, 1);
+          r.beam([u.x - 0.9, 2.3 + s, z], [u.x + 0.9, 2.3 + s, z], 0.07,
+                 { color:'#1b2133', metallic: 0.4, roughness: 0.6 });
+          r.beam([u.x - 0.9, 2.32 + s, z], [u.x - 0.9 + 1.8 * f, 2.32 + s, z], 0.09,
+                 { color: side > 0 ? '#39ff88' : '#ff2442',
+                   emissive: side > 0 ? '#39ff88' : '#ff2442', emissiveStrength: 1.8, height: 0.09 });
+        }
+      }
+    }
+    drawArmy(bots, 1);
+    drawArmy(foes, -1);
+
+    for(const b of beams){
+      r.beam(b.a, b.b, 0.09,
+             { color: b.c, emissive: b.c, emissiveStrength: 3.4 * (b.t / 0.14), height: 0.09 });
+    }
+
+    if(empFlash > 0.02){
+      r.draw('sphere', { pos:[0, 2, 0], scale: 8 + (1 - empFlash) * 90,
+                         color:'#ffffff', emissive:'#ffffff', emissiveStrength: 1.4,
+                         alpha: 0.16 * empFlash, blend: true });
+      r.light({ pos:[0, 8, 0], color:'#ffffff', intensity: 1400 * empFlash, range: 90 });
+    }
+    r.light({ pos:[w.goal.eye[0] + 10, 20, 14], color:'#7d8cff', intensity: 320, range: 60 });
+
+    if(outro) w.pop([w.cam.target[0], 9, 0], outro.text, outro.color, { size: 26, life: 0.9 });
+
+    w.end();
+  });
+
+  function finish(outcome){
+    if(ended) return;
+    ended = true;
+    const win = outcome === 'win';
+    let pts, verdict;
+    if(win){
+      pts = Math.min(BB.score.cap,
+        BB.score.win +
+        Math.round(BB.score.hpBonus * Math.max(0, mainHP) / BB.baseHP) +
+        Math.round(BB.score.timeBonus * Math.min(1, (Math.max(0, time) / TOTAL) / BB.score.timeFull)));
+      verdict = '☠️ THE GLITCH PURGED';
+      outro = { text:'GLITCH PURGED', color:'#39ff14' };
+      w.burst([E_END + 4, 8, 0], '#ff2442', 70, { speed: 24, life: 1.4, size: 0.6 });
+      w.kick(3.4);
+      snd('bigExplode');
+    } else {
+      pts = Math.round(BB.score.lossMax * (1 - Math.max(0, glitchHP) / BB.baseHP));
+      verdict = outcome === 'timeout' ? '⏱️ SIEGE TIMED OUT' : '💀 MAINFRAME BREACHED';
+      outro = { text: outcome === 'timeout' ? 'SIEGE FAILED' : 'MAINFRAME BREACHED', color:'#ff2442' };
+      if(outcome !== 'timeout'){
+        w.burst([P_END - 4, 8, 0], pColor, 70, { speed: 24, life: 1.4, size: 0.6 });
+        w.kick(3.4);
+      }
+      snd(outcome === 'timeout' ? 'alarm' : 'gameOver');
+    }
+    setLive(pts);
+    btns.forEach(b => b.el.classList.add('broke'));
+    gLater(() => {
+      if(scored) return; scored = true;
+      showResults('battlebots', pts, {
+        '⚔️ Outcome': verdict,
+        '🛡️ Mainframe Integrity': `${Math.max(0, Math.ceil(mainHP))} / ${BB.baseHP}`,
+        '☠️ Glitch Integrity': `${Math.max(0, Math.ceil(glitchHP))} / ${BB.baseHP}`,
+        '💀 Hostiles Deleted': kills,
+        '🤖 Bots Deployed': deployed,
+        '💥 EMP Surges': empFired,
+        '🌊 Waves Repelled': waveNo,
+        '⚡ RAM Throughput': `${Math.round(ramRate)}/s`,
+        '🏆 Score Accumulation': `${pts} PTS`
+      });
+    }, 1050);
+  }
+};
+
+})();
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  § 6/6  NETWORK ARENA     duels3d
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════
+//  🌐 NETWORK ARENA — THE THREE LIVE DUELS IN 3D
+// ══════════════════════════════════════════════════════════════════════
+// Thirteen of the sixteen duels are SCORE RACES: two players, two boards, one
+// scoreboard. Those needed nothing here at all — a race runs the ordinary solo
+// round and listens at setLive()/showResults(), so the moment startScoreDuel()
+// asks PI3D.startFor() first, every one of them is a 3D mission with a rival's
+// number on the strip beside it.
+//
+// The other three are LIVE VERSUS: two players inside ONE simulation, kept in
+// step over the wire. Those cannot be re-registered as 3D games, because a 3D
+// game owns its own loop, its own clock and its own ending — and a live duel's
+// loop, clock and ending belong to the netcode. Re-implementing that per
+// renderer would be two netcodes for one duel, and the second one would be the
+// one nobody tests.
+//
+// So these are VIEWS, not games. Each duel keeps every line of its simulation,
+// its listeners, its host authority, its settlement and its results card, and
+// simply asks whether there is a 3D view to hand its frame to instead of the
+// canvas. The state it passes is the same state it would have painted — already
+// in VIEW space, already mirrored for the guest — so nothing about who sees
+// what changes between the renderers.
+//
+// 🧭 EVERY CAMERA HERE IS FIXED-YAW, for the same reason Cyber Arena's is: the
+// controls are the 2D controls and they are written in board coordinates. Drag
+// up must be up and drag right must be right for the whole round, so each view
+// maps the board onto the world with screen-right = +X and screen-down = +Z and
+// then never rotates about Y again.
+//
+// ⚠️ NO SHADOWS, like everywhere else in this layer. Depth is the rail height,
+// the paddle standing off the table, the fog on the far end of the deck and a
+// ground ring under anything that floats.
+
+(function(){
+'use strict';
+
+const P = window.PI3D;
+if(!P) return;
+const K = P.kit;
+const { begin3d, mine, nx, ny, rnd, clamp, seeded, NEON, keyRig, labelRig } = K;
+
+// The grid the whole Network Arena is staged on: a colder, bluer room than the
+// solo missions, because a duel is two operatives in one facility rather than
+// one operative loose in a city.
+const GRID_ROOM = {
+  env:  { zenith:'#03051a', horizon:'#0f2a5e', ground:'#04060f', intensity: 1.3 },
+  fog:  { color:'#050b1e', density: 0.0072 },
+  sun:  { dir:[-0.35, -0.9, -0.45], color:'#6f8dff', intensity: 0.72 },
+  grade:{ exposure: 0.96, bloom: 0.44, threshold: 1.6, knee: 0.5, radius: 0.9,
+          vignette: 0.42, aberration: 0.5, grain: 0.026, scanline: 0.014, saturation: 1.14 }
+};
+
+// begin3d() claims onStopGame for unmount() and chains onto whatever the round's
+// owner installed. A view that also owns DOM chains again, the same way the
+// missions do, so quitting mid-duel takes its labels down with it.
+function onQuit(fn){
+  const prev = onStopGame;
+  onStopGame = () => { try{ fn(); }catch(e){} if(prev) prev(); };
+}
+
+// Every view is driven from its DUEL's animation frame rather than from
+// runLoop() — the duel already owns gameLoopId, and its loop is where the
+// netcode lives. So each view keeps its own clock, with the same 50ms stall
+// clamp the rest of the arcade uses so a backgrounded tab resumes instead of
+// teleporting.
+function ticker(){
+  let last = performance.now();
+  return () => {
+    const now = performance.now();
+    let dt = (now - last) / 1000;
+    last = now;
+    if(!(dt > 0)) dt = 1/60;
+    return dt > 0.05 ? 0.05 : dt;
+  };
+}
+
+// A rival's colour must never be the player's own or the two objects on the
+// board are indistinguishable. The duels already guard this for their own
+// drawing; this is the same guard for anything a view adds on top.
+const distinct = (a, b) => (String(a).toLowerCase() === String(b).toLowerCase()) ? '#ff0090' : a;
+
+
+// ══════════════════════════════════════════════
+//  🏓 CYBER PONG DUEL 3D — the table
+// ══════════════════════════════════════════════
+// The 2D duel is an overhead court: you on the left, the rival on the right,
+// the ball crossing between you, your paddle sliding up and down under the
+// drag. That layout IS the control scheme, so the staging keeps it exactly and
+// only adds the third dimension — the table has a surface, the rails have
+// height, the paddles stand ON the table and the ball hops along it.
+//
+// Board x maps to world X and board y maps to world Z, with the camera above
+// and behind the near rail looking down −Z. So "drag down" still moves your
+// paddle down the screen and the ball still travels left to right.
+P.duels.pong = function(cfg){
+  const W = cfg.W, H = cfg.H;
+  const w = begin3d(Object.assign({ ease: 0.3 }, GRID_ROOM));
+  if(!w) return null;
+  const r = w.r;
+
+  const myCol  = cfg.myCol || mine();
+  const oppCol = distinct(cfg.oppCol || '#ff0090', myCol);
+
+  // Table extents. Wider than deep, like the board — but deeper than the
+  // board's own ratio, because a tilted camera foreshortens Z and this is the
+  // shape that lands on screen as the 2D court rather than as a letterbox.
+  const TW = 46, TD = 46;
+  const wx = v => (v / W - 0.5) * TW;
+  const wz = v => (v / H - 0.5) * TD;
+  const padD = (cfg.PAD_H / H) * TD;          // paddle length, along Z
+  const MY_X = wx(20 + cfg.PAD_W / 2);        // the 2D build's own paddle insets
+  const OP_X = wx(W - 20 - cfg.PAD_W / 2);
+
+  // The 2D board stamps the player's equipped skin on their own paddle; here it
+  // rides on the caption over their end of the table.
+  const mySkin = (typeof getEquippedSkinEmoji === 'function' ? getEquippedSkinEmoji() : '') || '';
+  const lab = labelRig();
+  const meLab = lab.add('gl-status').set((mySkin ? mySkin + ' ' : '') + 'YOU', myCol, 12);
+  const opLab = lab.add('gl-status').set(cfg.oppLabel || 'RIVAL', oppCol, 12);
+  onQuit(() => lab.destroy());
+
+  const dt = ticker();
+  let bounce = 0, lastBX = null, lastBY = null, lastVX = 0, lastVY = 0;
+
+  return {
+    draw(s){
+      const d = dt();
+      const bx = wx(s.bx), bz = wz(s.by);
+      const myZ = wz(s.myY + cfg.PAD_H / 2);
+      const opZ = wz(s.oppY + cfg.PAD_H / 2);
+
+      // ── EVENT DETECTION ──
+      // Both clients render the same interpolated ball, so watching it TURN is
+      // the one way to spark a hit that works identically on the host and the
+      // guest: neither has to be told, and neither can disagree.
+      if(lastBX != null){
+        const vx = s.bx - lastBX, vy = s.by - lastBY;
+        if(lastVX && vx && Math.sign(vx) !== Math.sign(lastVX) && Math.abs(vx) > 0.2){
+          // Sparks in whoever's colour owns that half of the table.
+          w.burst([bx, 0.9, bz], s.bx < W / 2 ? myCol : oppCol, 12,
+                  { speed: 8, life: 0.4, size: 0.26 });
+          w.kick(0.5);
+          bounce = 1;
+        }
+        if(lastVY && vy && Math.sign(vy) !== Math.sign(lastVY) && Math.abs(vy) > 0.2){
+          w.burst([bx, 0.9, bz], '#ffffff', 6, { speed: 6, life: 0.3, size: 0.2 });
+        }
+        if(vx) lastVX = vx;
+        if(vy) lastVY = vy;
+      }
+      lastBX = s.bx; lastBY = s.by;
+      bounce = Math.max(0, bounce - d * 4);
+
+      // ── CAMERA ── fixed yaw, always: eye.x and target.x are both 0.
+      // The rake is chosen so the table PROJECTS as the 2D court — a shallower
+      // one letterboxes the board, a steeper one flattens the rails back into a
+      // plan view and throws away the depth this build exists for.
+      w.goal.eye[0] = 0;
+      w.goal.eye[1] = 56 + bounce * 0.6;
+      w.goal.eye[2] = TD * 0.5 + 13;
+      w.goal.target[0] = 0;
+      w.goal.target[1] = 0;
+      w.goal.target[2] = 2;
+      w.goal.fov = 46;
+      w.step(d);
+
+      w.begin();
+      w.drawStars();
+
+      // ── THE TABLE ──
+      // Rougher than a mirror on purpose. At 0.16 the deck is polished enough to
+      // return the fill light below as a hard specular dot near the near rail —
+      // physically right, and it reads as a bug on the table. Spreading the
+      // highlight keeps the neon reflections and loses the dot.
+      r.draw('ground', { pos:[0, -0.06, 0], scale:[TW * 1.08, 1, TD * 1.1],
+                         color:'#04060f', metallic: 0.82, roughness: 0.36, rim: 0.35 });
+      // The step is TW/9 rather than a round divisor on purpose: an even one
+      // puts a grid beam on x=0, directly under the centre line and directly
+      // over the near rail, and three emissive strips meeting at one point
+      // blooms into a bright square that reads as a bug on the table.
+      w.drawGrid({ y: 0.01, halfX: TW / 2, halfZ: TD / 2, step: TW / 9,
+                   color:'#1f4bb0', emissive: 0.85, width: 0.05, floor: false });
+      // Side rails. Their height is the depth cue that says the table is a solid
+      // you are looking across rather than a picture you are looking at.
+      for(const sgn of [-1, 1]){
+        r.draw('cube', { pos:[0, 0.75, sgn * (TD / 2 + 0.9)], scale:[TW + 3.4, 1.5, 1.6],
+                         color:'#0b1020', metallic: 0.86, roughness: 0.3, rim: 1.5 });
+        r.beam([-TW / 2 - 1.7, 1.55, sgn * (TD / 2 + 0.9)],
+               [ TW / 2 + 1.7, 1.55, sgn * (TD / 2 + 0.9)], 0.13,
+               { color:'#3f7bff', emissive:'#3f7bff', emissiveStrength: 1.8, height: 0.13 });
+      }
+      // Goal lines: your end wears your colour and theirs wears theirs, so which
+      // half of the table is yours never needs a caption.
+      r.beam([MY_X - 1.4, 0.07, -TD / 2], [MY_X - 1.4, 0.07, TD / 2], 0.2,
+             { color: myCol, emissive: myCol, emissiveStrength: 2.6, height: 0.16 });
+      r.beam([OP_X + 1.4, 0.07, -TD / 2], [OP_X + 1.4, 0.07, TD / 2], 0.2,
+             { color: oppCol, emissive: oppCol, emissiveStrength: 2.6, height: 0.16 });
+      // Centre line, dashed exactly as the 2D board dashes it.
+      for(let z = -TD / 2 + 1; z < TD / 2; z += 3){
+        r.draw('box', { pos:[0, 0.05, z], scale:[0.16, 0.06, 1.5],
+                        color:'#6273a0', emissive:'#8fa6ff', emissiveStrength: 0.7 });
+      }
+
+      // ── PADDLES ──
+      const paddle = (x, z, col) => {
+        r.draw('cube', { pos:[x, 0.62, z], scale:[1.5, 1.25, padD],
+                         color:'#c3cee2', metallic: 1.0, roughness: 0.14, rim: 1.6 });
+        r.draw('box', { pos:[x, 0.72, z], scale:[0.24, 0.7, padD * 0.88],
+                        color: col, emissive: col, emissiveStrength: 3.0 });
+        r.draw('thintorus', { pos:[x, 0.04, z], rot:[Math.PI / 2, 0, 0], scale: 3.0,
+                              color: col, emissive: col, emissiveStrength: 1.2, alpha: 0.5 });
+        r.light({ pos:[x, 2.6, z], color: col, intensity: 90, range: 20 });
+      };
+      paddle(MY_X, myZ, myCol);
+      paddle(OP_X, opZ, oppCol);
+
+      // ── BALL ──
+      // The hop is cosmetic and deliberate: a ball that stays flat on the table
+      // reads as a sprite sliding across a picture, one that leaves the surface
+      // reads as an object in a room.
+      const by = 0.8 + Math.abs(Math.sin(w.t * 6)) * 0.4;
+      r.draw('sphere', { pos:[bx, by, bz], scale: 0.95,
+                         color:'#ffffff', metallic: 0.9, roughness: 0.08,
+                         emissive:'#ffffff', emissiveStrength: 1.6 + bounce });
+      r.glow([bx, by, bz], 1.1, '#dff4ff', 1.3 + bounce);
+      r.light({ pos:[bx, by + 1.2, bz], color:'#dff4ff', intensity: 150, range: 24 });
+      // Ground ring under the ball: with no shadows, this is what tells you
+      // where on the table it actually is while it is off the surface.
+      r.draw('thintorus', { pos:[bx, 0.03, bz], rot:[Math.PI / 2, 0, 0], scale: 1.5,
+                            color:'#dff4ff', emissive:'#dff4ff', emissiveStrength: 1.0, alpha: 0.55 });
+
+      r.light({ pos:[0, 34, TD * 0.15], color:'#8fa6ff', intensity: 280, range: 95 });
+
+      // Captions sit over the far rail at the quarter marks — the same two
+      // places the 2D board writes them, so the eye finds them where it left
+      // them when the renderer changes.
+      meLab.at(wx(W / 4), 2.6, -TD / 2 - 1.5);
+      opLab.at(wx(3 * W / 4), 2.6, -TD / 2 - 1.5);
+      lab.sync(r);
+      w.end();
+    }
+  };
+};
+
+
+// ══════════════════════════════════════════════
+//  💥 CORE SURVIVAL 3D — the shared minefield
+// ══════════════════════════════════════════════
+// One hazard feed, two cores, last one alive takes the room. The 2D build drops
+// circles down a rectangle; here the rectangle is a lit deck and the circles
+// rush at the camera down it — the same staging the solo Dodge Cores mission
+// uses, deliberately, because they are the same game and a player should
+// recognise one from the other instantly.
+//
+// The rival is on YOUR deck at their own board position, in their own colour
+// with their name over them. That is what the 2D build does, and it is the
+// whole tension of the mode: you can watch them close on a core they may not
+// have seen.
+P.duels.dodge = function(cfg){
+  const W = cfg.W, H = cfg.H;
+  const w = begin3d(Object.assign({ ease: 0.3 }, GRID_ROOM, {
+    // Darker and denser than the shared room. This camera is shallow — it looks
+    // ALONG the deck rather than down at it — so half the frame is whatever is
+    // behind the far end, and a lit horizon there reads as a blank wall. A night
+    // sky with a city on it reads as somewhere.
+    env: { zenith:'#04061a', horizon:'#1a0a3c', ground:'#04060f', intensity: 1.2 },
+    fog: { color:'#06031a', density: 0.0105 }
+  }));
+  if(!w) return null;
+  const r = w.r;
+
+  const myCol  = cfg.myCol || mine();
+  const oppCol = distinct(cfg.oppCol || '#ff0090', myCol);
+
+  // The deck is as wide as the board and long enough that a core is already in
+  // the scene — small, fogged and coming — before it reaches the play area.
+  const DW = 26, DD = 30;
+  // Same backdrop the solo Dodge Cores mission uses, for the same reason: it is
+  // what puts the deck somewhere, and its parallax against a still deck is most
+  // of the sense of speed.
+  // `hole` is the radius the generator keeps clear of the play space, and it has
+  // to clear the CAMERA as well as the deck: this eye sits well back, so a tower
+  // allowed within 30 units of the axis stands beside it as a wall rather than
+  // behind it as a skyline.
+  w.buildCity({ seed: 5150, count: 72, spread: 180, hole: 78, y: -30 });
+  w.buildStars(170, 190);
+  const wx = x => (x / W - 0.5) * DW;
+  const wz = y => (y / H - 0.5) * DD;
+  const rad = (cfg.RAD / W) * DW;             // board radius → world radius
+
+  // The 2D board prints each operative's equipped skin over their dot and their
+  // name under it. Two lines of DOM in a 3D scene would be two things to keep
+  // projected, so the badge rides on the caption instead — same information,
+  // one label.
+  const skinOf = e => (e ? e + ' ' : '');
+  const mySkin = (typeof getEquippedSkinEmoji === 'function' ? getEquippedSkinEmoji() : '') || '';
+  const lab = labelRig();
+  const meLab = lab.add('gl-status').set(skinOf(mySkin) + 'YOU', myCol, 11);
+  const opLab = lab.add('gl-status').set(skinOf(cfg.oppSkin) + (cfg.oppLabel || 'RIVAL'), oppCol, 11);
+  onQuit(() => lab.destroy());
+
+  const dt = ticker();
+  let bob = 0;
+
+  // Cores tumble on their own axes. The phase is derived from the core's id
+  // rather than stored, because the list belongs to the duel and is rebuilt from
+  // the wire — a view that kept its own copy would drift out of step with it.
+  const spins = Object.create(null);
+  const spinOf = id => {
+    if(spins[id] == null){
+      let h = 0;
+      for(let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+      spins[id] = (h % 1000) / 1000 * 6.28;
+    }
+    return spins[id];
+  };
+
+  return {
+    draw(s){
+      const d = dt();
+      bob += d * 3;
+      const mx = wx(s.me.x), mz = wz(s.me.y);
+      const ox = wx(s.opp.x), oz = wz(s.opp.y);
+
+      // ── CAMERA ── fixed yaw, above and behind the near end of the deck.
+      w.goal.eye[0] = 0;
+      w.goal.eye[1] = 25;
+      w.goal.eye[2] = DD * 0.5 + 20;
+      w.goal.target[0] = 0;
+      w.goal.target[1] = 1;
+      w.goal.target[2] = -DD * 0.34;
+      w.goal.fov = 47;
+      w.step(d);
+
+      w.begin();
+      w.drawStars();
+      w.drawCity(w.t * 3);
+      w.drawGrid({ y: 0, halfX: DW / 2, halfZ: DD / 2 + 12, step: 3,
+                   color:'#1b3f6b', emissive: 1.0, width: 0.05,
+                   floorColor:'#05070f', floorRough: 0.18 });
+      // Deck rails, so the playable width is unambiguous without a HUD line.
+      for(const sgn of [-1, 1]){
+        r.beam([sgn * DW / 2, 0.16, -DD / 2 - 12], [sgn * DW / 2, 0.16, DD / 2 + 2], 0.28,
+               { color:'#2f6bff', emissive:'#2f6bff', emissiveStrength: 1.7, height: 0.28 });
+      }
+
+      // ── THE TWO CORES ──
+      // Same model for both, so neither side is reading a different silhouette
+      // from the other. Only the colour and the caption differ.
+      const core = (x, z, col, hero) => {
+        const b = Math.sin(bob + (hero ? 0 : 1.6)) * 0.09;
+        r.draw('sphere', { pos:[x, 1.0 + b, z], scale: rad * 1.7,
+                           color:'#c9d4e8', metallic: 1.0, roughness: 0.12, rim: 1.6 });
+        r.draw('sphere', { pos:[x, 1.0 + b, z], scale: rad * 0.9,
+                           color: col, emissive: col, emissiveStrength: 2.2 });
+        r.draw('thintorus', { pos:[x, 1.0 + b, z], rot:[0, w.t * 2.1, 0], scale: rad * 3.4,
+                              color: col, emissive: col, emissiveStrength: 2.4 });
+        r.draw('thintorus', { pos:[x, 1.0 + b, z], rot:[Math.PI / 2, 0, w.t * 1.5], scale: rad * 3.1,
+                              color:'#ffffff', emissive: col, emissiveStrength: 1.6 });
+        r.glow([x, 1.0 + b, z], rad * 1.5, col, hero ? 1.0 : 0.7);
+        // Ground ring — the no-shadow stand-in that says where on the deck a
+        // floating object actually is.
+        r.draw('thintorus', { pos:[x, 0.05, z], rot:[Math.PI / 2, 0, 0], scale: rad * 4.2,
+                              color: col, emissive: col, emissiveStrength: 1.0, alpha: 0.45 });
+      };
+      if(s.alive){ core(mx, mz, myCol, true); keyRig(w, [mx, 1.6, mz], myCol, { key: 80, fill: 60 }); }
+      if(s.oppAlive) core(ox, oz, oppCol, false);
+
+      // ── THE FEED ──
+      // MAX_LIGHTS is 10 and the key rig has already taken two, so only the few
+      // cores actually near the player get a light of their own.
+      const lit = s.cores
+        .map(c => ({ c, d: Math.abs(wz(c.y) - mz) }))
+        .sort((a, b) => a.d - b.d)
+        .slice(0, 5)
+        .map(o => o.c);
+      for(const c of s.cores){
+        const cx = wx(c.x), cz = wz(c.y), cr = (c.r / W) * DW;
+        const ph = spinOf(c.id), sp = ph + w.t * 2.2;
+        r.draw(ph > 3.14 ? 'rock' : 'rock2', {
+          pos:[cx, 1.1, cz], rot:[sp, sp * 0.7, sp * 0.4], scale: cr * 2.3,
+          color:'#0e1018', metallic: 0.35, roughness: 0.62, rim: 1.4,
+          emissive: c.c, emissiveStrength: 0.2
+        });
+        r.draw('sphere', { pos:[cx, 1.1, cz], scale: cr * 1.2,
+                           color: c.c, emissive: c.c, emissiveStrength: 2.0 });
+        r.glow([cx, 1.1, cz], cr * 1.7, c.c, 0.85);
+        if(lit.indexOf(c) >= 0) r.light({ pos:[cx, 1.4, cz], color: c.c, intensity: 34, range: 13 });
+      }
+
+      meLab.vis(!!s.alive).at(mx, 2.6 + rad, mz);
+      opLab.vis(!!s.oppAlive).at(ox, 2.6 + rad, oz);
+      lab.sync(r);
+      w.end();
+    }
+  };
+};
+
+
+// ══════════════════════════════════════════════
+//  🖱️ FRENZY DUEL 3D — two cores overloading
+// ══════════════════════════════════════════════
+// Twelve seconds of input war. The 2D build is a DOM pad with a number on it; in
+// 3D it becomes what the solo Click Frenzy mission became — a containment core
+// in a chamber that heats, spins faster and swells as you strike it — with the
+// rival's core standing beside yours doing the same, live. The side-by-side is
+// the point: you can see how hard they are going without reading a number.
+//
+// The view owns the input here, because in 3D there is no pad on screen to
+// press: the board itself is the button, exactly as the solo mission has it. It
+// calls straight back into the duel's own click handler, so the counting, the
+// wire and the settlement are untouched.
+P.duels.click = function(cfg){
+  const w = begin3d(Object.assign({ ease: 0.3 }, GRID_ROOM, {
+    env: { zenith:'#04051a', horizon:'#241056', ground:'#05060f', intensity: 1.45 },
+    fog: { color:'#080520', density: 0.0075 }
+  }));
+  if(!w) return null;
+  const r = w.r;
+
+  const myCol  = cfg.myCol || mine();
+  const oppCol = distinct(cfg.oppCol || '#ff0090', myCol);
+  const strike = typeof cfg.onStrike === 'function' ? cfg.onStrike : function(){};
+
+  setControls({ action: isTouchDevice ? '💥 STRIKE' : 'STRIKE' });
+  setControlHint('TAP THE CORE AS FAST AS YOU CAN', 'CLICK OR PRESS SPACE AS FAST AS YOU CAN');
+  showTouchHint('TAP ANYWHERE — FAST');
+
+  bindCanvasDrag({ onDown(){ hideTouchHint(); strike(); } });
+  window.onkeydown = e => { if(e.code === 'Space' || e.code === 'Enter'){ e.preventDefault(); strike(); } };
+  const act = document.getElementById('ctrl-action');
+  if(act) act.onclick = () => strike();
+
+  const lab = labelRig();
+  const meLab = lab.add('gl-big').set('0', myCol, 22);
+  const opLab = lab.add('gl-big').set('0', oppCol, 22);
+  const meTag = lab.add('gl-status').set('YOU', myCol, 11);
+  const opTag = lab.add('gl-status').set(cfg.oppLabel || 'RIVAL', oppCol, 11);
+  onQuit(() => lab.destroy());
+
+  const dt = ticker();
+  const X = 4.6;                                // half the gap between the cores
+  let punch = 0, oPunch = 0, heat = 0, oHeat = 0, spin = 0, oSpin = 0, lastO = 0;
+
+  // One core, drawn twice. `hot` runs 0..1 and drives colour, cage speed and
+  // light, which between them are the whole read on who is winning.
+  function drawCore(x, col, hot, hit){
+    const c = hot > 0.6 ? '#ff2442' : (hot > 0.3 ? '#ff8a00' : col);
+    const sc = 1.5 + Math.sin(w.t * 3) * 0.05 + hit * 0.36;
+    r.draw('sphere', { pos:[x, 1.4, 0], scale: sc,
+                       color: c, emissive: c, emissiveStrength: 1.5 + hit * 3.4 + hot * 1.8 });
+    r.draw('sphere', { pos:[x, 1.4, 0], scale: sc * 1.34,
+                       color:'#ffffff', emissive: c, emissiveStrength: 0.8,
+                       metallic: 0.2, roughness: 0.05, alpha: 0.17 });
+    return { c, sc };
+  }
+
+  return {
+    // Called by the duel the moment a click is counted on this side. The
+    // rival's is inferred in draw() from their published total, because a
+    // running total is the only thing that ever crosses the wire in this mode.
+    strike(){
+      punch = 1;
+      heat = Math.min(1, heat + 0.045);
+      w.kick(0.5 + heat * 0.6);
+      w.burst([-X, 1.4, 0], heat > 0.7 ? '#ff2442' : myCol, 10 + (heat * 14) | 0,
+              { speed: 9 + heat * 8, life: 0.5, size: 0.3 });
+    },
+    draw(s){
+      const d = dt();
+      if(s.oppN > lastO){
+        lastO = s.oppN;
+        oPunch = 1;
+        oHeat = Math.min(1, oHeat + 0.045);
+        w.burst([X, 1.4, 0], oHeat > 0.7 ? '#ff2442' : oppCol, 8, { speed: 8, life: 0.45, size: 0.26 });
+      }
+
+      punch  = Math.max(0, punch  - d * 5);
+      oPunch = Math.max(0, oPunch - d * 5);
+      heat   = Math.max(0, heat   - d * 0.06);
+      oHeat  = Math.max(0, oHeat  - d * 0.06);
+      spin  += d * (1 + heat * 5);
+      oSpin += d * (1 + oHeat * 5);
+
+      w.goal.eye[0] = 0;
+      w.goal.eye[1] = 3.4;
+      w.goal.eye[2] = 15.2 - punch * 0.6;
+      w.goal.target[0] = 0;
+      w.goal.target[1] = 1.2;
+      w.goal.target[2] = 0;
+      w.goal.fov = 52 + punch * 3;
+      w.step(d);
+
+      w.begin();
+
+      // ── THE CHAMBER ──
+      // A mirror floor and a ring of pillars, so the two cores have something to
+      // be reflected in and something to be measured against. The pillars take
+      // the colour of whichever side they stand on and brighten with that
+      // side's streak.
+      r.draw('ground', { pos:[0, -1.5, 0], scale:[34, 1, 34],
+                         color:'#05070f', metallic: 0.96, roughness: 0.08, rim: 0.3 });
+      // The ring is parametrised off the +Z axis with a gap left in it rather
+      // than closed all the way round, and it does not rotate. A full ring puts
+      // a pillar between the camera and the cores — dead centre, four units in
+      // front of the eye, blacking out the middle of the board — and a slow
+      // rotation only makes that intermittent instead of fixing it.
+      const GAP = 1.9;                              // radians kept clear, camera side
+      for(let i = 0; i < 12; i++){
+        const a = Math.PI / 2 + GAP / 2 + (i / 12) * (Math.PI * 2 - GAP);
+        const px = Math.cos(a) * 11, pz = Math.sin(a) * 11;
+        const col = px < 0 ? myCol : oppCol;
+        r.draw('cube', { pos:[px, 1.6, pz], scale:[0.85, 6.4, 0.85],
+                         color:'#0e1120', metallic: 0.85, roughness: 0.28, rim: 1.5 });
+        r.draw('box', { pos:[px * 0.9, 1.6, pz * 0.9], scale:[0.13, 5.2, 0.13],
+                        color: col, emissive: col,
+                        emissiveStrength: 1.3 + (px < 0 ? heat : oHeat) * 2.4 });
+      }
+      // ── THE TUG BAR ──
+      // A lit rod on the floor between the cores, split where the two counts
+      // meet: your colour claims it from the left, theirs from the right, and
+      // the seam walks toward whoever is losing. Laid along X and pulled toward
+      // the camera on purpose — a rod running in Z would be end-on from this
+      // low eye and read as a stray streak across the floor rather than a
+      // meter.
+      const END = X + 2.4;
+      const seam = clamp((s.n - s.oppN) / Math.max(6, s.n + s.oppN), -1, 1) * END;
+      r.draw('cube', { pos:[0, -1.16, 3.6], scale:[END * 2 + 0.5, 0.22, 0.5],
+                       color:'#0a0e1c', metallic: 0.8, roughness: 0.3, rim: 1.2 });
+      if(seam > -END) r.beam([-END, -1.05, 3.6], [seam, -1.05, 3.6], 0.16,
+                             { color: myCol, emissive: myCol, emissiveStrength: 2.4, height: 0.16 });
+      if(seam < END)  r.beam([seam, -1.05, 3.6], [END, -1.05, 3.6], 0.16,
+                             { color: oppCol, emissive: oppCol, emissiveStrength: 2.4, height: 0.16 });
+
+      const a = drawCore(-X, myCol, heat, punch);
+      const b = drawCore(X, oppCol, oHeat, oPunch);
+
+      // Containment cages — three rings each, spinning at the pace of that
+      // side's streak.
+      for(const [x, sp, o] of [[-X, spin, a], [X, oSpin, b]]){
+        r.draw('thintorus', { pos:[x, 1.4, 0], rot:[0, sp, 0], scale: o.sc * 1.75,
+                              color:'#d8e2f5', metallic: 1, roughness: 0.1, emissive: o.c, emissiveStrength: 0.9 });
+        r.draw('thintorus', { pos:[x, 1.4, 0], rot:[Math.PI / 2, 0, sp * 1.3], scale: o.sc * 1.75,
+                              color:'#d8e2f5', metallic: 1, roughness: 0.1, emissive: o.c, emissiveStrength: 0.9 });
+        r.draw('thintorus', { pos:[x, 1.4, 0], rot:[sp * 0.8, 0, Math.PI / 2], scale: o.sc * 1.75,
+                              color:'#d8e2f5', metallic: 1, roughness: 0.1, emissive: o.c, emissiveStrength: 0.9 });
+      }
+      r.glow([-X, 1.4, 0], a.sc * 0.8, a.c, 1.2 + punch * 2);
+      r.glow([ X, 1.4, 0], b.sc * 0.8, b.c, 1.0 + oPunch * 1.6);
+      r.light({ pos:[-X, 1.4, 0], color: a.c, intensity: 220 + punch  * 600 + heat  * 260, range: 26 });
+      r.light({ pos:[ X, 1.4, 0], color: b.c, intensity: 190 + oPunch * 480 + oHeat * 240, range: 26 });
+      r.light({ pos:[0, 7, 6], color:'#8fa6ff', intensity: 150, range: 26 });
+
+      meLab.set(String(s.n), a.c).at(-X, 3.9, 0);
+      opLab.set(String(s.oppN), b.c).at(X, 3.9, 0);
+      meTag.at(-X, -0.9, 2.2);
+      opTag.at(X, -0.9, 2.2);
+      lab.sync(r);
+      w.end();
+    }
+  };
+};
+
+})();
