@@ -19299,6 +19299,10 @@ P.games.meteor = function(){
   const diff = getDifficultyModifier();
   const colour = mine();
   const XL = 13, TOP = 26;
+  const SHOT_V = 62;        // bolt speed, world units a second
+  const MUZ = [0, 1.6, 2];  // where a bolt leaves the barrel
+  const HIT_PAD = 0.8;      // the bolt's own radius, added to the fragment's
+  const LOCK_SLACK = 1.35;  // how far off the sight line a fragment may still lock
   const time0 = Math.round(75 * getTimeModifier());
   let time = time0, score = 0, killed = 0, wave = 1, chain = 0, bestChain = 0;
   let over = false, cool = 0, aimX = 0, aimY = 6, spawnT = 0, waveT = 0;
@@ -19336,16 +19340,62 @@ P.games.meteor = function(){
     if(time <= 0) end('timeout');
   }, 1000);
 
+  // ── WHAT THE CROSSHAIR IS ACTUALLY ON ──
+  // The reticle rides the z=0 plane, but fragments fall through a band three
+  // units deep either side of it — and the muzzle is not the eye. The turret
+  // sits two units in FRONT of that plane while the camera sits twenty-five
+  // BEHIND it, so a bolt fired from the barrel straight through the reticle
+  // leaves the line of sight almost immediately: every unit of a fragment's z
+  // threw the bolt several units off in y. A fragment squarely under the
+  // crosshair was routinely nowhere near the shot, which is what "it went
+  // right through it" was — the bolt was never on it to begin with.
+  //
+  // So the crosshair picks a TARGET, not a point. Whatever fragment the SIGHT
+  // LINE — eye through reticle, the ray the player is really looking down —
+  // passes closest through is the lock, and the bolt is fired at where that
+  // fragment will be when it arrives. What you can see under the reticle is
+  // what the shot hits, which is what the control hint has promised all along.
+  function sightLock(){
+    const e = w.cam.eye;
+    let dx = aimX - e[0], dy = aimY - e[1], dz = -e[2];
+    const dl = Math.hypot(dx, dy, dz) || 1;
+    dx /= dl; dy /= dl; dz /= dl;
+    let best = null, bestOff = Infinity;
+    for(const k of rocks){
+      const px = k.x - e[0], py = k.y - e[1], pz = k.z - e[2];
+      const along = px * dx + py * dy + pz * dz;
+      if(along < 1) continue;                       // behind the camera
+      const ox = px - dx * along, oy = py - dy * along, oz = pz - dz * along;
+      const tol = k.r + LOCK_SLACK;                 // a big rock is easier to lock
+      const off = Math.hypot(ox, oy, oz) / tol;     // graded by size, so the
+      if(off > 1) continue;                         // fuller target wins a tie
+      if(off < bestOff){ bestOff = off; best = k; }
+    }
+    return best;
+  }
+
+  // Where to put the bolt so the fragment walks into it. Two passes converge
+  // well inside a fragment's own radius at this speed.
+  function leadPoint(k){
+    let t = 0;
+    for(let i = 0; i < 2; i++){
+      t = Math.hypot(k.x + k.vx * t - MUZ[0], k.y + k.vy * t - MUZ[1], k.z - MUZ[2]) / SHOT_V;
+    }
+    return [k.x + k.vx * t, k.y + k.vy * t, k.z];
+  }
+
   function fire(){
     if(over || cool > 0) return;
     cool = 0.17;
     snd('shoot');
-    const from = [0, 1.6, 2];
-    const to = [aimX, aimY, 0];
-    const d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    // No lock is an honest miss: the bolt goes where the reticle is and hits
+    // whatever it happens to run into on the way.
+    const lock = sightLock();
+    const to = lock ? leadPoint(lock) : [aimX, aimY, 0];
+    const d = [to[0] - MUZ[0], to[1] - MUZ[1], to[2] - MUZ[2]];
     const l = Math.hypot(d[0], d[1], d[2]) || 1;
-    const v = 62;
-    shots.push({ x: from[0], y: from[1], z: from[2], vx: d[0]/l*v, vy: d[1]/l*v, vz: d[2]/l*v, life: 1.4 });
+    shots.push({ x: MUZ[0], y: MUZ[1], z: MUZ[2],
+                 vx: d[0]/l*SHOT_V, vy: d[1]/l*SHOT_V, vz: d[2]/l*SHOT_V, life: 1.4 });
     w.kick(0.15);
   }
 
@@ -19396,31 +19446,47 @@ P.games.meteor = function(){
     spawnT -= dt;
     if(spawnT <= 0){ spawn(); spawnT = Math.max(0.22, (0.95 - wave * 0.06)) / diff; }
 
+    // Fragments move BEFORE the bolts and keep where they were, so the sweep
+    // below can test the two paths against each other rather than their end
+    // points. A bolt covers a full unit a frame at sixty, three on a stalled
+    // one — more than a small fragment is wide — so a point test could step
+    // clean over one and take the shot with it.
+    for(const k of rocks){
+      k.px = k.x; k.py = k.y;
+      k.y += k.vy * dt; k.x += k.vx * dt;
+      k.sx += k.spin * dt; k.sy += k.spin * 0.7 * dt;
+    }
+
     for(let i = shots.length - 1; i >= 0; i--){
       const s = shots[i];
+      const ox = s.x, oy = s.y, oz = s.z;
       s.x += s.vx * dt; s.y += s.vy * dt; s.z += s.vz * dt;
       s.life -= dt;
-      if(s.life <= 0 || s.y > TOP + 12){ shots.splice(i, 1); continue; }
       let done = false;
       for(let j = rocks.length - 1; j >= 0; j--){
         const k = rocks[j];
-        const dx = k.x - s.x, dy = k.y - s.y, dz = k.z - s.z;
-        if(dx*dx + dy*dy + dz*dz < (k.r + 0.8) * (k.r + 0.8)){
-          done = true;
-          k.hp--;
-          w.burst([s.x, s.y, s.z], '#ffffff', 6, { speed: 6, life: 0.22, size: 0.2 });
-          if(k.hp <= 0) shatter(k, j);
-          else snd('hit');
-          break;
-        }
+        // Closest approach over this frame: the gap between the two bodies is
+        // linear in time, so its nearest point is one clamped division away.
+        const rx = k.px - ox, ry = k.py - oy, rz = k.z - oz;
+        const vx = (k.x - k.px) / dt - s.vx, vy = (k.y - k.py) / dt - s.vy, vz = -s.vz;
+        const vv = vx*vx + vy*vy + vz*vz;
+        let u = vv > 0 ? -(rx*vx + ry*vy + rz*vz) / vv : 0;
+        u = u < 0 ? 0 : (u > dt ? dt : u);
+        const cx = rx + vx*u, cy = ry + vy*u, cz = rz + vz*u;
+        const rad = k.r + HIT_PAD;
+        if(cx*cx + cy*cy + cz*cz > rad*rad) continue;
+        done = true;
+        k.hp--;
+        w.burst([ox + s.vx*u, oy + s.vy*u, oz + s.vz*u], '#ffffff', 6, { speed: 6, life: 0.22, size: 0.2 });
+        if(k.hp <= 0) shatter(k, j);
+        else snd('hit');
+        break;
       }
-      if(done) shots.splice(i, 1);
+      if(done || s.life <= 0 || s.y > TOP + 12) shots.splice(i, 1);
     }
 
     for(let i = rocks.length - 1; i >= 0; i--){
       const k = rocks[i];
-      k.y += k.vy * dt; k.x += k.vx * dt;
-      k.sx += k.spin * dt; k.sy += k.spin * 0.7 * dt;
       if(k.y < 1.2){
         rocks.splice(i, 1);
         // Nearest surviving server takes the hit; a fragment that lands clear
@@ -19503,6 +19569,16 @@ P.games.meteor = function(){
                           color: colour, emissive: colour, emissiveStrength: 2.6, alpha: 0.75 });
     r.draw('thintorus', { pos:[aimX, aimY, 0], rot:[Math.PI / 2, 0, -w.t * 1.6], scale: 1.3,
                           color:'#ffffff', emissive: colour, emissiveStrength: 2.0, alpha: 0.6 });
+    // The lock, drawn ON the fragment the next bolt is going to take rather
+    // than on the plane the reticle rides. It is the honest readout of where
+    // the shot will go — if nothing is ringed, the trigger is a miss.
+    const lock = sightLock();
+    if(lock){
+      r.draw('thintorus', { pos:[lock.x, lock.y, lock.z], rot:[Math.PI / 2, 0, w.t * 3.4],
+                            scale: lock.r * 2.4 + 1.0,
+                            color:'#ffffff', emissive: colour, emissiveStrength: 3.4, alpha: 0.9 });
+      r.glow([lock.x, lock.y, lock.z], lock.r * 1.6, colour, 0.5);
+    }
     r.light({ pos:[0, 3, 6], color: colour, intensity: 90, range: 16 });
 
     w.end();
@@ -22556,10 +22632,29 @@ P.games.battlebots = function(){
         } else {
           waveNo++;
           const pool = Object.values(BB.foes).filter(f => elapsed >= f.from);
-          const n = Math.min(4, 1 + Math.floor(waveNo / 5) + (Math.random() < 0.35 ? 1 : 0));
-          for(let i = 0; i < n; i++) foeQueue.push(pool[(Math.random() * pool.length) | 0]);
-          const base = Math.max(BB.wave.floor, BB.wave.start - waveNo * BB.wave.tighten * 10);
-          waveT = base / waveScale;
+          // ⚠️ THE WAVE MODEL IS THE 2D BUILD'S, NOT A PORT OF ITS SHAPE. This
+          // block used to count off WAVE NUMBER rather than the clock, cap at
+          // four instead of three, roll a bonus hostile on top, tighten ten
+          // times too fast, and draw the type UNIFORMLY from the pool. Each
+          // looked like a small liberty; together they put roughly twice the
+          // hostiles on the field as 2D, mixed far heavier — a TROJAN.SYS as
+          // likely as a BUG once it unlocked — and by the hundred-second mark
+          // the corridor was past what three duelling lanes can chew through.
+          // Headless sieges put the player's win rate at ZERO on every tier and
+          // every buy order; the same sieges on this model win comfortably on
+          // Stable. The siege was never balanced against this, and the table
+          // above is meant to be the single place its balance lives.
+          const n = Math.min(3, 1 + Math.floor(elapsed / 70));
+          // Later waves lean on the heavy types without ever dropping BUGs, so
+          // the corridor keeps its chaff while the real threats arrive behind.
+          const wts = pool.map(f => f.key === 'bug' ? 3 : (elapsed - f.from) / 40 + 1);
+          const tot = wts.reduce((a, b) => a + b, 0);
+          for(let i = 0; i < n; i++){
+            let x = Math.random() * tot, pick = pool[0];
+            for(let j = 0; j < pool.length; j++){ if((x -= wts[j]) <= 0){ pick = pool[j]; break; } }
+            foeQueue.push(pick);
+          }
+          waveT = Math.max(BB.wave.floor, BB.wave.start - elapsed * BB.wave.tighten) / waveScale;
           if(waveNo % 5 === 0){
             snd('alarm');
             w.pop([E_END - 6, 10, 0], `WAVE ${waveNo}`, '#ff2442', { size: 22, life: 1.4 });
@@ -22575,8 +22670,16 @@ P.games.battlebots = function(){
       }
 
       stepSide(bots, foes, 1, dt, dtMs);
-      stepSide(foes, bots, -1, dt, dtMs);
+      // ⚠️ REAP BETWEEN THE TWO STEPS, NOT AFTER BOTH. stepSide() opens by
+      // splicing anything already at zero out of the list it is walking — so a
+      // hostile the player's bots had just killed was quietly deleted by the
+      // GLITCH's own step, before reapFoes() ever saw it. Every kill made by a
+      // bot therefore paid no bounty, scored no kill, and popped no wreck: the
+      // whole RAM economy the siege is built on only ever fired for the EMP,
+      // which reaps inline. The 2D build credits at the damage site (killUnit)
+      // and never had this.
       reapFoes();
+      stepSide(foes, bots, -1, dt, dtMs);
       for(let i = bots.length - 1; i >= 0; i--) if(bots[i].hp <= 0){
         w.burst([bots[i].x, 1.1, LANE_Z[bots[i].lane]], bots[i].color, 14, { speed: 9, life: 0.6, size: 0.28 });
         bots.splice(i, 1);
