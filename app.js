@@ -15050,7 +15050,20 @@ function mergeMesh(dst, src, xform){
     dst.nrm.push(nx/nl, ny/nl, nz/nl);
   }
   for(let i=0;i<src.uv.length;i++) dst.uv.push(src.uv[i]);
-  for(let i=0;i<src.idx.length;i++) dst.idx.push(src.idx[i] + base);
+  // A MIRRORING transform (an odd number of negative scale axes) reverses
+  // triangle orientation, so the copy's front faces become back faces and get
+  // culled — the part renders as its own interior. Mirroring is how every
+  // left/right pair on these hulls is built, so this has to be handled here
+  // rather than remembered at each of the dozens of call sites.
+  const s = xform && xform.scale;
+  const flip = s ? (s[0] * s[1] * s[2]) < 0 : false;
+  if(flip){
+    for(let i=0;i<src.idx.length;i+=3){
+      dst.idx.push(src.idx[i] + base, src.idx[i+2] + base, src.idx[i+1] + base);
+    }
+  }else{
+    for(let i=0;i<src.idx.length;i++) dst.idx.push(src.idx[i] + base);
+  }
   return dst;
 }
 
@@ -15285,74 +15298,490 @@ function buildRock(seed){
   return m;
 }
 
+// ── HARD-SURFACE HELPERS ──
+// Push a single flat-shaded face. Every hull below is built out of these rather
+// than out of stretched spheres, because a flat face with a hard edge is the
+// only thing that gives a shadowless renderer a crisp silhouette line to put
+// the rim light on — a rounded box has no edge, so it reads as a lozenge.
+function faceQuad(m, a, b, c, d){
+  const ux=b[0]-a[0], uy=b[1]-a[1], uz=b[2]-a[2];
+  const vx=d[0]-a[0], vy=d[1]-a[1], vz=d[2]-a[2];
+  let nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+  const l=Math.hypot(nx,ny,nz)||1; nx/=l; ny/=l; nz/=l;
+  const b0=m.pos.length/3;
+  const q=[a,b,c,d];
+  for(let i=0;i<4;i++){
+    m.pos.push(q[i][0],q[i][1],q[i][2]);
+    m.nrm.push(nx,ny,nz);
+    m.uv.push((i===1||i===2)?1:0, (i>=2)?1:0);
+  }
+  m.idx.push(b0,b0+1,b0+2, b0,b0+2,b0+3);
+}
+function faceTri(m, a, b, c){
+  const ux=b[0]-a[0], uy=b[1]-a[1], uz=b[2]-a[2];
+  const vx=c[0]-a[0], vy=c[1]-a[1], vz=c[2]-a[2];
+  let nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+  const l=Math.hypot(nx,ny,nz)||1; nx/=l; ny/=l; nz/=l;
+  const b0=m.pos.length/3;
+  const q=[a,b,c];
+  for(let i=0;i<3;i++){ m.pos.push(q[i][0],q[i][1],q[i][2]); m.nrm.push(nx,ny,nz); m.uv.push(i===1?1:0, i===2?1:0); }
+  m.idx.push(b0,b0+1,b0+2);
+}
+// Bridge two closed rings of equal length into a tube wall.
+function loftRings(m, A, B){
+  for(let i=0;i<A.length;i++){
+    const j=(i+1)%A.length;
+    faceQuad(m, A[i], A[j], B[j], B[i]);
+  }
+}
+// Fan-cap a ring (dir +1 outward along the ring's own winding, -1 reversed).
+function capRing(m, R, dir){
+  const c=[0,0,0];
+  for(const p of R){ c[0]+=p[0]; c[1]+=p[1]; c[2]+=p[2]; }
+  c[0]/=R.length; c[1]/=R.length; c[2]/=R.length;
+  for(let i=0;i<R.length;i++){
+    const j=(i+1)%R.length;
+    if(dir>0) faceTri(m, c, R[i], R[j]); else faceTri(m, c, R[j], R[i]);
+  }
+}
+
+// A swept, tapered wing panel — the one shape the primitive set was missing,
+// and the reason every craft here used to wear flat rectangular slabs. Root sits
+// at x=0, tip at x=+span, chord runs along Z. The cross-section is a six-point
+// diamond aerofoil, so the leading and trailing edges stay HARD lines.
+function buildWing(o){
+  o = o || {};
+  const span  = o.span  != null ? o.span  : 1;
+  const rootC = o.rootC != null ? o.rootC : 1;
+  const tipC  = o.tipC  != null ? o.tipC  : 0.34;
+  const sweep = o.sweep != null ? o.sweep : 0.5;
+  const rootT = o.rootT != null ? o.rootT : 0.11;
+  const tipT  = o.tipT  != null ? o.tipT  : 0.03;
+  const dih   = o.dihedral != null ? o.dihedral : 0;
+  const STA   = o.stations || 3;
+  const m = emptyMesh();
+  // nose, upper-fore, upper-aft, tail, lower-aft, lower-fore
+  const SEC = [[0,0],[0.28,0.50],[0.68,0.32],[1,0],[0.68,-0.28],[0.28,-0.44]];
+  const rings = [];
+  for(let i=0;i<=STA;i++){
+    const t = i/STA;
+    const c  = rootC + (tipC - rootC) * t;
+    const th = rootT + (tipT - rootT) * t;
+    const z0 = sweep * t - rootC * 0.5;
+    rings.push(SEC.map(([u,v]) => [span*t, v*th + dih*t, z0 + u*c]));
+  }
+  for(let i=0;i<STA;i++) loftRings(m, rings[i], rings[i+1]);
+  capRing(m, rings[0], -1);
+  capRing(m, rings[STA], 1);
+  return m;
+}
+
 // ── ASSEMBLED HULLS ──
 // Multi-part models built out of the primitives above. Each is one geometry, so
 // a fleet of them is still a single instanced draw call.
+//
+// All four heroes were rebuilt in 2026-09-10. The old versions merged
+// heavily-rounded boxes at a bevel radius comparable to the parts' own
+// thickness, which melted every feature into the same soft lozenge: at gameplay
+// distance the interceptor, the raider and the drone all read as the same
+// blue-grey blob. The rebuilds use hard-edged lofted forms with a small bevel
+// only where a highlight is wanted, and they carry RECESSES the games can sit a
+// glow inside. They also lean on the procedural surface detail (SURF.HULL /
+// SURF.TECH), which supplies the plating so the geometry does not have to.
 
-// Player interceptor: delta hull, twin nacelles, canopy, engine bells.
-// Nose points at -Z, which is "into the screen" for every 3D game here.
+// Player interceptor. Nose points at -Z, which is "into the screen" for every
+// 3D game here. Hexagonal fuselage cross-section: the two chine edges running
+// its whole length are what make it read as a fighter rather than a pod, and
+// they give the rim light one hard line to trace from nose to tail.
 function buildShip(){
   const m = emptyMesh();
-  const box = buildBox(), rb = buildRoundedBox(0.2, 3), cyl = buildCylinder(16), sph = buildSphere(18, 12);
-  // Central spine, tapering to the nose.
-  mergeMesh(m, rb,  { pos:[0, 0, 0.05], scale:[0.34, 0.20, 1.05] });
-  mergeMesh(m, cyl, { pos:[0, 0.01, -0.60], scale:[0.30, 0.42, 0.30], rot:[Math.PI/2, 0, 0] });
-  // Swept wings — two thin slabs rolled outward, plus leading-edge strakes.
+  const hex6 = buildCylinder(6);
+  const rb   = buildRoundedBox(0.07, 2);
+  const cyl  = buildCylinder(16);
+  const RX   = Math.PI/2;
+
+  // Fuselage: mid body, then a tapered nose section forward of it.
+  mergeMesh(m, hex6, { pos:[0, 0, 0.16], scale:[0.40, 1.15, 0.30], rot:[RX, 0, 0] });
+  mergeMesh(m, buildCylinder(6, 0.14, 0.5),
+                    { pos:[0, 0, -0.74], scale:[0.40, 0.60, 0.30], rot:[-RX, 0, 0] });
+  // Dorsal spine and a ventral keel strake — thin, hard, full length.
+  mergeMesh(m, rb, { pos:[0, 0.15, 0.20], scale:[0.075, 0.10, 1.30] });
+  mergeMesh(m, rb, { pos:[0, -0.14, 0.26], scale:[0.10, 0.09, 1.05] });
+
+  // Canopy: a faceted blister in a recessed collar, not a glued-on ball. The
+  // collar is what gives the games a rim to bounce the cockpit glow off.
+  mergeMesh(m, rb,   { pos:[0, 0.14, -0.30], scale:[0.26, 0.10, 0.52] });
+  mergeMesh(m, buildCylinder(6, 0.30, 0.5),
+                     { pos:[0, 0.20, -0.32], scale:[0.21, 0.44, 0.17], rot:[RX, 0, 0] });
+
   [-1, 1].forEach(s => {
-    mergeMesh(m, rb, { pos:[s*0.42, -0.02, 0.16], scale:[0.62, 0.075, 0.62], rot:[0, s*0.32, -s*0.20] });
-    mergeMesh(m, rb, { pos:[s*0.30, 0.02, -0.26], scale:[0.30, 0.07, 0.55], rot:[0, s*0.18, -s*0.10] });
-    // Nacelle + engine bell.
-    mergeMesh(m, cyl, { pos:[s*0.52, 0.01, 0.30], scale:[0.15, 0.60, 0.15], rot:[Math.PI/2, 0, 0] });
-    mergeMesh(m, buildCylinder(14, 0.5, 0.28), { pos:[s*0.52, 0.01, 0.60], scale:[0.19, 0.18, 0.19], rot:[-Math.PI/2, 0, 0] });
+    // Main delta, swept back with a real taper and a hard leading edge.
+    mergeMesh(m, buildWing({ span:1, rootC:0.94, tipC:0.26, sweep:0.62, rootT:0.15, tipT:0.045 }),
+              { pos:[s*0.17, -0.03, 0.20], scale:[s*0.62, 0.62, 0.80], rot:[0, 0, -s*0.14] });
+    // Forward canard / leading-edge strake — a second, smaller hard edge up
+    // front, which is what stops the nose reading as a bare tube.
+    mergeMesh(m, buildWing({ span:1, rootC:0.44, tipC:0.10, sweep:0.30, rootT:0.07, tipT:0.02 }),
+              { pos:[s*0.16, 0.02, -0.46], scale:[s*0.30, 0.30, 0.46], rot:[0, 0, -s*0.30] });
+    // Canted vertical stabiliser, angled outward off the wing root.
+    mergeMesh(m, buildWing({ span:1, rootC:0.50, tipC:0.20, sweep:0.36, rootT:0.06, tipT:0.02 }),
+              { pos:[s*0.30, 0.06, 0.42], scale:[0.34, 0.34, 0.52], rot:[s*1.28, 0, 0] });
+
+    // Engine: nacelle, then a nozzle ring left OPEN so the games' thruster glow
+    // sits inside a housing instead of floating behind a capped cylinder.
+    mergeMesh(m, hex6, { pos:[s*0.36, -0.02, 0.44], scale:[0.21, 0.60, 0.21], rot:[RX, 0, 0] });
+    mergeMesh(m, buildCylinder(12, 0.5, 0.34),
+                       { pos:[s*0.36, -0.02, 0.76], scale:[0.25, 0.16, 0.25], rot:[-RX, 0, 0] });
+    // Intake lip forward of the nacelle.
+    mergeMesh(m, buildCylinder(12, 0.34, 0.5),
+                       { pos:[s*0.36, -0.02, 0.12], scale:[0.23, 0.13, 0.23], rot:[-RX, 0, 0] });
+    // Under-wing hardpoint and a stub cannon barrel.
+    mergeMesh(m, rb,  { pos:[s*0.50, -0.12, 0.16], scale:[0.09, 0.09, 0.40] });
+    mergeMesh(m, cyl, { pos:[s*0.50, -0.13, -0.18], scale:[0.045, 0.42, 0.045], rot:[RX, 0, 0] });
   });
-  // Canopy blister and dorsal fin.
-  mergeMesh(m, sph, { pos:[0, 0.11, -0.06], scale:[0.20, 0.15, 0.40] });
-  mergeMesh(m, box, { pos:[0, 0.16, 0.36], scale:[0.035, 0.24, 0.34], rot:[0.30, 0, 0] });
   return m;
 }
 
-// Enemy raider: an inverted, angrier silhouette so it reads instantly as
-// hostile even head-on. Nose points at +Z (it flies toward the player).
+// Enemy raider. Nose points at +Z (it flies toward the player). Built as an
+// angular predator head — a wedge with a jaw and two forward-swept mandibles —
+// so it reads as hostile in silhouette alone, head-on, at fog distance, which
+// the old smooth ellipsoid never did.
 function buildRaider(){
   const m = emptyMesh();
-  const rb = buildRoundedBox(0.16, 3), cyl = buildCylinder(14), oct = buildSphere(10, 6);
-  mergeMesh(m, oct, { pos:[0,0,0], scale:[0.46, 0.30, 0.72] });
+  const rb = buildRoundedBox(0.07, 2);
+  const RX = Math.PI/2, RZ = Math.PI/2;
+
+  // Core wedge: broad at the back, tapering to a beak at +Z.
+  mergeMesh(m, buildCylinder(5, 0.16, 0.5),
+                    { pos:[0, 0, 0.10], scale:[0.62, 0.90, 0.44], rot:[-RX, 0, 0] });
+  // Rear engine block.
+  mergeMesh(m, buildCylinder(5), { pos:[0, 0, -0.42], scale:[0.46, 0.26, 0.34], rot:[-RX, 0, 0] });
+  // Dorsal crest, raked back. Rolled 90 degrees about Z so the wing's SPAN
+  // becomes the vertical axis and its chord stays fore-aft — which is what
+  // makes it a centreline fin. (Rolling it about X instead, as the first cut
+  // did, leaves the span lateral and plants the whole crest off to one side.)
+  mergeMesh(m, buildWing({ span:1, rootC:0.66, tipC:0.18, sweep:-0.34, rootT:0.09, tipT:0.025 }),
+            { pos:[0, 0.09, -0.18], scale:[0.34, 0.34, 0.62], rot:[0, 0, RZ] });
+
   [-1, 1].forEach(s => {
-    // Forward-swept claws.
-    mergeMesh(m, rb, { pos:[s*0.40, 0, 0.14], scale:[0.52, 0.10, 0.30], rot:[0, -s*0.55, s*0.28] });
-    mergeMesh(m, rb, { pos:[s*0.60, 0, 0.40], scale:[0.30, 0.08, 0.24], rot:[0, -s*0.90, s*0.40] });
-    mergeMesh(m, cyl,{ pos:[s*0.20, -0.10, -0.24], scale:[0.10, 0.30, 0.10], rot:[Math.PI/2,0,0] });
+    // Forward-swept mandible. Nose is +Z here, so reaching PAST the nose means
+    // a POSITIVE sweep — the tip is pushed toward +Z. Getting this sign wrong
+    // is what turned the first cut into a backswept gull wing: the silhouette
+    // opened away from the player instead of closing on them.
+    mergeMesh(m, buildWing({ span:1, rootC:0.70, tipC:0.15, sweep:0.55, rootT:0.12, tipT:0.035 }),
+              { pos:[s*0.24, -0.02, -0.10], scale:[s*0.60, 0.50, 0.90], rot:[0, 0, s*0.16] });
+    // Barb, anchored on the mandible TIP and yawed so it curls forward and
+    // inward — a claw closing. The tip's chord centre is not at `sweep`: it is
+    // at sweep - rootC/2 + tipC/2 in wing space, so here
+    // z = -0.10 + 0.90*(0.55 - 0.35 + 0.075) = 0.148. Anchoring it at 0.395
+    // instead — as the first cut did, by reading `sweep` as if it were the tip
+    // position — left both barbs floating a quarter of a unit off the model.
+    mergeMesh(m, buildWing({ span:1, rootC:0.34, tipC:0.05, sweep:0.30, rootT:0.055, tipT:0.015 }),
+              { pos:[s*0.80, -0.02, 0.135], scale:[s*0.30, 0.26, 0.42], rot:[0, -s*0.70, s*0.24] });
+    // Outboard drive pod, canted out and down.
+    mergeMesh(m, buildCylinder(6), { pos:[s*0.34, -0.13, -0.34], scale:[0.15, 0.44, 0.15], rot:[RX, 0, s*0.18] });
+    // Cheek armour along the wedge.
+    mergeMesh(m, rb, { pos:[s*0.22, 0.05, 0.08], scale:[0.10, 0.15, 0.60], rot:[0, s*0.16, 0] });
   });
-  // Sensor eye — the games light this with a high emissive so it glows.
-  mergeMesh(m, oct, { pos:[0, 0.02, 0.34], scale:[0.22, 0.18, 0.22] });
+
+  // Sensor eye, sunk into a brow socket. The games light this with a high
+  // emissive; the surrounding brow is what stops it blooming into a bare dot.
+  mergeMesh(m, buildCylinder(8), { pos:[0, 0.05, 0.40], scale:[0.30, 0.16, 0.26], rot:[RX, 0, 0] });
+  mergeMesh(m, buildSphere(14, 9), { pos:[0, 0.05, 0.50], scale:[0.20, 0.16, 0.18] });
   return m;
 }
 
-// A cyberpunk tower block: stacked slabs with a setback and an antenna. Used by
-// the hundred to build the skyline every 3D game sits inside.
+// ── TOWERS ──
+// A skyline is drawn by the hundred from these. There are four silhouettes
+// rather than one because the single biggest tell that a city is procedural is
+// every building being the same shape at a different scale — the eye reads the
+// repeat long before it reads any surface detail. They all take SURF.WINDOWS,
+// which supplies the storeys.
+
+// Setback block: the workhorse. Slab, one setback, plant room, mast.
 function buildTower(){
   const m = emptyMesh();
-  const rb = buildRoundedBox(0.06, 2), cyl = buildCylinder(8);
-  mergeMesh(m, rb,  { pos:[0, 0,    0], scale:[1.0, 1.0, 1.0] });
-  mergeMesh(m, rb,  { pos:[0, 0.56, 0], scale:[0.68, 0.16, 0.68] });
-  mergeMesh(m, rb,  { pos:[0, 0.72, 0], scale:[0.42, 0.20, 0.42] });
-  mergeMesh(m, cyl, { pos:[0, 0.98, 0], scale:[0.035, 0.36, 0.035] });
+  const rb = buildRoundedBox(0.03, 2), cyl = buildCylinder(8);
+  mergeMesh(m, rb,  { pos:[0, -0.06, 0], scale:[1.0, 0.88, 1.0] });
+  mergeMesh(m, rb,  { pos:[0, 0.40,  0], scale:[0.82, 0.10, 0.82] });   // setback lip
+  mergeMesh(m, rb,  { pos:[0, 0.56,  0], scale:[0.70, 0.24, 0.70] });
+  mergeMesh(m, rb,  { pos:[0, 0.72,  0], scale:[0.40, 0.12, 0.40] });   // plant room
+  mergeMesh(m, cyl, { pos:[0, 0.92,  0], scale:[0.03, 0.34, 0.03] });   // mast
+  mergeMesh(m, rb,  { pos:[0, 0.79,  0], scale:[0.16, 0.04, 0.16] });   // collar
   return m;
 }
 
-// A drone chassis: body pod plus four rotor booms and rings.
+// Curtain-wall slab: wide, thin, flat-topped, with a service core spine. Reads
+// as an office block and breaks up a skyline of square towers.
+function buildTowerSlab(){
+  const m = emptyMesh();
+  const rb = buildRoundedBox(0.02, 2);
+  mergeMesh(m, rb, { pos:[0, 0, 0],      scale:[1.0, 1.0, 0.52] });
+  mergeMesh(m, rb, { pos:[0, 0.02, 0],   scale:[0.34, 1.05, 0.60] });   // core spine
+  mergeMesh(m, rb, { pos:[0, 0.53, 0],   scale:[1.02, 0.05, 0.56] });   // crown band
+  mergeMesh(m, rb, { pos:[0.36, 0.58, 0],scale:[0.14, 0.10, 0.30] });   // roof plant
+  return m;
+}
+
+// Stepped ziggurat: three receding stages. The classic art-deco arcology
+// silhouette, and the one that gives a skyline its tallest, most distinct peaks.
+function buildTowerStepped(){
+  const m = emptyMesh();
+  const rb = buildRoundedBox(0.025, 2), cyl = buildCylinder(6);
+  mergeMesh(m, rb,  { pos:[0, -0.24, 0], scale:[1.0,  0.52, 1.0]  });
+  mergeMesh(m, rb,  { pos:[0,  0.10, 0], scale:[0.76, 0.20, 0.76] });
+  mergeMesh(m, rb,  { pos:[0,  0.34, 0], scale:[0.56, 0.30, 0.56] });
+  mergeMesh(m, rb,  { pos:[0,  0.58, 0], scale:[0.34, 0.22, 0.34] });
+  mergeMesh(m, cyl, { pos:[0,  0.82, 0], scale:[0.16, 0.28, 0.16] });   // crown
+  mergeMesh(m, cyl, { pos:[0,  1.00, 0], scale:[0.025, 0.22, 0.025] });
+  return m;
+}
+
+// Cylindrical residential spire with a ring collar and an antenna array. The
+// only round silhouette in the set, so it stands out at any distance.
+function buildTowerSpire(){
+  const m = emptyMesh();
+  const cyl = buildCylinder(12), rb = buildRoundedBox(0.03, 2);
+  mergeMesh(m, buildCylinder(12, 0.42, 0.5), { pos:[0, -0.05, 0], scale:[1.0, 0.94, 1.0] });
+  mergeMesh(m, cyl, { pos:[0, 0.30, 0], scale:[1.14, 0.05, 1.14] });    // sky-lobby collar
+  mergeMesh(m, cyl, { pos:[0, 0.52, 0], scale:[0.80, 0.16, 0.80] });
+  mergeMesh(m, cyl, { pos:[0, 0.64, 0], scale:[0.34, 0.12, 0.34] });
+  [0, 1, 2].forEach(i => {
+    const a = i * 2.094;
+    mergeMesh(m, rb, { pos:[Math.cos(a)*0.13, 0.82, Math.sin(a)*0.13], scale:[0.02, 0.32, 0.02] });
+  });
+  return m;
+}
+
+// A drone chassis: body pod, four booms, ducted rotor rings — and, new in the
+// rebuild, actual ROTOR BLADES inside those rings. The rings used to be empty,
+// which at any distance read as four floating hoops rather than as lift.
 function buildDrone(){
   const m = emptyMesh();
-  const rb = buildRoundedBox(0.25, 3), cyl = buildCylinder(12), tor = buildTorus(0.4, 0.06, 18, 8);
-  mergeMesh(m, rb, { pos:[0,0,0], scale:[0.52, 0.34, 0.78] });
-  mergeMesh(m, buildSphere(16,10), { pos:[0, 0.02, -0.32], scale:[0.30, 0.24, 0.34] });
+  const rb  = buildRoundedBox(0.12, 3), cyl = buildCylinder(12);
+  const tor = buildTorus(0.42, 0.055, 16, 7);
+  const RZ  = Math.PI/2;
+  // Body: a hexagonal pod with a sensor turret slung under the nose.
+  mergeMesh(m, buildCylinder(6), { pos:[0, 0, 0.02], scale:[0.52, 0.70, 0.34], rot:[Math.PI/2, 0, 0] });
+  mergeMesh(m, rb,  { pos:[0, 0.14, 0.06], scale:[0.34, 0.14, 0.46] });          // avionics deck
+  mergeMesh(m, buildCylinder(10, 0.28, 0.5),
+                    { pos:[0, -0.13, -0.24], scale:[0.26, 0.18, 0.26] });        // sensor ball housing
+  mergeMesh(m, buildSphere(14, 9), { pos:[0, -0.22, -0.24], scale:[0.20, 0.18, 0.20] });
   [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sz]) => {
-    // Boom laid along X (cylinder is Y-up, so roll it 90 deg) and yawed out
-    // toward its rotor, which is what puts the four rings on the diagonals.
-    mergeMesh(m, cyl, { pos:[sx*0.40, 0.05, sz*0.36], scale:[0.055, 0.40, 0.055],
-                        rot:[0, 0, Math.PI/2], });
-    mergeMesh(m, tor, { pos:[sx*0.52, 0.09, sz*0.44], scale:[0.62, 0.62, 0.62] });
+    const bx = sx*0.40, bz = sz*0.36, rx = sx*0.54, rz = sz*0.46;
+    mergeMesh(m, cyl, { pos:[bx, 0.05, bz], scale:[0.05, 0.42, 0.05], rot:[0, 0, RZ] });
+    mergeMesh(m, cyl, { pos:[rx, 0.06, rz], scale:[0.11, 0.10, 0.11] });          // motor can
+    mergeMesh(m, tor, { pos:[rx, 0.08, rz], scale:[0.60, 0.60, 0.60] });          // duct ring
+    // Two blades per rotor, set at a pitch angle so they catch the light.
+    [0, 1].forEach(b => {
+      const a = b * Math.PI/2 + (sx*sz > 0 ? 0.4 : -0.4);
+      mergeMesh(m, buildWing({ span:1, rootC:0.30, tipC:0.16, sweep:0.06, rootT:0.05, tipT:0.02 }),
+                { pos:[rx, 0.08, rz], scale:[0.24, 0.24, 0.24], rot:[0, a, 0.22] });
+      mergeMesh(m, buildWing({ span:1, rootC:0.30, tipC:0.16, sweep:0.06, rootT:0.05, tipT:0.02 }),
+                { pos:[rx, 0.08, rz], scale:[-0.24, 0.24, 0.24], rot:[0, a, -0.22] });
+    });
   });
+  return m;
+}
+
+// ── NEW MODELS ──
+
+// A defence turret: armoured base, traversing ring, twin barrels. Nose at -Z.
+// Anything in the arcade that "shoots from a fixed point" was previously a
+// stretched cube.
+function buildTurret(){
+  const m = emptyMesh();
+  const rb = buildRoundedBox(0.05, 2), cyl = buildCylinder(14);
+  const RX = Math.PI/2;
+  mergeMesh(m, buildCylinder(8, 0.40, 0.5), { pos:[0, -0.34, 0], scale:[1.0, 0.32, 1.0] });  // plinth
+  mergeMesh(m, cyl, { pos:[0, -0.16, 0], scale:[0.66, 0.10, 0.66] });                         // race ring
+  mergeMesh(m, buildCylinder(6), { pos:[0, 0.02, 0.02], scale:[0.66, 0.34, 0.72], rot:[0, Math.PI/6, 0] }); // mantlet
+  mergeMesh(m, rb,  { pos:[0, 0.22, 0.04], scale:[0.40, 0.16, 0.44] });                       // sight block
+  [-1, 1].forEach(s => {
+    mergeMesh(m, cyl, { pos:[s*0.17, 0.0, -0.44], scale:[0.085, 0.62, 0.085], rot:[RX, 0, 0] });
+    mergeMesh(m, buildCylinder(10, 0.5, 0.36), { pos:[s*0.17, 0.0, -0.76], scale:[0.11, 0.14, 0.11], rot:[-RX, 0, 0] });
+  });
+  return m;
+}
+
+// A reactor core: an inner sphere inside a slotted containment cage. Built so
+// the cage is the only thing drawn opaque — a game puts an emissive sphere in
+// the middle and the slots let the light out in bars, which is a far better
+// "unstable core" read than a glowing ball.
+function buildCore(){
+  const m = emptyMesh();
+  const rb = buildRoundedBox(0.04, 2), cyl = buildCylinder(10);
+  // Six meridian ribs.
+  for(let i=0;i<6;i++){
+    const a = i * Math.PI/6;
+    mergeMesh(m, buildTorus(0.46, 0.045, 20, 6), { pos:[0,0,0], scale:[1,1,1], rot:[Math.PI/2, a, 0] });
+  }
+  // Polar caps and an equatorial band.
+  mergeMesh(m, buildTorus(0.46, 0.06, 24, 7), { pos:[0,0,0], scale:[1,1,1] });
+  [-1, 1].forEach(s => {
+    mergeMesh(m, cyl, { pos:[0, s*0.44, 0], scale:[0.24, 0.12, 0.24] });
+    mergeMesh(m, rb,  { pos:[0, s*0.54, 0], scale:[0.16, 0.10, 0.16] });
+  });
+  return m;
+}
+
+// A bipedal walker. Battle Bots' heavyweight units used to be drawn with the
+// SKYLINE geometry — which was survivable while a tower was a featureless
+// block, and stopped being survivable the moment towers grew lit windows and
+// every titan on the field marched around wearing office glazing. Faces -Z.
+function buildMech(){
+  const m = emptyMesh();
+  const rb = buildRoundedBox(0.06, 2), cyl = buildCylinder(10);
+  const RX = Math.PI/2;
+  // Torso: a broad armoured chest over a narrow waist, with a reactor recess.
+  mergeMesh(m, buildCylinder(6), { pos:[0, 0.30, 0], scale:[0.78, 0.46, 0.62], rot:[0, Math.PI/6, 0] });
+  mergeMesh(m, rb,  { pos:[0, 0.02, 0], scale:[0.42, 0.28, 0.36] });
+  mergeMesh(m, cyl, { pos:[0, 0.30, -0.28], scale:[0.22, 0.14, 0.22], rot:[RX, 0, 0] });   // chest core
+  // Head: a sensor block set low between the shoulders, visor facing -Z.
+  mergeMesh(m, rb,  { pos:[0, 0.58, -0.06], scale:[0.30, 0.20, 0.28] });
+  mergeMesh(m, rb,  { pos:[0, 0.58, -0.20], scale:[0.24, 0.09, 0.06] });                   // visor slot
+  [-1, 1].forEach(s => {
+    // Shoulder pauldron and an arm-mounted cannon.
+    mergeMesh(m, buildCylinder(6), { pos:[s*0.46, 0.42, 0], scale:[0.34, 0.30, 0.34], rot:[0, 0, RX] });
+    mergeMesh(m, rb,  { pos:[s*0.52, 0.14, -0.02], scale:[0.20, 0.34, 0.22] });
+    mergeMesh(m, cyl, { pos:[s*0.52, 0.10, -0.36], scale:[0.09, 0.46, 0.09], rot:[RX, 0, 0] });
+    mergeMesh(m, buildCylinder(8, 0.5, 0.34), { pos:[s*0.52, 0.10, -0.62], scale:[0.12, 0.12, 0.12], rot:[-RX, 0, 0] });
+    // Leg: thigh, reverse-jointed shin, splayed foot.
+    mergeMesh(m, rb,  { pos:[s*0.22, -0.26, 0.04], scale:[0.24, 0.40, 0.26], rot:[-0.18, 0, 0] });
+    mergeMesh(m, rb,  { pos:[s*0.22, -0.62, -0.06], scale:[0.20, 0.42, 0.22], rot:[0.22, 0, 0] });
+    mergeMesh(m, rb,  { pos:[s*0.22, -0.84, -0.16], scale:[0.26, 0.10, 0.38] });
+  });
+  return m;
+}
+
+// A tracked assault tank. Hull, two track units, a traversing turret with a
+// long barrel. Faces -Z.
+function buildTank(){
+  const m = emptyMesh();
+  const rb = buildRoundedBox(0.05, 2), cyl = buildCylinder(12);
+  const RX = Math.PI/2, RZ = Math.PI/2;
+  // Glacis-plated hull: a hexagonal prism laid flat reads as sloped armour.
+  mergeMesh(m, buildCylinder(6), { pos:[0, 0.06, 0], scale:[0.62, 1.10, 0.34], rot:[RX, 0, 0] });
+  mergeMesh(m, rb, { pos:[0, 0.20, 0.10], scale:[0.56, 0.14, 0.70] });
+  [-1, 1].forEach(s => {
+    // Track unit: a rounded run with three road wheels showing.
+    mergeMesh(m, rb,  { pos:[s*0.42, -0.10, 0], scale:[0.22, 0.30, 1.06] });
+    [-0.34, 0, 0.34].forEach(z => {
+      mergeMesh(m, cyl, { pos:[s*0.42, -0.16, z], scale:[0.20, 0.10, 0.20], rot:[0, 0, RZ] });
+    });
+  });
+  // Turret and gun.
+  mergeMesh(m, buildCylinder(8), { pos:[0, 0.36, 0.04], scale:[0.60, 0.26, 0.62] });
+  mergeMesh(m, rb,  { pos:[0, 0.48, 0.10], scale:[0.26, 0.12, 0.30] });                    // cupola
+  mergeMesh(m, cyl, { pos:[0, 0.34, -0.52], scale:[0.09, 0.86, 0.09], rot:[RX, 0, 0] });
+  mergeMesh(m, cyl, { pos:[0, 0.34, -0.86], scale:[0.13, 0.16, 0.13], rot:[RX, 0, 0] });   // muzzle brake
+  return m;
+}
+
+// A deployable shield barrier: an armoured panel on buttress legs with an
+// emitter frame around it. Wide face points -Z, so it reads as cover.
+function buildBarrier(){
+  const m = emptyMesh();
+  const rb = buildRoundedBox(0.05, 2), cyl = buildCylinder(8);
+  mergeMesh(m, rb, { pos:[0, 0.10, 0], scale:[1.10, 0.86, 0.20] });          // main plate
+  mergeMesh(m, rb, { pos:[0, 0.56, 0], scale:[1.18, 0.10, 0.28] });          // top rail
+  mergeMesh(m, rb, { pos:[0, -0.34, 0], scale:[1.18, 0.10, 0.28] });         // bottom rail
+  [-1, 1].forEach(s => {
+    mergeMesh(m, rb,  { pos:[s*0.58, 0.10, 0], scale:[0.16, 1.02, 0.30] });  // emitter post
+    mergeMesh(m, cyl, { pos:[s*0.58, 0.64, 0], scale:[0.18, 0.16, 0.18] });  // emitter head
+    // Buttress legs raking back.
+    mergeMesh(m, rb,  { pos:[s*0.42, -0.30, 0.26], scale:[0.12, 0.44, 0.14], rot:[0.55, 0, 0] });
+    mergeMesh(m, rb,  { pos:[s*0.42, -0.50, 0.44], scale:[0.20, 0.10, 0.30] });
+  });
+  return m;
+}
+
+// A moulded tech block: a bevelled core with a raised rim framing a recessed
+// panel on the four faces a player ever sees square-on. This is the shape
+// Tetris pieces, Breaker bricks and grid tiles are made of, and it exists
+// because a plain rounded cube in flat colour is the single most common way a
+// 3D game gives itself away as untextured boxes — the rim is what catches a
+// highlight and tells the eye the block is a moulded object with a front.
+//
+// Deliberately built from buildBox (24 verts) for the rim bars rather than from
+// rounded boxes: this geometry is instanced by the couple of hundred, so its
+// vertex count is multiplied by every block on the board.
+function buildTechBlock(){
+  const m = emptyMesh();
+  const box = buildBox();
+  mergeMesh(m, buildRoundedBox(0.09, 3), { pos:[0,0,0], scale:[0.90, 0.90, 0.90] });
+  // Rim on ±Z and ±X. Each is four bars around the face, standing 0.05 proud.
+  const RIM = 0.44, BAR = 0.11, OUT = 0.47;
+  [1, -1].forEach(s => {
+    // ±Z faces
+    [[0, RIM], [0, -RIM]].forEach(([a, b]) => {
+      mergeMesh(m, box, { pos:[a, b, s*OUT], scale:[0.96, BAR, 0.10] });
+    });
+    [[RIM, 0], [-RIM, 0]].forEach(([a, b]) => {
+      mergeMesh(m, box, { pos:[a, b, s*OUT], scale:[BAR, 0.96, 0.10] });
+    });
+    // ±X faces
+    [[0, RIM], [0, -RIM]].forEach(([a, b]) => {
+      mergeMesh(m, box, { pos:[s*OUT, b, a], scale:[0.10, BAR, 0.96] });
+    });
+    [[RIM, 0], [-RIM, 0]].forEach(([a, b]) => {
+      mergeMesh(m, box, { pos:[s*OUT, b, a], scale:[0.10, 0.96, BAR] });
+    });
+  });
+  // Top and bottom caps stay flat — a stack of these reads as a solid column.
+  [1, -1].forEach(s => mergeMesh(m, box, { pos:[0, s*0.47, 0], scale:[0.82, 0.10, 0.82] }));
+  return m;
+}
+
+// A server rack: cabinet, vented door, rack-unit shelves, cable spine and feet.
+// Meteor Shield is a mission ABOUT defending these, and they were four
+// featureless cubes — the thing the whole round is protecting had less shape
+// than the rubble falling on it. Front face is +Z.
+function buildServerRack(){
+  const m = emptyMesh();
+  const box = buildBox(), rb = buildRoundedBox(0.04, 2), cyl = buildCylinder(8);
+  // Cabinet shell, slightly inset at the front so the door sits in a frame.
+  mergeMesh(m, rb, { pos:[0, 0, -0.06], scale:[1.0, 1.0, 0.88] });
+  // Door frame: four bars around the front opening.
+  [[0, 0.45, 1.0, 0.10], [0, -0.45, 1.0, 0.10], [0.45, 0, 0.10, 1.0], [-0.45, 0, 0.10, 1.0]]
+    .forEach(([x, y, w, h]) => mergeMesh(m, box, { pos:[x, y, 0.40], scale:[w, h, 0.12] }));
+  // Rack units behind the door — six shelves, each with a drive bay lip. These
+  // are what give the cabinet its horizontal read at distance.
+  for(let i=0;i<6;i++){
+    const y = -0.36 + i * 0.145;
+    mergeMesh(m, box, { pos:[0, y, 0.34], scale:[0.80, 0.10, 0.06] });
+    mergeMesh(m, box, { pos:[-0.28, y, 0.38], scale:[0.16, 0.05, 0.04] });   // bay handle
+  }
+  // Cable spine and cooling stack up the back.
+  mergeMesh(m, rb,  { pos:[0, 0, -0.50], scale:[0.30, 0.94, 0.18] });
+  [-1, 1].forEach(s => mergeMesh(m, cyl, { pos:[s*0.30, 0, -0.50], scale:[0.14, 0.86, 0.14] }));
+  // Roof plenum and levelling feet.
+  mergeMesh(m, rb, { pos:[0, 0.53, -0.04], scale:[1.06, 0.10, 0.94] });
+  [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([a,b]) =>
+    mergeMesh(m, box, { pos:[a*0.40, -0.55, b*0.34], scale:[0.14, 0.12, 0.14] }));
+  return m;
+}
+
+// A deflector paddle. Long axis is Z, thin across X, with a recessed emitter
+// channel down BOTH X faces so the same model serves either end of a Pong table
+// and, rotated, the bat in Breaker. The end caps are what make it read as a
+// piece of equipment: a bare slab has no ends, so it looks like a UI element
+// lying on the board rather than an object standing on it.
+function buildPaddle(){
+  const m = emptyMesh();
+  const rb = buildRoundedBox(0.10, 3), box = buildBox(), cyl = buildCylinder(10);
+  // Spine and the two emitter lips that frame the channel.
+  mergeMesh(m, rb, { pos:[0, 0, 0], scale:[0.52, 0.66, 0.86] });
+  [1, -1].forEach(s => {
+    mergeMesh(m, box, { pos:[s*0.34, 0.28, 0], scale:[0.34, 0.16, 0.90] });   // upper lip
+    mergeMesh(m, box, { pos:[s*0.34, -0.28, 0], scale:[0.34, 0.16, 0.90] });  // lower lip
+  });
+  // End caps with a bumper roller, so the paddle has a top and a bottom end.
+  [1, -1].forEach(s => {
+    mergeMesh(m, rb,  { pos:[0, 0, s*0.46], scale:[0.62, 0.80, 0.14] });
+    mergeMesh(m, cyl, { pos:[0, 0, s*0.53], scale:[0.34, 0.20, 0.34], rot:[Math.PI/2, 0, 0] });
+  });
+  // Dorsal rail — a raised strip along the top for the highlight to run down.
+  mergeMesh(m, box, { pos:[0, 0.36, 0], scale:[0.20, 0.10, 0.78] });
   return m;
 }
 
@@ -15383,6 +15812,16 @@ out vec2 vUV;
 out vec4 vColor;
 out vec4 vEmis;
 out vec4 vMat;
+// Object space, PRE-multiplied by the instance's scale. The procedural surface
+// detail in the fragment shader lives in this space rather than in world space
+// or in UV: world space makes the pattern swim as a ship flies through it, and
+// raw UV makes a plate's size depend on how big the part it belongs to is, so a
+// hull built by merging twenty primitives ends up with twenty different panel
+// scales. Folding the scale in means a unit cube stretched into a 15-unit pylon
+// gets fifteen units' worth of panelling instead of one smeared plate, while
+// translation and rotation still leave the pattern welded to the model.
+out vec3 vObj;
+out vec3 vObjN;
 
 void main(){
   mat4 M = mat4(aM0, aM1, aM2, aM3);
@@ -15394,6 +15833,8 @@ void main(){
   vec3 invS = vec3(1.0/length(aM0.xyz), 1.0/length(aM1.xyz), 1.0/length(aM2.xyz));
   vNrm = normalize(mat3(M) * (aNrm * invS * invS));
   vUV = aUV;
+  vObj  = aPos / invS;
+  vObjN = aNrm;
   vColor = aColor;
   vEmis = aEmis;
   vMat = aMat;
@@ -15409,6 +15850,8 @@ in vec2 vUV;
 in vec4 vColor;
 in vec4 vEmis;
 in vec4 vMat;
+in vec3 vObj;
+in vec3 vObjN;
 
 #define MAX_LIGHTS 10
 uniform vec3  uCam;
@@ -15425,6 +15868,11 @@ uniform float uEnvInt;
 uniform vec3  uFogCol;
 uniform float uFogDensity;
 uniform float uTime;
+// Global dial on the procedural surface detail below, owned by the quality
+// governor rather than by the art: the patterns are per-pixel ALU on every
+// surface in the frame, so a phone that starts dropping frames turns them down
+// (and, at the bottom of the range, off) before it gives up resolution.
+uniform float uDetailScale;
 
 out vec4 fragColor;
 
@@ -15473,6 +15921,268 @@ vec3 fresnelSchlick(float u, vec3 F0){
   return F0 + (1.0 - F0) * f;
 }
 
+// ══════════════════════════════════════════════
+//  🔩 PROCEDURAL SURFACE DETAIL
+// ══════════════════════════════════════════════
+// The arcade ships no image assets at all — no textures, no normal maps, no
+// atlases — because it has to run from file:// and survive going offline. So
+// every surface was a single flat colour, and that is the one thing that made
+// these models read as untextured primitives rather than as hardware: a hull
+// with no plate seams has nothing in it to give the eye a sense of SCALE, so a
+// two-metre interceptor and a two-hundred-metre tower look like the same object
+// at different zooms.
+//
+// These patterns put the detail back analytically. They are evaluated in scaled
+// object space (see vObj in the vertex shader) and triplanar-projected, so they
+// need no UV layout — which matters because the hulls here are built by merging
+// primitives, and merged primitives have overlapping UVs by construction.
+//
+// vMat.w carries "style + intensity": the integer part selects the pattern, the
+// fraction dials it in. That keeps the whole system inside a float that was
+// already in the instance stream and previously hardcoded to 1.0, so it costs
+// no extra bandwidth per instance. Style 0 (and any intensity of 0) early-outs
+// to exactly the old behaviour.
+
+float hash21(vec2 p){
+  p = fract(p * vec2(127.31, 311.7));
+  p += dot(p, p + 34.23);
+  return fract(p.x * p.y);
+}
+
+float vnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash21(i),               hash21(i + vec2(1.0, 0.0)), f.x),
+             mix(hash21(i + vec2(0.0,1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+// One rectangular plate lattice. Returns x = seam mask (1 inside the groove),
+// y = a stable per-plate random used to jitter that plate's finish.
+// The row offset and the merge test exist to stop it reading as graph paper:
+// real panelling is irregular, and a perfect grid is the giveaway that a
+// surface is procedural.
+vec2 plateGrid(vec2 p, float size, float seam){
+  vec2 g = p / size;
+  // Every row picks its own plate WIDTH and its own phase, so runs of plating
+  // never line up into one unbroken lattice. Doing it per row rather than per
+  // plate keeps the cell id well defined — an earlier version resized cells
+  // individually and tore along every row boundary, because two neighbouring
+  // rows disagreed about where the shared seam was.
+  float row = floor(g.y);
+  float rh  = hash21(vec2(row, 3.7));
+  g.x = g.x * mix(0.7, 1.5, rh) + rh * 7.0;
+  vec2 c = floor(g), f = fract(g);
+  vec2 d = min(f, 1.0 - f);
+  return vec2(1.0 - smoothstep(0.0, seam, min(d.x, d.y)), hash21(c + row * 0.137));
+}
+
+// Flat-top hex lattice. xy = offset inside the cell, zw = cell id.
+vec4 hexGrid(vec2 p){
+  const vec2 S = vec2(1.0, 1.7320508);
+  vec4 hC = floor(vec4(p, p - vec2(0.5, 1.0)) / S.xyxy) + 0.5;
+  vec4 h  = vec4(p - hC.xy * S, p - (hC.zw + 0.5) * S);
+  return dot(h.xy, h.xy) < dot(h.zw, h.zw) ? vec4(h.xy, hC.xy) : vec4(h.zw, hC.zw + 0.5);
+}
+float hexEdge(vec2 p){
+  p = abs(p);
+  return max(dot(p, vec2(0.8660254, 0.5)), p.x);
+}
+
+// Perturbs albedo / roughness / metallic / emissive in place and reports a
+// height field for the normal bump applied by the caller.
+void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
+                   inout vec3 emisTint, inout float emis, out float height){
+  height = 0.0;
+  float style = floor(vMat.w);
+  // Windows are the skyline's IDENTITY, not surface polish. A tower with the
+  // pattern trimmed away is not a cheaper tower — it is exactly the featureless
+  // block this whole system exists to replace, so a device that trips the
+  // quality governor would appear to have had the art reverted. That one style
+  // gets a floor under the governor's dial: it can be dimmed, never deleted.
+  // Everything else here really is polish and may go all the way to nothing.
+  float ds  = (style > 1.5 && style < 2.5) ? max(uDetailScale, 0.7) : uDetailScale;
+  float amt = fract(vMat.w) * ds;
+  if(style < 0.5 || amt <= 0.004) return;
+
+  // DOMINANT-AXIS projection, not a three-tap triplanar blend. The weights were
+  // already raised to the fourth power — all but one-hot everywhere except on a
+  // bevel — so the two extra taps were buying a soft cross-fade across a seam
+  // that lands on a hard edge anyway. This runs per-pixel on every surface in
+  // the frame, and paying for three projections of it was the single most
+  // expensive thing in this shader: cutting to one takes the plate styles from
+  // six lattice evaluations to two.
+  vec3 an = abs(normalize(vObjN));
+  an *= an; an *= an;
+  vec3 bw = an / max(an.x + an.y + an.z, 1e-4);
+  vec2 pp = (an.x >= an.y && an.x >= an.z) ? vObj.zy
+          : (an.y >= an.z)                 ? vObj.xz
+                                           : vObj.xy;
+
+  // The albedo-modulating styles below fade out as an instance's emission
+  // climbs. A neon sign, a holo readout or a block of glowing type is a LIGHT,
+  // not a fabricated panel, and plate seams drawn across one read as dirt on
+  // the glass rather than as construction. This is a blanket safeguard: the
+  // arcade draws a great many things with the same workhorse geometry, and
+  // without it every emissive cube in eighteen missions would have to
+  // remember to opt out by hand. The emissive styles (windows, hex, circuit)
+  // deliberately do not use it — emission is their whole subject.
+  float matte = mix(1.0, 0.25, clamp(emis * 0.5, 0.0, 1.0));
+
+  if(style < 1.5){
+    // ── 1 · HULL. Armour plating: staggered plates, seam grooves, and a
+    // per-plate finish jitter so the eye reads separate pieces of metal.
+    amt *= matte;
+    const float SZ = 0.30, SEAM = 0.06;
+    vec2 g0 = plateGrid(pp, SZ, SEAM);
+    float groove = g0.x, ph = g0.y;
+    // Finer rivet-scale sub-panelling, only on some plates.
+    float sub = plateGrid(pp, SZ * 0.34, 0.09).x * step(0.72, ph);
+    groove = max(groove, sub * 0.55);
+    float mottle = vnoise(pp * 1.7);
+    albedo *= 1.0 + ((ph - 0.5) * 0.20 + (mottle - 0.5) * 0.13) * amt;
+    albedo *= 1.0 - groove * 0.42 * amt;
+    rough  += ((ph - 0.5) * 0.16 + groove * 0.30) * amt;
+    height = -groove * 0.9 * amt;
+
+  }else if(style < 2.5){
+    // ── 2 · WINDOWS. A lit facade. The single reason the skyline used to read
+    // as grey blocks is that a building with no windows has no storeys, and
+    // without storeys it has no height. Cells are lit per-hash, so every tower
+    // instance shows a different occupancy pattern from the same geometry.
+    // Applied to the vertical faces only — bw.y is the roof, which gets plant.
+    float side = 1.0 - bw.y;
+    vec2 q = vec2(an.x >= an.z ? vObj.z : vObj.x, vObj.y);
+    // Cell size is in WORLD units because vObj carries the instance scale, so
+    // one setting gives a forty-unit tower thirty storeys and a six-unit
+    // outbuilding five — the windows stay the same physical size, which is the
+    // whole reason the skyline now reads as having depth and scale at all.
+    vec2 cell = vec2(0.92, 1.15);
+    vec2 g = q / cell;
+    vec2 c = floor(g), f = fract(g);
+    vec2 d = min(f, 1.0 - f);
+    float pane = smoothstep(0.0, 0.19, min(d.x, d.y));       // 1 inside the glass
+    // Occupancy: most cells dark, whole floors dead, a few bright.
+    float floorLit = step(0.30, hash21(vec2(7.3, c.y)));
+    float lit = step(0.56, hash21(c)) * floorLit;
+    float bright = mix(0.30, 1.0, hash21(c + 3.1));
+    // A warm/cool split reads as different tenants on different floors.
+    vec3 warm = vec3(1.0, 0.74, 0.40), cool = vec3(0.48, 0.86, 1.0);
+    vec3 tint = mix(cool, warm, step(0.55, hash21(c.yx + 1.7)));
+    float mask = pane * lit * bright * side;
+    // Mullions darken; the glass itself goes dark and glossy where unlit, which
+    // is what stops an unoccupied facade reading as flat concrete.
+    albedo = mix(albedo, albedo * 0.45, side * (1.0 - pane) * amt);
+    albedo = mix(albedo, albedo * 0.7, side * pane * (1.0 - lit) * amt);
+    albedo = mix(albedo, tint, min(mask * amt * 0.55, 0.6));
+    // A lit window emits its OWN colour. Without this the glow inherits the
+    // instance's emissive tint, which for a tower drawn with no emissive at all
+    // defaults to the building's albedo — so every window in the city lit up
+    // the same dark blue as the concrete around it and read as nothing.
+    emisTint = mix(emisTint, tint, step(0.001, mask));
+    emis    += mask * 1.9 * amt;
+    rough  = mix(rough, mix(0.18, 0.75, 1.0 - pane), side * amt * 0.8);
+    height = -(1.0 - pane) * side * 0.5 * amt;
+
+  }else if(style < 3.5){
+    // ── 3 · TECH. Machinery: tight plates plus louvred vent slots, for the
+    // parts of a model that should read as cooling and mechanism rather than
+    // as armour — engine housings, boom shrouds, reactor casings.
+    amt *= matte;
+    const float SZ = 0.16;
+    vec2 g0 = plateGrid(pp, SZ, 0.10);
+    float groove = g0.x, ph = g0.y;
+    // Vent slots run along the model's long axis in bands.
+    float band = step(0.62, hash21(vec2(floor(vObj.y / 0.34), 3.0)));
+    float slot = smoothstep(0.35, 0.5, abs(fract(vObj.y / 0.075) - 0.5)) * band;
+    groove = max(groove, (1.0 - slot) * band * 0.8);
+    albedo *= 1.0 - groove * 0.5 * amt;
+    albedo *= 1.0 + (ph - 0.5) * 0.16 * amt;
+    metal   = clamp(metal + (ph - 0.5) * 0.22 * amt, 0.0, 1.0);
+    rough  += (groove * 0.26 + (ph - 0.5) * 0.14) * amt;
+    height  = -groove * 1.1 * amt;
+
+  }else if(style < 4.5){
+    // ── 4 · BRUSHED. Directional micro-scratches. The renderer has no
+    // anisotropic BRDF, but streaking ROUGHNESS along one axis produces the
+    // same stretched highlight for a fraction of the cost, which is what makes
+    // a turned metal ring look machined instead of moulded.
+    amt *= matte;
+    float u = (an.y >= an.x && an.y >= an.z) ? vObj.x : vObj.y;
+    float streak = vnoise(vec2(u * 90.0, floor(u * 3.0))) * 0.6
+                 + vnoise(vec2(u * 310.0, 11.0)) * 0.4;
+    rough  += (streak - 0.5) * 0.30 * amt;
+    albedo *= 1.0 + (streak - 0.5) * 0.10 * amt;
+    height  = (streak - 0.5) * 0.10 * amt;
+
+  }else if(style < 5.5){
+    // ── 5 · HEX. Energy-cell lattice for shields, holo panels and force
+    // fields: bright at the cell edge, near-transparent in the middle, with a
+    // slow travelling pulse so a barrier reads as powered rather than painted.
+    vec4 hg = hexGrid(pp * 3.4);
+    float e = hexEdge(hg.xy);
+    float edge = smoothstep(0.38, 0.5, e);
+    float pulse = 0.55 + 0.45 * sin(uTime * 2.2 - hg.z * 0.9 + hg.w * 0.7);
+    float cellDim = mix(0.25, 1.0, hash21(hg.zw) * 0.6 + 0.4);
+    emis *= 1.0 + (edge * 2.6 + 0.10) * cellDim * pulse * amt;
+    albedo *= 1.0 - (1.0 - edge) * 0.25 * amt;
+    height = edge * 0.35 * amt;
+
+  }else if(style < 6.5){
+    // ── 6 · CIRCUIT. Traces and pads, for decks, floor plates and consoles.
+    vec2 q = pp * 1.9;
+    vec2 c = floor(q), f = fract(q) - 0.5;
+    float h = hash21(c);
+    // Each cell carries one trace: horizontal, vertical, or a corner elbow.
+    float w = 0.055;
+    float tr = h < 0.34 ? step(abs(f.y), w)
+             : h < 0.68 ? step(abs(f.x), w)
+             : max(step(abs(f.y), w) * step(f.x, 0.0), step(abs(f.x), w) * step(0.0, f.y));
+    // Solder pads where traces terminate.
+    float pad = step(length(f), 0.13) * step(0.86, hash21(c + 5.5));
+    float trace = clamp(tr + pad, 0.0, 1.0);
+    float run = 0.5 + 0.5 * sin(uTime * 3.0 + (c.x + c.y) * 1.3);
+    emis   *= 1.0 + trace * (1.2 + run * 1.5) * amt;
+    albedo  = mix(albedo, albedo * 0.6, (1.0 - trace) * 0.5 * amt);
+    metal   = clamp(metal + trace * 0.5 * amt, 0.0, 1.0);
+    rough   = clamp(rough - trace * 0.25 * amt, 0.035, 1.0);
+    height  = trace * 0.30 * amt;
+
+  }else{
+    // ── 7 · MINERAL. Strata and grain for rock: meteors and destructible
+    // cores. Flat-shaded facets alone make a rock look like cut crystal; the
+    // banding is what makes it read as stone.
+    amt *= matte;
+    float band = vnoise(vec2(vObj.y * 5.5, vObj.x * 0.8)) * 0.6
+               + vnoise(vec2(vObj.y * 17.0, vObj.z * 2.0)) * 0.4;
+    float grain = vnoise(pp * 26.0);
+    albedo *= 1.0 + ((band - 0.5) * 0.45 + (grain - 0.5) * 0.18) * amt;
+    rough  += ((grain - 0.5) * 0.22 + (band - 0.5) * 0.18) * amt;
+    height  = (band - 0.5) * 0.7 * amt + (grain - 0.5) * 0.2 * amt;
+  }
+}
+
+// Height field to shading normal without tangents — Mikkelsen's derivative
+// trick. The pattern is defined per-pixel, so there is no tangent frame to
+// hand it; taking the screen-space gradient of the height and projecting it
+// back onto the surface gives the same result and works on every geometry in
+// the arcade, none of which carry tangents.
+vec3 bumpNormal(vec3 N, vec3 wp, float h, float scale){
+  vec3 dpx = dFdx(wp), dpy = dFdy(wp);
+  float dhx = dFdx(h), dhy = dFdy(h);
+  vec3 r1 = cross(dpy, N), r2 = cross(N, dpx);
+  float det = dot(dpx, r1);
+  if(abs(det) < 1e-12) return N;
+  vec3 grad = (r1 * dhx + r2 * dhy) / det;
+  // Bound the tilt. An analytic pattern has genuinely vertical walls at a seam,
+  // so the true gradient there is near-infinite; left unbounded it does not
+  // shade a groove, it FLIPS the normal, and the seam comes back as a bright
+  // line of specular and rim instead of a dark one. Clamping is what turns the
+  // pattern from a glowing wireframe into panelling.
+  float g = length(grad);
+  if(g > 6.0) grad *= 6.0 / g;
+  return normalize(N - scale * grad);
+}
+
 void main(){
   vec3 N = normalize(vNrm);
   vec3 V = normalize(uCam - vWorld);
@@ -15484,6 +16194,25 @@ void main(){
   vec3  albedo    = vColor.rgb;
   float metallic  = clamp(vMat.x, 0.0, 1.0);
   float rough     = clamp(vMat.y, 0.035, 1.0);
+
+  // ── Procedural detail. Runs before the BRDF terms are derived so plate
+  // seams, vents and window mullions feed the real lighting rather than being
+  // painted over it, and bumps the shading normal so a groove catches the rim
+  // light and the specular the same way a modelled one would.
+  float emisAmt  = vEmis.a;
+  vec3  emisTint = vEmis.rgb;
+  float bumpH;
+  // The rim term below is a SILHOUETTE effect, so it keeps the geometric
+  // normal. Feeding it the bumped one lit up every seam on the model as if the
+  // hull were made of glowing wire.
+  vec3 Ng = N;
+  surfaceDetail(albedo, rough, metallic, emisTint, emisAmt, bumpH);
+  if(bumpH != 0.0) N = bumpNormal(N, vWorld, bumpH, 0.05);
+  albedo   = clamp(albedo, 0.0, 4.0);
+  rough    = clamp(rough, 0.035, 1.0);
+  metallic = clamp(metallic, 0.0, 1.0);
+  NoV      = clamp(dot(N, V), 1e-4, 1.0);
+
   float a         = rough * rough;
   vec3  F0        = mix(vec3(0.04), albedo, metallic);
   vec3  diffCol   = albedo * (1.0 - metallic);
@@ -15542,12 +16271,12 @@ void main(){
 
   // ── Fresnel rim. Not physical — a deliberate stylistic edge light, which in a
   // shadowless render is what stops two dark objects merging into one blob.
-  float rim = pow(1.0 - NoV, 3.5) * vMat.z;
+  float rim = pow(1.0 - clamp(dot(Ng, V), 1e-4, 1.0), 3.5) * vMat.z;
   vec3 rimCol = mix(uHorizon, vEmis.rgb, 0.6) * rim * 2.4;
 
   // ── Emission. This is the neon, and it is allowed well past 1.0 — the HDR
   // target and the bloom pyramid downstream are the entire point.
-  vec3 emissive = vEmis.rgb * vEmis.a;
+  vec3 emissive = emisTint * emisAmt;
 
   vec3 color = direct + ambient + rimCol + emissive;
 
@@ -15830,6 +16559,22 @@ void main(){
 //  🖥️ RENDERER
 // ══════════════════════════════════════════════
 
+// Surface-detail styles. The value handed to a geometry (or to draw's `detail`)
+// is `STYLE + intensity`, intensity in [0,1) — so SURF.HULL + 0.8 is heavy
+// plating and SURF.HULL + 0.2 is a whisper of it. See the procedural-detail
+// block in FS_MESH for what each one draws. Anything at intensity 0 costs one
+// branch and shades exactly as it did before this system existed.
+const SURF = {
+  NONE:    0,   // flat colour — neon strips, holo sheets, energy orbs
+  HULL:    1,   // armour plating: staggered plates, seam grooves, finish jitter
+  WINDOWS: 2,   // lit building facade: window cells, dead floors, warm/cool mix
+  TECH:    3,   // machinery: tight plates, louvred vents
+  BRUSHED: 4,   // turned/machined metal: directional roughness streaks
+  HEX:     5,   // energy lattice: shields, holo panels, force fields
+  CIRCUIT: 6,   // traces and solder pads: decks, floor plates, consoles
+  MINERAL: 7    // strata and grain: meteors, asteroids, destructible cores
+};
+
 const MAX_LIGHTS = 10;
 const FLOATS_PER_INSTANCE = 16 + 4 + 4 + 4;   // model, colour, emissive, material
 const FLOATS_PER_GLOW = 8;                    // centre+size, tint+intensity
@@ -15906,7 +16651,14 @@ function createRenderer(canvas){
 
   // ── GEOMETRY REGISTRY ──
   const geos = Object.create(null);
-  function registerGeo(name, mesh){
+  // `surf` is the geometry's DEFAULT surface style (see SURF below and the
+  // procedural-detail block in FS_MESH). Hanging it off the geometry rather
+  // than off each draw call is deliberate: a hull should be plated wherever it
+  // is drawn, in every mission and every mode, without eighteen missions and
+  // three duel views each having to remember to ask for it. A call site can
+  // still override with `o.detail` when a specific instance wants something
+  // else — a shield flaring, a deck powering down.
+  function registerGeo(name, mesh, surf){
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
 
@@ -15949,28 +16701,48 @@ function createRenderer(canvas){
     gl.enableVertexAttribArray(9); gl.vertexAttribPointer(9, 4, gl.FLOAT, false, stride, 96); gl.vertexAttribDivisor(9, 1);
 
     gl.bindVertexArray(null);
-    geos[name] = { vao, ibo, inst, count: mesh.idx.length, cap: 0 };
+    geos[name] = { vao, ibo, inst, count: mesh.idx.length, cap: 0, surf: surf || 0 };
     return geos[name];
   }
 
-  registerGeo('box',       buildBox());
-  registerGeo('cube',      buildRoundedBox(0.10, 4));
-  registerGeo('slab',      buildRoundedBox(0.055, 3));
-  registerGeo('pill',      buildRoundedBox(0.42, 5));
-  registerGeo('sphere',    buildSphere(30, 20));
+  // ── THE PALETTE ──
+  // `surf` is `style + intensity` (SURF above). The choices are deliberate and
+  // the DEFAULTS OF ZERO matter as much as the non-zero ones: `box` is what
+  // every neon light bar and holo sheet in the arcade is drawn with, and
+  // plate-seaming a light bar would be wrong, so the workhorse primitives that
+  // usually carry emissive stay perfectly clean. Detail goes on the things that
+  // are meant to read as fabricated hardware.
+  registerGeo('box',       buildBox());                        // neon strips, sheets — clean
+  registerGeo('cube',      buildRoundedBox(0.10, 4), SURF.HULL    + 0.45);
+  registerGeo('slab',      buildRoundedBox(0.055, 3), SURF.HULL   + 0.35);
+  registerGeo('pill',      buildRoundedBox(0.42, 5), SURF.TECH    + 0.28);
+  registerGeo('sphere',    buildSphere(30, 20));                // energy orbs — clean
   registerGeo('lowsphere', buildSphere(14, 10));
-  registerGeo('cylinder',  buildCylinder(26));
-  registerGeo('cone',      buildCylinder(20, 0.001, 0.5));
-  registerGeo('torus',     buildTorus(0.4, 0.09, 44, 16));
-  registerGeo('thintorus', buildTorus(0.45, 0.035, 48, 10));
+  registerGeo('cylinder',  buildCylinder(26), SURF.BRUSHED      + 0.55);
+  registerGeo('cone',      buildCylinder(20, 0.001, 0.5), SURF.BRUSHED + 0.4);
+  registerGeo('torus',     buildTorus(0.4, 0.09, 44, 16), SURF.BRUSHED + 0.45);
+  registerGeo('thintorus', buildTorus(0.45, 0.035, 48, 10));    // neon rings — clean
   registerGeo('quad',      buildQuad());
   registerGeo('ground',    buildGround(28));
-  registerGeo('ship',      buildShip());
-  registerGeo('raider',    buildRaider());
-  registerGeo('tower',     buildTower());
-  registerGeo('drone',     buildDrone());
-  registerGeo('rock',      buildRock(7));
-  registerGeo('rock2',     buildRock(1337));
+  registerGeo('ship',      buildShip(),   SURF.HULL    + 0.7);
+  registerGeo('raider',    buildRaider(), SURF.HULL    + 0.6);
+  registerGeo('drone',     buildDrone(),  SURF.TECH    + 0.55);
+  registerGeo('turret',    buildTurret(), SURF.TECH    + 0.6);
+  registerGeo('techblock', buildTechBlock(), SURF.HULL + 0.35);
+  registerGeo('rack',      buildServerRack(), SURF.TECH + 0.55);
+  registerGeo('paddle',    buildPaddle(),     SURF.HULL + 0.5);
+  registerGeo('mech',      buildMech(),   SURF.HULL    + 0.65);
+  registerGeo('tank',      buildTank(),   SURF.HULL    + 0.7);
+  registerGeo('barrier',   buildBarrier(),SURF.TECH    + 0.55);
+  registerGeo('core',      buildCore(),   SURF.TECH    + 0.5);
+  registerGeo('wing',      buildWing({ span:1, rootC:1, tipC:0.3, sweep:0.55 }), SURF.HULL + 0.5);
+  // Four skyline silhouettes, all window-plated. drawCity() picks per building.
+  registerGeo('tower',     buildTower(),        SURF.WINDOWS + 0.9);
+  registerGeo('tower2',    buildTowerSlab(),    SURF.WINDOWS + 0.9);
+  registerGeo('tower3',    buildTowerStepped(), SURF.WINDOWS + 0.9);
+  registerGeo('tower4',    buildTowerSpire(),   SURF.WINDOWS + 0.85);
+  registerGeo('rock',      buildRock(7),    SURF.MINERAL + 0.75);
+  registerGeo('rock2',     buildRock(1337), SURF.MINERAL + 0.75);
 
   // ── GLOW BILLBOARD VAO ──
   const glowVAO = gl.createVertexArray();
@@ -16034,25 +16806,38 @@ function createRenderer(canvas){
     if(t.depth) gl.deleteRenderbuffer(t.depth);
   }
 
-  const BLOOM_MIPS = 5;
+  // Depth of the bloom pyramid. Every level is a down pass and an up pass over
+  // a full target, so on a phone — where the whole chain is bandwidth, not
+  // arithmetic — the last two levels cost real milliseconds and blur detail
+  // that is already sub-pixel at a phone's render size. setQuality() lowers it.
+  let BLOOM_MIPS = 5;
   let scene = null, mips = [];
   let vpW = 0, vpH = 0;
+
+  function buildTargets(){
+    destroyTarget(scene);
+    mips.forEach(destroyTarget);
+    scene = makeTarget(vpW, vpH, true);
+    mips = [];
+    let mw = vpW, mh = vpH;
+    for(let i=0;i<BLOOM_MIPS;i++){
+      mw = Math.max(2, mw >> 1); mh = Math.max(2, mh >> 1);
+      mips.push(makeTarget(mw, mh, false));
+    }
+  }
 
   function resize(w, h){
     w = Math.max(2, Math.floor(w)); h = Math.max(2, Math.floor(h));
     if(w === vpW && h === vpH) return;
     vpW = w; vpH = h;
     canvas.width = w; canvas.height = h;
-    destroyTarget(scene);
-    mips.forEach(destroyTarget);
-    scene = makeTarget(w, h, true);
-    mips = [];
-    let mw = w, mh = h;
-    for(let i=0;i<BLOOM_MIPS;i++){
-      mw = Math.max(2, mw >> 1); mh = Math.max(2, mh >> 1);
-      mips.push(makeTarget(mw, mh, false));
-    }
+    buildTargets();
   }
+
+  // Caps the renderer applies AFTER a game has had its say. `grade()` is called
+  // every frame from w.begin(), so a one-shot override would be overwritten on
+  // the next one — these are clamps, checked at composite time instead.
+  const caps = { grain: Infinity, scanline: Infinity, aberration: Infinity, detail: 1 };
 
   // ── FRAME STATE ──
   // One reusable scratch buffer per bucket, grown geometrically. Nothing is
@@ -16102,8 +16887,28 @@ function createRenderer(canvas){
   const DEF_POS = [0,0,0], DEF_ROT = [0,0,0], DEF_SCALE1 = [1,1,1];
   const _s = [1,1,1];
 
+  // ── CONTEXT LOSS ──
+  // Phones drop WebGL contexts for reasons that have nothing to do with this
+  // page: the tab going to the background, memory pressure, a driver reset, the
+  // screen locking. Every GPU object above dies with it, and because the
+  // renderer is built ONCE per session and cached, a lost context left the
+  // board black for the rest of that session — including every later round,
+  // which is exactly the shape of "3D just stops working on my phone".
+  //
+  // preventDefault() is the part that actually matters: without it the browser
+  // will not even attempt a restore. The renderer then goes inert rather than
+  // firing thousands of calls into a dead context, and PI3D throws the whole
+  // surface away and builds a fresh one for the next round.
+  let lost = false;
+  canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); lost = true; }, false);
+
   const api = {
     gl, canvas, hdr: HDR,
+
+    // True once the context has gone. Nothing here recovers in place — the
+    // programs, buffers and targets are all invalid — so this is a signal to
+    // rebuild, not something to wait out.
+    get lost(){ return lost || gl.isContextLost(); },
 
     get width(){ return vpW; },
     get height(){ return vpH; },
@@ -16112,11 +16917,12 @@ function createRenderer(canvas){
 
     // Adds a geometry at runtime — a game can build its own hull and hand it
     // over once at startup, then draw it by name like any built-in.
-    addGeometry(name, mesh){ if(!geos[name]) registerGeo(name, mesh); return name; },
+    addGeometry(name, mesh, surf){ if(!geos[name]) registerGeo(name, mesh, surf); return name; },
     hasGeometry(name){ return !!geos[name]; },
 
     // ── FRAME ──
     begin(dt){
+      if(lost) return;
       time += (dt || 0.016);
       for(const k in buckets) buckets[k].n = 0;
       blendList.length = 0;
@@ -16166,6 +16972,21 @@ function createRenderer(canvas){
     // hotter exposure and heavier aberration, for instance.
     grade(o){ Object.assign(post, o); },
 
+    // The device's say in how much of the above it can afford. Separate from
+    // grade() on purpose: grade is the ART's intent and every game re-asserts
+    // it each frame, while this is the HARDWARE's ceiling and has to survive
+    // that. Called by PI3D's quality tier, never by a game.
+    setQuality(q){
+      if(q.bloomMips != null){
+        const n = Math.max(1, Math.min(5, q.bloomMips | 0));
+        if(n !== BLOOM_MIPS){ BLOOM_MIPS = n; if(vpW) buildTargets(); }
+      }
+      if(q.detail     != null) caps.detail     = Math.max(0, q.detail);
+    if(q.grain      != null) caps.grain      = q.grain;
+      if(q.scanline   != null) caps.scanline   = q.scanline;
+      if(q.aberration != null) caps.aberration = q.aberration;
+    },
+
     // Silently ignored past MAX_LIGHTS rather than throwing: a game spraying
     // one light per explosion should degrade, not crash.
     light(o){
@@ -16206,6 +17027,7 @@ function createRenderer(canvas){
           metallic: o.metallic != null ? o.metallic : 0.1,
           roughness: o.roughness != null ? o.roughness : 0.55,
           rim: o.rim != null ? o.rim : 0.6,
+          detail: o.detail != null ? o.detail : g.surf,
           z: 0
         });
         return;
@@ -16221,7 +17043,7 @@ function createRenderer(canvas){
       b.data[off+24] = o.metallic  != null ? o.metallic  : 0.1;
       b.data[off+25] = o.roughness != null ? o.roughness : 0.55;
       b.data[off+26] = o.rim       != null ? o.rim       : 0.6;
-      b.data[off+27] = 1;
+      b.data[off+27] = o.detail    != null ? o.detail    : g.surf;
       b.n++;
     },
 
@@ -16276,7 +17098,7 @@ function createRenderer(canvas){
 
     // ── SUBMIT ──
     render(){
-      if(!scene) return;
+      if(lost || !scene) return;
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, scene.fbo);
       gl.viewport(0, 0, vpW, vpH);
@@ -16337,6 +17159,7 @@ function createRenderer(canvas){
       gl.uniform3fv(U.uFogCol, fog.color);
       gl.uniform1f(U.uFogDensity, fog.density);
       gl.uniform1f(U.uTime, time);
+      gl.uniform1f(U.uDetailScale, caps.detail);
 
       // Opaque, one instanced call per geometry.
       for(const name in buckets){
@@ -16386,7 +17209,7 @@ function createRenderer(canvas){
             M4.compose(buf, off, it.p, it.r, it.s);
             buf[off+16]=it.col[0]; buf[off+17]=it.col[1]; buf[off+18]=it.col[2]; buf[off+19]=it.alpha;
             buf[off+20]=it.emisCol[0]; buf[off+21]=it.emisCol[1]; buf[off+22]=it.emisCol[2]; buf[off+23]=it.emisStr;
-            buf[off+24]=it.metallic; buf[off+25]=it.roughness; buf[off+26]=it.rim; buf[off+27]=1;
+            buf[off+24]=it.metallic; buf[off+25]=it.roughness; buf[off+26]=it.rim; buf[off+27]=it.detail;
           }
           const g = geos[name];
           gl.bindVertexArray(g.vao);
@@ -16480,9 +17303,9 @@ function createRenderer(canvas){
       gl.uniform1f(C.uBloomAmt, post.bloom);
       gl.uniform1f(C.uExposure, post.exposure);
       gl.uniform1f(C.uTime, time);
-      gl.uniform1f(C.uAberration, post.aberration * 0.01);
-      gl.uniform1f(C.uGrain, post.grain);
-      gl.uniform1f(C.uScanline, post.scanline);
+      gl.uniform1f(C.uAberration, Math.min(post.aberration, caps.aberration) * 0.01);
+      gl.uniform1f(C.uGrain, Math.min(post.grain, caps.grain));
+      gl.uniform1f(C.uScanline, Math.min(post.scanline, caps.scanline));
       gl.uniform1f(C.uVignette, post.vignette);
       gl.uniform3fv(C.uLift, post.lift);
       gl.uniform3fv(C.uGain, post.gain);
@@ -16527,13 +17350,17 @@ function supported(){
 
 return {
   createRenderer, supported,
-  M4, V3, hexToLinear,
+  M4, V3, hexToLinear, SURF,
   mesh: {
     empty: emptyMesh, merge: mergeMesh,
     box: buildBox, roundedBox: buildRoundedBox, sphere: buildSphere,
     cylinder: buildCylinder, torus: buildTorus, quad: buildQuad,
-    ground: buildGround, rock: buildRock,
-    ship: buildShip, raider: buildRaider, tower: buildTower, drone: buildDrone
+    ground: buildGround, rock: buildRock, wing: buildWing,
+    faceQuad, faceTri, loftRings, capRing,
+    ship: buildShip, raider: buildRaider, tower: buildTower, drone: buildDrone,
+    towerSlab: buildTowerSlab, towerStepped: buildTowerStepped, towerSpire: buildTowerSpire,
+    turret: buildTurret, core: buildCore,
+    mech: buildMech, tank: buildTank, barrier: buildBarrier, techBlock: buildTechBlock, serverRack: buildServerRack, paddle: buildPaddle
   }
 };
 
@@ -16606,6 +17433,199 @@ function setMode(m){
 }
 
 // ══════════════════════════════════════════════
+//  📱 QUALITY — what the device can actually afford
+// ══════════════════════════════════════════════
+// This renderer is FRAGMENT-BOUND, not geometry-bound: one forward PBR pass
+// with up to ten punctual lights, an RGBA16F scene target, a five-level bloom
+// pyramid over it, and a composite doing aberration, grain and grade. Every one
+// of those costs per PIXEL, so the render size is the master dial and nothing
+// else is close — the surface was going up at `min(devicePixelRatio, 2)`, which
+// on a phone means rendering FOUR TIMES the pixels the panel is ever asked to
+// show, through the most expensive shader in the file.
+//
+// Two things set the level, because neither is sufficient alone:
+//   · A starting guess from the device class. A coarse pointer means a phone,
+//     and a phone gets a conservative opening bid — a soft first frame is a far
+//     better first impression than a stuttering sharp one.
+//   · A GOVERNOR that then measures the real thing. Device sniffing cannot tell
+//     a flagship from a budget handset with the same pointer type, and nothing
+//     here can know what else the phone is doing; the frame clock can. It walks
+//     the ladder in both directions, so a fast phone earns its resolution back
+//     and a thermally throttled one gives it up before the round is spoiled.
+const COARSE = (() => {
+  try{
+    // A touchscreen laptop is NOT a phone. `'ontouchstart' in window` is true on
+    // every Windows machine with a digitiser — a perfectly ordinary desktop can
+    // report ten touch points — so the old test dropped those machines to the
+    // MOBILE tier: render scale capped at 1.0 while the display asks for 1.5 or
+    // 2.0, half the skyline, a 0.48MP scene cap and surface detail at 55%. The
+    // symptom is a soft board carrying plain-looking buildings, on hardware with
+    // the headroom to draw neither — and it is invisible in testing, because a
+    // dev machine without a digitiser takes the other branch.
+    //
+    // The honest signal is the PRIMARY pointer together with hover: a machine
+    // driven by a mouse or trackpad reports a fine pointer that can hover,
+    // whatever else it happens to have attached. `isTouchDevice` further up is
+    // deliberately NOT changed — that one decides which CONTROLS to offer, and a
+    // hybrid should still be offered touch.
+    return matchMedia('(pointer: coarse)').matches && !matchMedia('(hover: hover)').matches;
+  }catch(e){ return false; }
+})();
+
+// Render scale rungs, in device pixels per CSS pixel. Stepping a ladder rather
+// than scaling continuously keeps the target sizes stable enough that the
+// governor is not reallocating framebuffers every time the load twitches.
+const LADDER = [0.55, 0.7, 0.85, 1.0, 1.25, 1.5, 2.0];
+const rung = v => { let i = 0; while(i + 1 < LADDER.length && LADDER[i + 1] <= v + 1e-6) i++; return i; };
+
+// A hard ceiling on the scene target regardless of scale. A tablet in landscape
+// has a board several times a phone's area, and a per-CSS-pixel ratio alone
+// would happily ask a mobile GPU for two megapixels of HDR.
+const PIXEL_CAP = COARSE ? 480000 : 4200000;
+
+const dpr = () => window.devicePixelRatio || 1;
+// The governor may climb, but not all the way back to a desktop's ceiling on a
+// handset: a phone that posts fast frames for three quarters of a second is
+// usually cold, and the reward for believing it is a round that starts sharp
+// and then throttles in the player's hands. 1.5 on a phone board is already a
+// quarter-megapixel of HDR.
+const MAX_RUNG = rung(COARSE ? 1.5 : 2.0);
+
+// The rung is derived, not stored: `baseIdx` is the sharpest rung THIS DISPLAY
+// can actually show, and `penalty` is how many rungs the governor has given up
+// for performance. Keeping them apart is what lets the display change without
+// erasing what the governor has learned — and, more importantly, lets a display
+// that gets sharper be followed.
+//
+// devicePixelRatio is NOT a constant. It changes when the window moves to
+// another monitor, when the browser zoom changes, and when a preview pane is
+// resized. The old code read it once at module scope, so a session that
+// happened to start at dpr 1 and later became dpr 1.5 rendered the whole 3D
+// board at two thirds of the display's resolution and let the browser upscale
+// it — a permanently soft picture, on a machine with the headroom to draw it
+// sharp, with nothing in the game to say why.
+const baseRung = () => rung(Math.min(dpr(), COARSE ? 1.0 : 2.0));
+let baseIdx = baseRung();
+let penalty = 0;
+// Detail is shed BEFORE resolution and restored after it. It is fragment ALU
+// with no effect on silhouette or legibility, and the player sees a soft board
+// long before they see slightly plainer plating.
+const DETAIL_STEPS = [1, 0.55, 0];
+let detailIdx = 0;
+const qIdxOf = () => Math.max(0, Math.min(MAX_RUNG, baseIdx - penalty));
+let qIdx = qIdxOf();
+
+const Q = {
+  get scale(){ return LADDER[qIdx]; },
+  get pixelCap(){ return PIXEL_CAP; },
+  // Bloom depth, world density and the particle ceiling all follow the same
+  // tier. On a phone the last bloom levels are blurring detail that was never
+  // resolvable, the skyline is background the player never looks at, and the
+  // star field is ~190 ADDITIVE billboards — blended overdraw, which is the one
+  // thing a tile-based mobile GPU is worst at.
+  get bloomMips(){ return COARSE ? 3 : 5; },
+  get props(){ return COARSE ? 0.5 : 1; },
+  get parts(){ return COARSE ? 380 : 900; },
+  get coarse(){ return COARSE; },
+  get level(){ return qIdx; },
+  get levels(){ return LADDER.length; }
+};
+
+function pushQuality(){
+  if(!R) return;
+  R.setQuality({
+    bloomMips: Q.bloomMips,
+    // Grain and scanline are per-pixel noise the phone pays for and the panel
+    // is too dense to show; aberration is two extra taps and is half the look,
+    // so it is trimmed rather than cut.
+    grain:      COARSE ? 0 : Infinity,
+    scanline:   COARSE ? 0 : Infinity,
+    aberration: COARSE ? 0.8 : Infinity,
+    // Procedural surface detail is per-pixel ALU on every surface in the
+    // frame. A dense phone panel cannot resolve the plate seams anyway, so it
+    // starts at just over half strength there.
+    detail:     (COARSE ? 0.55 : 1) * DETAIL_STEPS[detailIdx]
+  });
+}
+
+// ── THE GOVERNOR ──
+// Real elapsed time, not the game's dt: runLoop clamps dt at 50ms so a stall
+// reads as a merely-slow frame, and a game that steps a fixed timestep would
+// hide the cost entirely. Medians, not means, because one 300ms hitch on a
+// garbage collection must not cost the player their resolution.
+const SLOW_MS = 21, FAST_MS = 12.5;   // ≈48fps and ≈80fps
+const WINDOW = 45;                     // ~0.75s of evidence before either move
+let costs = [], lastT = 0, warmup = 0, coolDown = 0;
+
+function qualityReset(){ costs = []; lastT = 0; warmup = 30; coolDown = 0; }
+
+function qualitySample(){
+  // A THROTTLED tab is not evidence about the device. A backgrounded or
+  // occluded tab has its rAF cadence cut by the browser, and every one of those
+  // stretched frames used to read as "this GPU is struggling" — so a round that
+  // spent time behind another window came back permanently downgraded, and the
+  // player got a soft board on hardware that was never the problem. Throw the
+  // window away rather than learning from it.
+  if(document.visibilityState !== 'visible'){ lastT = 0; costs = []; return; }
+  const now = performance.now();
+  const dt = lastT ? now - lastT : 0;
+  lastT = now;
+  // A round's opening frames are shader warm-up and first-touch buffer
+  // allocation; judging the device on those downgrades everybody.
+  if(warmup > 0){ warmup--; return; }
+  if(dt <= 0 || dt > 500) return;      // tab was away — not evidence of anything
+  costs.push(dt);
+  if(costs.length < WINDOW) return;
+  const med = costs.slice().sort((a, b) => a - b)[costs.length >> 1];
+  costs = [];
+  if(coolDown > 0){ coolDown--; return; }
+  if(med > SLOW_MS){
+    // Give up detail first, resolution only once there is no detail left.
+    if(detailIdx < DETAIL_STEPS.length - 1){ detailIdx++; applyQuality(); }
+    else if(qIdx > 0){ penalty++; qIdx = qIdxOf(); applyQuality(); }
+  }else if(med < FAST_MS){
+    // And take resolution back first on the way up.
+    if(penalty > 0 && qIdx < MAX_RUNG && LADDER[qIdx + 1] <= dpr() + 1e-6){
+      penalty--; qIdx = qIdxOf(); applyQuality();
+    }else if(detailIdx > 0){ detailIdx--; applyQuality(); }
+  }
+}
+
+function applyQuality(){
+  // Two windows of grace after a change: the resize itself reallocates every
+  // target, and that frame is never representative of the new level.
+  coolDown = 2; warmup = 12; costs = [];
+  syncSize();          // pushQuality() inside picks up the new detail step
+}
+
+// A display change re-derives the ideal rung while leaving the governor's
+// learned penalty alone, so moving the window to a sharper monitor sharpens the
+// board immediately instead of waiting for the governor to happen to see three
+// quarters of a second above 80fps.
+function watchDisplay(){
+  let mq = null;
+  const onChange = () => {
+    const b = baseRung();
+    if(b !== baseIdx){ baseIdx = b; qIdx = qIdxOf(); applyQuality(); }
+    bind();
+  };
+  // matchMedia on the current ratio is the only reliable dpr-change signal:
+  // there is no 'devicepixelratiochange' event, and resize does not fire for a
+  // zoom on every browser. The query has to be rebuilt after each change,
+  // because it is pinned to the ratio it was created with.
+  function bind(){
+    if(mq && mq.removeEventListener) mq.removeEventListener('change', onChange);
+    try{
+      mq = matchMedia(`(resolution: ${dpr()}dppx)`);
+      if(mq.addEventListener) mq.addEventListener('change', onChange);
+    }catch(e){ mq = null; }
+  }
+  bind();
+  addEventListener('resize', onChange);
+}
+watchDisplay();
+
+// ══════════════════════════════════════════════
 //  🖥️ THE GL SURFACE
 // ══════════════════════════════════════════════
 // One canvas and one renderer for the whole session, created on the first 3D
@@ -16635,6 +17655,7 @@ function ensureSurface(){
 }
 
 function ensureRenderer(){
+  if(R && R.lost) dropSurface();     // dead context — build a clean one below
   if(R) return R;
   if(!ensureSurface()) return null;
   R = E.createRenderer(glCanvas);
@@ -16643,8 +17664,35 @@ function ensureRenderer(){
     // driver, too many live contexts). Fall back for the rest of the session.
     supportCache = false;
     toast('3D unavailable on this device — running in 2D', 3200);
+  } else {
+    // A lost context cannot be repaired in place, so the whole surface is
+    // replaced rather than revived. Losing it mid-round is the case that
+    // actually shows up on a phone — backgrounding the tab during a mission —
+    // and the round cannot continue without a GPU, so it is ended the same way
+    // the Quit button ends one, which is the only path that unwinds a Network
+    // Arena round's listeners as well.
+    glCanvas.addEventListener('webglcontextlost', () => {
+      setTimeout(() => {
+        const wasPlaying = mounted;
+        dropSurface();
+        if(wasPlaying){
+          document.getElementById('btn-quit')?.click();
+          toast('🧊 3D surface was reset by the browser — round ended', 3600);
+        }
+      }, 0);
+    }, false);
   }
   return R;
+}
+
+// Throws the GL surface away entirely: renderer, canvas and fx layer. The next
+// round rebuilds all three from scratch through ensureSurface().
+function dropSurface(){
+  R = null;
+  mounted = false;
+  if(glCanvas){ glCanvas.remove(); glCanvas = null; }
+  if(fxLayer){ fxLayer.remove(); fxLayer = null; }
+  document.getElementById('arcade-canvas')?.classList.remove('behind-gl');
 }
 
 // Matches the GL surface to whatever fitCanvas() just decided the 2D board
@@ -16661,8 +17709,23 @@ function syncSize(){
   fxLayer.style.width   = a2d.offsetWidth + 'px';
   fxLayer.style.height  = a2d.offsetHeight + 'px';
   if(!R) return;
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  R.resize(Math.round(glCanvas.clientWidth * dpr), Math.round(glCanvas.clientHeight * dpr));
+  // The scene target, not the element: the canvas stays exactly the size the
+  // 2D board is (so taps still map 1:1) and only its BACKING STORE moves. The
+  // browser scales the result up, which is why a lower rung reads as softness
+  // rather than as a smaller picture.
+  const cw = glCanvas.clientWidth, ch = glCanvas.clientHeight;
+  // Called before the element has been laid out — mid orientation flip, or with
+  // the board still display:none — the old maths asked for a 2×2 scene target
+  // and the round then rendered into it until something else happened to call
+  // fitCanvas again. Leaving the existing target alone is always the better
+  // answer: a stale size is a frame or two of wrong aspect, a 2×2 one is a
+  // black board.
+  if(cw < 2 || ch < 2) return;
+  let s = Math.min(Q.scale, dpr());
+  const cap = Q.pixelCap / Math.max(1, cw * ch);
+  if(s * s > cap) s = Math.sqrt(cap);
+  pushQuality();
+  R.resize(Math.max(2, Math.round(cw * s)), Math.max(2, Math.round(ch * s)));
 }
 
 function mount(){
@@ -16738,7 +17801,7 @@ function createWorld(cfg){
   // Drawn as additive billboards, so a burst is one instanced draw no matter
   // how many sparks it holds. Capped hard: a chained explosion in Meltdown can
   // otherwise ask for thousands and drop the frame the player dies on.
-  const MAX_PARTS = 900;
+  const MAX_PARTS = Q.parts;
   w.burst = function(p, color, n, o){
     o = o || {};
     const spd = o.speed != null ? o.speed : 9;
@@ -16801,10 +17864,15 @@ function createWorld(cfg){
   // the middle so the play space is never obstructed, and each keeps two
   // emissive window strips — enough to read as a lit building at distance
   // without a thousand extra instances.
+  const TOWER_KINDS = ['tower', 'tower2', 'tower3', 'tower4', 'tower', 'tower2'];
+
   w.buildCity = function(o){
     o = o || {};
     const g = seeded(o.seed || 20260907);
-    const n = o.count || 84;
+    // Thinned on a phone, not shrunk: the SAME seeded sequence is walked and
+    // only every other tower is kept, so the skyline keeps its silhouette and
+    // its spread instead of turning into a dense clump at one end.
+    const n = Math.max(8, Math.round((o.count || 84) * Q.props));
     const spread = o.spread || 130;
     const hole = o.hole || 26;
     const y0 = o.y != null ? o.y : -10;
@@ -16816,9 +17884,20 @@ function createWorld(cfg){
         z = -g() * spread * 1.5 - 10;
       }while(Math.abs(x) < hole && guard++ < 8);
       const h = 8 + g() * 46;
+      // One of four silhouettes per building. A skyline assembled from a single
+      // shape at assorted scales reads as procedural immediately — the eye
+      // catches the repeat long before it notices any surface detail — and the
+      // slab and spire in particular carry their own proportions, so they get
+      // their footprint adjusted rather than being stretched like the block.
+      const kind = TOWER_KINDS[(g() * TOWER_KINDS.length) | 0];
+      // Named bw/bd, not w/d: `w` is the world object this whole closure hangs
+      // off, and shadowing it inside the loop is a trap waiting for the next
+      // edit that needs the world in here.
+      let bw = 4 + g() * 7, bd = 4 + g() * 7;
+      if(kind === 'tower2'){ bw *= 1.5; bd *= 0.6; }      // curtain-wall slab
+      else if(kind === 'tower4'){ bd = bw; }              // spire is round
       list.push({
-        x, z, y: y0, h,
-        w: 4 + g() * 7, d: 4 + g() * 7,
+        x, z, y: y0, h, kind, w: bw, d: bd,
         rot: g() * 0.5 - 0.25,
         neon: NEON[(g() * NEON.length) | 0],
         lit: g() > 0.45,
@@ -16839,7 +17918,7 @@ function createWorld(cfg){
       // modulo is done here rather than mutating b.z so the layout stays stable.
       let z = ((b.z + sz) % span);
       if(z > 30) z -= span;
-      r.draw('tower', {
+      r.draw(b.kind, {
         pos: [b.x, b.y + b.h * 0.5, z],
         rot: [0, b.rot, 0],
         scale: [b.w, b.h, b.d],
@@ -16866,7 +17945,9 @@ function createWorld(cfg){
   w.buildStars = function(count, radius){
     const g = seeded(9137);
     const list = [];
-    const n = count || 150;
+    // Each star is an additive billboard, so this count is blended overdraw —
+    // the single thing a tile-based mobile GPU handles worst.
+    const n = Math.max(24, Math.round((count || 150) * Q.props));
     for(let i = 0; i < n; i++){
       // Sampled on a hemisphere shell so nothing spawns underfoot.
       const u = g() * 0.9 + 0.05, th = g() * Math.PI * 2;
@@ -17052,11 +18133,13 @@ let keepOwnerHook = false;
 // assigning through the shared `gameLoopId` so stopGame() can cancel it.
 function runLoop(fn){
   let last = performance.now();
+  qualityReset();                 // every round judges the device afresh
   const tick = now => {
     let dt = (now - last) / 1000;
     last = now;
     if(!(dt > 0)) dt = 1/60;
     if(dt > 0.05) dt = 0.05;      // matches the 2D engine's stall clamp
+    qualitySample();
     if(fn(dt) === false) return;  // a game returns false on its last frame
     gameLoopId = requestAnimationFrame(tick);
   };
@@ -17127,6 +18210,13 @@ const API = {
   // — surface —
   syncSize, unmount,
   get renderer(){ return R; },
+  // Read-only view of the tier the governor has settled on, so a support
+  // report (or a test) can say what the device is actually rendering at.
+  get quality(){
+    return { coarse: Q.coarse, scale: Q.scale, level: Q.level, levels: Q.levels,
+             bloomMips: Q.bloomMips, props: Q.props, parts: Q.parts,
+             pixels: glCanvas ? glCanvas.width * glCanvas.height : 0 };
+  },
 
   // Shared scaffolding, consumed by games3d.js.
   kit: { createWorld, begin3d, runLoop, mine, nx, ny, rnd, clamp, seeded, NEON, mount },
@@ -18083,10 +19173,20 @@ P.games.tetris = function(){
   function block(x, y, colour, o){
     o = o || {};
     const a = o.alpha != null ? o.alpha : 1;
-    r.draw('cube', {
+    // 'techblock' rather than 'cube': the raised rim frames the emissive face
+    // plate below instead of letting it sit on a bare surface, which is what
+    // stops a well full of these reading as flat coloured squares.
+    //
+    // It also carries roughly twice the emitting surface of the plain cube it
+    // replaced — the rim bars glow too — so a chassis value tuned for the cube
+    // blooms about twice as hard here and the active piece went to a white
+    // ball. Damp the top of the range and leave the resting glow untouched, so
+    // a settled well looks the same and only the hot states are pulled back.
+    const ce = o.emissive != null ? o.emissive : 0.35;
+    r.draw('techblock', {
       pos: [x, y, 0], scale: 0.94 * (o.scale || 1),
       color: colour, metallic: 0.7, roughness: 0.28, rim: 1.1,
-      emissive: colour, emissiveStrength: o.emissive != null ? o.emissive : 0.35,
+      emissive: colour, emissiveStrength: ce <= 0.4 ? ce : 0.4 + (ce - 0.4) * 0.45,
       alpha: a
     });
     r.draw('box', {
@@ -18368,12 +19468,12 @@ P.games.pong = function(){
     r.beam([-XL, 0.07, ZP], [XL, 0.07, ZP], 0.16, { color: colour, emissive: colour, emissiveStrength: 2.6, height: 0.16 });
 
     // ── PADDLES ──
-    r.draw('cube', { pos:[me, 0.62, ZP], scale:[PAD_W, 1.05, 0.8],
-                     color:'#c3cee2', metallic: 1.0, roughness: 0.14, rim: 1.5 });
+    r.draw('paddle', { pos:[me, 0.62, ZP], scale:[0.8, 1.05, PAD_W], rot:[0, Math.PI / 2, 0],
+                       color:'#c3cee2', metallic: 0.72, roughness: 0.28, rim: 1.5 });
     r.draw('box', { pos:[me, 0.62, ZP - 0.42], scale:[PAD_W * 0.86, 0.5, 0.1],
                     color: colour, emissive: colour, emissiveStrength: 3.0 });
-    r.draw('cube', { pos:[ai, 0.62, ZA], scale:[PAD_W, 1.05, 0.8],
-                     color:'#9aa3b8', metallic: 1.0, roughness: 0.18, rim: 1.5 });
+    r.draw('paddle', { pos:[ai, 0.62, ZA], scale:[0.8, 1.05, PAD_W], rot:[0, Math.PI / 2, 0],
+                       color:'#9aa3b8', metallic: 0.72, roughness: 0.30, rim: 1.5 });
     r.draw('box', { pos:[ai, 0.62, ZA + 0.42], scale:[PAD_W * 0.86, 0.5, 0.1],
                     color:'#ff2442', emissive:'#ff2442', emissiveStrength: 3.0 });
 
@@ -18574,7 +19674,10 @@ P.games.snake = function(){
       const head = i === 0;
       const bulge = Math.max(0, 1 - Math.abs((w.t - lastEat) * 9 - i)) * 0.45;
       const h = (head ? 1.15 : 0.78 - t * 0.22) + bulge;
-      r.draw('cube', {
+      // The body is made of moulded data blocks and the head is left smooth
+      // chrome, so the two read as different things: a reader head pulling a
+      // train of packets, rather than one undifferentiated tube of cubes.
+      r.draw(head ? 'cube' : 'techblock', {
         pos:[wx(s.x), h * 0.5 - 0.1, wz(s.y)],
         scale:[0.9 + bulge * 0.3, h, 0.9 + bulge * 0.3],
         color: head ? '#eaf6ff' : colour,
@@ -18993,7 +20096,7 @@ P.games.breaker = function(){
       if(!b.alive) continue;
       const age = w.t - b.hit;
       const lit = age < 0.22 ? (1 - age / 0.22) : 0;
-      r.draw('cube', {
+      r.draw('techblock', {
         pos:[b.x, 0.62, b.z], scale:[BW, 1.15, BD],
         color: b.col, metallic: 0.55, roughness: 0.22, rim: 1.2,
         emissive: b.col, emissiveStrength: (b.hp > 1 ? 0.85 : 0.4) + lit * 3
@@ -19004,8 +20107,8 @@ P.games.breaker = function(){
     }
 
     // ── DEFLECTOR + BALL ──
-    r.draw('cube', { pos:[pad, 0.5, ZP], scale:[3.6, 0.85, 0.9],
-                     color:'#c3cee2', metallic: 1.0, roughness: 0.12, rim: 1.5 });
+    r.draw('paddle', { pos:[pad, 0.5, ZP], scale:[0.9, 0.85, 3.6], rot:[0, Math.PI / 2, 0],
+                       color:'#c3cee2', metallic: 1.0, roughness: 0.12, rim: 1.5 });
     r.draw('box', { pos:[pad, 0.5, ZP - 0.48], scale:[3.2, 0.4, 0.1],
                     color: colour, emissive: colour, emissiveStrength: 3.2 });
     r.draw('sphere', { pos:[ballX, 0.7, ballZ], scale: 0.84,
@@ -19524,16 +20627,20 @@ P.games.meteor = function(){
     for(const b of bases){
       const hurt = w.t - b.hit < 0.3 ? 1 : 0;
       if(b.alive){
-        r.draw('cube', { pos:[b.x, 1.5, 0], scale:[2.5, 3.0, 2.0],
-                         color: hurt ? '#ff9a9a' : '#161b2b', metallic: 0.85, roughness: 0.3, rim: 1.5 });
-        // Rack lights — three strips that go dark when the server does.
+        // Cabinet albedo lifted off near-black. At #161b2b under one 40-power
+        // lamp the whole rack sat below the strips' bloom floor, so the object
+        // the round is about was a silhouette behind four green bars.
+        r.draw('rack', { pos:[b.x, 1.5, 0], scale:[2.5, 3.0, 2.0],
+                         color: hurt ? '#ff9a9a' : '#2b3454', metallic: 0.8, roughness: 0.34, rim: 1.5 });
+        // Rack lights — three strips that go dark when the server does. They
+        // sit just proud of the cabinet's door frame (front face at +Z).
         for(let s = 0; s < 3; s++){
-          r.draw('box', { pos:[b.x, 0.7 + s * 0.8, 1.02], scale:[1.9, 0.16, 0.08],
+          r.draw('box', { pos:[b.x, 0.7 + s * 0.8, 1.06], scale:[1.9, 0.16, 0.08],
                           color: b.hp > 1 ? '#39ff88' : '#ffd700',
                           emissive: b.hp > 1 ? '#39ff88' : '#ffd700',
                           emissiveStrength: 2.6 + hurt * 4 });
         }
-        r.light({ pos:[b.x, 3.4, 2], color: b.hp > 1 ? '#39ff88' : '#ffd700', intensity: 40, range: 10 });
+        r.light({ pos:[b.x, 3.4, 2.6], color: b.hp > 1 ? '#39ff88' : '#ffd700', intensity: 70, range: 13 });
       }else{
         r.draw('cube', { pos:[b.x, 0.55, 0], rot:[0.1, 0.3, 0.12], scale:[2.4, 1.1, 2.0],
                          color:'#0a0c14', metallic: 0.5, roughness: 0.7, rim: 0.8 });
@@ -19559,12 +20666,13 @@ P.games.meteor = function(){
     }
 
     // ── TURRET + RETICLE ──
-    r.draw('cube', { pos:[0, 0.7, 3.2], scale:[3.0, 1.4, 2.2],
-                     color:'#c3cee2', metallic: 1.0, roughness: 0.15, rim: 1.5 });
     const yaw = Math.atan2(aimX, 3.2), pitch = -Math.atan2(aimY - 1.6, Math.hypot(aimX, 3.2));
-    r.draw('cylinder', { pos:[Math.sin(yaw) * 0.9, 1.7 - Math.sin(pitch) * 0.6, 3.2 - Math.cos(yaw) * 0.9],
-                         rot:[pitch + Math.PI / 2, yaw, 0], scale:[0.42, 2.6, 0.42],
-                         color:'#8f9bb5', metallic: 0.95, roughness: 0.22, rim: 1.4 });
+    // The launcher is a real mount now: it traverses fully and the whole
+    // cradle takes a fraction of the elevation, which is how a CIWS-style
+    // gimbal actually moves. Its own twin barrels replace the lone cylinder
+    // that used to be stuck on the front of a cube.
+    r.draw('turret', { pos:[0, 1.05, 3.2], rot:[pitch * 0.45, yaw, 0], scale:[2.4, 2.2, 2.4],
+                       color:'#c3cee2', metallic: 1.0, roughness: 0.15, rim: 1.5 });
     r.draw('thintorus', { pos:[aimX, aimY, 0], rot:[Math.PI / 2, 0, w.t * 2.4], scale: 2.2,
                           color: colour, emissive: colour, emissiveStrength: 2.6, alpha: 0.75 });
     r.draw('thintorus', { pos:[aimX, aimY, 0], rot:[Math.PI / 2, 0, -w.t * 1.6], scale: 1.3,
@@ -20006,7 +21114,11 @@ function drawText3D(r, str, pos, cell, o){
           scale: [cell * 1.16, cell * 1.16, depth],
           color: col, emissive: o.emissive || col, emissiveStrength: em,
           metallic: o.metallic != null ? o.metallic : 0.35,
-          roughness: o.roughness != null ? o.roughness : 0.3
+          roughness: o.roughness != null ? o.roughness : 0.3,
+          // Type stays CLEAN. 'cube' carries hull plating by default, which is
+          // right for hardware and wrong for a glowing readout — panel seams
+          // across a digit read as dirt on the glass, not as construction.
+          detail: o.detail != null ? o.detail : 0
         });
       }
     }
@@ -22288,8 +23400,13 @@ P.games.battlebots = function(){
   };
   // Each unit gets its own silhouette. Reading a lane at a glance is the whole
   // skill of this game, and in 3D shape does that job better than an emoji.
-  const GEO = { scout:'drone', wall:'cube', zapper:'raider', tank:'cube', titan:'tower',
-                bug:'rock', virus:'sphere', adware:'raider', worm:'pill', spyware:'rock2', trojan:'tower' };
+  // Every unit gets a silhouette of its own. `wall` and `tank` were both plain
+  // cubes, so two units with completely different roles were indistinguishable
+  // on the field; `titan` and `trojan` borrowed the SKYLINE geometry, which
+  // stopped being merely lazy and started being wrong once towers grew lit
+  // windows — a walking heavy does not have office glazing.
+  const GEO = { scout:'drone', wall:'barrier', zapper:'raider', tank:'tank', titan:'mech',
+                bug:'rock', virus:'sphere', adware:'raider', worm:'pill', spyware:'rock2', trojan:'mech' };
 
   const ramPerk = perkRamMult();
   let ram = BB.ram.start, ramRate = BB.ram.rate * ramPerk, upgIdx = 0;
@@ -23099,13 +24216,23 @@ P.duels.pong = function(cfg){
 
       // ── PADDLES ──
       const paddle = (x, z, col) => {
-        r.draw('cube', { pos:[x, 0.62, z], scale:[1.5, 1.25, padD],
-                         color:'#c3cee2', metallic: 1.0, roughness: 0.14, rim: 1.6 });
-        r.draw('box', { pos:[x, 0.72, z], scale:[0.24, 0.7, padD * 0.88],
+        // NOT metallic 1.0. A fully metallic surface has no diffuse term at
+        // all — it is a mirror — and the only thing there is to mirror here is
+        // a night sky, so at roughness 0.14 the paddle was black everywhere a
+        // specular highlight did not happen to land. Your own paddle got away
+        // with it by sitting a couple of units from its own lamp; the rival's,
+        // at the far end of a 46-unit table, reduced to its emissive strip and
+        // read as a floating line rather than as their bat. Backing off the
+        // metallic gives it a diffuse response and widening the lobe spreads
+        // the highlight over the body instead of concentrating it in a dot.
+        r.draw('paddle', { pos:[x, 0.62, z], scale:[1.5, 1.25, padD],
+                           color:'#c3cee2', metallic: 0.72, roughness: 0.30, rim: 1.6 });
+        // The emitter strip sits in the model's channel between the two lips.
+        r.draw('box', { pos:[x, 0.62, z], scale:[0.30, 0.42, padD * 0.90],
                         color: col, emissive: col, emissiveStrength: 3.0 });
         r.draw('thintorus', { pos:[x, 0.04, z], rot:[Math.PI / 2, 0, 0], scale: 3.0,
                               color: col, emissive: col, emissiveStrength: 1.2, alpha: 0.5 });
-        r.light({ pos:[x, 2.6, z], color: col, intensity: 90, range: 20 });
+        r.light({ pos:[x, 3.2, z], color: col, intensity: 130, range: 26 });
       };
       paddle(MY_X, myZ, myCol);
       paddle(OP_X, opZ, oppCol);
