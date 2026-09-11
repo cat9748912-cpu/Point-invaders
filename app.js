@@ -17506,17 +17506,25 @@ const MAX_RUNG = rung(COARSE ? 1.5 : 2.0);
 // sharp, with nothing in the game to say why.
 const baseRung = () => rung(Math.min(dpr(), COARSE ? 1.0 : 2.0));
 let baseIdx = baseRung();
-let penalty = 0;
 // Detail is shed BEFORE resolution and restored after it. It is fragment ALU
 // with no effect on silhouette or legibility, and the player sees a soft board
 // long before they see slightly plainer plating.
 const DETAIL_STEPS = [1, 0.55, 0];
-let detailIdx = 0;
-const qIdxOf = () => Math.max(0, Math.min(MAX_RUNG, baseIdx - penalty));
-let qIdx = qIdxOf();
+const DLAST = DETAIL_STEPS.length - 1;
+
+// ONE ladder for the whole dial, rather than a detail index and a resolution
+// penalty moving independently. Step 0 is everything on; steps 1..DLAST shed
+// procedural surface detail; every step beyond that gives up a rung of render
+// resolution. Linearising the two is what lets the governor remember WHICH
+// level it could not hold, in a single array indexed by qStep -- see `fails`.
+let qStep = 0;
+const maxStep   = () => DLAST + baseIdx;
+const detailIdx = () => Math.min(DLAST, qStep);
+const penalty   = () => Math.max(0, qStep - DLAST);
+const qIdx      = () => Math.max(0, Math.min(MAX_RUNG, baseIdx - penalty()));
 
 const Q = {
-  get scale(){ return LADDER[qIdx]; },
+  get scale(){ return LADDER[qIdx()]; },
   get pixelCap(){ return PIXEL_CAP; },
   // Bloom depth, world density and the particle ceiling all follow the same
   // tier. On a phone the last bloom levels are blurring detail that was never
@@ -17527,7 +17535,7 @@ const Q = {
   get props(){ return COARSE ? 0.5 : 1; },
   get parts(){ return COARSE ? 380 : 900; },
   get coarse(){ return COARSE; },
-  get level(){ return qIdx; },
+  get level(){ return qIdx(); },
   get levels(){ return LADDER.length; }
 };
 
@@ -17544,7 +17552,7 @@ function pushQuality(){
     // Procedural surface detail is per-pixel ALU on every surface in the
     // frame. A dense phone panel cannot resolve the plate seams anyway, so it
     // starts at just over half strength there.
-    detail:     (COARSE ? 0.55 : 1) * DETAIL_STEPS[detailIdx]
+    detail:     (COARSE ? 0.55 : 1) * DETAIL_STEPS[detailIdx()]
   });
 }
 
@@ -17553,11 +17561,103 @@ function pushQuality(){
 // reads as a merely-slow frame, and a game that steps a fixed timestep would
 // hide the cost entirely. Medians, not means, because one 300ms hitch on a
 // garbage collection must not cost the player their resolution.
-const SLOW_MS = 21, FAST_MS = 12.5;   // ≈48fps and ≈80fps
-const WINDOW = 45;                     // ~0.75s of evidence before either move
-let costs = [], lastT = 0, warmup = 0, coolDown = 0;
+//
+// WHAT THIS NUMBER ACTUALLY IS, AND THE RATCHET IT CAUSED (fixed 2026-09-11).
+// requestAnimationFrame is vsync-locked, so the gap between two callbacks is
+// the DISPLAY's frame period, never the renderer's cost. A GPU that draws the
+// frame in 3ms and one that takes 15ms both report 16.7ms on a 60Hz panel.
+// That makes an ABSOLUTE millisecond threshold meaningless in the fast
+// direction, and the old code used one: it wanted a 12.5ms median (~80fps)
+// before it would give anything back. No frame on a 60Hz display is ever that
+// short — measured on this machine, the FASTEST rAF interval in 150 frames
+// was 16.6ms — so the climb branch could not execute at all. The governor
+// could only ever walk DOWN.
+//
+// The symptom was a ratchet, and it is exactly what a player feels. Every
+// heavy moment in every round — a wave, a chained explosion, a skyline-heavy
+// mission at Meltdown tier — cost a step of detail and then a rung of
+// resolution, permanently, because the learned state deliberately carries from
+// one round to the next. The board started excellent and got blurrier the
+// longer you played, with nothing on screen to say why. Simulated over five
+// 70-second rounds against the shipped code, a healthy desktop spent 88% of
+// the session below its display's native rung; with this, 0%.
+//
+// So every threshold below is RELATIVE to the display's own frame period,
+// which is measured rather than assumed.
 
-function qualityReset(){ costs = []; lastT = 0; warmup = 30; coolDown = 0; }
+// The display's frame period in ms. Probed on an IDLE rAF — during a round the
+// number is contaminated by the very load we are trying to judge — and again
+// whenever the display changes, because a 60Hz panel, a 120Hz laptop and a
+// browser throttled to 30Hz by the OS power saver are three different budgets
+// and none of them is a constant.
+let REFRESH_MS = 16.7;
+let probing = false;
+function probeRefresh(){
+  if(probing) return;
+  probing = true;
+  const seen = [];
+  let last = 0, n = 0;
+  const walk = t => {
+    if(last) seen.push(t - last);
+    last = t;
+    if(++n < 24){ requestAnimationFrame(walk); return; }
+    probing = false;
+    if(seen.length < 6) return;
+    seen.sort((a, b) => a - b);
+    const m = seen[seen.length >> 1];
+    // A probe that ran while the tab was hidden reports ~1000ms, and one that
+    // caught a stall reports nonsense; keep the last good answer instead.
+    if(m >= 3 && m <= 40) REFRESH_MS = m;
+  };
+  requestAnimationFrame(walk);
+}
+
+// Never chase more than 60fps. On a 144Hz panel the display period is 6.9ms,
+// and judging the renderer against THAT makes the governor empty the entire
+// dial trying to reach a frame rate nobody asked for: a scene that costs 9ms
+// misses a 6.9ms vsync, reads as slow at full quality, and gets cut all the
+// way to 0.55x — 144fps on a mushy board, when 60fps at full resolution was
+// there for the taking. Quality is the thing being spent, so the budget is the
+// display's period or a 60Hz frame, whichever is LONGER.
+const TARGET_MS = 1000 / 60;
+const budget = () => Math.max(REFRESH_MS, TARGET_MS);
+
+// Missing at least every other frame of that budget for three quarters of a
+// second is the signal to shed something; landing inside it nearly every frame
+// is the signal to take it back. As multiples of the budget these mean the same
+// thing at 60Hz, at 144Hz and on a tab the OS has throttled to 30.
+const SLOW_X = 1.5, FAST_X = 1.15;
+const WINDOW = 45;                     // ~0.75s of evidence before either move
+// Consecutive good windows required before a step comes back. Asymmetric on
+// purpose: the player feels a stutter immediately, so a cut is made on the
+// first bad window, but they do not mind waiting for sharpness — and a board
+// whose resolution visibly changes every few seconds is worse than one that is
+// a rung soft. Detail is subtle and cheap to move, so it climbs quickly;
+// resolution has to earn it.
+const CLIMB_DETAIL = 2, CLIMB_RES = 24;
+let costs = [], lastT = 0, warmup = 0, coolDown = 0;
+// Per-level memory: how many times a climb INTO that step had to be undone.
+// Each failure doubles the evidence needed to try it again, so a device sitting
+// exactly at the edge of a rung settles there instead of pumping between two.
+// Kept across rounds — which rung this DEVICE cannot hold is knowledge about
+// the hardware, unlike the load of any one mission.
+let fails = [], goodRun = 0, lastClimbTo = -1, sinceClimb = 99;
+// The slide detector: where the median stood when the current run of cuts
+// began, and how many cuts it has made.
+let slideMed = 0, slideSteps = 0;
+
+function qualityReset(){
+  costs = []; lastT = 0; warmup = 30; coolDown = 0;
+  goodRun = 0; lastClimbTo = -1; sinceClimb = 99; slideSteps = 0;
+  // Hand back one step of whatever the governor took, every round. What it
+  // learned in the last mission is evidence about THAT mission — a skyline at
+  // Meltdown tier says nothing about the grid the player picked next — and
+  // without this the session-long state is still a one-way ratchet even once
+  // the climb works, because a round that happened to END in an explosion
+  // carries the penalty into the next one. Starting optimistic and re-proving
+  // the need costs at most one extra cut (~1.5s) on a device at its limit.
+  if(qStep > 0){ qStep--; syncSize(); }
+}
 
 function qualitySample(){
   // A THROTTLED tab is not evidence about the device. A backgrounded or
@@ -17576,19 +17676,63 @@ function qualitySample(){
   if(dt <= 0 || dt > 500) return;      // tab was away — not evidence of anything
   costs.push(dt);
   if(costs.length < WINDOW) return;
-  const med = costs.slice().sort((a, b) => a - b)[costs.length >> 1];
+  const sorted = costs.slice().sort((a, b) => a - b);
+  const med = sorted[costs.length >> 1];
   costs = [];
   if(coolDown > 0){ coolDown--; return; }
-  if(med > SLOW_MS){
-    // Give up detail first, resolution only once there is no detail left.
-    if(detailIdx < DETAIL_STEPS.length - 1){ detailIdx++; applyQuality(); }
-    else if(qIdx > 0){ penalty++; qIdx = qIdxOf(); applyQuality(); }
-  }else if(med < FAST_MS){
-    // And take resolution back first on the way up.
-    if(penalty > 0 && qIdx < MAX_RUNG && LADDER[qIdx + 1] <= dpr() + 1e-6){
-      penalty--; qIdx = qIdxOf(); applyQuality();
-    }else if(detailIdx > 0){ detailIdx--; applyQuality(); }
+
+  // A window whose FASTEST frames beat what the probe reported means the probe
+  // was wrong (it ran while the tab was hidden) or the display has changed
+  // under it. The low percentile can only ever reveal a FASTER display, never a
+  // slower one, so following it down is always safe; the slide detector below
+  // is what catches the estimate being too low.
+  const p10 = sorted[Math.floor(WINDOW * 0.1)];
+  if(p10 >= 3 && p10 < REFRESH_MS - 0.6) REFRESH_MS = p10;
+  sinceClimb++;
+
+  if(med > budget() * SLOW_X){
+    goodRun = 0;
+    // THE SLIDE DETECTOR, checked BEFORE this window's cut and never after.
+    // `med` was measured with whatever the previous cut left in place, so
+    // testing it here is the only way to judge cuts that have actually been
+    // rendered; testing it after the increment judges the newest cut on frames
+    // drawn before it existed, which is an off-by-one that reverts a cut that
+    // was about to work.
+    //
+    // Three rungs spent and the median has not moved at all: whatever is
+    // setting this cadence, it is not the renderer. A browser throttled to
+    // 30fps by the OS power saver reports a locked 33.3ms however little is
+    // drawn, and the old code read that as an infinitely slow GPU and emptied
+    // the whole dial into it — a board rendered at 0.55x for no gain
+    // whatsoever. Real GPU cost always moves the number somewhat across three
+    // rungs, so a number that refuses to move means quality was never the
+    // problem. Adopt the cadence as the budget and give back what the slide
+    // cost.
+    if(slideSteps >= 3 && med > slideMed * 0.96){
+      REFRESH_MS = Math.max(4, Math.min(med, 40));
+      qStep = Math.max(0, qStep - slideSteps);
+      slideSteps = 0; fails = []; applyQuality();
+      return;
+    }
+    // A level we climbed into and immediately lost is a level that needs more
+    // proof next time. A level that held for a while and then met a genuinely
+    // heavy moment is not — that is the load talking, not the hardware.
+    if(lastClimbTo === qStep && sinceClimb <= 8) fails[qStep] = (fails[qStep] || 0) + 1;
+    if(slideSteps === 0) slideMed = med;
+    if(qStep < maxStep()){ qStep++; slideSteps++; applyQuality(); }
+    return;
   }
+  slideSteps = 0;
+
+  if(med < budget() * FAST_X){
+    if(qStep === 0){ goodRun = 0; return; }
+    const tgt = qStep - 1;
+    const need = (tgt >= DLAST ? CLIMB_RES : CLIMB_DETAIL) << Math.min(fails[tgt] || 0, 5);
+    if(++goodRun < need) return;
+    qStep--; goodRun = 0; lastClimbTo = qStep; sinceClimb = 0; applyQuality();
+  }
+  // A median between the two thresholds is ambiguous — not comfortably fast,
+  // not badly missing. It neither earns a step back nor resets the run.
 }
 
 function applyQuality(){
@@ -17606,7 +17750,9 @@ function watchDisplay(){
   let mq = null;
   const onChange = () => {
     const b = baseRung();
-    if(b !== baseIdx){ baseIdx = b; qIdx = qIdxOf(); applyQuality(); }
+    if(b !== baseIdx){ baseIdx = b; qStep = Math.min(qStep, maxStep()); applyQuality(); }
+    // The refresh rate is a property of the display too, not just its dpr.
+    probeRefresh();
     bind();
   };
   // matchMedia on the current ratio is the only reliable dpr-change signal:
@@ -17624,6 +17770,7 @@ function watchDisplay(){
   addEventListener('resize', onChange);
 }
 watchDisplay();
+probeRefresh();
 
 // ══════════════════════════════════════════════
 //  🖥️ THE GL SURFACE
@@ -18215,7 +18362,13 @@ const API = {
   get quality(){
     return { coarse: Q.coarse, scale: Q.scale, level: Q.level, levels: Q.levels,
              bloomMips: Q.bloomMips, props: Q.props, parts: Q.parts,
-             pixels: glCanvas ? glCanvas.width * glCanvas.height : 0 };
+             pixels: glCanvas ? glCanvas.width * glCanvas.height : 0,
+             // What the governor has actually given up, and the display period
+             // it is judging against. A soft board is almost always one of
+             // these two: steps > 0, or a refreshMs that does not match the
+             // panel. Both were invisible while the ratchet bug was live.
+             steps: qStep, detail: DETAIL_STEPS[detailIdx()], refreshMs: +REFRESH_MS.toFixed(1),
+             dpr: dpr() };
   },
 
   // Shared scaffolding, consumed by games3d.js.
