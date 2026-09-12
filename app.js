@@ -1053,11 +1053,53 @@ const VFX = (function(){
 (function(){
   const c = document.getElementById('bg-canvas');
   const x = c.getContext('2d');
-  let p=[];
-  const resize=()=>{c.width=innerWidth;c.height=innerHeight};
-  const init=()=>{p=Array.from({length:110},()=>({x:Math.random()*c.width,y:Math.random()*c.height,r:Math.random()*1.3+.2,a:Math.random(),da:(Math.random()*.012+.003)*(Math.random()<.5?1:-1),s:Math.random()*.35+.05}))};
-  const draw=()=>{x.clearRect(0,0,c.width,c.height);const still=VFX.reducedMotion;p.forEach(pt=>{if(!still){pt.a+=pt.da;if(pt.a>1||pt.a<0)pt.da*=-1;pt.y-=pt.s;if(pt.y<-2){pt.y=c.height+2;pt.x=Math.random()*c.width}}x.beginPath();x.arc(pt.x,pt.y,pt.r,0,Math.PI*2);x.fillStyle=`rgba(255,255,255,${Math.max(0,Math.min(.65,pt.a))})`;x.fill()});requestAnimationFrame(draw)};
-  resize();init();draw();window.addEventListener('resize',()=>{resize();init()});
+  let p=[], W=0, H=0, lastD=0;
+  // The backing store is sized in DEVICE pixels and the context scaled to match.
+  // Sized in CSS pixels — which is what `c.width = innerWidth` does — the whole
+  // field was drawn at 1/dpr of the display and stretched back up by the
+  // compositor, so every star was a soft blob rather than the crisp point it is
+  // meant to be. This canvas is behind EVERY screen in the arcade and it is the
+  // first thing on the page, so that one line made the product read as soft
+  // before a single game had started. A star is 0.2–1.5px across: it is exactly
+  // the kind of mark that has nothing left after a 1.5× or 3× upscale.
+  //
+  // The style size has to be written too. #bg-canvas is position:fixed with
+  // inset:0, and an absolutely positioned REPLACED element takes its intrinsic
+  // size — the width/height attributes — not the space between the offsets. So
+  // the attribute alone used to be the layout size; now that it is in device
+  // pixels, CSS has to be told the box is still one viewport.
+  const resize=()=>{
+    // A window with no layout yet -- a restored background tab, a collapsed
+    // pane -- reports 0, and writing that through leaves a 0x0 canvas that
+    // nothing ever resizes back. Keep what we have and let the next resize or
+    // the first real frame do it. (fitCanvas() refuses the same value for the
+    // same reason.)
+    if(innerWidth < 2 || innerHeight < 2) return;
+    const d = Math.min(window.devicePixelRatio || 1, 3);
+    W = innerWidth; H = innerHeight; lastD = d;
+    c.width = Math.round(W * d); c.height = Math.round(H * d);
+    c.style.width = W + 'px'; c.style.height = H + 'px';
+    x.setTransform(d, 0, 0, d, 0, 0);          // draw in CSS units, land on device pixels
+  };
+  const init=()=>{p=Array.from({length:110},()=>({x:Math.random()*W,y:Math.random()*H,r:Math.random()*1.3+.2,a:Math.random(),da:(Math.random()*.012+.003)*(Math.random()<.5?1:-1),s:Math.random()*.35+.05}))};
+  const draw=()=>{
+    // Two things this catches that the resize listener cannot. A page that was
+    // laid out only AFTER first paint (a restored background tab) never got a
+    // size at all; and dpr is not a constant -- it changes when the window
+    // moves to another monitor or the browser zooms, and neither reliably
+    // fires `resize`. One comparison a frame, and the field follows the display
+    // instead of staying soft until something happens to resize the window.
+    const d = Math.min(window.devicePixelRatio || 1, 3);
+    if(innerWidth > 1 && (!W || d !== lastD || W !== innerWidth || H !== innerHeight)){
+      const reshaped = (!W || W !== innerWidth || H !== innerHeight);
+      resize();
+      if(reshaped) init();                 // a dpr change alone must not reshuffle the sky
+    }
+    x.clearRect(0,0,W,H);const still=VFX.reducedMotion;p.forEach(pt=>{if(!still){pt.a+=pt.da;if(pt.a>1||pt.a<0)pt.da*=-1;pt.y-=pt.s;if(pt.y<-2){pt.y=H+2;pt.x=Math.random()*W}}x.beginPath();x.arc(pt.x,pt.y,pt.r,0,Math.PI*2);x.fillStyle=`rgba(255,255,255,${Math.max(0,Math.min(.65,pt.a))})`;x.fill()});requestAnimationFrame(draw)};
+  resize();init();draw();
+  // The listener is still the fast path for an ordinary window drag; the check
+  // in draw() is what covers the cases that never fire one.
+  window.addEventListener('resize',()=>{resize();init()});
 })();
 
 // ════════════════════════════════════════════
@@ -1840,7 +1882,15 @@ function fitCanvas(){
   // what the element actually paints. Trusting cssW squeezed the board by
   // 4/cssW horizontally and 4/cssH vertically — a different factor on each
   // axis, since the board isn't square — which skewed it very slightly.
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  // Capped at 3, not 2. Every current phone reports a dpr of 2.6–3.5, so a cap
+  // of 2 drew the board at two thirds of the panel and let the compositor
+  // stretch it — a permanent softness on exactly the device the arcade is most
+  // played on, and one no setting could recover. A 2D board costs fills and
+  // strokes rather than per-pixel shading, so the extra pixels are cheap here
+  // in a way they are not in the 3D layer (which has its own governor for it).
+  // 3 is the ceiling because nothing ships above it and an uncapped dpr would
+  // let a browser-zoom quirk ask for a 30-megapixel bitmap.
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const dispW = aCanvas.clientWidth || cssW, dispH = aCanvas.clientHeight || cssH;
   const pxW = Math.round(dispW * dpr), pxH = Math.round(dispH * dpr);
   if(aCanvas.width !== pxW || aCanvas.height !== pxH){
@@ -5607,6 +5657,17 @@ function startTetris(){
 
   const nCanvas = document.getElementById('nextCanvas');
   const nCtx = nCanvas.getContext('2d');
+  // The NEXT box draws in an 80x80 space and its backing store was 80x80 flat,
+  // so on any display finer than 1x the browser stretched it -- the one panel
+  // on the board with visibly softer edges than the board behind it. Backing
+  // store in device pixels, context scaled back to the 80x80 the drawing code
+  // uses, so nothing below this line has to know.
+  (() => {
+    const d = Math.min(window.devicePixelRatio || 1, 3);
+    const px = Math.round(80 * d);
+    if(nCanvas.width !== px){ nCanvas.width = px; nCanvas.height = px; }
+    nCtx.setTransform(d, 0, 0, d, 0, 0);
+  })();
 
   let tetrisOver=false;
   // The clock is shortened by the tier, so the bar has to be measured against
@@ -9147,6 +9208,11 @@ function startMeteor(){
   // positive to the right, and clamped short of horizontal so a battery can
   // never swing far enough to point into its own server stack.
   const PIVOT_Y=GROUND-30, BARREL_L=19, RECOIL_PX=6, AIM_LIMIT=1.32;
+  // The smallest elevation the aim is ever measured against. The reticle can go
+  // BELOW the pivot — it is clamped at GROUND-14, which is 16px under it, and
+  // fragments land 30px under it — and an elevation measured from a target
+  // below the muzzle is not an elevation at all: see aimAt().
+  const MIN_ELEV=26;
 
   let score=0, time=time0, wave=1, isOver=false, frame=0, shake=0;
   let ammo=AMMO_MAX, reloadT=0, killed=0, bestChain=1;
@@ -9217,8 +9283,29 @@ function startMeteor(){
     return from;
   }
 
+  // Elevation off straight up, positive to the right, clamped short of
+  // horizontal so a battery can never point into its own server stack.
+  //
+  // The vertical component is FLOORED, and that is the whole fix. Measured raw,
+  // `PIVOT_Y-ty` goes negative for any target below the pivot — the bottom 16px
+  // the reticle can reach, and every fragment in the act of landing — and
+  // atan2 with a negative second argument returns an angle PAST ±90° whose sign
+  // flips the instant the target crosses the barrel's own x. Two board pixels
+  // of reticle movement (279 → 281, either side of the middle rack) swung every
+  // barrel through 151°: atan2(-1,-16) = -3.08 rad and atan2(1,-16) = +3.08,
+  // both clamped to the opposite ends of AIM_LIMIT. So the guns snapped
+  // violently from one side to the other exactly when the player was tracking
+  // something about to hit the ground, and sat pinned at 76° pointing at their
+  // neighbours instead of at the target. fire() reads the tip from this angle,
+  // so the missile left the side of a sideways barrel too.
+  //
+  // Floored, the elevation is always measured from a point above the muzzle, so
+  // the angle stays inside ±90°, is continuous everywhere, and reads the way a
+  // mount should: near vertical for a target overhead, leaning further over the
+  // lower and wider the target gets, horizontal only for something genuinely
+  // out to the side.
   function aimAt(b,tx,ty){
-    const a=Math.atan2(tx-b.x, PIVOT_Y-ty);
+    const a=Math.atan2(tx-b.x, Math.max(PIVOT_Y-ty, MIN_ELEV));
     return Math.max(-AIM_LIMIT, Math.min(AIM_LIMIT, a));
   }
   // recoil is passed rather than read, so a launch can ask for the tip at full
@@ -9541,11 +9628,22 @@ function startMeteor(){
     // ── TURRETS ──
     // Idle batteries ease onto the reticle so the guns are always looking where
     // you are; recoil and muzzle flare decay on their own clocks.
+    //
+    // All three rates are PER SECOND, raised to this frame's own share of one.
+    // As bare per-frame constants they were rates per REFRESH: the barrel
+    // tracked 2.4× faster on a 144Hz panel than the 60Hz it was tuned on, and
+    // the muzzle flare — 0.74 a frame, a ~9-frame life — was gone in 60ms
+    // there and lingered for a fifth of a second on a 30fps phone. Recoil was
+    // the worst of the three, because `fire()` sets it to 1 on a tap: on a fast
+    // display the barrel was back at full extension before the missile had
+    // cleared the muzzle, so the kick simply did not read.
+    const fr = dt / 16.6667;
+    const decay = (k) => Math.pow(k, fr);
     bases.forEach(b=>{
       if(!b.alive) return;
-      b.aim += (aimAt(b,retX,retY)-b.aim)*0.18;
-      b.recoil*=0.82; if(b.recoil<0.01) b.recoil=0;
-      b.muzzle*=0.74; if(b.muzzle<0.02) b.muzzle=0;
+      b.aim += (aimAt(b,retX,retY)-b.aim)*(1-decay(0.82));
+      b.recoil*=decay(0.82); if(b.recoil<0.01) b.recoil=0;
+      b.muzzle*=decay(0.74); if(b.muzzle<0.02) b.muzzle=0;
     });
 
     // ── ABILITY TIMERS ──
@@ -11656,6 +11754,8 @@ function startCoreMerge(){
   const BOARD = Math.min(W - PAD * 2, H - PAD * 2 - 70);
   const CELL = (BOARD - GAP * (N + 1)) / N;
   const OX = (W - BOARD) / 2, OY = (H - BOARD) / 2 + 24;
+  const cellX = c => OX + GAP + c * (CELL + GAP);
+  const cellY = r => OY + GAP + r * (CELL + GAP);
 
   // Value → colour. Stops at 4096 because a board that reaches it has already
   // beaten the clock several times over.
@@ -11675,8 +11775,23 @@ function startCoreMerge(){
   let time = Math.round(100 * getTimeModifier());
   const anims = [];
 
+  // ── THE SLIDE ──
+  // Without this the board TELEPORTS: you swipe, and sixteen cores are simply
+  // somewhere else. The travel is the only thing that shows WHY the board ended
+  // up the way it did — which core ran into which, and which pair was one cell
+  // short of touching — so the move is animated and the spawn and the merge
+  // pops are held back until it lands.
+  const SLIDE = 0.1;                     // seconds
+  let slideT = 0;
+  let movers = [];                       // {v, fr, fc, tr, tc}
+  let holdGrid = null;                   // the board as it stood BEFORE the move
+  let srcs = new Set();                  // cells the movers left behind
+
   const at = (r, c) => grid[r * N + c];
   const put = (r, c, v) => { grid[r * N + c] = v; };
+  // What the player is looking at right now: mid-slide that is the old board
+  // with the travelling cores lifted out of it, otherwise the real one.
+  const shown = i => slideT > 0 ? (srcs.has(i) ? 0 : holdGrid[i]) : grid[i];
 
   function freeCells(){
     const out = [];
@@ -11688,7 +11803,7 @@ function startCoreMerge(){
     if(!free.length) return false;
     const i = free[Math.floor(dailyRand() * free.length)];
     grid[i] = dailyRand() < 0.88 ? 2 : 4;
-    anims.push({ i, t: 1, kind: 'spawn' });
+    anims.push({ i, t: 1, delay: SLIDE, kind: 'spawn' });
     return true;
   }
   spawn(); spawn();
@@ -11702,6 +11817,8 @@ function startCoreMerge(){
     if(over) return;
     let moved = false;
     const gained = [];
+    const flying = [];
+    const before = grid.slice();
     // Iterate from the far edge so a merged cell can never merge twice in one
     // move — the rule everyone gets wrong first, and the one that decides
     // whether the board is beatable.
@@ -11728,13 +11845,22 @@ function startCoreMerge(){
           locked.add(nr * N + nc);
           gained.push(v * 2);
           moved = true;
-          anims.push({ i: nr * N + nc, t: 1, kind: 'merge' });
+          // The tile keeps travelling into the cell it merged with, so the
+          // animation carries it all the way there and the doubled core
+          // appears under it rather than beside it.
+          rr = nr; cc = nc;
+          anims.push({ i: nr * N + nc, t: 1, delay: SLIDE, kind: 'merge' });
         }
         break;
       }
+      if(rr !== r || cc !== c) flying.push({ v, fr: r, fc: c, tr: rr, tc: cc });
     }
 
     if(!moved){ snd('deny'); return; }
+    holdGrid = before;
+    movers = flying;
+    srcs = new Set(flying.map(m => m.fr * N + m.fc));
+    slideT = SLIDE;
     moves++;
     if(gained.length){
       merges += gained.length;
@@ -11775,18 +11901,24 @@ function startCoreMerge(){
   document.getElementById('ctrl-drop').onclick   = () => slide(1, 0);
 
   // Swipe. A threshold in BOARD units rather than pixels, so the gesture feels
-  // the same on a phone and on a 1.9×-scaled desktop board.
+  // the same on a phone and on a 1.9×-scaled desktop board. It is read on the
+  // way as well as at the end: a flick that leaves the canvas — easy on a phone,
+  // where the board is most of the screen — never delivers a touchend the
+  // gesture can use, and the move was simply lost.
   let sx = 0, sy = 0, swiping = false;
+  const SWIPE = 26;
+  function trySwipe(p){
+    if(!swiping) return;
+    const dx = p.x - sx, dy = p.y - sy;
+    if(Math.abs(dx) < SWIPE && Math.abs(dy) < SWIPE) return;
+    swiping = false;
+    if(Math.abs(dx) > Math.abs(dy)) slide(0, dx > 0 ? 1 : -1);
+    else slide(dy > 0 ? 1 : -1, 0);
+  }
   bindCanvasDrag({
     onDown(p){ hideTouchHint(); sx = p.x; sy = p.y; swiping = true; },
-    onUp(p){
-      if(!swiping) return;
-      swiping = false;
-      const dx = p.x - sx, dy = p.y - sy;
-      if(Math.abs(dx) < 26 && Math.abs(dy) < 26) return;
-      if(Math.abs(dx) > Math.abs(dy)) slide(0, dx > 0 ? 1 : -1);
-      else slide(dy > 0 ? 1 : -1, 0);
-    }
+    onMove: trySwipe,
+    onUp(p){ trySwipe(p); swiping = false; }
   });
 
   gTimer = setInterval(() => {
@@ -11797,9 +11929,37 @@ function startCoreMerge(){
     if(time <= 0) end('timeout');
   }, 1000);
 
-  function loop(){
+  // One core, drawn at an arbitrary position so the same routine serves a tile
+  // sitting in its cell and a tile halfway between two.
+  function drawTile(x, y, v, k){
+    const s = CELL * k, ox = (CELL - s) / 2;
+    const col = tileCol(v);
+    aCtx.save();
+    aCtx.shadowBlur = v >= 64 ? 16 : 6; aCtx.shadowColor = col;
+    aCtx.fillStyle = col;
+    aCtx.beginPath(); aCtx.roundRect(x + ox, y + ox, s, s, 9); aCtx.fill();
+    aCtx.shadowBlur = 0;
+    aCtx.strokeStyle = 'rgba(255,255,255,0.22)';
+    aCtx.lineWidth = 1.5;
+    aCtx.beginPath(); aCtx.roundRect(x + ox, y + ox, s, s, 9); aCtx.stroke();
+    const txt = String(v);
+    aCtx.fillStyle = tileInk(v);
+    aCtx.textAlign = 'center';
+    aCtx.textBaseline = 'middle';
+    aCtx.font = `900 ${Math.round(CELL * (txt.length >= 4 ? 0.26 : txt.length === 3 ? 0.32 : 0.4))}px Orbitron,monospace`;
+    aCtx.fillText(txt, x + CELL / 2, y + CELL / 2 + 1);
+    aCtx.restore();
+  }
+
+  let last = performance.now();
+  function loop(now){
     if(over) return;
     gameLoopId = requestAnimationFrame(loop);
+    let dt = (now - last) / 1000; last = now;
+    if(!(dt > 0)) dt = 1 / 60;
+    if(dt > 0.05) dt = 0.05;
+    if(slideT > 0) slideT = Math.max(0, slideT - dt);
+
     aCtx.clearRect(0, 0, W, H);
 
     // Well.
@@ -11811,44 +11971,46 @@ function startCoreMerge(){
     aCtx.restore();
 
     for(let i = anims.length - 1; i >= 0; i--){
-      anims[i].t -= 0.09;
-      if(anims[i].t <= 0) anims.splice(i, 1);
+      const a = anims[i];
+      // Held until the travel is over, so a spawn does not grow in while the
+      // board it is landing on is still moving.
+      if(a.delay > 0){ a.delay -= dt; continue; }
+      a.t -= dt * 5.5;
+      if(a.t <= 0) anims.splice(i, 1);
     }
-    const animFor = i => anims.find(a => a.i === i);
+    const animFor = i => anims.find(a => a.i === i && a.delay <= 0);
 
+    // Empty sockets first, under everything.
     for(let r = 0; r < N; r++) for(let c = 0; c < N; c++){
-      const x = OX + GAP + c * (CELL + GAP);
-      const y = OY + GAP + r * (CELL + GAP);
       aCtx.save();
       aCtx.fillStyle = 'rgba(255,255,255,0.035)';
-      aCtx.beginPath(); aCtx.roundRect(x, y, CELL, CELL, 9); aCtx.fill();
+      aCtx.beginPath(); aCtx.roundRect(cellX(c), cellY(r), CELL, CELL, 9); aCtx.fill();
       aCtx.restore();
+    }
 
-      const v = at(r, c);
+    // Cores that are standing still.
+    for(let r = 0; r < N; r++) for(let c = 0; c < N; c++){
+      const i = r * N + c;
+      const v = shown(i);
       if(!v) continue;
-      const a = animFor(r * N + c);
+      const a = slideT > 0 ? null : animFor(i);
       // A spawn grows in and a merge overshoots and settles. The two have to
       // look different or the board reads as noise the moment it gets busy.
       const k = !a ? 1
         : a.kind === 'spawn' ? 1 - a.t
         : 1 + Math.sin(a.t * Math.PI) * 0.16;
-      const s = CELL * k, ox = (CELL - s) / 2;
-      const col = tileCol(v);
-      aCtx.save();
-      aCtx.shadowBlur = v >= 64 ? 16 : 6; aCtx.shadowColor = col;
-      aCtx.fillStyle = col;
-      aCtx.beginPath(); aCtx.roundRect(x + ox, y + ox, s, s, 9); aCtx.fill();
-      aCtx.shadowBlur = 0;
-      aCtx.strokeStyle = 'rgba(255,255,255,0.22)';
-      aCtx.lineWidth = 1.5;
-      aCtx.beginPath(); aCtx.roundRect(x + ox, y + ox, s, s, 9); aCtx.stroke();
-      const txt = String(v);
-      aCtx.fillStyle = tileInk(v);
-      aCtx.textAlign = 'center';
-      aCtx.textBaseline = 'middle';
-      aCtx.font = `900 ${Math.round(CELL * (txt.length >= 4 ? 0.26 : txt.length === 3 ? 0.32 : 0.4))}px Orbitron,monospace`;
-      aCtx.fillText(txt, x + CELL / 2, y + CELL / 2 + 1);
-      aCtx.restore();
+      drawTile(cellX(c), cellY(r), v, k);
+    }
+
+    // Cores in transit, on top — a core sliding over the cell it is about to
+    // merge with has to be the thing you see, not the thing underneath it.
+    if(slideT > 0){
+      const p = 1 - slideT / SLIDE;
+      const e = 1 - Math.pow(1 - p, 3);        // ease out: leaves fast, arrives soft
+      for(const m of movers){
+        drawTile(cellX(m.fc) + (cellX(m.tc) - cellX(m.fc)) * e,
+                 cellY(m.fr) + (cellY(m.tr) - cellY(m.fr)) * e, m.v, 1);
+      }
     }
 
     aCtx.save();
@@ -11889,27 +12051,43 @@ function startCoreMerge(){
 // and then watch it be right or wrong, which is a completely different kind of
 // tension from anything else on the grid.
 //
-// Drag from the launcher to aim — the pull-back is the power, the same gesture
-// on a phone and on a mouse, and the only control the mission has.
+// Drag BACKWARDS anywhere on the board to aim — the pull is the power, the
+// same gesture on a phone and on a mouse, and the only control the mission has.
+// Anchored where the drag starts rather than at the dish; see the gesture note
+// inside for why that is not a detail.
 function startOrbitalUplink(){
   document.getElementById('g-canvas-holder').style.display = 'block';
   setControls(null);                 // pure drag — no pad to steal board height
-  setControlHint('DRAG BACK FROM THE DISH AND RELEASE',
-                 'DRAG BACK FROM THE DISH AND RELEASE — the pull is the power');
-  showTouchHint('DRAG BACK FROM THE DISH TO LOB');
+  setControlHint('DRAG BACKWARDS ANYWHERE ON THE BOARD, THEN RELEASE',
+                 'DRAG BACKWARDS ANYWHERE AND RELEASE — the pull is the power');
+  showTouchHint('DRAG BACKWARDS ANYWHERE TO LOB');
   fitCanvas();                       // after setControls — see startPulseSync()
 
   const W = BOARD_W, H = BOARD_H;
   const GROUND = H - 46;
   const PAD_X = 62, PAD_Y = GROUND - 12;
-  const G = 560;                         // px/s² — tuned so a full-power shot
-                                         // crosses the board in about a second
-  const MAX_PULL = 132;
+  const G = 560;                         // px/s²
+
+  // ── THE SLING, AND WHY IT IS SHAPED LIKE THIS ──
+  // Range under gravity goes as v², so a pull mapped LINEARLY onto speed spends
+  // its first half crossing a third of the board and its second half sailing
+  // off the far edge: every shot actually worth taking lived in a three-pixel
+  // band of the drag, and the mission read as unaimable rather than as hard.
+  // Mapping the pull onto √speed makes RANGE linear in the pull instead, so a
+  // millimetre of finger is worth the same number of pixels downrange wherever
+  // in the stroke it happens.
+  const MAX_PULL = 190;                  // board units of drag for full power
+  const V_MAX = 680;                     // px/s at full pull. A 45° shot then
+                                         // carries ~825px — past the far edge
+                                         // with margin, but not so far that the
+                                         // useful half of the stroke vanishes.
+  const shotSpeed = pull => V_MAX * Math.sqrt(Math.min(1, pull / MAX_PULL));
   const diff = getDifficultyModifier();
 
   let time = Math.round(75 * getTimeModifier());
   let score = 0, sunk = 0, shots = 0, streak = 0, bestStreak = 0, over = false;
   let wind = 0, relays = [], packet = null, aiming = false, aim = { x: 0, y: 0 };
+  let anchor = null, ghost = null;
   const sparks = [], pops = [];
   let shake = 0, barrier = null;
 
@@ -11920,18 +12098,25 @@ function startOrbitalUplink(){
   // makes the mission about arcs rather than about aiming: a flat shot is
   // always wrong, so every shot has to go over something.
   function newField(){
-    const far = 210 + Math.random() * (W - 290);
+    // The slab is placed FIRST and the relay is placed around it. The other way
+    // round, a relay could land just behind a tall firewall — a field whose
+    // only solution is an arc that clears the slab and drops inside a few
+    // pixels — and nothing on screen tells the player that the field, not the
+    // shot, is the problem.
+    const bx = PAD_X + 90 + Math.random() * 60;
+    barrier = { x: bx, w: 20, h: 70 + Math.random() * 80 * Math.min(1.3, diff) };
+    const near = bx + 130, far = W - 44;
     relays = [{
-      x: Math.max(PAD_X + 170, Math.min(W - 40, far)),
-      y: GROUND - (20 + Math.random() * 190),
-      r: 20,
+      x: near + Math.random() * Math.max(40, far - near),
+      // Never below the top of the slab either: threading UNDER a firewall is
+      // a different mission, and an unwinnable one at this launch height.
+      y: GROUND - Math.max(barrier.h + 26, 30 + Math.random() * 150),
+      r: 26,
       bob: Math.random() * Math.PI * 2
     }];
-    const bx = PAD_X + 90 + Math.random() * 60;
-    barrier = { x: bx, w: 20, h: 90 + Math.random() * 130 * Math.min(1.4, diff) };
     // Crosswind arrives only once the player has landed a few, so the mission
     // teaches the arc before it starts moving it.
-    wind = sunk >= 3 ? (Math.random() * 2 - 1) * 90 * Math.min(1.5, diff) : 0;
+    wind = sunk >= 3 ? (Math.random() * 2 - 1) * 70 * Math.min(1.4, diff) : 0;
   }
   newField();
 
@@ -11942,21 +12127,39 @@ function startOrbitalUplink(){
     snd('shoot');
   }
 
+  // ── THE GESTURE ──
+  // The pull is measured from where the finger WENT DOWN, not from the dish.
+  // The dish sits in the bottom-left corner, and "pull back from the dish"
+  // means dragging down and to the left — into that corner, off the board, and
+  // on a phone (where the whole board is scaled to about 0.65) clean off the
+  // screen. Full power in the one direction the mission asks for was literally
+  // out of reach. Anchoring the sling wherever the drag starts gives the stroke
+  // the entire board to happen in, and a drag that does begin at the dish
+  // behaves exactly as it always did.
+  function pullFrom(p){
+    if(!anchor) return null;
+    const dx = anchor.x - p.x, dy = anchor.y - p.y;
+    const len = Math.hypot(dx, dy);
+    if(len < 14) return null;                    // a tap is not a shot
+    const pull = Math.min(MAX_PULL, len);
+    const k = shotSpeed(pull);
+    return { vx: dx / len * k, vy: dy / len * k, pull };
+  }
+
   bindCanvasDrag({
-    onDown(p){ hideTouchHint(); if(packet) return; aiming = true; aim = { x: p.x, y: p.y }; },
+    onDown(p){
+      hideTouchHint();
+      if(packet) return;
+      anchor = { x: p.x, y: p.y };
+      aim = { x: p.x, y: p.y };
+      aiming = true;
+    },
     onMove(p){ if(aiming) aim = { x: p.x, y: p.y }; },
     onUp(p){
       if(!aiming) return;
       aiming = false;
-      // Pull BACK to launch, catapult-style: the drag vector is inverted, which
-      // is the gesture every player already knows from a slingshot and needs no
-      // instruction beyond "drag back".
-      let dx = PAD_X - p.x, dy = (PAD_Y - 12) - p.y;
-      const len = Math.hypot(dx, dy);
-      if(len < 14) return;                         // a tap is not a shot
-      const pull = Math.min(MAX_PULL, len);
-      const k = (pull / MAX_PULL) * 760;
-      fire(dx / len * k, dy / len * k);
+      const s = pullFrom(p);
+      if(s) fire(s.vx, s.vy);
     }
   });
 
@@ -11967,6 +12170,60 @@ function startOrbitalUplink(){
     if(time <= 5 && time > 0) snd('tick');
     if(time <= 0) end();
   }, 1000);
+
+  // One collision pass, run per PHYSICS SUBSTEP rather than per frame. At full
+  // power the packet covers 34px in a stalled 50ms frame — wider than the 20px
+  // firewall — so a frame-sized step let shots pass straight THROUGH the slab
+  // and skim past a relay without either registering. Both failures are
+  // invisible; both read as the physics being arbitrary.
+  function resolve(){
+    let done = null;
+    for(const rl of relays){
+      const by = rl.y + Math.sin(rl.bob) * 8;
+      if(Math.hypot(packet.x - rl.x, packet.y - by) < rl.r + 10){ done = 'hit'; break; }
+    }
+    if(!done && packet.x > barrier.x && packet.x < barrier.x + barrier.w &&
+       packet.y > GROUND - barrier.h) done = 'wall';
+    if(!done && (packet.y > GROUND || packet.x > W + 60 || packet.x < -60 || packet.t > 9)) done = 'miss';
+    if(!done) return;
+
+    if(done === 'hit'){
+      const rl = relays[0];
+      sunk++; streak++;
+      bestStreak = Math.max(bestStreak, streak);
+      // Distance is the skill, so distance is the pay. Plus a streak bonus,
+      // because the second consecutive hit is the one that proves the first
+      // was not luck.
+      const dist = Math.round((rl.x - PAD_X) / 10);
+      const gain = 40 + dist * 2 + Math.min(80, (streak - 1) * 20);
+      score += gain;
+      setLive(Math.min(1000, score));
+      snd('correct', { semi: Math.min(14, streak * 2) });
+      shake = 8;
+      for(let i = 0; i < 26; i++) sparks.push({
+        x: rl.x, y: rl.y, vx: (Math.random() - 0.5) * 320, vy: (Math.random() - 0.5) * 320,
+        life: 0.6, color: '#39ff88'
+      });
+      pops.push({ x: rl.x, y: rl.y - 34, text: `UPLINK +${gain}`, color: '#39ff88', life: 1 });
+      ghost = null;                              // new field, old line is moot
+      packet = null;
+      newField();
+    }else{
+      streak = 0;
+      snd(done === 'wall' ? 'shieldHit' : 'wrong');
+      shake = done === 'wall' ? 5 : 2;
+      for(let i = 0; i < 12; i++) sparks.push({
+        x: packet.x, y: Math.min(packet.y, GROUND), vx: (Math.random() - 0.5) * 180,
+        vy: -Math.random() * 180, life: 0.45, color: done === 'wall' ? '#ff2442' : '#5a6cff'
+      });
+      // The line the last shot took, kept on screen until the next one. A miss
+      // you cannot see is a miss you cannot correct: the field does not change
+      // until you land it, so the ghost turns the next attempt into an
+      // adjustment rather than another guess.
+      ghost = packet.trail.slice();
+      packet = null;
+    }
+  }
 
   let last = performance.now();
   function loop(now){
@@ -11980,52 +12237,19 @@ function startOrbitalUplink(){
 
     // ── PHYSICS ──
     if(packet){
-      packet.t += dt;
-      packet.vy += G * dt;
-      packet.vx += wind * dt;
-      packet.x += packet.vx * dt;
-      packet.y += packet.vy * dt;
-      packet.trail.push({ x: packet.x, y: packet.y });
-      if(packet.trail.length > 48) packet.trail.shift();
-
-      let done = null;
-      for(const rl of relays){
-        const by = rl.y + Math.sin(rl.bob) * 8;
-        if(Math.hypot(packet.x - rl.x, packet.y - by) < rl.r + 6){ done = 'hit'; break; }
+      const steps = Math.max(1, Math.ceil(dt / 0.006));
+      const sdt = dt / steps;
+      for(let s = 0; s < steps && packet; s++){
+        packet.t += sdt;
+        packet.vy += G * sdt;
+        packet.vx += wind * sdt;
+        packet.x += packet.vx * sdt;
+        packet.y += packet.vy * sdt;
+        resolve();
       }
-      if(!done && packet.x > barrier.x && packet.x < barrier.x + barrier.w &&
-         packet.y > GROUND - barrier.h) done = 'wall';
-      if(!done && (packet.y > GROUND || packet.x > W + 60 || packet.x < -60 || packet.t > 9)) done = 'miss';
-
-      if(done === 'hit'){
-        const rl = relays[0];
-        sunk++; streak++;
-        bestStreak = Math.max(bestStreak, streak);
-        // Distance is the skill, so distance is the pay. Plus a streak bonus,
-        // because the second consecutive hit is the one that proves the first
-        // was not luck.
-        const dist = Math.round((rl.x - PAD_X) / 10);
-        const gain = 40 + dist * 2 + Math.min(80, (streak - 1) * 20);
-        score += gain;
-        setLive(Math.min(1000, score));
-        snd('correct', { semi: Math.min(14, streak * 2) });
-        shake = 8;
-        for(let i = 0; i < 26; i++) sparks.push({
-          x: rl.x, y: rl.y, vx: (Math.random() - 0.5) * 320, vy: (Math.random() - 0.5) * 320,
-          life: 0.6, color: '#39ff88'
-        });
-        pops.push({ x: rl.x, y: rl.y - 34, text: `UPLINK +${gain}`, color: '#39ff88', life: 1 });
-        packet = null;
-        newField();
-      }else if(done){
-        streak = 0;
-        snd(done === 'wall' ? 'shieldHit' : 'wrong');
-        shake = done === 'wall' ? 5 : 2;
-        for(let i = 0; i < 12; i++) sparks.push({
-          x: packet.x, y: Math.min(packet.y, GROUND), vx: (Math.random() - 0.5) * 180,
-          vy: -Math.random() * 180, life: 0.45, color: done === 'wall' ? '#ff2442' : '#5a6cff'
-        });
-        packet = null;
+      if(packet){
+        packet.trail.push({ x: packet.x, y: packet.y });
+        if(packet.trail.length > 90) packet.trail.shift();
       }
     }
 
@@ -12060,6 +12284,18 @@ function startOrbitalUplink(){
     aCtx.lineWidth = 2;
     aCtx.beginPath(); aCtx.moveTo(0, GROUND); aCtx.lineTo(W, GROUND); aCtx.stroke();
     aCtx.restore();
+
+    // Ghost of the last shot, under everything else.
+    if(ghost && ghost.length > 1){
+      aCtx.save();
+      aCtx.strokeStyle = 'rgba(255,255,255,0.16)';
+      aCtx.lineWidth = 2;
+      aCtx.setLineDash([5, 7]);
+      aCtx.beginPath();
+      ghost.forEach((p, i) => i ? aCtx.lineTo(p.x, p.y) : aCtx.moveTo(p.x, p.y));
+      aCtx.stroke();
+      aCtx.restore();
+    }
 
     // Firewall slab.
     aCtx.save();
@@ -12105,31 +12341,56 @@ function startOrbitalUplink(){
     drawSkinBadge(PAD_X, PAD_Y - 32, 12);
 
     // ── THE AIM ──
-    // A dotted preview of the first third of the flight. Not the whole arc: the
-    // mission is judging a trajectory, and drawing the answer would leave it
-    // with nothing to judge.
-    if(aiming && !packet){
-      let dx = PAD_X - aim.x, dy = (PAD_Y - 12) - aim.y;
-      const len = Math.hypot(dx, dy);
-      if(len > 8){
-        const pull = Math.min(MAX_PULL, len);
-        const k = (pull / MAX_PULL) * 760;
-        let px = PAD_X, py = PAD_Y - 12, pvx = dx / len * k, pvy = dy / len * k;
+    // The whole arc, fading out along its length. The first build drew two
+    // thirds of a second of flight on the theory that showing the answer left
+    // nothing to judge — but with the launcher pinned to one corner and the
+    // relay half a board away, a third of a parabola is not a read, it is a
+    // guess, and the mission played as though the physics were random. The
+    // fade keeps the judgement where it belongs: the near half is exact, the
+    // far end is a suggestion, and the wind still has to be allowed for.
+    if(aiming && !packet && anchor){
+      const s = pullFrom(aim);
+      if(s){
+        let px = PAD_X, py = PAD_Y - 12, pvx = s.vx, pvy = s.vy;
+        const step = 0.022;
         aCtx.save();
-        aCtx.fillStyle = `rgba(255,255,255,${0.25 + (pull / MAX_PULL) * 0.4})`;
-        for(let i = 0; i < 22; i++){
-          pvy += G * 0.03; pvx += wind * 0.03;
-          px += pvx * 0.03; py += pvy * 0.03;
-          if(py > GROUND) break;
-          aCtx.beginPath(); aCtx.arc(px, py, 2.4, 0, Math.PI * 2); aCtx.fill();
+        for(let i = 0; i < 110; i++){
+          pvy += G * step; pvx += wind * step;
+          px += pvx * step; py += pvy * step;
+          if(py > GROUND || px > W + 20 || px < -20) break;
+          if(px > barrier.x && px < barrier.x + barrier.w && py > GROUND - barrier.h) break;
+          const fade = Math.max(0.06, 1 - i / 90);
+          aCtx.globalAlpha = fade * (0.35 + (s.pull / MAX_PULL) * 0.45);
+          aCtx.fillStyle = '#ffffff';
+          aCtx.beginPath(); aCtx.arc(px, py, 1.4 + fade * 1.6, 0, Math.PI * 2); aCtx.fill();
         }
         aCtx.restore();
-        // Power bar on the dish.
+
+        // ── THE BAND ──
+        // Drawn at the anchor rather than at the dish, because the anchor is
+        // where the hand is and the hand is what needs the feedback. It is the
+        // only thing on screen that says the sling is relative.
+        const pw = s.pull / MAX_PULL;
         aCtx.save();
+        aCtx.strokeStyle = pw > 0.86 ? '#ff2442' : mine;
+        aCtx.lineWidth = 2;
+        aCtx.globalAlpha = 0.75;
+        aCtx.beginPath(); aCtx.moveTo(anchor.x, anchor.y); aCtx.lineTo(aim.x, aim.y); aCtx.stroke();
+        aCtx.globalAlpha = 1;
+        aCtx.fillStyle = 'rgba(255,255,255,0.16)';
+        aCtx.beginPath(); aCtx.arc(anchor.x, anchor.y, 7, 0, Math.PI * 2); aCtx.fill();
+        // Above the thumb, unless the thumb is at the top of the board — then
+        // below it, so the readout is never drawn off the field.
+        const flip = anchor.y < 46;
+        const by2 = flip ? anchor.y + 22 : anchor.y - 26;
         aCtx.fillStyle = 'rgba(255,255,255,0.14)';
-        aCtx.fillRect(PAD_X - 26, PAD_Y + 14, 52, 6);
-        aCtx.fillStyle = pull / MAX_PULL > 0.86 ? '#ff2442' : mine;
-        aCtx.fillRect(PAD_X - 26, PAD_Y + 14, 52 * (pull / MAX_PULL), 6);
+        aCtx.fillRect(anchor.x - 26, by2, 52, 6);
+        aCtx.fillStyle = pw > 0.86 ? '#ff2442' : mine;
+        aCtx.fillRect(anchor.x - 26, by2, 52 * pw, 6);
+        aCtx.textAlign = 'center';
+        aCtx.font = 'bold 11px Orbitron,monospace';
+        aCtx.fillStyle = 'rgba(255,255,255,0.8)';
+        aCtx.fillText(`${Math.round(pw * 100)}%`, anchor.x, flip ? by2 + 18 : by2 - 6);
         aCtx.restore();
       }
     }
@@ -19632,6 +19893,13 @@ function createRenderer(canvas){
     }
   }
 
+  // The ONE canvas in the file whose size is not derived from devicePixelRatio
+  // here, because it is already in device pixels when it arrives: PI3D.syncSize
+  // multiplies the element's CSS size by the governor's render scale — which is
+  // floored at one device pixel per CSS pixel, see FLOOR_RUNG — and hands the
+  // result down. This is the surface, not the element: the canvas keeps the CSS
+  // size the 2D board has (so taps map 1:1) and only its backing store moves.
+  // dpr-ok: caller passes device pixels (PI3D.syncSize)
   function resize(w, h){
     w = Math.max(2, Math.floor(w)); h = Math.max(2, Math.floor(h));
     if(w === vpW && h === vpH) return;
@@ -20285,7 +20553,15 @@ const COARSE = (() => {
 // Render scale rungs, in device pixels per CSS pixel. Stepping a ladder rather
 // than scaling continuously keeps the target sizes stable enough that the
 // governor is not reallocating framebuffers every time the load twitches.
-const LADDER = [0.55, 0.7, 0.85, 1.0, 1.25, 1.5, 2.0];
+// 2.5 and 3.0 are here because panels are. Every current phone reports a dpr
+// between 2.6 and 3.5, and a ladder that stopped at 2.0 could not describe the
+// display it was drawing on: the board rendered at two thirds of the panel and
+// the compositor stretched it back up. That is the same failure the COARSE
+// clamp below used to cause, one rung higher up — a permanent softness the
+// governor could never give back, because it was never the governor that took
+// it. The frame clock decides whether a device can hold its own panel; this
+// only has to stop being the thing that says no.
+const LADDER = [0.55, 0.7, 0.85, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
 const rung = v => { let i = 0; while(i + 1 < LADDER.length && LADDER[i + 1] <= v + 1e-6) i++; return i; };
 
 // A hard ceiling on the scene target regardless of scale. A tablet in landscape
@@ -20302,7 +20578,12 @@ const rung = v => { let i = 0; while(i + 1 < LADDER.length && LADDER[i + 1] <= v
 // live site reads sharp on desktop and blurry on a phone no matter what the
 // frame clock says. The governor is what protects a slow device — that is its
 // entire job — so the static cap only has to stop something absurd.
-const PIXEL_CAP = COARSE ? 1500000 : 4200000;
+// Raised from 1.5M once the ladder above could reach 3.0: a portrait phone
+// board is ~380×680 CSS px, and at its panel's own 3× that is 2.33M — so a
+// 1.5M cap would have re-imposed exactly the ceiling the new rungs exist to
+// lift, silently, one layer down. It still binds where it should: a tablet in
+// landscape carries a board twice the area and is held to ~2.4× by it.
+const PIXEL_CAP = COARSE ? 2600000 : 4200000;
 
 const dpr = () => window.devicePixelRatio || 1;
 // The ceiling the governor may climb to. This is deliberately the SAME on a
@@ -20311,7 +20592,7 @@ const dpr = () => window.devicePixelRatio || 1;
 // code — the board could never get within reach of it. Whether a phone can
 // afford its own panel is a question the frame clock answers in about a
 // second and a half; hard-coding "no" answers it wrongly for every flagship.
-const MAX_RUNG = rung(2.0);
+const MAX_RUNG = rung(3.0);
 
 // The rung is derived, not stored: `baseIdx` is the sharpest rung THIS DISPLAY
 // can actually show, and `penalty` is how many rungs the governor has given up
@@ -20331,8 +20612,54 @@ const MAX_RUNG = rung(2.0);
 // phone could not render above one device pixel per CSS pixel even when the
 // GPU was idle. A phone opens at its panel's own rung like everything else and
 // the governor takes resolution back if — and only if — the frames say so.
-const baseRung = () => rung(Math.min(dpr(), 2.0));
+//
+// The min() was 2.0 and that was the same bug again, one rung up: a dpr-3
+// handset -- which is most of them -- opened at 2.0 and could never be told
+// to go higher, so two thirds of the panel was the best the board could ever
+// look, and no amount of GPU headroom changed it. It follows the display now;
+// 3.0 is only there so a browser-zoom quirk cannot ask for a target nothing
+// can draw.
+const baseRung = () => rung(Math.min(dpr(), 3.0));
 let baseIdx = baseRung();
+
+// ── 🔒 THE SHARPNESS FLOOR ──
+// ⚠️ READ THIS BEFORE TOUCHING THE LADDER, THE PENALTY OR `qIdx`.
+//
+// The governor may cost the player sharpness relative to their PANEL. It may
+// never cost them sharpness relative to their own LAYOUT. Rung 1.0 is exactly
+// one render pixel per CSS pixel — the board drawn at the size it occupies.
+// Below that (0.55, 0.7, 0.85) the renderer draws FEWER pixels than the element
+// covers and the compositor stretches the result, and that is a different KIND
+// of degradation from everything else on this dial: plainer plating, shallower
+// bloom, fewer sparks all read as "simpler", while an upscaled board reads as
+// "the graphics are broken". It is also the one cut the player cannot escape,
+// because `qStep` is persisted and a rung costs six consecutive good windows to
+// earn back — so one heavy round, or one feature that adds a little fragment
+// cost, leaves the board soft for every session after it.
+//
+// That was live and it was reachable on EVERY device, a plain 1× desktop
+// included, because the penalty counts DOWN from whatever rung the display
+// opened at rather than down to a floor. Measured on the shipped build with a
+// settled governor state: a dpr-1 desktop drew an 862×769 board into a 603×538
+// buffer, and a dpr-3 phone drew a 374×334 board (1122×1002 device pixels) into
+// a 318×284 one — 28% of the panel, a twelfth of its pixels — while the 2D
+// board beside it stayed pixel-exact. That asymmetry is what "the graphics are
+// blurry compared to the website" has meant every time it has been reported.
+//
+// So the sub-native rungs stay in LADDER (mid-round arithmetic reads cleaner
+// with the whole ladder present) but nothing can select them. Everything else
+// the governor spends is untouched: both detail steps, bloom depth, prop
+// density, the particle ceiling, and every rung BETWEEN the panel's own and
+// 1.0 — which on a dpr-3 phone is still five rungs of headroom (3.0 → 2.5 →
+// 2.0 → 1.5 → 1.25 → 1.0), i.e. a 9× range of pixel cost. A device that cannot
+// hold 1.0 has nothing left to give here and needs a smaller BOARD, not a
+// blurrier one.
+const FLOOR_RUNG = rung(1.0);
+// min() with baseIdx so a display BELOW 1× — a window at 67% browser zoom
+// reports dpr 0.8 — is not asked for more pixels than it can show. The floor is
+// "never below your own layout", not "always at least 1.0".
+const floorIdx = () => Math.min(baseIdx, FLOOR_RUNG);
+
 // Detail is shed BEFORE resolution and restored after it. It is fragment ALU
 // with no effect on silhouette or legibility, and the player sees a soft board
 // long before they see slightly plainer plating.
@@ -20363,14 +20690,22 @@ const LS_QSTEP = 'pi_render_qstep';
 let qStep = (() => {
   try{
     const v = parseInt(localStorage.getItem(LS_QSTEP), 10);
-    if(v > 0) return Math.min(Math.max(0, v - 1), DLAST + baseIdx);
+    // Clamped by the same expression maxStep() uses — inlined only because
+    // maxStep is a const declared below this initialiser. A bid saved by a
+    // build whose ladder went lower cannot carry a sub-native rung into this
+    // one; it lands on the floor like any other over-large step.
+    if(v > 0) return Math.min(Math.max(0, v - 1), DLAST + Math.max(0, baseIdx - Math.min(baseIdx, FLOOR_RUNG)));
   }catch(e){}
   return 0;
 })();
-const maxStep   = () => DLAST + baseIdx;
+// The ladder stops where the floor is. Steps past it would be banked with no
+// effect on the picture and would then have to be climbed back through one
+// good window at a time, so the governor would sit on an invisible penalty —
+// which is how a floor added at qIdx() alone turns into a different bug.
+const maxStep   = () => DLAST + Math.max(0, baseIdx - floorIdx());
 const detailIdx = () => Math.min(DLAST, qStep);
 const penalty   = () => Math.max(0, qStep - DLAST);
-const qIdx      = () => Math.max(0, Math.min(MAX_RUNG, baseIdx - penalty()));
+const qIdx      = () => Math.max(floorIdx(), Math.min(MAX_RUNG, baseIdx - penalty()));
 
 const Q = {
   get scale(){ return LADDER[qIdx()]; },
@@ -20843,6 +21178,13 @@ function syncSize(){
   let s = Math.min(Q.scale, dpr());
   const cap = Q.pixelCap / Math.max(1, cw * ch);
   if(s * s > cap) s = Math.sqrt(cap);
+  // The cap is subject to the sharpness floor as well — see FLOOR_RUNG. It is
+  // the second, independent path to a sub-native board: it is applied AFTER the
+  // ladder, so it can undo the floor silently for any board whose CSS area is
+  // large enough for it to bind below 1.0. Nothing ships a board that big (it
+  // would need 2.6M CSS pixels on a phone, 4.2M on a desktop), which is exactly
+  // why this would go unnoticed until a future board or cap made it reachable.
+  s = Math.max(s, Math.min(1, dpr()));
   pushQuality();
   R.resize(Math.max(2, Math.round(cw * s)), Math.max(2, Math.round(ch * s)));
 }
@@ -23593,12 +23935,74 @@ P.games.meteor = function(){
   const colour = mine();
   const XL = 13, TOP = 26;
   const SHOT_V = 62;        // bolt speed, world units a second
-  const MUZ = [0, 1.6, 2];  // where a bolt leaves the barrel
   const HIT_PAD = 0.8;      // the bolt's own radius, added to the fragment's
   const LOCK_SLACK = 1.35;  // how far off the sight line a fragment may still lock
   const time0 = Math.round(75 * getTimeModifier());
   let time = time0, score = 0, killed = 0, wave = 1, chain = 0, bestChain = 0;
   let over = false, cool = 0, aimX = 0, aimY = 6, spawnT = 0, waveT = 0;
+
+  // ── 🔭 THE MOUNT ──
+  // Where the launcher stands, how big it is drawn, and where inside the
+  // `turret` mesh its two barrels end — see buildTurret(): the barrels are
+  // cylinders at local x=±0.17 whose far ends reach z=-1.06, facing -Z, which
+  // is the direction of the board. These are the numbers muzzlePoint() needs,
+  // and they are declared next to the draw call's own pos/scale on purpose: a
+  // muzzle worked out from a different scale than the one the mount is drawn at
+  // is exactly the bug this replaces.
+  const MNT_POS = [0, 1.05, 3.2], MNT_SCALE = [2.4, 2.2, 2.4];
+  const BARREL = [0.17, 0, -1.02];   // local, just inside the barrel tip
+  const RECOIL_U = 0.34;             // world units the mount jolts back
+  // Traverse, elevation, recoil and muzzle flare — the whole animation the
+  // mount did not have. `tYaw`/`tPitch` are what is DRAWN; aimX/aimY are where
+  // the player is pointing. Keeping them apart is what makes the launcher a
+  // machine with mass instead of a decal that teleports to the cursor: before
+  // this, yaw and pitch were recomputed from the raw aim inside the draw block
+  // every frame, so a mouse flick across the board swung a 2.4-scale gimbal
+  // through 150° in a single frame, and firing produced no movement on the
+  // mount at all — no kick, no flash — while the bolt spawned from a fixed
+  // point in space that the barrels had long since rotated away from.
+  let tYaw = 0, tPitch = 0, tRecoil = 0, tMuzzle = 0, muzSide = 1;
+
+  // The aim as a mount orientation. Bearing is measured from the mount's own
+  // position, not the origin, so it is the angle the barrels actually need.
+  //
+  // ⚠️ BOTH SIGNS ARE LOAD-BEARING AND BOTH WERE WRONG. M4.compose() builds
+  // R = Ry·Rx as ordinary right-handed rotations, and the mesh's barrels face
+  // -Z (see buildTurret), so the barrel axis comes out as
+  //     (-sin(yaw)·cos(pitch),  sin(pitch),  -cos(yaw)·cos(pitch))
+  // and matching that to a target at (Δx, Δy, -3.2) gives yaw = atan2(-Δx, 3.2)
+  // and pitch = +atan2(Δy, horizontal). The shipped code had `atan2(aimX, 3.2)`
+  // and a NEGATED pitch — so the gimbal traversed AWAY from the reticle on both
+  // axes: aim left and the barrels swung right, aim high and they depressed.
+  // Caught by firing at the far right of the board and finding the muzzle flash
+  // on the far left. It survived this long because nothing was measured off the
+  // barrels — the bolt spawned from a fixed point in space and the mount had no
+  // flash or kick — so the mesh was the only thing pointing the wrong way, on a
+  // small object at the bottom edge of a busy frame.
+  const yawFor   = () => Math.atan2(MNT_POS[0] - aimX, MNT_POS[2]);
+  const pitchFor = () => Math.atan2(aimY - MNT_POS[1], Math.hypot(aimX - MNT_POS[0], MNT_POS[2]));
+
+  // Barrel tip in world space for a given mount orientation, through the same
+  // R = Rz·Ry·Rx composition M4.compose() uses (with roll zero), so the point
+  // tracks the drawn mesh exactly at any angle. `side` picks which of the two
+  // barrels, and `recoil` slides the whole mount back along its own +Z.
+  function muzzlePoint(yaw, pitch, side, recoil){
+    const cx = Math.cos(pitch), sx = Math.sin(pitch);
+    const cy = Math.cos(yaw),   sy = Math.sin(yaw);
+    const ax = BARREL[0] * MNT_SCALE[0] * side;
+    const az = BARREL[2] * MNT_SCALE[2] - recoil * RECOIL_U;
+    return [
+      MNT_POS[0] + cy * ax + sy * cx * az,
+      MNT_POS[1] - sx * az,
+      MNT_POS[2] - sy * ax + cy * cx * az
+    ];
+  }
+  // The cradle takes a fraction of the elevation — how a CIWS-style gimbal
+  // actually moves — so the barrel axis is not the aim axis, and the muzzle has
+  // to be measured against the SAME fraction the mesh is drawn with or the
+  // flash floats off the end of the gun.
+  const PITCH_FRAC = 0.45;
+  const muzzleNow = () => muzzlePoint(tYaw, tPitch * PITCH_FRAC, muzSide, tRecoil);
 
   const rocks = [], shots = [];
   // Four servers on a plate. Losing all four ends the run; each survivor is
@@ -23669,10 +24073,10 @@ P.games.meteor = function(){
 
   // Where to put the bolt so the fragment walks into it. Two passes converge
   // well inside a fragment's own radius at this speed.
-  function leadPoint(k){
+  function leadPoint(k, from){
     let t = 0;
     for(let i = 0; i < 2; i++){
-      t = Math.hypot(k.x + k.vx * t - MUZ[0], k.y + k.vy * t - MUZ[1], k.z - MUZ[2]) / SHOT_V;
+      t = Math.hypot(k.x + k.vx * t - from[0], k.y + k.vy * t - from[1], k.z - from[2]) / SHOT_V;
     }
     return [k.x + k.vx * t, k.y + k.vy * t, k.z];
   }
@@ -23681,14 +24085,23 @@ P.games.meteor = function(){
     if(over || cool > 0) return;
     cool = 0.17;
     snd('shoot');
+    // Snap the mount onto the shot before the muzzle is measured. The traverse
+    // is smoothed, so a tap can beat the gimbal to its target — and a bolt
+    // leaving the SIDE of a barrel that is still swinging is the one thing that
+    // would give the animation away. The 2D build does the same thing for the
+    // same reason. Barrels then alternate, so a burst reads as a twin mount.
+    tYaw = yawFor(); tPitch = pitchFor();
+    muzSide = -muzSide;
+    const from = muzzlePoint(tYaw, tPitch * PITCH_FRAC, muzSide, 0);
     // No lock is an honest miss: the bolt goes where the reticle is and hits
     // whatever it happens to run into on the way.
     const lock = sightLock();
-    const to = lock ? leadPoint(lock) : [aimX, aimY, 0];
-    const d = [to[0] - MUZ[0], to[1] - MUZ[1], to[2] - MUZ[2]];
+    const to = lock ? leadPoint(lock, from) : [aimX, aimY, 0];
+    const d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     const l = Math.hypot(d[0], d[1], d[2]) || 1;
-    shots.push({ x: MUZ[0], y: MUZ[1], z: MUZ[2],
+    shots.push({ x: from[0], y: from[1], z: from[2],
                  vx: d[0]/l*SHOT_V, vy: d[1]/l*SHOT_V, vz: d[2]/l*SHOT_V, life: 1.4 });
+    tRecoil = 1; tMuzzle = 1;
     w.kick(0.15);
   }
 
@@ -23733,6 +24146,21 @@ P.games.meteor = function(){
   runLoop(dt => {
     if(over) return false;
     cool -= dt;
+
+    // ── THE MOUNT, ONCE A FRAME ──
+    // Rates per SECOND against the real dt, not per frame: dt here is already
+    // seconds, so the gimbal traverses at the same speed and the flash lives
+    // the same length of time on a 30Hz phone as on a 144Hz panel. The traverse
+    // closes ~90% of the remaining angle in a quarter of a second — fast
+    // enough to feel responsive, slow enough that the barrels visibly SWING.
+    // (The three constants are the 2D build's per-frame 0.82/0.82/0.74 raised
+    // to the 60th, so both renderers' turrets move at the same rate.)
+    const ease = 1 - Math.pow(0.00008, dt);
+    tYaw   += (yawFor()   - tYaw)   * ease;
+    tPitch += (pitchFor() - tPitch) * ease;
+    tRecoil *= Math.pow(0.00002, dt); if(tRecoil < 0.01) tRecoil = 0;
+    tMuzzle *= Math.pow(1e-9,   dt); if(tMuzzle < 0.02) tMuzzle = 0;
+
     waveT += dt;
     if(waveT > 12){ waveT = 0; wave++; w.pop([0, 14, 0], 'WAVE ' + wave, '#ffd700', { size: 24, life: 1.6 }); snd('wave'); }
 
@@ -23856,13 +24284,35 @@ P.games.meteor = function(){
     }
 
     // ── TURRET + RETICLE ──
-    const yaw = Math.atan2(aimX, 3.2), pitch = -Math.atan2(aimY - 1.6, Math.hypot(aimX, 3.2));
-    // The launcher is a real mount now: it traverses fully and the whole
-    // cradle takes a fraction of the elevation, which is how a CIWS-style
-    // gimbal actually moves. Its own twin barrels replace the lone cylinder
-    // that used to be stuck on the front of a cube.
-    r.draw('turret', { pos:[0, 1.05, 3.2], rot:[pitch * 0.45, yaw, 0], scale:[2.4, 2.2, 2.4],
+    // The launcher is a real mount: it traverses fully, the whole cradle takes
+    // a fraction of the elevation the way a CIWS-style gimbal does, and it
+    // SMOOTHS onto the aim rather than being recomputed from the raw cursor in
+    // the draw call — see the mount block at the top of this game. The kick and
+    // the flash are the other half of that: a gun that fires and does not move
+    // reads as scenery, however good the mesh is.
+    const pitchDrawn = tPitch * PITCH_FRAC;
+    // Recoil slides the mount back along its own barrel axis, which is the
+    // mount's local +Z: column 2 of R = Ry·Rx.
+    const cxk = Math.cos(pitchDrawn), sxk = Math.sin(pitchDrawn);
+    const cyk = Math.cos(tYaw),       syk = Math.sin(tYaw);
+    const rk  = tRecoil * RECOIL_U;
+    r.draw('turret', { pos:[MNT_POS[0] + rk * syk * cxk,
+                            MNT_POS[1] - rk * sxk,
+                            MNT_POS[2] + rk * cyk * cxk],
+                       rot:[pitchDrawn, tYaw, 0], scale: MNT_SCALE,
                        color:'#c3cee2', metallic: 1.0, roughness: 0.15, rim: 1.5 });
+    // Muzzle flare on the barrel that actually fired, at the tip the bolt
+    // actually left. A glow plus one short emissive pill along the barrel axis
+    // — the flash has to have a DIRECTION or a twin mount at full traverse
+    // looks like it is leaking light out of its side.
+    if(tMuzzle > 0.02){
+      const tip = muzzleNow();
+      r.glow(tip, 1.1 + 1.7 * tMuzzle, '#ffd700', 2.2 * tMuzzle);
+      r.draw('pill', { pos: tip, rot:[pitchDrawn, tYaw, 0],
+                       scale:[0.26 * tMuzzle, 0.26 * tMuzzle, 0.34 + 0.9 * tMuzzle],
+                       color:'#ffffff', emissive:'#ffd27a',
+                       emissiveStrength: 4.5 * tMuzzle, alpha: Math.min(1, tMuzzle * 1.4) });
+    }
     r.draw('thintorus', { pos:[aimX, aimY, 0], rot:[Math.PI / 2, 0, w.t * 2.4], scale: 2.2,
                           color: colour, emissive: colour, emissiveStrength: 2.6, alpha: 0.75 });
     r.draw('thintorus', { pos:[aimX, aimY, 0], rot:[Math.PI / 2, 0, -w.t * 1.6], scale: 1.3,
@@ -28160,8 +28610,23 @@ P.games.merge = function(){
   let time = Math.round(100 * getTimeModifier());
   const anims = [];
 
+  // ── THE SLIDE ──
+  // The pillars TRAVEL to the wall you swiped toward instead of reappearing
+  // there. In a vault read by height that matters more than it does on the flat
+  // board: watching a tall core cross the floor and take another one is the
+  // whole feedback loop of the mission. The merge burst and the spawn are held
+  // until the travel lands, so the board is never celebrating a move it is
+  // still making.
+  const SLIDE = 0.1;
+  let slideT = 0;
+  let movers = [];                       // {v, fr, fc, tr, tc}
+  let holdGrid = null;
+  let srcs = new Set();
+  let pendingFx = [];
+
   const at = (rr, c) => grid[rr * N + c];
   const put = (rr, c, v) => { grid[rr * N + c] = v; };
+  const shown = i => slideT > 0 ? (srcs.has(i) ? 0 : holdGrid[i]) : grid[i];
 
   function freeCells(){
     const out = [];
@@ -28173,7 +28638,7 @@ P.games.merge = function(){
     if(!free.length) return false;
     const i = free[Math.floor(dailyRand() * free.length)];
     grid[i] = dailyRand() < 0.88 ? 2 : 4;
-    anims.push({ i, t: 1, kind: 'spawn' });
+    anims.push({ i, t: 1, delay: SLIDE, kind: 'spawn' });
     return true;
   }
   spawn(); spawn();
@@ -28186,6 +28651,8 @@ P.games.merge = function(){
     if(over) return;
     let moved = false;
     const gained = [];
+    const flying = [];
+    const before = grid.slice();
     const order = [];
     for(let rr = 0; rr < N; rr++) for(let c = 0; c < N; c++) order.push([rr, c]);
     if(dr > 0) order.sort((a, b) => b[0] - a[0]);
@@ -28209,13 +28676,26 @@ P.games.merge = function(){
           locked.add(nr * N + nc);
           gained.push(v * 2);
           moved = true;
-          anims.push({ i: nr * N + nc, t: 1, kind: 'merge' });
+          // Carries all the way into the cell it merged with, so the doubled
+          // core rises under the pillar that made it.
+          cr = nr; cc = nc;
+          anims.push({ i: nr * N + nc, t: 1, delay: SLIDE, kind: 'merge' });
+          const mv = v * 2, mx = cx(nc), mz = cz(nr), mcol = tileCol(mv);
+          pendingFx.push(() => {
+            w.burst([mx, tileH(mv), mz], mcol, 22, { speed: 9, life: 0.6, size: 0.3 });
+            w.pop([mx, tileH(mv) + 1.6, mz], `+${mv}`, mcol, { size: 17, life: 1 });
+          });
         }
         break;
       }
+      if(cr !== rr || cc !== c) flying.push({ v, fr: rr, fc: c, tr: cr, tc: cc });
     }
 
     if(!moved){ snd('deny'); return; }
+    holdGrid = before;
+    movers = flying;
+    srcs = new Set(flying.map(m => m.fr * N + m.fc));
+    slideT = SLIDE;
     moves++;
     if(gained.length){
       merges += gained.length;
@@ -28225,13 +28705,6 @@ P.games.merge = function(){
       setLive(Math.min(1300, score));
       snd('match', { semi: Math.min(16, Math.round(Math.log2(Math.max(...gained))) * 2) });
       w.kick(Math.min(1.6, 0.3 + Math.log2(Math.max(...gained)) * 0.12));
-      for(const [rr, c] of order){
-        const i = rr * N + c;
-        if(!anims.some(a => a.i === i && a.kind === 'merge')) continue;
-        const v = at(rr, c);
-        w.burst([cx(c), tileH(v), cz(rr)], tileCol(v), 22, { speed: 9, life: 0.6, size: 0.3 });
-        w.pop([cx(c), tileH(v) + 1.6, cz(rr)], `+${v}`, tileCol(v), { size: 17, life: 1 });
-      }
     }else{
       snd('move');
     }
@@ -28264,18 +28737,23 @@ P.games.merge = function(){
 
   // Screen-right is +X and screen-down is +Z for the whole round — the camera
   // never yaws — so a swipe in board coordinates maps straight onto a grid
-  // direction with no projection and no inverse matrix.
+  // direction with no projection and no inverse matrix. Read on the way as well
+  // as at the end: a flick that leaves the canvas never delivers a touchend the
+  // gesture can use, and on a phone the board is most of the screen.
   let sx = 0, sy = 0, swiping = false;
+  const SWIPE = 26;
+  function trySwipe(p){
+    if(!swiping) return;
+    const dx = p.x - sx, dy = p.y - sy;
+    if(Math.abs(dx) < SWIPE && Math.abs(dy) < SWIPE) return;
+    swiping = false;
+    if(Math.abs(dx) > Math.abs(dy)) slide(0, dx > 0 ? 1 : -1);
+    else slide(dy > 0 ? 1 : -1, 0);
+  }
   bindCanvasDrag({
     onDown(p){ hideTouchHint(); sx = p.x; sy = p.y; swiping = true; },
-    onUp(p){
-      if(!swiping) return;
-      swiping = false;
-      const dx = p.x - sx, dy = p.y - sy;
-      if(Math.abs(dx) < 26 && Math.abs(dy) < 26) return;
-      if(Math.abs(dx) > Math.abs(dy)) slide(0, dx > 0 ? 1 : -1);
-      else slide(dy > 0 ? 1 : -1, 0);
-    }
+    onMove: trySwipe,
+    onUp(p){ trySwipe(p); swiping = false; }
   });
 
   gTimer = setInterval(() => {
@@ -28290,11 +28768,17 @@ P.games.merge = function(){
 
   runLoop(dt => {
     if(over) return false;
-    for(let i = anims.length - 1; i >= 0; i--){
-      anims[i].t -= dt * 3.4;
-      if(anims[i].t <= 0) anims.splice(i, 1);
+    if(slideT > 0){
+      slideT = Math.max(0, slideT - dt);
+      if(slideT === 0 && pendingFx.length){ pendingFx.forEach(f => f()); pendingFx = []; }
     }
-    const animFor = i => anims.find(a => a.i === i);
+    for(let i = anims.length - 1; i >= 0; i--){
+      const a = anims[i];
+      if(a.delay > 0){ a.delay -= dt; continue; }
+      a.t -= dt * 3.4;
+      if(a.t <= 0) anims.splice(i, 1);
+    }
+    const animFor = i => anims.find(a => a.i === i && a.delay <= 0);
 
     // Low and raked, and fixed. A top-down camera would throw away the height
     // read the whole design rests on.
@@ -28321,7 +28805,7 @@ P.games.merge = function(){
     // Empty sockets, so the board reads as a 4×4 lattice even when it is nearly
     // empty — without them a two-core board is two objects floating in a room.
     for(let rr = 0; rr < N; rr++) for(let c = 0; c < N; c++){
-      if(at(rr, c)) continue;
+      if(shown(rr * N + c)) continue;
       r.draw('slab', { pos:[cx(c), -0.42, cz(rr)], scale:[STEP * 0.84, 0.2, STEP * 0.84],
                        color:'#0d1426', metallic: 0.88, roughness: 0.32, rim: 1.8,
                        emissive:'#12335c', emissiveStrength: 0.22 });
@@ -28341,31 +28825,45 @@ P.games.merge = function(){
     // Sorted so the tallest gets a light: MAX_LIGHTS is 10 and a full board of
     // sixteen emitters would silently drop most of them anyway.
     const lit = [];
-    for(let rr = 0; rr < N; rr++) for(let c = 0; c < N; c++){
-      const v = at(rr, c);
-      if(!v) continue;
-      const a = animFor(rr * N + c);
-      const k = !a ? 1 : a.kind === 'spawn' ? 1 - a.t : 1 + Math.sin(a.t * Math.PI) * 0.2;
+    function drawCore(x, z, v, k){
       const h = tileH(v) * k;
       const col = tileCol(v);
       const em = v >= 64 ? 0.9 + Math.min(0.6, Math.log2(v / 64) * 0.14) : 0.2;
       r.draw('techblock', {
-        pos:[cx(c), h / 2 - 0.3, cz(rr)],
+        pos:[x, h / 2 - 0.3, z],
         scale:[STEP * 0.84 * k, h, STEP * 0.84 * k],
         color: col, metallic: 0.7, roughness: 0.3, rim: 1.3,
         emissive: col, emissiveStrength: em
       });
       // Lit cap — the part that actually reads as "this core is live".
-      r.draw('box', { pos:[cx(c), h - 0.3 + 0.06, cz(rr)],
+      r.draw('box', { pos:[x, h - 0.3 + 0.06, z],
                       scale:[STEP * 0.6 * k, 0.1, STEP * 0.6 * k],
                       color: col, emissive: col, emissiveStrength: 1.6 + em });
       // The number, carved into a plate standing on the cap and facing the
       // camera. Height says how big the core is at a glance; this says exactly.
       const s = String(v);
-      drawText3D(r, s, [cx(c), h + 0.5, cz(rr) + 0.1], Math.min(0.2, 0.62 / s.length),
+      drawText3D(r, s, [x, h + 0.5, z + 0.1], Math.min(0.2, 0.62 / s.length),
                  { color:'#ffffff', emissiveStrength: 1.9, depth: 0.14 });
-      if(v >= 64) lit.push({ v, pos:[cx(c), h + 0.4, cz(rr)], col });
+      if(v >= 64) lit.push({ v, pos:[x, h + 0.4, z], col });
     }
+
+    for(let rr = 0; rr < N; rr++) for(let c = 0; c < N; c++){
+      const i = rr * N + c;
+      const v = shown(i);
+      if(!v) continue;
+      const a = slideT > 0 ? null : animFor(i);
+      const k = !a ? 1 : a.kind === 'spawn' ? 1 - a.t : 1 + Math.sin(a.t * Math.PI) * 0.2;
+      drawCore(cx(c), cz(rr), v, k);
+    }
+    if(slideT > 0){
+      const p = 1 - slideT / SLIDE;
+      const e = 1 - Math.pow(1 - p, 3);        // leaves fast, arrives soft
+      for(const m of movers){
+        drawCore(cx(m.fc) + (cx(m.tc) - cx(m.fc)) * e,
+                 cz(m.fr) + (cz(m.tr) - cz(m.fr)) * e, m.v, 1);
+      }
+    }
+
     lit.sort((a, b) => b.v - a.v).slice(0, 5).forEach(o => {
       r.light({ pos: o.pos, color: o.col, intensity: 110 + Math.log2(o.v) * 26, range: 20 });
     });
@@ -28426,47 +28924,71 @@ P.games.uplink = function(){
   const PAD = [-17.5, 0.6, 0];
   const G = 34;                          // world units/s² — the 2D 560px/s²
                                          // rewritten at this scale
-  const MAX_PULL = 132;                  // board units, as in the 2D build
-  const V_MAX = 60;
+  // Same sling as the 2D build, for the same reasons: the pull is anchored
+  // where the drag STARTS rather than at the dish (which lives in the corner,
+  // off the board on a phone), and it maps onto √speed so that RANGE, not
+  // velocity, is linear in the stroke. See startOrbitalUplink().
+  const MAX_PULL = 190;                  // board units, as in the 2D build
+  const V_MAX = 46;
+  const shotSpeed = pull => V_MAX * Math.sqrt(Math.min(1, pull / MAX_PULL));
   const diff = (typeof getDifficultyModifier === 'function') ? getDifficultyModifier() : 1;
 
   let time = Math.round(75 * getTimeModifier());
   let score = 0, sunk = 0, shots = 0, streak = 0, bestStreak = 0, over = false;
   let wind = 0, relay = null, barrier = null, packet = null;
-  let aiming = false, aim = { x: 0, y: 0 };
+  let aiming = false, aim = { x: 0, y: 0 }, anchor = null, ghost = null;
   const wake = [];
 
   document.getElementById('g-time').textContent = time;
   setControls(null);
-  setControlHint('DRAG BACK FROM THE DISH AND RELEASE',
-                 'DRAG BACK FROM THE DISH AND RELEASE — the pull is the power');
-  showTouchHint('DRAG BACK FROM THE DISH TO LOB');
+  setControlHint('DRAG BACKWARDS ANYWHERE ON THE BOARD, THEN RELEASE',
+                 'DRAG BACKWARDS ANYWHERE AND RELEASE — the pull is the power');
+  showTouchHint('DRAG BACKWARDS ANYWHERE TO LOB');
 
   function newField(){
-    relay = { x: rnd(-2, 19), y: rnd(3, 20), r: 1.5, bob: Math.random() * Math.PI * 2 };
-    barrier = { x: PAD[0] + rnd(6, 12), h: rnd(6, 6 + 10 * Math.min(1.4, diff)) };
-    wind = sunk >= 3 ? rnd(-1, 1) * 5.5 * Math.min(1.5, diff) : 0;
+    // Slab first, relay placed around it — an arc has to exist before the
+    // player is asked to find it.
+    barrier = { x: PAD[0] + rnd(6, 12), h: rnd(5, 5 + 7 * Math.min(1.3, diff)) };
+    relay = {
+      x: barrier.x + rnd(9, 22),
+      y: Math.max(barrier.h + 2.5, rnd(3, 15)),
+      r: 2.0,
+      bob: Math.random() * Math.PI * 2
+    };
+    wind = sunk >= 3 ? rnd(-1, 1) * 4.2 * Math.min(1.4, diff) : 0;
   }
   newField();
 
+  // The pull, in BOARD units, measured from where the drag went down. One
+  // function for the launch and for the preview, so what you saw is what you
+  // fired.
+  function pullFrom(p){
+    if(!anchor) return null;
+    const dx = anchor.x - p.x, dy = anchor.y - p.y;
+    const len = Math.hypot(dx, dy);
+    if(len < 14) return null;
+    const pull = Math.min(MAX_PULL, len);
+    const k = shotSpeed(pull);
+    return { vx: dx / len * k, vy: -dy / len * k, pull };
+  }
+
   bindCanvasDrag({
-    onDown(p){ hideTouchHint(); if(packet) return; aiming = true; aim = { x: p.x, y: p.y }; },
+    onDown(p){
+      hideTouchHint();
+      if(packet) return;
+      anchor = { x: p.x, y: p.y };
+      aim = { x: p.x, y: p.y };
+      aiming = true;
+    },
     onMove(p){ if(aiming) aim = { x: p.x, y: p.y }; },
     onUp(p){
       if(!aiming) return;
       aiming = false;
-      // The pull is measured in BOARD units against the dish's projected
-      // position, so the gesture is identical in both renderers: pull back from
-      // the dish, and how far back you pulled is how hard it goes.
-      const px = (PAD[0] / WIDE + 0.5) * BOARD_W;
-      const py = (1 - (PAD[1] + 2) / TALL) * BOARD_H;
-      const dx = px - p.x, dy = py - p.y;
-      const len = Math.hypot(dx, dy);
-      if(len < 14) return;
-      const k = (Math.min(MAX_PULL, len) / MAX_PULL) * V_MAX;
+      const s = pullFrom(p);
+      if(!s) return;
       shots++;
       wake.length = 0;
-      packet = { x: PAD[0], y: PAD[1] + 0.8, vx: dx / len * k, vy: -dy / len * k, t: 0 };
+      packet = { x: PAD[0], y: PAD[1] + 0.8, vx: s.vx, vy: s.vy, t: 0 };
       snd('shoot');
       w.kick(0.5);
     }
@@ -28482,45 +29004,63 @@ P.games.uplink = function(){
 
   w.buildCity({ seed: 6161, count: 78, spread: 130, hole: 40, y: -14 });
 
+  // Collision, run per physics SUBSTEP. A frame-sized step at full power moves
+  // the packet further than the firewall is thick, so shots passed through the
+  // slab and skimmed relays without either registering.
+  function resolve(){
+    const by = relay.y + Math.sin(relay.bob) * 0.7;
+    let done = null;
+    if(Math.hypot(packet.x - relay.x, packet.y - by) < relay.r + 0.9) done = 'hit';
+    else if(Math.abs(packet.x - barrier.x) < 0.8 && packet.y < barrier.h) done = 'wall';
+    else if(packet.y < 0 || packet.x > WIDE || packet.x < -WIDE || packet.t > 9) done = 'miss';
+    if(!done) return;
+
+    if(done === 'hit'){
+      sunk++; streak++;
+      bestStreak = Math.max(bestStreak, streak);
+      const dist = Math.round((relay.x - PAD[0]) * 2.4);
+      const gain = 40 + dist * 2 + Math.min(80, (streak - 1) * 20);
+      score += gain;
+      setLive(Math.min(1000, score));
+      snd('correct', { semi: Math.min(14, streak * 2) });
+      w.kick(1.8);
+      w.burst([relay.x, by, 0], '#39ff88', 40, { speed: 13, life: 0.9, size: 0.4 });
+      w.pop([relay.x, by + 2.4, 0], `UPLINK +${gain}`, '#39ff88', { size: 20, life: 1.3 });
+      ghost = null;
+      packet = null;
+      newField();
+    }else{
+      streak = 0;
+      snd(done === 'wall' ? 'shieldHit' : 'wrong');
+      w.kick(done === 'wall' ? 1.1 : 0.4);
+      w.burst([packet.x, Math.max(0.2, packet.y), 0],
+              done === 'wall' ? '#ff2442' : '#5a6cff', 16, { speed: 9, life: 0.5 });
+      // The line the last shot took, held until the next one leaves. The field
+      // does not change until you land it, so the ghost turns the next attempt
+      // into an adjustment instead of another guess.
+      ghost = wake.slice();
+      packet = null;
+    }
+  }
+
   runLoop(dt => {
     if(over) return false;
     relay.bob += dt * 1.6;
 
     if(packet){
-      packet.t += dt;
-      packet.vy -= G * dt;
-      packet.vx += wind * dt;
-      packet.x += packet.vx * dt;
-      packet.y += packet.vy * dt;
-      wake.push([packet.x, packet.y, 0]);
-      if(wake.length > 40) wake.shift();
-
-      const by = relay.y + Math.sin(relay.bob) * 0.7;
-      let done = null;
-      if(Math.hypot(packet.x - relay.x, packet.y - by) < relay.r + 0.5) done = 'hit';
-      else if(Math.abs(packet.x - barrier.x) < 0.8 && packet.y < barrier.h) done = 'wall';
-      else if(packet.y < 0 || packet.x > WIDE || packet.x < -WIDE || packet.t > 9) done = 'miss';
-
-      if(done === 'hit'){
-        sunk++; streak++;
-        bestStreak = Math.max(bestStreak, streak);
-        const dist = Math.round((relay.x - PAD[0]) * 2.4);
-        const gain = 40 + dist * 2 + Math.min(80, (streak - 1) * 20);
-        score += gain;
-        setLive(Math.min(1000, score));
-        snd('correct', { semi: Math.min(14, streak * 2) });
-        w.kick(1.8);
-        w.burst([relay.x, by, 0], '#39ff88', 40, { speed: 13, life: 0.9, size: 0.4 });
-        w.pop([relay.x, by + 2.4, 0], `UPLINK +${gain}`, '#39ff88', { size: 20, life: 1.3 });
-        packet = null;
-        newField();
-      }else if(done){
-        streak = 0;
-        snd(done === 'wall' ? 'shieldHit' : 'wrong');
-        w.kick(done === 'wall' ? 1.1 : 0.4);
-        w.burst([packet.x, Math.max(0.2, packet.y), 0],
-                done === 'wall' ? '#ff2442' : '#5a6cff', 16, { speed: 9, life: 0.5 });
-        packet = null;
+      const steps = Math.max(1, Math.ceil(dt / 0.006));
+      const sdt = dt / steps;
+      for(let s = 0; s < steps && packet; s++){
+        packet.t += sdt;
+        packet.vy -= G * sdt;
+        packet.vx += wind * sdt;
+        packet.x += packet.vx * sdt;
+        packet.y += packet.vy * sdt;
+        resolve();
+      }
+      if(packet){
+        wake.push([packet.x, packet.y, 0]);
+        if(wake.length > 40) wake.shift();
       }
     }
 
@@ -28579,31 +29119,44 @@ P.games.uplink = function(){
     r.beam([relay.x, 0, 0], [relay.x, by - relay.r, 0], 0.06,
            { color:'#39ff88', emissive:'#39ff88', emissiveStrength: 0.5, height: 0.06 });
 
+    // Ghost of the last shot.
+    if(ghost && ghost.length > 1){
+      for(let i = 0; i < ghost.length; i += 2) r.glow(ghost[i], 0.3, '#8fa6ff', 0.16);
+    }
+
     // ── AIM PREVIEW ──
-    // The first third of the flight only. The mission is judging a trajectory;
-    // drawing the whole one leaves it with nothing to judge.
-    if(aiming && !packet){
-      const px = (PAD[0] / WIDE + 0.5) * BOARD_W;
-      const py = (1 - (PAD[1] + 2) / TALL) * BOARD_H;
-      const dx = px - aim.x, dy = py - aim.y;
-      const len = Math.hypot(dx, dy);
-      if(len > 8){
-        const pull = Math.min(MAX_PULL, len);
-        const k = (pull / MAX_PULL) * V_MAX;
-        let sx = PAD[0], sy = PAD[1] + 0.8, svx = dx / len * k, svy = -dy / len * k;
-        for(let i = 0; i < 20; i++){
-          svy -= G * 0.045; svx += wind * 0.045;
-          sx += svx * 0.045; sy += svy * 0.045;
-          if(sy < 0) break;
+    // The whole arc, fading along its length. Two thirds of a second of dots
+    // was not a read at this distance, it was a guess — the mission played as
+    // if the physics were random. The fade leaves the judgement intact: the
+    // near half is exact, the far end is a suggestion, and the wind still has
+    // to be allowed for.
+    if(aiming && !packet && anchor){
+      const s = pullFrom(aim);
+      if(s){
+        let sx = PAD[0], sy = PAD[1] + 0.8, svx = s.vx, svy = s.vy;
+        for(let i = 0; i < 80; i++){
+          svy -= G * 0.032; svx += wind * 0.032;
+          sx += svx * 0.032; sy += svy * 0.032;
+          if(sy < 0 || sx > WIDE || sx < -WIDE) break;
+          if(Math.abs(sx - barrier.x) < 0.8 && sy < barrier.h) break;
+          const fade = Math.max(0.08, 1 - i / 64);
           // Bigger and brighter than they look like they need to be: these dots
           // are 30-odd units from the camera and they are the only feedback the
           // gesture has.
-          r.glow([sx, sy, 0], 0.62, '#ffffff', 0.75 + (pull / MAX_PULL) * 0.5);
+          r.glow([sx, sy, 0], 0.24 + fade * 0.44, '#ffffff',
+                 fade * (0.55 + (s.pull / MAX_PULL) * 0.45));
         }
-        // Above the dish, not below it — at y = -1.4 the readout was under the
-        // ground plane, where the floor drew straight over it.
-        drawText3D(r, `${Math.round((pull / MAX_PULL) * 100)}%`, [PAD[0], 6.4, 0], 0.42,
-                   { color: pull / MAX_PULL > 0.86 ? '#ff2442' : col, emissiveStrength: 2, depth: 0.3 });
+        // ── THE BAND ──
+        // At the anchor, not at the dish: the anchor is where the hand is, and
+        // it is the only thing on screen that says the sling is relative.
+        const pw = s.pull / MAX_PULL;
+        const bandCol = pw > 0.86 ? '#ff2442' : col;
+        const aw = [bx2w(anchor.x), by2w(anchor.y), 6];
+        const fw = [bx2w(aim.x), by2w(aim.y), 6];
+        r.beam(aw, fw, 0.12, { color: bandCol, emissive: bandCol, emissiveStrength: 2.2, height: 0.12 });
+        r.glow(aw, 0.9, bandCol, 0.7);
+        drawText3D(r, `${Math.round(pw * 100)}%`, [aw[0], aw[1] + 1.8, 6], 0.34,
+                   { color: bandCol, emissiveStrength: 2, depth: 0.2 });
       }
     }
 

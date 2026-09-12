@@ -1074,6 +1074,15 @@ body { overscroll-behavior: none; }
      here (a five-digit Cyber Arena score has to sit still on a phone too), so
      the room comes out of the padding instead. */
   .stat-pill { padding: 5px 8px; font-size: .55rem; }
+  /* The pace ghost is an extra pill that shows up only once the mission has a
+     personal best to race, and on a phone it is the one that pushes Audio and
+     Fullscreen clean off the right edge: .g-stats is a flex line inside a grid
+     track, and a grid item will not shrink below its content unless it is told
+     to. Let the row wrap instead. Nothing has to be re-measured for it — the
+     board sizes itself from the header's real bottom edge, so a second line
+     costs the play field exactly its own height and no more. */
+  .g-hdr, .g-hdr > * { min-width: 0; }
+  .g-stats { flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; }
   .prog-bar { margin-bottom: 10px; }
   .g-area { max-width: 100%; }
   #arcade-controls { max-width: 100%; }
