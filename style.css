@@ -161,7 +161,29 @@ textarea::-webkit-scrollbar-thumb,select::-webkit-scrollbar-thumb,.input::-webki
 .rarity-badge{display:inline-block;font-family:var(--fd);font-size:.48rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;padding:2px 10px;border-radius:20px;margin-bottom:8px}
 .rarity-badge.rare{color:var(--cyan);border:1px solid var(--cyan);background:rgba(0,245,255,.08)}
 .rarity-badge.epic{color:#e879f9;border:1px solid #e879f9;background:rgba(232,121,249,.08)}
-.rarity-badge.legendary{position:relative;border:1px solid var(--gold);background:linear-gradient(90deg,var(--gold),var(--pink),var(--cyan),var(--gold));background-size:300% 100%;-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;animation:legendary-text-shift 3s linear infinite}
+/* LEGENDARY badge — the shimmer IS the text: the gradient is clipped to the
+   glyphs, so this badge's `background-image` is not decoration that can be
+   swapped out, it is the only thing painting the word. Two consequences the
+   rules below have to respect:
+     · the pill can have no background FILL — background-clip:text clips every
+       background layer, colour included — so the tint arrives as an inset
+       shadow, which paints over the background box and under the text.
+     · any later rule that sets `background-image` on .rarity-badge erases the
+       word entirely (see the mode-3d override further down).
+   `color` is the safety net for engines without background-clip:text, where
+   -webkit-text-fill-color is skipped and the flat gold shows instead. */
+.rarity-badge.legendary{
+  --legend-shimmer:linear-gradient(90deg,var(--gold),var(--pink),var(--cyan),var(--gold));
+  position:relative;color:var(--gold);border:1px solid var(--gold);
+  box-shadow:inset 0 0 0 20px rgba(255,215,0,.10);
+  background-image:var(--legend-shimmer);background-size:300% 100%;
+  -webkit-background-clip:text;background-clip:text;
+  filter:drop-shadow(0 0 3px rgba(255,215,0,.5));
+  animation:legendary-text-shift 3s linear infinite
+}
+@supports ((-webkit-background-clip:text) or (background-clip:text)){
+  .rarity-badge.legendary{-webkit-text-fill-color:transparent}
+}
 @keyframes legendary-text-shift{0%{background-position:0% 50%}100%{background-position:300% 50%}}
 
 /* RARE — gentle cyan breathing glow */
@@ -2501,6 +2523,13 @@ body.mode-3d .res-bonus{
     inset 0 1px 0 rgba(255,255,255,.18),inset 0 -1px 0 rgba(0,0,0,.45);
 }
 
+/* The specular sheen above is a background-image, and on the legendary badge
+   the background-image is the word itself — painting --spec there clips a
+   16%-white gradient to the glyphs and the text all but disappears. This badge
+   keeps its shimmer and forgoes the sheen; it still gets the solid body and
+   lit lip from the shared rule, only the face gradient differs. */
+body.mode-3d .rarity-badge.legendary{background-image:var(--legend-shimmer)}
+
 /* ══ RECESSED WELLS — the inverse solid ══
    A field you type into is a hole in the panel, not a block on top of it. Same
    modelling logic run backwards: the lit lip goes on the BOTTOM edge (light
@@ -2804,3 +2833,463 @@ body.mode-3d #board-frame{transform-style:preserve-3d}
   body.mode-3d .shop-emoji{transform:translateZ(16px)}
   body.mode-3d::-webkit-scrollbar,body.mode-3d ::-webkit-scrollbar{width:10px;height:10px}
 }
+
+/* ══════════════════════════════════════════════════════════════
+   🌀 CHAOS PROTOCOL — the opt-in dial
+   Sits directly under the stability selector and borrows its frame, because
+   the two are read together: one sets how hard the round is, the other sets
+   whether the round is a gamble. Deliberately NOT the same colour — stability
+   is a dial you turn, this is a switch you throw.
+   ══════════════════════════════════════════════════════════════ */
+.chaos-selector{
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  /* #hub-screen is a flex COLUMN, so this is a flex item and shrinks by default
+     — which squashed a 26px toggle into a 19px strip on any hub tall enough to
+     overflow. .diff-selector above it never hit this because it is taller than
+     its content either way. */
+  flex:none;width:100%;
+  max-width:1060px;margin:8px auto 20px;padding:9px 16px;
+  border:1px solid var(--border);border-radius:var(--r);
+  background:var(--s1);position:relative;overflow:hidden;
+  transition:border-color .25s ease,box-shadow .25s ease,background .25s ease;
+}
+.chaos-selector.armed{
+  border-color:rgba(168,85,247,.5);
+  background:linear-gradient(100deg,rgba(168,85,247,.12),rgba(255,36,66,.07));
+  box-shadow:0 0 24px rgba(168,85,247,.18);
+}
+/* A slow sweep across the strip while it is armed — the one piece of motion
+   in the hub that says "something is running". Held to a 6s cycle so it reads
+   as a system light rather than as an animation demanding attention. */
+.chaos-selector.armed::after{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(100deg,transparent 30%,rgba(168,85,247,.18) 50%,transparent 70%);
+  background-size:220% 100%;animation:chaosSweep 6s linear infinite;
+}
+@keyframes chaosSweep{from{background-position:120% 0}to{background-position:-120% 0}}
+html.reduced-motion .chaos-selector.armed::after{animation:none;opacity:.35}
+
+.chaos-toggle{
+  display:inline-flex;align-items:center;gap:9px;
+  padding:5px 13px 5px 6px;border-radius:20px;cursor:pointer;
+  border:1px solid var(--border2);background:var(--s2);
+  font-family:var(--fd);font-size:.5rem;font-weight:900;letter-spacing:.16em;
+  color:var(--dim);transition:all .2s ease;position:relative;z-index:1;
+}
+.chaos-toggle:hover{border-color:var(--purple);color:var(--text)}
+.chaos-toggle .chaos-knob{
+  width:15px;height:15px;border-radius:50%;
+  background:var(--dimmer);transition:all .22s ease;flex:none;
+}
+.chaos-toggle.on{border-color:var(--purple);color:var(--purple);background:rgba(168,85,247,.15)}
+.chaos-toggle.on .chaos-knob{background:var(--purple);box-shadow:0 0 12px var(--purple)}
+.chaos-note{font-size:.72rem;color:var(--dim);position:relative;z-index:1;flex:1;min-width:170px}
+.chaos-selector.armed .chaos-note{color:rgba(255,255,255,.72)}
+
+/* A boon has to be readable as GOOD from the first glance, or the banner reads
+   as bad news and the round gets played defensively for nothing. */
+#chaos-banner.chaos-boon{
+  border-color:rgba(57,255,20,.55);
+  background:linear-gradient(100deg,rgba(57,255,20,.14),rgba(0,245,255,.1));
+  box-shadow:0 0 26px rgba(57,255,20,.22);
+}
+#chaos-banner.chaos-boon .chaos-name{color:var(--lime)}
+#chaos-banner.chaos-boon .chaos-icon{filter:drop-shadow(0 0 10px var(--lime))}
+/* 🎲 Signal Filter's reroll. Lives on the banner and disappears with it. */
+.chaos-reroll{
+  flex:none;margin-left:auto;cursor:pointer;
+  padding:6px 12px;border-radius:18px;
+  border:1px solid var(--border2);background:var(--s2);color:var(--text);
+  font-family:var(--fd);font-size:.5rem;font-weight:900;letter-spacing:.14em;
+  transition:all .18s ease;
+}
+.chaos-reroll:hover{border-color:var(--gold);color:var(--gold);transform:translateY(-1px)}
+#chaos-banner.chip .chaos-reroll{display:none}
+
+/* 📶 SIGNAL DEGRADATION. A corrupted FEED, not a corrupted round — the board
+   underneath is pristine and the mission never learns this happened. Two
+   overlaid effects: a chromatic smear on the pixels, and a tear that walks
+   down the picture. */
+.g-area.sig-degraded{
+  /* Scoped to the modifier, never blanket: .g-area is an ancestor of every
+     mission's play surface, and giving it a permanent containing block would
+     silently repoint any absolutely positioned overlay that currently resolves
+     further up the tree. It only needs to be positioned while the scanline
+     overlay below exists. */
+  position:relative;
+  filter:blur(.7px) contrast(1.22) saturate(.72);
+  animation:sigJitter 2.4s steps(1,end) infinite;
+}
+.g-area.sig-degraded::after{
+  content:'';position:absolute;inset:0;pointer-events:none;z-index:5;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.32) 0 2px,transparent 2px 4px);
+  mix-blend-mode:multiply;
+}
+@keyframes sigJitter{
+  0%,74%{transform:none;filter:blur(.7px) contrast(1.22) saturate(.72)}
+  76%{transform:translateX(-3px);filter:blur(1.4px) contrast(1.5) saturate(.4) hue-rotate(8deg)}
+  78%{transform:translateX(4px)}
+  80%,100%{transform:none}
+}
+html.reduced-motion .g-area.sig-degraded{animation:none}
+
+/* 📉 PACKET LOSS. A whisper, never an alert: the modifier's whole character is
+   that a dropped input is indistinguishable from your own mistake until the
+   pattern adds up, and a big red "DROPPED" would make it a fair, readable
+   handicap instead. */
+.g-area.pkt-drop{animation:pktDrop .16s ease-out}
+@keyframes pktDrop{0%{filter:brightness(1.16)}100%{filter:none}}
+html.reduced-motion .g-area.pkt-drop{animation:none}
+
+/* 🌀 AXIS DRIFT rotates #board-frame from script (boardPos() untilts the
+   finger to match). The transition only has to smooth the 60ms steps the
+   driver writes — anything longer and the aim correction, which reads the
+   angle instantly, leads the picture. */
+#board-frame{transition:transform .07s linear}
+
+/* ⚙️ OVERCLOCK CHIP — a standing tint for the rest of the round, so the board
+   itself says the points are running hot. */
+.g-area.overclocked-run{filter:saturate(1.12) brightness(1.04)}
+
+/* ══════════════════════════════════════════════════════════════
+   👻 PACE GHOST
+   How far ahead of your own best run you are right now. Lives in the stat
+   strip beside the clock and the score, because it is the third number that
+   describes the round in progress.
+   ══════════════════════════════════════════════════════════════ */
+.ghost-pace{
+  display:flex;align-items:center;gap:7px;white-space:nowrap;
+  background:var(--s2);border:1px solid var(--border);border-radius:20px;
+  padding:5px 11px;font-family:var(--fd);font-size:.6rem;font-weight:700;
+  transition:border-color .25s ease,box-shadow .25s ease;
+}
+.ghost-pace .gp-ico{font-size:.8rem;line-height:1}
+.ghost-pace .gp-delta{letter-spacing:.06em}
+.ghost-pace .gp-target{font-size:.5rem;color:var(--dimmer);letter-spacing:.1em}
+.ghost-pace.ahead{border-color:rgba(57,255,20,.5);box-shadow:0 0 14px rgba(57,255,20,.16)}
+.ghost-pace.ahead .gp-delta{color:var(--lime)}
+.ghost-pace.behind{border-color:rgba(255,36,66,.45)}
+.ghost-pace.behind .gp-delta{color:var(--red)}
+
+/* ══════════════════════════════════════════════════════════════
+   🌳 PERK TREE — the tiers
+   The tree is drawn as rows because the one thing that matters about twelve
+   perks is that half of them cannot be bought yet, and a flat grid hides
+   exactly that.
+   ══════════════════════════════════════════════════════════════ */
+.perk-tint .fb-modal{max-width:980px}
+.perk-tree{display:block}
+.perk-row{margin-bottom:20px}
+.perk-row:last-child{margin-bottom:0}
+.perk-row-nodes{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px}
+.perk-tier-hdr{
+  display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  margin-bottom:9px;padding-bottom:6px;border-bottom:1px solid var(--border);
+}
+.perk-tier-name{font-family:var(--fd);font-size:.62rem;font-weight:900;letter-spacing:.18em;color:var(--lime)}
+.perk-tier-cost{
+  font-family:var(--fd);font-size:.44rem;letter-spacing:.14em;color:var(--gold);
+  border:1px solid rgba(255,215,0,.35);border-radius:12px;padding:2px 8px;
+}
+.perk-tier-note{font-size:.7rem;color:var(--dim);flex:1;min-width:180px}
+/* BARRED is not LOCKED. "You have the points but not the parent" and "you have
+   the parent but not the points" are different problems, and a player has to
+   be able to tell at a glance which one they are looking at. */
+.perk-node.barred{opacity:.42;border-style:dashed}
+.perk-node.barred .perk-ico{filter:grayscale(1)}
+.perk-needs{
+  font-family:var(--fd);font-size:.46rem;letter-spacing:.12em;
+  color:var(--red);border-top:1px solid var(--border);padding-top:6px;margin-top:2px;
+}
+.perk-needs.met{color:var(--lime)}
+.perk-kids{font-size:.66rem;color:var(--dimmer);line-height:1.45}
+.perk-node .perk-desc{margin-bottom:2px}
+
+/* 💱 Data Broker repoints the headline conversion rate, so the number says so. */
+.convert-rate.perked{color:var(--lime);text-shadow:0 0 12px rgba(57,255,20,.4)}
+
+/* ══════════════════════════════════════════════════════════════
+   💀 EXIT STATES II — datamosh, core purge, tape rewind
+   Same stage as the first three: fixed, above every screen, below the toast.
+   All three are pure CSS over a body the script fills with a handful of
+   elements, so nothing here needs a canvas or an image.
+   ══════════════════════════════════════════════════════════════ */
+
+/* 🟪 DATAMOSH. A picture arriving in the wrong ORDER — each band carries its
+   own offset and its own delay, so the eye keeps trying to reassemble a stream
+   that never settles. The RGB layer underneath supplies the channel shred. */
+#exit-fx.fx-glitch{background:rgba(4,4,14,.82);animation:glFade 1.2s ease forwards}
+@keyframes glFade{0%{opacity:0}8%{opacity:1}82%{opacity:1}100%{opacity:0}}
+.gl-band{
+  position:absolute;left:0;width:100%;
+  background:linear-gradient(90deg,rgba(0,245,255,.22),rgba(255,0,144,.3),rgba(168,85,247,.2));
+  transform:translateX(var(--gx));
+  animation:glShift .34s steps(3,end) infinite;
+  mix-blend-mode:screen;
+}
+@keyframes glShift{
+  0%{transform:translateX(var(--gx))}
+  40%{transform:translateX(calc(var(--gx) * -0.6)) scaleY(1.06)}
+  70%{transform:translateX(calc(var(--gx) * 1.4))}
+  100%{transform:translateX(var(--gx))}
+}
+.gl-rgb{
+  position:absolute;inset:0;
+  background:
+    repeating-linear-gradient(90deg,rgba(255,0,0,.12) 0 2px,transparent 2px 4px),
+    repeating-linear-gradient(90deg,transparent 0 2px,rgba(0,255,255,.12) 2px 4px);
+  animation:glRgb .16s steps(2,end) infinite;
+}
+@keyframes glRgb{0%{transform:translateX(-3px)}50%{transform:translateX(4px)}100%{transform:translateX(-2px)}}
+
+/* ⬜ CORE PURGE. A CRT switching off, run backwards and then forwards: the
+   picture collapses to a single line, holds just long enough to register as a
+   deliberate pause, then blows out. The hold is what makes it land. */
+#exit-fx.fx-purge{background:#000}
+.pg-line{
+  position:absolute;left:0;right:0;top:50%;height:3px;
+  background:#fff;box-shadow:0 0 40px 10px rgba(255,255,255,.85);
+  transform:scaleX(0);transform-origin:50% 50%;
+  animation:pgLine 1.3s cubic-bezier(.7,0,.3,1) forwards;
+}
+@keyframes pgLine{
+  0%{transform:scaleX(0) scaleY(60);opacity:0}
+  14%{transform:scaleX(1) scaleY(60);opacity:1}
+  34%{transform:scaleX(1) scaleY(1)}
+  62%{transform:scaleX(1) scaleY(1)}
+  78%{transform:scaleX(1.02) scaleY(1);box-shadow:0 0 90px 26px rgba(255,255,255,1)}
+  100%{transform:scaleX(0) scaleY(1);opacity:0}
+}
+.pg-flash{position:absolute;inset:0;background:#fff;opacity:0;animation:pgFlash 1.3s ease forwards}
+@keyframes pgFlash{0%,72%{opacity:0}80%{opacity:.9}100%{opacity:0}}
+
+/* 📼 TAPE REWIND. The tracking bar IS the effect: a band of noise walking UP
+   the picture is what a tape looks like running backwards, and it reads as
+   that instantly with no frame of video anywhere. */
+#exit-fx.fx-rewind{background:rgba(2,3,10,.9)}
+.rw-noise{
+  position:absolute;inset:0;opacity:.5;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.07) 0 1px,transparent 1px 3px);
+  animation:rwNoise .1s steps(2,end) infinite;
+}
+@keyframes rwNoise{0%{transform:translateY(0)}100%{transform:translateY(-3px)}}
+.rw-track{
+  position:absolute;left:0;right:0;height:16%;
+  background:linear-gradient(180deg,transparent,rgba(255,255,255,.32),rgba(0,245,255,.22),transparent);
+  filter:blur(1px);
+  animation:rwTrack .62s linear infinite;
+}
+@keyframes rwTrack{from{top:104%}to{top:-20%}}
+.rw-lbl{
+  position:absolute;top:8%;left:50%;transform:translateX(-50%);
+  font-family:var(--fd);font-size:.8rem;font-weight:900;letter-spacing:.3em;
+  color:#fff;text-shadow:0 0 18px rgba(0,245,255,.9);
+  animation:rwBlink .5s steps(1,end) infinite;
+}
+@keyframes rwBlink{0%,60%{opacity:1}61%,100%{opacity:.25}}
+
+/* Every exit state is a flourish and nothing else, so reduced motion simply
+   holds the first frame rather than trying to find a gentler version of a
+   deliberate visual assault. playExitFx() already skips them entirely there —
+   this is the belt to that braces. */
+html.reduced-motion #exit-fx *{animation:none!important}
+
+/* ══════════════════════════════════════════════════════════════
+   🎖️ SEASON TRACK
+   Ten tiers, drawn as a rail with a fill behind it so the whole week reads as
+   one distance rather than as ten separate goals.
+   ══════════════════════════════════════════════════════════════ */
+.season-tint .fb-modal{max-width:920px;border-color:rgba(255,215,0,.45)}
+.season-bar{
+  height:8px;border-radius:6px;background:var(--s2);
+  border:1px solid var(--border);overflow:hidden;margin-bottom:16px;
+}
+.season-bar-fill{
+  height:100%;border-radius:6px;
+  background:linear-gradient(90deg,var(--cyan),var(--gold));
+  box-shadow:0 0 18px rgba(255,215,0,.5);transition:width .5s ease;
+}
+.season-tiers{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:10px}
+.season-tier{
+  display:flex;flex-direction:column;gap:5px;align-items:center;text-align:center;
+  padding:12px 8px;border:1px solid var(--border);border-radius:var(--r);
+  background:var(--s1);transition:border-color .2s ease,box-shadow .2s ease;
+}
+/* Three states, and they have to be distinguishable at a glance: a tier you
+   have been paid for, one being paid right now, and one you are working
+   toward. Anything less and the track is ten identical boxes. */
+.season-tier.paid{border-color:var(--gold);background:rgba(255,215,0,.09);box-shadow:0 0 18px rgba(255,215,0,.14)}
+.season-tier.ready{border-color:var(--lime);background:rgba(57,255,20,.08)}
+.season-tier.locked{opacity:.6}
+.st-num{
+  font-family:var(--fd);font-size:.52rem;font-weight:900;letter-spacing:.14em;
+  color:var(--dimmer);
+}
+.season-tier.paid .st-num{color:var(--gold)}
+.st-at{font-family:var(--fd);font-size:.68rem;font-weight:900}
+.st-reward{font-size:.72rem;color:var(--lime)}
+.st-meter{width:100%;height:4px;border-radius:3px;background:var(--s2);overflow:hidden}
+.st-meter span{display:block;height:100%;background:var(--cyan);border-radius:3px}
+.season-tier.paid .st-meter span{background:var(--gold)}
+.st-state{font-family:var(--fd);font-size:.44rem;letter-spacing:.12em;color:var(--dim)}
+.season-tier.paid .st-state{color:var(--gold)}
+
+/* ══════════════════════════════════════════════════════════════
+   📁 OPERATIVE DOSSIER
+   Read-only, so it is allowed to be dense — nothing here is a control the
+   player has to find among the numbers.
+   ══════════════════════════════════════════════════════════════ */
+.dossier-tint .fb-modal{max-width:1000px;border-color:rgba(0,245,255,.4)}
+.dos-sec{
+  display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;
+  font-family:var(--fd);font-size:.56rem;font-weight:900;letter-spacing:.18em;
+  color:var(--cyan);margin:22px 0 10px;padding-bottom:6px;
+  border-bottom:1px solid var(--border);
+}
+.dos-sec:first-child{margin-top:4px}
+.dos-sec em{font-family:var(--fb);font-size:.74rem;font-style:normal;letter-spacing:0;color:var(--dim)}
+.dos-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:10px}
+.dos-tile{
+  display:flex;flex-direction:column;gap:2px;
+  padding:12px;border:1px solid var(--border);border-radius:var(--r);background:var(--s1);
+}
+.dos-ico{font-size:1.1rem;line-height:1}
+.dos-val{font-family:var(--fd);font-size:1rem;font-weight:900;line-height:1.2}
+.dos-lbl{font-size:.72rem;color:var(--dim)}
+.dos-note{font-size:.66rem;color:var(--dimmer)}
+
+/* The heatmap. Columns are weeks, rows are weekdays — the shape everybody
+   already reads as a calendar, so it needs no legend beyond quiet→busy. */
+.dos-heat{display:flex;gap:3px;overflow-x:auto;padding-bottom:4px}
+.dos-heat-col{display:flex;flex-direction:column;gap:3px;flex:none}
+.dos-cell{
+  width:12px;height:12px;border-radius:3px;display:block;flex:none;
+  background:var(--s2);border:1px solid transparent;
+}
+.dos-cell.l1{background:rgba(0,245,255,.28)}
+.dos-cell.l2{background:rgba(0,245,255,.5)}
+.dos-cell.l3{background:rgba(0,245,255,.72)}
+.dos-cell.l4{background:var(--cyan);box-shadow:0 0 8px rgba(0,245,255,.6)}
+/* A day that has not happened yet must not read as a quiet day. */
+.dos-cell.fut{opacity:.25}
+.dos-cell.today{border-color:var(--gold)}
+.dos-heat-key{
+  display:flex;align-items:center;gap:4px;margin-top:8px;
+  font-size:.66rem;color:var(--dimmer);
+}
+
+.dos-missions{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
+.dos-mission{
+  display:flex;flex-direction:column;gap:5px;
+  padding:12px;border:1px solid var(--border);border-radius:var(--r);background:var(--s1);
+}
+.dm-ico{font-size:1.2rem;line-height:1}
+.dm-name{font-family:var(--fd);font-size:.58rem;font-weight:900;letter-spacing:.08em}
+.dm-stats{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.dm-best{font-family:var(--fd);font-size:.95rem;font-weight:900;color:var(--cyan)}
+.dm-cap{font-size:.66rem;color:var(--dim)}
+.dm-bar{height:5px;border-radius:4px;background:var(--s2);overflow:hidden}
+.dm-bar span{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,var(--cyan),var(--lime))}
+.dm-bar-none{background:repeating-linear-gradient(90deg,var(--s2) 0 4px,transparent 4px 8px)}
+.dm-foot{display:flex;justify-content:space-between;gap:8px;font-size:.66rem;color:var(--dimmer)}
+/* Bars, not a polyline: at twelve points a line is mostly interpolation and a
+   bar is a fact. */
+.dm-spark{display:flex;align-items:flex-end;gap:2px;height:24px}
+.dm-spark span{flex:1;min-width:2px;background:rgba(0,245,255,.45);border-radius:2px 2px 0 0}
+.dm-spark span:last-child{background:var(--cyan)}
+.dos-missing{display:flex;flex-wrap:wrap;gap:8px}
+.dos-chip{
+  cursor:pointer;padding:6px 11px;border-radius:16px;
+  border:1px dashed var(--border2);background:var(--s1);
+  font-size:.72rem;color:var(--dim);transition:all .18s ease;
+}
+.dos-chip:hover{border-style:solid;border-color:var(--cyan);color:var(--text);transform:translateY(-1px)}
+.dos-empty{font-size:.76rem;color:var(--dim);padding:14px;text-align:center}
+
+/* ══════════════════════════════════════════════════════════════
+   🔒 CLEARANCE LEVELS
+   A locked card stays legible — you are meant to want it. It is dimmed and
+   un-clickable, not hidden or blanked.
+   ══════════════════════════════════════════════════════════════ */
+.mission-clearance{
+  font-family:var(--fb);font-size:.72rem;font-style:normal;letter-spacing:0;
+  color:var(--dim);margin-left:8px;
+}
+.mission-clearance.all-clear{color:var(--lime)}
+.game-card.locked{
+  opacity:.42;cursor:not-allowed;filter:grayscale(.7);
+  border-style:dashed;
+}
+.game-card.locked:hover{transform:none;box-shadow:none}
+.gc-lock{
+  position:absolute;inset:auto 10px 10px 10px;
+  display:flex;align-items:center;gap:7px;justify-content:center;
+  padding:6px 8px;border-radius:10px;
+  background:rgba(4,4,14,.82);border:1px solid var(--border2);
+  backdrop-filter:blur(2px);
+}
+.gcl-ico{font-size:.85rem;line-height:1}
+.gcl-txt{
+  display:flex;flex-direction:column;line-height:1.25;
+  font-family:var(--fd);font-size:.46rem;font-weight:900;letter-spacing:.14em;
+  color:var(--text);
+}
+.gcl-txt em{font-family:var(--fb);font-size:.62rem;font-style:normal;letter-spacing:0;color:var(--dim)}
+/* The flash a dossier chip leaves on the card it scrolled you to. */
+.game-card.gc-flash{animation:gcFlash 1.6s ease}
+@keyframes gcFlash{
+  0%,100%{box-shadow:none}
+  15%,55%{box-shadow:0 0 0 2px var(--cyan),0 0 28px rgba(0,245,255,.45)}
+}
+html.reduced-motion .game-card.gc-flash{animation:none;box-shadow:0 0 0 2px var(--cyan)}
+
+/* ══════════════════════════════════════════════════════════════
+   ⚔️ RIVAL CHALLENGES
+   Lives in the hub's right column with the two leaderboards, because it is the
+   same kind of thing: other people's numbers.
+   ══════════════════════════════════════════════════════════════ */
+.chal-panel{display:flex;flex-direction:column;gap:8px}
+.chal-mine{margin-bottom:4px}
+.chal-mine-lbl{
+  font-family:var(--fd);font-size:.44rem;font-weight:900;letter-spacing:.16em;
+  color:var(--gold);margin-bottom:6px;
+}
+.chal-row{
+  display:flex;align-items:center;gap:10px;
+  padding:9px 11px;border:1px solid var(--border);border-radius:var(--r);
+  background:var(--s1);transition:border-color .2s ease;
+}
+.chal-row:hover{border-color:var(--border2)}
+.chal-row.own{border-color:rgba(255,215,0,.45);background:rgba(255,215,0,.07)}
+.chal-row.locked{opacity:.5}
+.chal-ico{font-size:1.15rem;line-height:1;flex:none}
+.chal-txt{min-width:0;flex:1}
+.chal-name{font-family:var(--fd);font-size:.52rem;font-weight:900;letter-spacing:.1em}
+.chal-meta{font-size:.7rem;color:var(--dim);margin-top:2px}
+.chal-meta strong{color:var(--cyan)}
+.chal-meta em{color:var(--lime);font-style:normal}
+.chal-locked{
+  flex:none;font-family:var(--fd);font-size:.44rem;letter-spacing:.12em;color:var(--dim);
+}
+.chal-take{flex:none}
+/* The pace HUD says whose curve it is racing, and a rival is not your ghost. */
+.ghost-pace.vs-rival{border-color:rgba(255,215,0,.55);box-shadow:0 0 14px rgba(255,215,0,.18)}
+.ghost-pace.vs-rival .gp-target{color:var(--gold)}
+
+/* ══════════════════════════════════════════════════════════════
+   🩸 BOSS RUSH CHAIN INTEGRITY
+   A pill in the stat strip, because it is a number that describes the round in
+   progress — the same category as the clock and the score.
+   ══════════════════════════════════════════════════════════════ */
+.br-int-pill{display:flex;align-items:center;gap:6px}
+.br-int-pill em{font-style:normal;color:var(--lime)}
+.br-int-pill.mid em{color:var(--gold)}
+.br-int-pill.low em{color:var(--red)}
+.br-int-bar{
+  display:block;width:38px;height:4px;border-radius:3px;
+  background:var(--s2);overflow:hidden;
+}
+.br-int-bar span{display:block;height:100%;border-radius:3px;background:var(--lime);transition:width .4s ease}
+.br-int-pill.mid .br-int-bar span{background:var(--gold)}
+.br-int-pill.low .br-int-bar span{background:var(--red)}
+.br-int-pill.low{border-color:rgba(255,36,66,.6);box-shadow:0 0 14px rgba(255,36,66,.25)}

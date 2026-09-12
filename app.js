@@ -648,6 +648,11 @@ return {
   play, music, unlock, bindToggle, bindIndicator, repaintAll, cycleMode, setMode, setVolume,
   setDrive, setTension,
   get tense(){ return tension > 1; },
+  // 🎵 The round track's tempo, which a Music Drive retunes. Published because
+  // PULSE SYNC charts its beats against it: the mission's notes land on the
+  // music the player chose rather than on a number of its own, and a drive
+  // bought in the market genuinely changes how that mission feels to play.
+  get bpm(){ return TRACKS.game.bpm; },
   get mode(){ return mode; },
   get volume(){ return volume; },
   modeToast(){ return MODE_UI[mode].toast; },
@@ -1146,6 +1151,9 @@ const META = {
   battlebots:{name:'BATTLE BOTS', emoji: '🤖', maxPts: 1200 },
   path:   { name: 'OVERCLOCK PATH', emoji: '🔌', maxPts: 1100 },
   freq:   { name: 'FREQUENCY MODULATOR', emoji: '🎚️', maxPts: 950 },
+  rhythm: { name: 'PULSE SYNC',    emoji: '🎵', maxPts: 1400 },
+  merge:  { name: 'CORE MERGE',    emoji: '🧮', maxPts: 1300 },
+  uplink: { name: 'ORBITAL UPLINK',emoji: '🛰️', maxPts: 1000 },
   // Not a mission — the chained run. maxPts is the ceiling of the five biggest
   // caps, which is what clamps the combined award.
   bossrush:{ name:'BOSS RUSH',    emoji: '🔥', maxPts: 6200 }
@@ -1160,7 +1168,8 @@ const SOLO_START = {
   memory: startMemory, math: startMath,     reaction: startReaction, pong: startPong,
   snake: startSnake,   flappy: startFlappy, breaker: startBreaker, arena: startArena,
   runner: startRunner, hacker: startHacker, meteor: startMeteor,   battlebots: startBattleBots,
-  path: startOverclockPath, freq: startFrequencyModulator
+  path: startOverclockPath, freq: startFrequencyModulator,
+  rhythm: startPulseSync, merge: startCoreMerge, uplink: startOrbitalUplink
 };
 
 // ══════════════════════════════════════════════
@@ -1228,6 +1237,9 @@ function setDifficultyTier(tierKey){
   // duel cards quote point caps that scale with the dial — both are its own
   // business, so it gets the last word on its own panel.
   if(typeof mpPaintDiff === 'function') mpPaintDiff();
+  // 🌀 The chaos note quotes what a roll will DO, and Meltdown is the tier that
+  // stacks two of them — so the note has to move when the dial does.
+  if(typeof paintChaosToggle === 'function') paintChaosToggle();
 }
 
 function lockDifficultySelector(){
@@ -1611,16 +1623,40 @@ function boardPos(clientX, clientY){
   const rect = aCanvas.getBoundingClientRect();
   const w = aCanvas.clientWidth  || rect.width  || 1;
   const h = aCanvas.clientHeight || rect.height || 1;
-  const p = {
-    x: (clientX - rect.left - aCanvas.clientLeft) * (BOARD_W / w),
-    y: (clientY - rect.top  - aCanvas.clientTop ) * (BOARD_H / h)
-  };
+  let p;
+  // 🌀 AXIS DRIFT tilts the board with a CSS rotation, and getBoundingClientRect
+  // knows nothing about rotations: it reports the axis-aligned box the rotated
+  // canvas now OCCUPIES, which is wider and taller than the board and whose
+  // left/top corner is not a corner of the board at all. Measuring off it lands
+  // the finger progressively further from the thing it is pointing at the closer
+  // you get to a corner — so under drift the mapping is done from the CENTRE,
+  // which a rotation about the board's own middle leaves exactly where it was.
+  //
+  // clientWidth/clientHeight are layout values and are untouched by the
+  // transform, so they stay the right divisor either way.
+  if(chaosDrift){
+    const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+    const c = Math.cos(-chaosDrift), s = Math.sin(-chaosDrift);
+    const ox = clientX - cx, oy = clientY - cy;
+    const ux = ox * c - oy * s, uy = ox * s + oy * c;   // un-rotated screen offset
+    p = { x: BOARD_W / 2 + ux * (BOARD_W / w), y: BOARD_H / 2 + uy * (BOARD_H / h) };
+  }else{
+    p = {
+      x: (clientX - rect.left - aCanvas.clientLeft) * (BOARD_W / w),
+      y: (clientY - rect.top  - aCanvas.clientTop ) * (BOARD_H / h)
+    };
+  }
   // 🔄 INVERSE CONTROLS mirrors the board here rather than in each game: this is
   // the one funnel every drag, swipe and tap passes through on its way to
   // becoming a coordinate, so one flip covers all of them and none of them has
   // to know a modifier exists. Vertical is mirrored too — Flappy is a vertical
   // game, and "reversed direction inputs" that left it untouched would be a
   // modifier half the arcade ignored.
+  //
+  // AFTER the drift correction, never before: the un-rotation is a fact about
+  // where the finger physically is, and the flip is a fact about what that
+  // position should MEAN. Doing them the other way round mirrors the tilt too
+  // and the two modifiers stop composing.
   if(chaosInverse){ p.x = BOARD_W - p.x; p.y = BOARD_H - p.y; }
   return p;
 }
@@ -1776,6 +1812,15 @@ function fitCanvas(){
   // backstop for if that ever widens.
   const scale = Math.min(availW / BOARD_W, Math.max(130, availH) / BOARD_H, 1.9);
   const cssW = Math.round(BOARD_W * scale), cssH = Math.round(BOARD_H * scale);
+  // A round can start while the page has no layout at all — a tab restored in
+  // the background, a pane the window manager has collapsed, a start that lands
+  // between the screen switch and the first layout pass. availW is 0 there, and
+  // writing that through collapses the canvas to nothing. That state is
+  // SELF-PERPETUATING: a zero canvas gives .g-area zero width, which gives the
+  // next fit zero again, so the board never comes back and the round plays out
+  // on an invisible field. Refusing to write it and asking for another frame
+  // costs nothing and cannot get stuck.
+  if(cssW <= 0 || cssH <= 0){ scheduleFit(); return; }
   aCanvas.style.width  = cssW + 'px';
   aCanvas.style.height = cssH + 'px';
 
@@ -2080,11 +2125,33 @@ function ensureUserDefaults(raw){
     achievements: { ...(raw.achievements || {}) },
     history:      { ...(raw.history || {}) },
     streak:       { count: 0, lastDay: null, best: 0, ...(raw.streak || {}) },
+    // ⚠️ EXACTLY {season, pts}. The database's rules validate this record's shape
+    // and refuse a write that adds a child to it — and because a refusal takes
+    // down the entire update() it rides in, an extra key here silently stopped
+    // the streak, the achievements and the credit payout from persisting too.
+    // How many season tiers have been paid is DERIVED from `pts` instead (see
+    // seasonTiersFor), which is better anyway: the total only ever rises within
+    // a season, so a counter beside it was a second source of truth that could
+    // disagree with the first.
     weekly:       { season: null, pts: 0, ...(raw.weekly || {}) },
+    // 📁 THE DOSSIER's three ledgers. None of these can be derived from what
+    // was already stored: `history` keeps only the last twelve runs per mission,
+    // so the lifetime best and the lifetime count are both lost the moment a
+    // thirteenth round is played.
+    best:         { ...(raw.best || {}) },      // gid → best single run, lifetime
+    runs:         { ...(raw.runs || {}) },      // gid → rounds finished, lifetime
+    days:         { ...(raw.days || {}) },      // UTC day → rounds finished that day
+    // ⚔️ The player's STANDING CHALLENGE — one per profile, posted from a results
+    // card and discovered by everyone else through the player list the
+    // leaderboard already reads. See postChallenge().
+    challenge:    raw.challenge || null,
     friends:      { ...(raw.friends || {}) },
     // Perks bought from the tree, keyed by perk id → true. Separate from
     // `achievements` because these are SPENT for, not earned.
     perks:        { ...(raw.perks || {}) },
+    // The UTC day ⏳ Chrono Reserve last paid out on. Null on every profile that
+    // has never owned the perk, which reads correctly as "not collected today".
+    perkDay:      raw.perkDay || null,
     // Consumables, keyed by shop id → count remaining. A number rather than a
     // list: two Time Dilators are not distinguishable from each other.
     powerups:     { ...(raw.powerups || {}) },
@@ -2226,7 +2293,16 @@ function enterHub(){
   // Same reasoning for a chained run and for a watched room: reaching the hub
   // ends both, and a spectator that kept its listeners would leak them.
   if(typeof abortBossRush === 'function') abortBossRush();
+  if(typeof abortChallenge === 'function') abortChallenge();
   if(typeof mpStopSpectating === 'function') mpStopSpectating();
+  // 📈 The pace ghost deliberately OUTLIVES stopGame() — the results card is
+  // written after the round is torn down and it is the thing that reads the
+  // curve. So the round that ends by walking away instead has to be closed
+  // here, or its frame loop keeps running against a hidden readout.
+  Ghost.endPace();
+  // ⏳ Chrono Reserve pays out on arrival rather than on a timer — see
+  // perkDailyGrant(). A no-op for every profile that does not own it.
+  if(typeof perkDailyGrant === 'function') perkDailyGrant();
   // A Daily Hack that was walked away from mid-round still holds the fixed
   // tier. Released here for the same reason the room and the chain are: this is
   // the one door every "I'm done" path goes through.
@@ -2287,6 +2363,14 @@ document.querySelectorAll('.game-card').forEach(card=>{
   if(!isTouchDevice) card.addEventListener('mouseenter',()=>snd('hover'));
   card.addEventListener('click',()=>{
     const gid=card.dataset.game;
+    // 🔒 Checked here as well as painted on the card: the class is the polite
+    // refusal, this is the real one.
+    if(!missionUnlocked(gid)){
+      snd('deny');
+      const need = missionClearance(gid);
+      toast(`🔒 ${META[gid].name} needs CLEARANCE ${need} — you are level ${xpLevel(user.xp || 0).level}.`, 3200);
+      return;
+    }
     curGame=gid;
     snd('success');
     document.getElementById('g-title').textContent=META[gid].name;
@@ -2313,6 +2397,19 @@ document.getElementById('btn-quit').onclick=()=>{
 function resetGameStage(gid){
   stopGame();
   onQuitGame=null;
+  // 🌀 The record the results card reads about "what was this round played
+  // under". chaosClear() deliberately will not overwrite it with nothing — it
+  // has to survive a second stopGame() — so the place it gets forgotten is the
+  // START of the next round, which is here. Every round passes through this
+  // function, including the Daily Hack and a Network Arena round, neither of
+  // which would otherwise clear a modifier the previous mission had left behind
+  // and would pay the player for it.
+  chaos.last = null;
+  chaos.lastStack = [];
+  // 🌳 Signal Filter's per-round allowance. Zeroed here and restocked by
+  // prepGame(), so a round that does NOT go through prepGame — a duel, the
+  // Daily Hack — cannot inherit a reroll the last mission left unspent.
+  chaosRerollLeft = 0;
   music('game');
   lockDifficultySelector();
   document.getElementById('g-click').style.display='none';
@@ -2332,13 +2429,19 @@ function resetGameStage(gid){
   // 🧊 A 3D round always plays on the board, including the missions whose 2D
   // build is pure DOM — so the landscape layout that parks the pad beside the
   // board has to know about them too.
-  const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','breaker','arena','runner','meteor','battlebots','freq'].includes(gid)
+  const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','breaker','arena','runner','meteor','battlebots','freq',
+                      'rhythm','merge','uplink'].includes(gid)
                   || !!(window.PI3D && PI3D.has(gid));
   document.getElementById('game-screen').classList.toggle('canvas-game', canvasGame);
   // Whatever the last round left up comes down here, before the next one
   // decides whether it wants the GL surface at all.
   if(window.PI3D) PI3D.unmount();
 
+  // ⚙️ A chip is spent on ONE round. Cleared here rather than at the results
+  // card because the card is the thing that reads it — clearing it there would
+  // be clearing it before the read on the very next line.
+  runOverclock = 0;
+  document.querySelector('.g-area')?.classList.remove('overclocked-run');
   document.getElementById('g-pts').textContent='0';
   document.getElementById('g-time').textContent='—';
   document.getElementById('prog-fill').style.width='100%';
@@ -2356,9 +2459,23 @@ function prepGame(gid, mod){
   resetGameStage(gid);
   const start = SOLO_START[gid];
   if(!start) return;
-  chaosAnnounce(mod);
+  // 🌀 An ordinary mission rolls its own, but only when the player has armed
+  // CHAOS PROTOCOL. Rolled HERE rather than at the game card so that Play Again
+  // rerolls too — a modifier you could out-wait by pressing the same button is
+  // not a modifier, it is a loading screen. Boss Rush and the Network Arena
+  // still pass their own in, and passing one always wins: those two have
+  // reasons of their own for which modifier this round gets.
+  if(mod === undefined && chaosOptIn && !mp && !bossRush){
+    const rolled = chaosRollStack();
+    mod = rolled.length ? rolled : null;
+  }
+  chaos.pending = !mod ? [] : (Array.isArray(mod) ? mod : [mod]);
+  // 🌳 Signal Filter. One reroll per ROUND, restocked here, because the perk
+  // is about the hand you were dealt rather than about a budget to manage.
+  chaosRerollLeft = hasPerk('perk-filter') ? 1 : 0;
+  chaosAnnounce(chaos.pending);
   countdown(()=>{
-    chaosArm(mod);
+    chaosArm(chaos.pending);
     // 🧊 3D MODE. The 3D missions are the same rounds behind a different
     // renderer, so they run through chaosRun() exactly as the 2D ones do —
     // that is what keeps the setInterval doubling and the inverted-key wrapper
@@ -2367,10 +2484,20 @@ function prepGame(gid, mod){
     // startup; each of those falls through to the 2D implementation, which is
     // always present.
     let ran = false;
+    // 📈 Started BEFORE the round so its clock begins on the same frame the
+    // game does. Started after chaosArm() so the tier and modifier the personal
+    // best is keyed against are the ones actually running.
+    Ghost.beginPace(gid, chalRival());
     chaosRun(() => {
       ran = !!(window.PI3D && PI3D.startFor(gid));
       if(!ran) start();
     });
+    if(Ghost.pacing){
+      const rv = Ghost.paceRival;
+      toast(rv
+        ? `⚔️ Racing ${String(rv.name || 'RIVAL').slice(0, 14)} — ${Ghost.paceTarget.toLocaleString()} to beat`
+        : `👀 Pacing your best run — ${Ghost.paceTarget.toLocaleString()} to beat`, 2600);
+    }
     showPowerDock();
   });
 }
@@ -2378,10 +2505,16 @@ function prepGame(gid, mod){
 // ════════════════════════════════════════════
 //  👻 GHOST REPLAY — race your own best run
 // ════════════════════════════════════════════
-// A game opts in with three calls: begin() at start, sample() once per frame,
-// finish() at the end. Playback is frame-indexed rather than time-indexed, which
-// is why sample() must be called exactly once per frame — the same rhythm the
-// recording was made at.
+// There are TWO ghosts, and the split is worth understanding before touching
+// either. This one is a POSITION trail: begin() at start, sample() once per
+// frame, finish() at the end, with playback indexed by FRAME rather than time —
+// which is why sample() must be called exactly once per frame, in the same
+// rhythm the recording was made at. It only means anything in a mission where
+// the player is a moving dot, so four missions use it.
+//
+// The other is the PACE ghost, further down this module: a score-over-time
+// curve that rides setLive() and therefore covers all twenty-one missions
+// without any of them opting in. See beginPace().
 //
 // Ghosts live in localStorage, not Firebase: a timeline is thousands of numbers,
 // it is only meaningful against your OWN run, and it must not cost a round trip
@@ -2431,10 +2564,165 @@ const Ghost = (function(){
 
   function cancel(){ rec = null; play = null; }
 
+  // ══════════════════════════════════════════════════════════════════════
+  //  📈 THE PACE GHOST — the other kind of ghost, for the other seventeen
+  // ══════════════════════════════════════════════════════════════════════
+  // The ghost above is a POSITION trail, and a position trail only means
+  // anything in a game where the player is a moving dot: dodge, snake, flappy
+  // and runner. That left fourteen missions — every grid, every puzzle, every
+  // wave shooter — ending against a bare number with nothing to push against.
+  //
+  // A pace ghost races the one thing every mission in the arcade genuinely has:
+  // a SCORE OVER TIME. It records (elapsed, score) whenever the live counter
+  // moves, replays the best run's curve alongside the live one, and says how
+  // far ahead or behind you are right now. That works for a mission whose score
+  // arrives in one lump at the end as well as one that ticks up continuously —
+  // it just says nothing useful until the lump lands, which is honest.
+  //
+  // It hangs off setLive(), which is the single funnel every mission already
+  // writes its live score through. No mission opts in and none can forget to.
+  const PACE_PREFIX = 'pi_pace_';
+  const PACE_MAX = 400;             // samples; a round that scores more often than
+                                    // this is sampled coarsely rather than truncated
+  const paceKey = gid => `${PACE_PREFIX}${gid}:${currentDifficultyTier}`;
+
+  let pace = null;                  // { gid, t0, pts:[[ms,score]], best, last, beat }
+  let paceRaf = 0;
+
+  // `rival` is an accepted ⚔️ RIVAL CHALLENGE — someone else's curve, raced
+  // instead of your own. Two curves are tracked rather than one because they
+  // answer different questions: `best` is what the HUD races, `mine` is what a
+  // new personal best is measured against. Conflating them meant a run that
+  // beat a rival but not your own record overwrote your record with a worse
+  // curve, and a run that beat your record while chasing a better rival never
+  // saved at all.
+  function beginPace(gid, rival){
+    endPace();
+    // The same three exclusions the position ghost makes, for the same reason:
+    // a duel board, a Boss Rush stage and a seeded Daily Hack are not the run
+    // this personal best describes.
+    if(mp || bossRush || dailyActive) return;
+    let mine = null;
+    try{
+      const raw = localStorage.getItem(paceKey(gid));
+      const p = raw ? JSON.parse(raw) : null;
+      if(p && Array.isArray(p.pts) && p.pts.length) mine = p;
+    }catch(e){ mine = null; }
+    const best = (rival && Array.isArray(rival.pts) && rival.pts.length) ? rival : mine;
+    pace = { gid, t0: performance.now(), pts: [[0, 0]], best, mine,
+             rival: best === rival ? rival : null, last: 0, beat: false };
+    paintPace();
+    // Ticks on its own as well as on every score change, because the GHOST
+    // moves while you are stuck: a pace readout that only updated when you
+    // scored would freeze at "+40" through the ten seconds it took your best
+    // run to overtake you, which is the exact stretch you wanted to see.
+    const tick = () => {
+      if(!pace) return;
+      paintPace();
+      paceRaf = requestAnimationFrame(tick);
+    };
+    paceRaf = requestAnimationFrame(tick);
+  }
+
+  // Called from setLive(). Cheap by construction: one array push, and only when
+  // the number actually moved.
+  function samplePace(score){
+    if(!pace) return;
+    const n = +score;
+    if(!Number.isFinite(n) || n === pace.last) return;
+    pace.last = n;
+    const ms = Math.round(performance.now() - pace.t0);
+    // Thinning keeps a long round's curve inside the storage budget without
+    // losing its shape: once the list is full, every second sample is dropped
+    // and the sampling interval doubles. The curve stays the same curve.
+    if(pace.pts.length >= PACE_MAX){
+      pace.pts = pace.pts.filter((_, i) => i % 2 === 0);
+    }
+    pace.pts.push([ms, n]);
+  }
+
+  // The best run's score at `ms`, interpolated between the two samples that
+  // straddle it — a step function would make the ghost lurch.
+  function paceAt(ms){
+    const b = pace && pace.best;
+    if(!b || !b.pts.length) return null;
+    const pts = b.pts;
+    if(ms <= pts[0][0]) return pts[0][1];
+    // The curve ends when the best run did. After that the ghost simply holds
+    // its final score, which is exactly what it scored.
+    if(ms >= pts[pts.length - 1][0]) return pts[pts.length - 1][1];
+    let lo = 0, hi = pts.length - 1;
+    while(hi - lo > 1){
+      const mid = (lo + hi) >> 1;
+      if(pts[mid][0] <= ms) lo = mid; else hi = mid;
+    }
+    const [t0, s0] = pts[lo], [t1, s1] = pts[hi];
+    const k = t1 === t0 ? 0 : (ms - t0) / (t1 - t0);
+    return s0 + (s1 - s0) * k;
+  }
+
+  function paintPace(){
+    const el = document.getElementById('ghost-pace');
+    if(!el) return;
+    if(!pace || !pace.best){ el.style.display = 'none'; return; }
+    const ms = performance.now() - pace.t0;
+    const ghost = Math.round(paceAt(ms) || 0);
+    const diff = pace.last - ghost;
+    el.style.display = 'flex';
+    el.classList.toggle('ahead', diff >= 0);
+    el.classList.toggle('behind', diff < 0);
+    const rival = pace.rival;
+    el.classList.toggle('vs-rival', !!rival);
+    el.innerHTML =
+      `<span class="gp-ico">${rival ? '⚔️' : '👻'}</span>` +
+      `<span class="gp-delta">${diff >= 0 ? '▲ +' : '▼ −'}${Math.abs(diff).toLocaleString()}</span>` +
+      `<span class="gp-target">${rival ? esc(String(rival.name || 'RIVAL')).slice(0, 10).toUpperCase() : 'PB'} ` +
+      `${pace.best.score.toLocaleString()}</span>`;
+  }
+
+  // Saves only on an improvement, and reports whether this run was one — which
+  // is what 🌳 Echo Trace pays for.
+  function finishPace(score){
+    if(!pace) return false;
+    const ms = Math.round(performance.now() - pace.t0);
+    const curve = pace.pts.concat([[score === pace.last ? ms : ms, score]]);
+    // Saved against YOUR record, whoever you were racing.
+    if((!pace.mine || score > pace.mine.score) && pace.pts.length > 1){
+      try{ localStorage.setItem(paceKey(pace.gid), JSON.stringify({ score, pts: curve })); }
+      catch(e){ /* quota or private mode — a missing ghost is not an error */ }
+    }
+    const hadGhost = !!pace.best;
+    const target = pace.best ? pace.best.score : 0;
+    const rival = pace.rival;
+    endPace();
+    // `curve` travels out so a finished run can be POSTED as a challenge
+    // without the results card having to reconstruct it.
+    return hadGhost
+      ? { beat: score > target, target, rival: rival ? (rival.name || 'RIVAL') : null, curve }
+      : { beat: false, target: 0, rival: null, curve, none: true };
+  }
+
+  function endPace(){
+    if(paceRaf) cancelAnimationFrame(paceRaf);
+    paceRaf = 0;
+    pace = null;
+    const el = document.getElementById('ghost-pace');
+    // Emptied as well as hidden: a hidden element that still holds the last
+    // mission's numbers is a trap for anything that reads it back, and it
+    // flashes the wrong personal best for a frame if the next round shows it.
+    if(el){ el.style.display = 'none'; el.className = 'ghost-pace'; el.innerHTML = ''; }
+  }
+
   return {
     begin, sample, at, finish, cancel,
+    beginPace, samplePace, finishPace, endPace,
     get racing(){ return !!play; },
-    get target(){ return play ? play.score : 0; }
+    get target(){ return play ? play.score : 0; },
+    // True while a pace ghost is live AND has a best run to race. Read by the
+    // round-start toast, which should not promise a race that is not happening.
+    get pacing(){ return !!(pace && pace.best); },
+    get paceTarget(){ return pace && pace.best ? pace.best.score : 0; },
+    get paceRival(){ return pace && pace.rival ? pace.rival : null; }
   };
 })();
 
@@ -2456,21 +2744,57 @@ function ghostStyle(alpha = 0.28){
 // combined total reaches showResults(), so the tier multiplier and the score
 // write both happen exactly once.
 const BOSS_RUSH_LEN = 5;
+// 🩸 CHAIN INTEGRITY. Five independent stages whose scores are added up is a
+// playlist, not a chain: a disaster on stage two costs you those points and
+// nothing else, and stage three plays exactly as it would have. Carrying a
+// single integrity bar across all five is what makes it one run — a bad leg
+// now threatens the legs after it, so the decision on stage four is different
+// depending on how stage two went.
+//
+// A stage that takes BR_SAFE of its cap costs nothing at all. Below that the
+// damage scales, up to BR_MAX_DMG for a zero — so three genuinely bad stages
+// end the chain, two do not, and one is free to be a write-off.
+const BR_INTEGRITY = 100, BR_SAFE = 0.6, BR_MAX_DMG = 34;
 let bossRush = null;
 
 function startBossRush(){
   // Cyber Arena never ends on its own, so it can't be a stage in a fixed chain.
-  const pool = Object.keys(SOLO_START).filter(g => g !== 'arena');
+  // 🔒 And a chain must not deal a mission the player has never been allowed to
+  // see: a rush is a test of missions you know, not an ambush. Falls back to the
+  // full pool if the ladder ever leaves too few to fill a chain.
+  let pool = Object.keys(SOLO_START).filter(g => g !== 'arena' && missionUnlocked(g));
+  if(pool.length < BOSS_RUSH_LEN) pool = Object.keys(SOLO_START).filter(g => g !== 'arena');
   const queue = pool
     .map(g => ({ g, k: Math.random() }))
     .sort((a, b) => a.k - b.k)
     .slice(0, BOSS_RUSH_LEN)
     .map(x => x.g);
-  bossRush = { queue, idx: 0, total: 0, bd: {}, mods: [] };
+  bossRush = { queue, idx: 0, total: 0, bd: {}, mods: [], integrity: BR_INTEGRITY, worst: null };
   vsResultTap = bossRushTap;
   snd('success');
-  toast(`🔥 BOSS RUSH — ${queue.length} missions, one score. No breaks.`, 3200);
+  toast(`🔥 BOSS RUSH — ${queue.length} missions, one score, one integrity bar.`, 3600);
   bossRushNext();
+}
+
+// The pill that carries the bar into every stage. Built here rather than in
+// index.html for the same reason the Battle Bots deck is: it belongs to a mode,
+// not to the game screen, and a stale cached page should degrade to "no pill"
+// rather than to a broken layout.
+function paintBossIntegrity(){
+  const stats = document.querySelector('.g-stats');
+  let pill = document.getElementById('br-int-pill');
+  if(!bossRush){ if(pill) pill.remove(); return; }
+  if(!pill && stats){
+    pill = document.createElement('div');
+    pill.id = 'br-int-pill';
+    pill.className = 'stat-pill br-int-pill';
+    stats.insertBefore(pill, stats.firstChild);
+  }
+  if(!pill) return;
+  const v = Math.max(0, Math.round(bossRush.integrity));
+  pill.innerHTML = `🩸 <em>${v}%</em><span class="br-int-bar"><span style="width:${v}%"></span></span>`;
+  pill.classList.toggle('low', v <= 34);
+  pill.classList.toggle('mid', v > 34 && v <= 67);
 }
 
 function bossRushNext(){
@@ -2484,9 +2808,20 @@ function bossRushNext(){
   // 🌀 A fresh roll per STAGE, not per run: the point of a rush is that you
   // never settle in, and five stages under one modifier is just a long round
   // with a handicap. Recorded so the final card can list what it threw at you.
-  const mod = chaosRoll();
-  if(mod) bossRush.mods.push(`${mod.icon} ${mod.name}`);
-  prepGame(gid, mod);
+  //
+  // ESCALATING, and not on the ordinary odds. A rush whose modifiers were rolled
+  // at 55% could hand out five clean stages or five loaded ones, so the shape of
+  // the run was luck rather than design. The first stage is always clean — it is
+  // the one that sets the pace and it should be readable — then one modifier,
+  // then two. That ramp is the same every run, which is what lets a player plan
+  // for it: spend integrity early, because the end is where it gets expensive.
+  const step = bossRush.idx;
+  const forced = step === 0 ? 0 : step <= 2 ? 1 : 2;
+  const rolled = chaosForce(forced);
+  if(rolled.length) bossRush.mods.push(`${step + 1}: ${chaosLabel(rolled)}`);
+  prepGame(gid, rolled.length ? rolled : null);
+  // After prepGame, which calls resetGameStage and wipes the stat strip.
+  paintBossIntegrity();
 }
 
 function bossRushTap(gid, pts, bd){
@@ -2494,27 +2829,76 @@ function bossRushTap(gid, pts, bd){
   // The tap short-circuits showResults(), so the finished stage is still
   // running its loop — stop it here rather than waiting for the next prep.
   stopGame();
-  bossRush.total += pts;
-  bossRush.bd[`${META[gid].emoji} ${META[gid].name}`] = `${pts} PTS`;
+  // 🌀 Each stage is paid for its OWN modifier, here, because each stage rolled
+  // its own. Doing it on the final card instead would multiply five stages by
+  // whatever the fifth one happened to draw — which is why bossRushFinish()
+  // passes noChaosPay and this line exists.
+  const mult = chaosPayMult();
+  const paid = Math.round(pts * mult);
+  bossRush.total += paid;
+
+  // 🩸 What this stage cost the chain. Measured against the mission's own cap so
+  // a 300 in Reaction Time (a 400 cap) and a 1,000 in Cyberpunk Tetris (1,500)
+  // are read as the same quality of run — anything else would make the chain a
+  // lottery on which missions it drew.
+  const cap = (META[gid] && META[gid].maxPts) || 1;
+  const frac = Math.min(1, pts / cap);
+  const dmg = Math.round(Math.max(0, 1 - frac / BR_SAFE) * BR_MAX_DMG);
+  bossRush.integrity -= dmg;
+  if(dmg > 0 && (!bossRush.worst || dmg > bossRush.worst.dmg)){
+    bossRush.worst = { gid, dmg, frac };
+  }
+
+  bossRush.bd[`${META[gid].emoji} ${META[gid].name}`] =
+    `${paid} PTS · ${Math.round(frac * 100)}% of cap` + (dmg ? ` · −${dmg}% integrity` : ' · clean');
   bossRush.idx++;
   const left = bossRush.queue.length - bossRush.idx;
-  snd('score');
-  toast(left > 0 ? `✅ +${pts} PTS · ${left} to go` : `✅ +${pts} PTS · final stage clear`, 1600);
+  paintBossIntegrity();
+
+  if(bossRush.integrity <= 0){
+    // The chain COLLAPSES rather than being forfeit. Quitting still forfeits
+    // (see abortBossRush) because that is a choice; running out of integrity is
+    // the chain's own ending, and an ending banks.
+    snd('gameOver');
+    toast('🩸 CHAIN INTEGRITY LOST — banking what you carried', 2800);
+    setTimeout(() => bossRushFinish(true), 1400);
+    return true;
+  }
+
+  snd(dmg ? 'hurt' : 'score');
+  toast(
+    left > 0
+      ? `✅ +${paid} PTS · ${dmg ? `−${dmg}% integrity · ` : ''}${left} to go`
+      : `✅ +${paid} PTS · final stage clear`,
+    1800);
   setTimeout(bossRushNext, 1100);
   return true;
 }
 
-function bossRushFinish(){
+function bossRushFinish(collapsed){
   const total = bossRush.total, bd = { ...bossRush.bd };
-  const cleared = bossRush.queue.length;
+  const cleared = bossRush.idx;
+  const planned = bossRush.queue.length;
   const mods = bossRush.mods.slice();
+  const integrity = Math.max(0, Math.round(bossRush.integrity));
+  const worst = bossRush.worst;
   bossRush = null;
   vsResultTap = null;
-  bd['🔥 Stages Cleared'] = `${cleared}`;
+  paintBossIntegrity();
+  bd['🔥 Stages Cleared'] = `${cleared}/${planned}`;
+  bd['🩸 Chain Integrity'] = collapsed ? 'LOST' : `${integrity}%`;
+  if(worst) bd['💥 Weakest Leg'] = `${META[worst.gid].emoji} ${META[worst.gid].name} · −${worst.dmg}%`;
   if(mods.length) bd['🌀 Modifiers Survived'] = mods.join(' · ');
-  showResults('bossrush', total, bd, {
-    emoji: '🔥',
-    name: 'BOSS RUSH',
+  // An intact bar is worth points on the way out, so playing the back half
+  // carefully beats throwing a stage away for nothing — the same shape as Ice
+  // Breaker paying for shields you never spent.
+  const bonus = collapsed ? 0 : Math.round(integrity * 4);
+  if(bonus) bd['🩸 Integrity Bonus'] = `+${bonus}`;
+  showResults('bossrush', total + bonus, bd, {
+    emoji: collapsed ? '🩸' : '🔥',
+    name: collapsed ? 'BOSS RUSH — CHAIN LOST' : 'BOSS RUSH',
+    noChaosPay: true,
+    ...(collapsed ? { sound: 'gameOver' } : {}),
     again: { label: 'Run It Again', fn: () => startBossRush() }
   });
 }
@@ -2525,6 +2909,7 @@ function abortBossRush(){
   if(!bossRush) return;
   bossRush = null;
   vsResultTap = null;
+  paintBossIntegrity();
 }
 
 // ── SCORE TAPS ────────────────────────────────────────────────────────
@@ -2539,6 +2924,11 @@ let vsResultTap = null;    // (gid, pts, bd) => bool — true means "I've taken 
 
 const setLive=n=>{
   document.getElementById('g-pts').textContent=n;
+  // 📈 The pace ghost rides here because this is the one line every mission in
+  // the arcade already calls to publish its live score. Nothing opts in, nothing
+  // can forget to, and a mission added tomorrow gets a personal best to race
+  // without its author knowing the feature exists.
+  Ghost.samplePace(n);
   if(vsLiveTap) vsLiveTap(n);
 };
 
@@ -2573,7 +2963,34 @@ function showResultsCard(gid,pts,bd,opts){
   // 🌳 Perk A rides here rather than inside each game, for the same reason the
   // tier multiplier does: this is the one place a raw score becomes an award.
   const perkMult = perkScoreMult(gid, opts);
-  const finalPts = Math.round(pts * (opts.noBonus ? 1 : tier.pointMult) * perkMult);
+  // 🌀 What the modifiers the round was played under are worth. Rides the same
+  // seam as the tier and the perk for the same reason: this is the one place a
+  // raw score becomes an award, and a multiplier applied anywhere else would
+  // have to be applied in twenty-one places.
+  //
+  // noChaosPay is Boss Rush's flag. That chain rolls a FRESH modifier per stage
+  // and banks each stage's score as it lands, so it has already paid for every
+  // one of them — letting the final card multiply the total by whatever the
+  // fifth stage happened to roll would pay the last modifier five times.
+  const chaosMult = (opts.noBonus || opts.noChaosPay) ? 1 : chaosPayMult();
+  // ⚙️ The chip is the player's own money, so it pays even on the paths that
+  // refuse the tier bonus — a duel board where both sides could have bought one
+  // is still a fair board.
+  const chipMult = (opts.internal || !runOverclock) ? 1 : runOverclock;
+  // 📈 Closed here, not in stopGame(), because this is the last moment the run
+  // exists: the curve has to survive the teardown to be compared against and
+  // saved. Returns false when there was no personal best to race.
+  const paceRes = opts.internal ? false : Ghost.finishPace(pts);
+  // 🌳 Echo Trace pays for beating the ghost rather than for having one, so it
+  // is worth exactly as much as the run you are proud of and nothing on the
+  // ones you are not.
+  const echoMult = (paceRes && paceRes.beat && hasPerk('perk-echo')) ? 1.1 : 1;
+  // ⚔️ Settled here for the same reason everything else is: it is a fact about
+  // what this round PAYS. Stands the challenge down either way — a challenge is
+  // taken once, win or lose — and hands back the tier it borrowed.
+  const chalRes = opts.internal ? null : settleChallenge(gid, pts);
+  const chalMult = chalRes ? chalRes.mult : 1;
+  const finalPts = Math.round(pts * (opts.noBonus ? 1 : tier.pointMult) * perkMult * chaosMult * chipMult * echoMult * chalMult);
   const m=META[gid],pct=finalPts/m.maxPts;
   // A three-quarter run earns the fanfare; anything less gets the neutral
   // readout chime, so the sound is honest about how the round actually went.
@@ -2602,7 +3019,32 @@ function showResultsCard(gid,pts,bd,opts){
   // modifier it was played under, and the seed if it was the Daily Hack.
   bd = { ...bd };
   if(perkMult > 1) bd['🌳 Perk · Arcade Boost'] = `+${Math.round((perkMult-1)*100)}%`;
-  if(chaos.last)   bd['🌀 Chaos Modifier'] = `${chaos.last.icon} ${chaos.last.name}`;
+  if(chipMult > 1) bd['⚙️ Overclock Chip'] = `+${Math.round((chipMult-1)*100)}%`;
+  // `none` means there was a pace ghost RECORDING but nothing to race, which is
+  // every first run on a mission — a row saying "0 vs 0" there is noise.
+  if(paceRes && !paceRes.none){
+    bd[paceRes.rival ? '⚔️ Rival Pace' : '👀 Pace Ghost'] = paceRes.beat
+      ? `AHEAD · beat ${paceRes.target.toLocaleString()}`
+      : `${(pts - paceRes.target).toLocaleString()} vs ${paceRes.target.toLocaleString()}`;
+    if(echoMult > 1) bd['🌳 Perk · Echo Trace'] = `+${Math.round((echoMult-1)*100)}%`;
+  }
+  if(chalRes){
+    Object.assign(bd, chalRes.rows);
+    if(chalMult > 1) bd['⚔️ Takedown Bonus'] = `+${Math.round((chalMult-1)*100)}%`;
+  }
+  if(chaos.lastStack && chaos.lastStack.length){
+    bd['🌀 Chaos Modifier'] = chaosLabel(chaos.lastStack);
+    if(chaosMult > 1) bd['🌀 Chaos Payout'] = `×${chaosMult.toFixed(2)}`;
+  }else if(chaos.last){
+    bd['🌀 Chaos Modifier'] = `${chaos.last.icon} ${chaos.last.name}`;
+  }
+  // 📦 SUPPLY DROP settles here rather than at the moment it was rolled: the
+  // boon is "finish the round and the grid pays out", and a consumable handed
+  // over at the countdown would be one a player could quit to keep.
+  if(!opts.internal && (chaos.lastStack || []).some(c => c.id === 'surplus')){
+    const won = grantRandomConsumable();
+    if(won) bd['📦 Supply Drop'] = `${won.emoji} ${won.name}`;
+  }
   if(dailyActive)  bd['📅 Daily Seed'] = dailySeedLabel() + (dailyRun ? '' : ' · PRACTICE');
   document.getElementById('res-bd').innerHTML=Object.entries(bd).map(([k,v])=>`<div class="res-row"><span>${k}</span><span class="rv">${v}</span></div>`).join('');
   showScreen('results-screen');
@@ -2627,6 +3069,31 @@ function showResultsCard(gid,pts,bd,opts){
   // on `dailyRun`: a practice replay has nothing to post but still has a tier
   // to release.
   if(dailyActive) settleDailyRun(gid, finalPts);
+
+  // ⚔️ POST AS CHALLENGE. Offered only for a run that can actually be raced:
+  // a solo mission (a duel, a Boss Rush total and the Daily Hack are all runs
+  // nobody could reproduce from a mission id and a tier), a score above zero,
+  // and a pace curve worth posting. The curve comes out of finishPace() rather
+  // than being rebuilt here — the round's state is already gone by now.
+  const postBtn = document.getElementById('btn-post-chal');
+  if(postBtn){
+    const curve = paceRes && paceRes.curve;
+    const postable = !opts.internal && !!SOLO_START[gid] && pts > 0 && !dailyActive &&
+                     Array.isArray(curve) && curve.length > 1 && !!db && !offlineMode;
+    postBtn.style.display = postable ? '' : 'none';
+    postBtn.disabled = false;
+    postBtn.textContent = '⚔️ Post As Challenge';
+    if(postable){
+      postBtn.onclick = async () => {
+        postBtn.disabled = true;
+        const ok = await postChallenge(gid, pts, tier.key, curve);
+        postBtn.textContent = ok ? '⚔️ Challenge Posted' : '⚔️ Post As Challenge';
+        postBtn.disabled = ok;
+      };
+    }else{
+      postBtn.onclick = null;
+    }
+  }
 
   const againBtn=document.getElementById('btn-again');
   const hubBtn=document.getElementById('btn-hub');
@@ -2836,16 +3303,579 @@ function seasonKey(t = Date.now()){
 
 // Rolls the daily streak forward. Returns the patch to write, or null when the
 // player has already been counted today.
+// 🌳 Cold Storage widens the gap a streak survives from one day to two. Read
+// live rather than baked into the record, so buying the perk protects the
+// streak you are ALREADY on rather than only future ones.
+const streakGapAllowed = () => hasPerk('perk-cold') ? 2 : 1;
+
 function rollStreak(streak){
   const today = dayKey();
   if(streak.lastDay === today) return null;
   const gap = streak.lastDay ? daysBetween(streak.lastDay, today) : null;
-  const count = (gap === 1) ? (streak.count || 0) + 1 : 1;
+  const count = (gap !== null && gap >= 1 && gap <= streakGapAllowed())
+    ? (streak.count || 0) + 1 : 1;
   return { count, lastDay: today, best: Math.max(count, streak.best || 0) };
 }
 
 // Escalating drip, capped so a long streak stays a bonus rather than an income.
 const streakReward = n => Math.min(1 + Math.floor(n / 3), 8);
+
+// ══════════════════════════════════════════════════════════════════════
+//  🎖️ THE SEASON TRACK — ten tiers a week
+// ══════════════════════════════════════════════════════════════════════
+// The weekly bucket already existed and did exactly one thing: rank the board,
+// and hand a crown to whoever topped it. That is a reward for being the single
+// best player on the grid, which is nobody — so for everyone else the weekly
+// number was a statistic rather than a goal.
+//
+// A track fixes that without touching the ranking: it pays for YOUR OWN total,
+// on thresholds nobody else can take from you. The board still decides who is
+// best; the track decides whether the week was worth playing.
+//
+// Tiers are claimed AUTOMATICALLY the moment the threshold is crossed. A claim
+// button would be a second thing to remember and a way to lose a reward by
+// forgetting it — and there is no decision to make, so there is nothing for the
+// button to ask.
+const SEASON_TIERS = [
+  { at:    500, cr:  1 },
+  { at:   1500, cr:  2 },
+  { at:   3000, cr:  3 },
+  { at:   5000, cr:  4 },
+  { at:   7500, cr:  6 },
+  { at:  11000, cr:  8 },
+  { at:  15000, cr: 10 },
+  { at:  20000, cr: 12 },
+  { at:  27000, cr: 15 },
+  // The crown was previously reachable only by topping the weekly board. It
+  // stays the top prize, but grinding a full season is now a second way in —
+  // grantSeasonCrown() is idempotent, so a player who does both keeps one.
+  { at:  35000, cr: 20, crown: true }
+];
+
+const seasonPts = () => (user && user.weekly && user.weekly.season === seasonKey()) ? (user.weekly.pts || 0) : 0;
+// How many tiers a total has earned. A pure function of the points, which is
+// the whole trick: nothing is stored, nothing can drift, and a profile opened
+// on a second device computes the same answer from the same number.
+const seasonTiersFor = pts => SEASON_TIERS.filter(t => pts >= t.at).length;
+const seasonClaimed  = () => seasonTiersFor(seasonPts());
+// The next unearned tier, or null once the track is finished.
+const seasonNext     = () => SEASON_TIERS[seasonClaimed()] || null;
+
+// Milliseconds until the season key rolls over, so the overlay can say how long
+// is left rather than making the player work out which Thursday it means.
+function seasonResetIn(){
+  const now = Date.now();
+  // Walk forward a day at a time rather than doing calendar arithmetic against
+  // seasonKey()'s nearest-Thursday rule — eight iterations at most, and it can
+  // never disagree with the function that actually decides the bucket.
+  for(let d = 1; d <= 8; d++){
+    const t = now + d * 86400000;
+    if(seasonKey(t) !== seasonKey(now)){
+      return Date.parse(new Date(t).toISOString().slice(0, 10) + 'T00:00:00Z') - now;
+    }
+  }
+  return 0;
+}
+function seasonResetLabel(){
+  const ms = seasonResetIn();
+  const h = Math.floor(ms / 3600000);
+  return h >= 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : `${h}h`;
+}
+
+// Pays for every tier the round just crossed. Takes the total BEFORE and AFTER
+// rather than reading a stored counter: the difference between the two tier
+// counts is exactly what this round earned, needs no state of its own, and
+// cannot pay twice for the same tier even if the write that recorded the points
+// is later refused.
+function settleSeasonTrack(before, after){
+  if(!user) return 0;
+  const from = seasonTiersFor(before), to = seasonTiersFor(after);
+  if(to <= from) return 0;
+  let cr = 0, crown = false;
+  const hit = [];
+  for(let i = from; i < to; i++){
+    cr += SEASON_TIERS[i].cr;
+    if(SEASON_TIERS[i].crown) crown = true;
+    hit.push(i + 1);
+  }
+  // Held back so it lands after the results card rather than under the round's
+  // own death sting — the same reason awardXp() delays its level-up toast.
+  setTimeout(() => {
+    snd('levelUp');
+    toast(hit.length === 1
+      ? `🎖️ SEASON TIER ${hit[0]} CLEARED — +${cr} CR`
+      : `🎖️ SEASON TIERS ${hit[0]}–${hit[hit.length - 1]} CLEARED — +${cr} CR`, 3600);
+    paintSeasonRail();
+  }, 1800);
+  if(crown) setTimeout(grantSeasonCrown, 2600);
+  return cr;
+}
+
+function paintSeasonRail(){
+  const btn = document.getElementById('btn-season');
+  if(!btn) return;
+  const next = seasonNext();
+  const done = seasonClaimed();
+  btn.textContent = next
+    ? `🎖️ SEASON ${done}/${SEASON_TIERS.length}`
+    : `🎖️ SEASON COMPLETE`;
+  // Lit only when there is a tier within reach, so the button is a nudge when
+  // it is worth one and furniture the rest of the time.
+  const close = next && seasonPts() >= next.at * 0.6;
+  btn.classList.toggle('btn-primary', !!close);
+  btn.classList.toggle('btn-secondary', !close);
+}
+
+
+// ══════════════════════════════════════════════════════════════════════
+//  ⚔️ RIVAL CHALLENGES — the asynchronous half of the arena
+// ══════════════════════════════════════════════════════════════════════
+// Every head-to-head thing in this arcade needed both people online at the same
+// moment. The Network Arena is a live socket: two clients, one simulation, a
+// shared countdown — which is the best version of playing someone, and also the
+// reason almost nobody ever does. Two people who play at different times of day
+// had no way to compete at all.
+//
+// A challenge is a POSTED RUN. You finish a mission, you publish the score and
+// the pace curve, and it sits there. Someone else picks it up hours later, plays
+// the same mission at the same stability tier, and races your curve on the same
+// HUD the personal-best ghost uses. Nobody waits for anybody.
+//
+// 🔥 THE STORAGE IS THE INTERESTING PART. A new top-level node would be refused
+// outright — the database's rules name the nodes they allow and `players` is one
+// of them — so a challenge lives at `players/<uid>/challenge`, inside the record
+// its author already owns and already writes. That is not a workaround: it is
+// also the only shape that needs no directory, because the leaderboard ALREADY
+// reads the player list, so every challenge is discovered by the query that was
+// being made anyway.
+//
+// One standing challenge per profile. A list per player would need pagination,
+// expiry and moderation; one slot means posting is always "replace mine", which
+// is a decision anyone can make in a second.
+const CHAL_CURVE_MAX = 26;          // samples kept in a posted curve
+const CHAL_BONUS = 0.15;            // +15% for taking someone's challenge down
+let chalActive = null;              // the challenge THIS round is racing
+let chalBoard = [];                 // what the last player-list read turned up
+
+// A posted curve is thinned hard. A full pace curve is up to 400 pairs and this
+// one rides inside a record the leaderboard fetches for every player on the
+// grid — so it is resampled to 26 evenly spaced points, which is more than
+// enough to draw a pace line and about three hundred bytes.
+function thinCurve(pts){
+  if(!Array.isArray(pts) || pts.length <= CHAL_CURVE_MAX) return (pts || []).map(p => [p[0], p[1]]);
+  const out = [];
+  for(let i = 0; i < CHAL_CURVE_MAX; i++){
+    const src = pts[Math.round(i * (pts.length - 1) / (CHAL_CURVE_MAX - 1))];
+    out.push([src[0], src[1]]);
+  }
+  return out;
+}
+
+async function postChallenge(gid, pts, tier, curve){
+  if(!user) return false;
+  if(!db || offlineMode){
+    snd('deny');
+    toast('📴 Offline — a challenge needs a connection to post.', 2800);
+    return false;
+  }
+  const rec = {
+    gid, tier: tier || 'stable', pts: Math.max(0, Math.round(pts)),
+    name: user.username || 'OPERATIVE',
+    at: Date.now(),
+    curve: thinCurve(curve)
+  };
+  try{
+    await db.ref(`players/${user.uid}/challenge`).set(rec);
+    user.challenge = rec;
+    snd('purchase');
+    toast(`⚔️ CHALLENGE POSTED — ${META[gid].emoji} ${META[gid].name} · ${rec.pts.toLocaleString()} to beat`, 3600);
+    loadChallenges();
+    return true;
+  }catch(e){
+    // The rules refusing this is the one failure worth naming precisely, because
+    // it looks exactly like a code bug from the outside.
+    console.warn('Challenge post failed:', e);
+    snd('deny');
+    toast('⚠️ The grid refused the challenge — it was not posted.', 3200);
+    return false;
+  }
+}
+
+async function withdrawChallenge(){
+  if(!user || !db) return;
+  try{
+    await db.ref(`players/${user.uid}/challenge`).remove();
+    user.challenge = null;
+    snd('uiBack');
+    toast('⚔️ Challenge withdrawn.', 2200);
+    loadChallenges();
+  }catch(e){ console.warn('Challenge withdraw failed:', e); }
+}
+
+// Reads the same player list the leaderboard reads. Ordered by totalPoints so
+// the sample skews toward players who actually play, which is also who posts.
+function loadChallenges(){
+  const panel = document.getElementById('chal-panel');
+  if(!panel) return;
+  if(!db || offlineMode){
+    panel.innerHTML = '<div class="lb-empty">📴 Offline — challenges need a connection.</div>';
+    return;
+  }
+  db.ref('players').orderByChild('totalPoints').limitToLast(60).once('value', snap => {
+    const list = [];
+    snap.forEach(c => {
+      const d = c.val() || {};
+      const ch = d.challenge;
+      if(!ch || !ch.gid || !META[ch.gid] || !(ch.pts > 0)) return;
+      if(c.key === user?.uid) return;                  // yours is shown separately
+      list.push({ uid: c.key, ...ch });
+    });
+    // Freshest first: a challenge from this morning is a better invitation than
+    // a record someone set in March.
+    list.sort((a, b) => (b.at || 0) - (a.at || 0));
+    chalBoard = list.slice(0, 8);
+    renderChallenges();
+  }, err => {
+    console.warn('Challenge read failed:', err);
+    panel.innerHTML = '<div class="lb-empty">⚠️ Could not read the challenge board.</div>';
+  });
+}
+
+function renderChallenges(){
+  const panel = document.getElementById('chal-panel');
+  if(!panel) return;
+  const mine = user && user.challenge;
+  let html = '';
+  if(mine && META[mine.gid]){
+    html += `<div class="chal-mine">` +
+      `<div class="chal-mine-lbl">⚔️ YOUR STANDING CHALLENGE</div>` +
+      `<div class="chal-row own">` +
+        `<span class="chal-ico">${META[mine.gid].emoji}</span>` +
+        `<div class="chal-txt"><div class="chal-name">${esc(META[mine.gid].name)}</div>` +
+        `<div class="chal-meta">${(mine.pts || 0).toLocaleString()} PTS · ${esc((DIFFICULTY_TIERS[mine.tier] || {}).label || mine.tier)}</div></div>` +
+        `<button class="btn btn-secondary btn-sm" id="chal-withdraw">WITHDRAW</button>` +
+      `</div></div>`;
+  }
+  if(!chalBoard.length){
+    html += `<div class="lb-empty">No open challenges on the grid. Post one from a results card and it waits here for someone.</div>`;
+  }else{
+    html += chalBoard.map(c => {
+      const m = META[c.gid];
+      const tier = DIFFICULTY_TIERS[c.tier] || DIFFICULTY_TIERS.stable;
+      const mineBest = (user && user.best && user.best[c.gid]) || 0;
+      // Says whether you have ALREADY beaten the number, because that changes
+      // whether the row is an invitation or a formality.
+      const edge = mineBest > c.pts ? `your best ${mineBest.toLocaleString()}` : null;
+      const locked = !missionUnlocked(c.gid);
+      return `<div class="chal-row${locked ? ' locked' : ''}">` +
+        `<span class="chal-ico">${m.emoji}</span>` +
+        `<div class="chal-txt">` +
+          `<div class="chal-name">${esc(m.name)}</div>` +
+          `<div class="chal-meta">${esc(String(c.name || 'OPERATIVE')).slice(0, 14)} · ` +
+          `<strong>${(c.pts || 0).toLocaleString()}</strong> PTS · ${tier.icon} ${esc(tier.label)}` +
+          (edge ? ` · <em>${edge}</em>` : '') + `</div>` +
+        `</div>` +
+        (locked
+          ? `<span class="chal-locked">🔒 CLEARANCE ${missionClearance(c.gid)}</span>`
+          : `<button class="btn btn-primary btn-sm chal-take" data-uid="${esc(c.uid)}">TAKE IT →</button>`) +
+        `</div>`;
+    }).join('');
+  }
+  panel.innerHTML = html;
+  document.getElementById('chal-withdraw')?.addEventListener('click', withdrawChallenge);
+  panel.querySelectorAll('.chal-take').forEach(b => {
+    b.onclick = () => acceptChallenge(b.dataset.uid);
+  });
+}
+
+function acceptChallenge(uid){
+  const c = chalBoard.find(x => x.uid === uid);
+  if(!c) return;
+  if(!missionUnlocked(c.gid)) return;
+  chalActive = c;
+  // The tier is part of the challenge, not a preference: racing someone's
+  // Meltdown run on Stable Core would be racing a different game. Borrowed for
+  // the round and handed back by settleChallenge().
+  chalPrevTier = currentDifficultyTier;
+  if(DIFFICULTY_TIERS[c.tier]) setDifficultyTier(c.tier);
+  lockDifficultySelector();
+  curGame = c.gid;
+  document.getElementById('g-title').textContent =
+    `⚔️ ${META[c.gid].name} · vs ${String(c.name || 'RIVAL').slice(0, 12)}`;
+  showScreen('game-screen');
+  snd('success');
+  toast(`⚔️ CHALLENGE ACCEPTED — beat ${(c.pts || 0).toLocaleString()} on ${(DIFFICULTY_TIERS[c.tier] || {}).label || c.tier}`, 3600);
+  prepGame(c.gid);
+}
+let chalPrevTier = null;
+
+// The curve the pace ghost should race this round, or null for your own record.
+function chalRival(){
+  if(!chalActive || !Array.isArray(chalActive.curve) || !chalActive.curve.length) return null;
+  return { score: chalActive.pts, pts: chalActive.curve, name: chalActive.name };
+}
+
+// Settled on the results card. Returns the breakdown rows it wants added and
+// the multiplier it earned, then stands the challenge down — win or lose, a
+// challenge is taken once.
+function settleChallenge(gid, pts){
+  if(!chalActive) return null;
+  const c = chalActive;
+  chalActive = null;
+  if(chalPrevTier){ setDifficultyTier(chalPrevTier); chalPrevTier = null; }
+  unlockDifficultySelector();
+  if(c.gid !== gid) return null;                 // not the round that was accepted
+  const won = pts > (c.pts || 0);
+  setTimeout(() => {
+    snd(won ? 'victory' : 'results');
+    toast(won
+      ? `⚔️ CHALLENGE TAKEN DOWN — beat ${String(c.name || 'RIVAL').slice(0, 14)} by ${(pts - c.pts).toLocaleString()}`
+      : `⚔️ CHALLENGE HELD — ${String(c.name || 'RIVAL').slice(0, 14)} keeps it by ${((c.pts || 0) - pts).toLocaleString()}`,
+      3600);
+  }, 1600);
+  return {
+    won,
+    mult: won ? 1 + CHAL_BONUS : 1,
+    rows: {
+      '⚔️ Rival Challenge': `${String(c.name || 'RIVAL').slice(0, 14)} · ${(c.pts || 0).toLocaleString()} PTS`,
+      '⚔️ Outcome': won ? 'TAKEN DOWN' : 'HELD'
+    }
+  };
+}
+
+// Walking away from an accepted challenge must hand the borrowed tier back, or
+// the dial stays locked on someone else's setting for the rest of the session.
+function abortChallenge(){
+  if(!chalActive) return;
+  chalActive = null;
+  if(chalPrevTier){ setDifficultyTier(chalPrevTier); chalPrevTier = null; }
+  unlockDifficultySelector();
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  📁 THE OPERATIVE DOSSIER
+// ══════════════════════════════════════════════════════════════════════
+// Everything the profile already knew and had nowhere to say. The arcade
+// recorded a lifetime point total, a run history per mission and a streak, and
+// showed the player exactly one of those three — a number in the hub bar. So a
+// hundred rounds of play left no readable trace, and the one question a
+// returning player actually has ("which of these have I got good at?") had no
+// answer anywhere in the interface.
+//
+// It is a READ-ONLY view by design. Nothing here awards anything, nothing here
+// can be spent, and that is what lets it show everything at once without
+// becoming a second economy to manage.
+const HEAT_WEEKS = 18;                     // ~4 months, which fits the width
+
+// 📅 THE ACTIVITY LOG lives in localStorage rather than on the profile. It is a
+// private record of when you played, nothing else in the arcade reads it, and
+// nobody is ever ranked on it — the same reasoning that keeps the ghost curves
+// local. The honest cost is that it is per-device: play on a phone and a laptop
+// and each keeps its own half of the picture.
+const DAYS_KEY = 'pi_days';
+function activityDays(){
+  try{
+    const raw = localStorage.getItem(DAYS_KEY);
+    const o = raw ? JSON.parse(raw) : null;
+    return (o && typeof o === 'object') ? o : {};
+  }catch(e){ return {}; }
+}
+function bumpActivityDay(){
+  try{
+    const o = activityDays();
+    const k = dayKey();
+    o[k] = (o[k] || 0) + 1;
+    // Pruned to a little more than the window the heatmap draws, so the record
+    // cannot grow without bound on a profile that is years old.
+    const keep = Object.keys(o).sort().slice(-(HEAT_WEEKS * 7 + 14));
+    const out = {};
+    keep.forEach(d => { out[d] = o[d]; });
+    localStorage.setItem(DAYS_KEY, JSON.stringify(out));
+    if(user) user.days = out;
+  }catch(e){ /* private mode — a missing heatmap is not an error */ }
+}
+
+// 📁 Best and run count, derived when the database has not been taught to store
+// them. `history` keeps the last twelve runs, so the derived best is the best of
+// those twelve and the derived count saturates at twelve — which is why the
+// dossier marks a saturated count with a '+' rather than pretending to know.
+const dosBest = gid => (user.best && user.best[gid]) || Math.max(0, ...(user.history[gid] || [0]));
+const dosRuns = gid => (user.runs && user.runs[gid]) || (user.history[gid] || []).length;
+const dosRunsExact = gid => !!(user.runs && user.runs[gid]);
+
+// Sundays back to the start of the window, so the grid's columns are weeks and
+// its rows are weekdays — the shape everyone already reads as a calendar.
+function heatDays(){
+  const out = [];
+  const today = new Date(dayKey() + 'T00:00:00Z');
+  // Walk back to the most recent Sunday so the final column is the current week.
+  const end = new Date(today);
+  end.setUTCDate(end.getUTCDate() + (6 - end.getUTCDay()));
+  for(let i = HEAT_WEEKS * 7 - 1; i >= 0; i--){
+    const d = new Date(end);
+    d.setUTCDate(d.getUTCDate() - i);
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+function renderDossier(){
+  const wrap = document.getElementById('dossier-body');
+  const sub  = document.getElementById('dossier-sub');
+  if(!wrap || !user) return;
+
+  const st = xpLevel(user.xp || 0);
+  const gids = Object.keys(SOLO_START);
+  // Read from localStorage each time it is opened rather than trusting the copy
+  // on the profile: the log is written by bumpActivityDay() and a session that
+  // was open when the day rolled over would otherwise draw a stale calendar.
+  user.days = activityDays();
+  const played = gids.filter(g => dosRuns(g) > 0);
+  const bestRun = Math.max(0, ...gids.map(g => dosBest(g)));
+  const totalRuns = gids.reduce((a, g) => a + dosRuns(g), 0);
+  const achGot = ACHIEVEMENTS.filter(a => user.achievements[a.id]).length;
+
+  if(sub) sub.textContent =
+    `${esc(user.username || 'OPERATIVE')} · level ${st.level} · ${played.length} of ${gids.length} missions on record`;
+
+  const tile = (icon, label, value, note) =>
+    `<div class="dos-tile"><span class="dos-ico">${icon}</span>` +
+    `<div class="dos-val">${value}</div><div class="dos-lbl">${esc(label)}</div>` +
+    (note ? `<div class="dos-note">${esc(note)}</div>` : '') + `</div>`;
+
+  // ── LIFETIME ──
+  let html = `<div class="dos-sec">⭐ LIFETIME</div><div class="dos-tiles">` +
+    tile('🏆', 'Points banked', (user.totalPoints || 0).toLocaleString()) +
+    tile('🎮', 'Rounds finished', (user.gamesPlayed || 0).toLocaleString()) +
+    tile('💎', 'Credits held', (user.credits || 0).toLocaleString()) +
+    tile('📈', 'Best single run', bestRun ? bestRun.toLocaleString() : '—') +
+    tile('🔥', 'Streak', `${user.streak.count || 0}`, `best ${user.streak.best || 0} days`) +
+    tile('🏅', 'Achievements', `${achGot}/${ACHIEVEMENTS.length}`) +
+    tile('🎖️', 'Season points', seasonPts().toLocaleString(), `tier ${seasonClaimed()}/${SEASON_TIERS.length}`) +
+    tile('🌳', 'Perks owned', `${PERKS.filter(p => hasPerk(p.id)).length}/${PERKS.length}`) +
+    `</div>`;
+
+  // ── ACTIVITY ──
+  // A day with one round and a day with thirty should not look the same, so the
+  // ramp is on the COUNT — but capped at 6, because past that the difference
+  // stops being information and starts being a gradient nobody can read.
+  const days = heatDays();
+  const todayKey = dayKey();
+  const activeDays = days.filter(d => (user.days[d] || 0) > 0).length;
+  html += `<div class="dos-sec">📅 ACTIVITY <em>${activeDays} active days in the last ${HEAT_WEEKS} weeks</em></div>`;
+  html += `<div class="dos-heat">`;
+  for(let w = 0; w < HEAT_WEEKS; w++){
+    html += `<div class="dos-heat-col">`;
+    for(let d = 0; d < 7; d++){
+      const key = days[w * 7 + d];
+      const n = user.days[key] || 0;
+      const lvl = n === 0 ? 0 : Math.min(4, Math.ceil(n / 1.5));
+      const future = key > todayKey;
+      html += `<span class="dos-cell l${lvl}${future ? ' fut' : ''}${key === todayKey ? ' today' : ''}"` +
+              ` title="${key} · ${n} round${n === 1 ? '' : 's'}"></span>`;
+    }
+    html += `</div>`;
+  }
+  html += `</div><div class="dos-heat-key"><span>quiet</span>` +
+          `<span class="dos-cell l0"></span><span class="dos-cell l1"></span><span class="dos-cell l2"></span>` +
+          `<span class="dos-cell l3"></span><span class="dos-cell l4"></span><span>busy</span></div>`;
+
+  // ── PER-MISSION ──
+  // Ranked by how close the best run got to the mission's CAP, not by the raw
+  // score: a 1,400 in Pulse Sync and a 400 in Reaction Time are the same
+  // achievement, and ranking by points would bury every short mission.
+  const rows = played.map(g => {
+    const m = META[g], hist = user.history[g] || [];
+    const best = dosBest(g);
+    const runs = dosRuns(g);
+    const exact = dosRunsExact(g);
+    const avg = hist.length ? Math.round(hist.reduce((a, b) => a + b, 0) / hist.length) : 0;
+    // Cyber Arena is uncapped (99999), so a percentage of its cap is
+    // meaningless — it is ranked on its own best instead and shows no bar.
+    const capped = m.maxPts < 90000;
+    return { g, m, best, runs, avg, hist, capped, exact, pct: capped ? Math.min(1, best / m.maxPts) : 0 };
+  }).sort((a, b) => (b.capped ? b.pct : 0) - (a.capped ? a.pct : 0) || b.best - a.best);
+
+  html += `<div class="dos-sec">🎯 MISSION RECORD <em>ranked by how close your best run came to the cap</em></div>`;
+  if(!rows.length){
+    html += `<div class="dos-empty">Nothing on record yet — finish a mission and it appears here.</div>`;
+  }else{
+    html += `<div class="dos-missions">`;
+    for(const r of rows){
+      // Sparkline of the last twelve, drawn as bars rather than a polyline: at
+      // twelve points a line is mostly interpolation and a bar is a fact.
+      const top = Math.max(1, ...r.hist);
+      const spark = r.hist.map(v =>
+        `<span style="height:${Math.max(6, (v / top) * 100)}%"></span>`).join('');
+      html += `<div class="dos-mission">` +
+        `<span class="dm-ico">${r.m.emoji}</span>` +
+        `<div class="dm-name">${esc(r.m.name)}</div>` +
+        `<div class="dm-stats">` +
+          `<span class="dm-best">${r.best.toLocaleString()}</span>` +
+          `<span class="dm-cap">${r.capped ? `${Math.round(r.pct * 100)}% of cap` : 'uncapped'}</span>` +
+        `</div>` +
+        (r.capped ? `<div class="dm-bar"><span style="width:${r.pct * 100}%"></span></div>` : `<div class="dm-bar dm-bar-none"></div>`) +
+        `<div class="dm-foot"><span>${r.runs}${!r.exact && r.runs >= HISTORY_LEN ? '+' : ''} run${r.runs === 1 ? '' : 's'}</span>` +
+        `<span>avg ${r.avg.toLocaleString()} (last ${r.hist.length})</span></div>` +
+        `<div class="dm-spark">${spark}</div>` +
+        `</div>`;
+    }
+    html += `</div>`;
+  }
+
+  // Missions with nothing on record are named rather than omitted: "you have
+  // never played these three" is the most actionable line on the page.
+  const missing = gids.filter(g => !played.includes(g));
+  if(missing.length){
+    html += `<div class="dos-sec">🕳️ NO RECORD <em>never finished</em></div><div class="dos-missing">` +
+      missing.map(g => `<span class="dos-chip" data-jump="${g}">${META[g].emoji} ${esc(META[g].name)}</span>`).join('') +
+      `</div>`;
+  }
+
+  wrap.innerHTML = html;
+  // The chips are a door, not a label: tapping one closes the dossier and
+  // scrolls the mission it names into view.
+  wrap.querySelectorAll('.dos-chip[data-jump]').forEach(el => {
+    el.onclick = () => {
+      closeOverlay('dossier-overlay');
+      const card = document.querySelector(`.game-card[data-game="${el.dataset.jump}"]`);
+      if(card){
+        card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        card.classList.add('gc-flash');
+        setTimeout(() => card.classList.remove('gc-flash'), 1600);
+      }
+    };
+  });
+}
+
+function renderSeasonTrack(){
+  const wrap = document.getElementById('season-track');
+  const sub  = document.getElementById('season-sub');
+  if(!wrap || !user) return;
+  const pts = seasonPts(), done = seasonClaimed();
+  const next = seasonNext();
+  if(sub){
+    sub.textContent = next
+      ? `${pts.toLocaleString()} pts this season · ${(next.at - pts).toLocaleString()} to tier ${done + 1} · resets in ${seasonResetLabel()}`
+      : `${pts.toLocaleString()} pts this season · track complete · resets in ${seasonResetLabel()}`;
+  }
+  const top = SEASON_TIERS[SEASON_TIERS.length - 1].at;
+  wrap.innerHTML =
+    `<div class="season-bar"><div class="season-bar-fill" style="width:${Math.min(100, pts / top * 100)}%"></div></div>` +
+    `<div class="season-tiers">` +
+    SEASON_TIERS.map((t, i) => {
+      const state = i < done ? 'paid' : pts >= t.at ? 'ready' : 'locked';
+      const pct = Math.min(1, pts / t.at);
+      return `<div class="season-tier ${state}">` +
+             `<div class="st-num">${i + 1}</div>` +
+             `<div class="st-at">${t.at.toLocaleString()}</div>` +
+             `<div class="st-reward">${t.crown ? '👑 CROWN + ' : ''}${t.cr} CR</div>` +
+             `<div class="st-meter"><span style="width:${pct * 100}%"></span></div>` +
+             `<div class="st-state">${state === 'paid' ? '✔ PAID' : state === 'ready' ? 'CLAIMING…' : `${Math.round(pct * 100)}%`}</div>` +
+             `</div>`;
+    }).join('') +
+    `</div>`;
+}
 
 // The whole progression write for one finished round, batched into a single
 // update() so it costs one round trip and can't half-apply.
@@ -2859,11 +3889,33 @@ function recordRun(gid, pts, ctx){
   user.history[gid] = hist;
   patch['history/' + gid] = hist;
 
+  // ── 📁 the dossier's ledgers.
+  //
+  // ⚠️ DELIBERATELY NOT IN `patch`. The database's rules enumerate the child keys
+  // they allow under a player record, and a single update() carrying ONE key
+  // they do not name is refused ENTIRELY — so adding these three to the
+  // progression patch silently stopped the streak, the achievements, the weekly
+  // bucket and the credit payout from persisting at all. The symptom was a
+  // console warning and four unrelated systems quietly going read-only.
+  //
+  // So they go out as their own write, after the one that matters, and that
+  // write is allowed to fail. Until the Console rules name `best` and `runs`,
+  // the dossier derives them from `history` instead (see dosBest/dosRuns) and
+  // is fully readable either way; once they are named it gains a lifetime run
+  // count and a best that survives a thirteenth round.
+  if(pts > (user.best[gid] || 0)) user.best[gid] = pts;
+  user.runs[gid] = (user.runs[gid] || 0) + 1;
+  const ledger = { ['best/' + gid]: user.best[gid], ['runs/' + gid]: user.runs[gid] };
+  // 📅 The activity log is LOCAL on purpose, not just for want of a rule. It is
+  // a private record of when you played, it is never compared against anyone,
+  // and nothing else in the arcade needs to read it — the same reasoning that
+  // keeps the ghost curves in localStorage. The cost is that it is per-device.
+  bumpActivityDay();
+
   // ── weekly bucket, reset when the season key rolls over
   const season = seasonKey();
-  const weekly = (user.weekly.season === season)
-    ? { season, pts: (user.weekly.pts || 0) + pts }
-    : { season, pts };
+  const weeklyBefore = (user.weekly.season === season) ? (user.weekly.pts || 0) : 0;
+  const weekly = { season, pts: weeklyBefore + pts };
   user.weekly = weekly;
   patch.weekly = weekly;
 
@@ -2898,7 +3950,19 @@ function recordRun(gid, pts, ctx){
     missionsPlayed: Object.keys(user.history)
       .filter(k => SOLO_START[k] && (user.history[k] || []).length).length
   };
-  let creditGain = streakBonus;
+  // 🎖️ The season track pays for whatever tiers this round's points crossed,
+  // folded into the same payout the streak and the achievements use. It stores
+  // nothing of its own — the tier count is derived from the weekly total, which
+  // is the only reason it needs no key the rules would have to be taught.
+  let creditGain = streakBonus + settleSeasonTrack(weeklyBefore, weekly.pts);
+  // ♻️ Salvage Routine. Sixty percent of a mission's cap is a good run rather
+  // than a lucky one, and Cyber Arena's uncapped 99999 can never reach it —
+  // which is correct: a perk that paid per point would pay that mission alone.
+  let salvage = 0;
+  if(hasPerk('perk-salvage') && cond.pct >= 0.6){
+    salvage = 1;
+    creditGain += salvage;
+  }
   ACHIEVEMENTS.forEach(a => {
     if(user.achievements[a.id]) return;
     let hit = false;
@@ -2917,7 +3981,13 @@ function recordRun(gid, pts, ctx){
 
   db.ref('players/' + user.uid).update(patch)
     .catch(e => console.warn('Progression write failed:', e));
+  // Fired and forgotten, separately, so a rule that has not been taught about
+  // these keys costs the dossier a little precision and costs the progression
+  // write nothing at all.
+  db.ref('players/' + user.uid).update(ledger)
+    .catch(() => { /* not yet allowed by the rules — the dossier derives instead */ });
 
+  if(salvage > 0) toast(`♻️ SALVAGE ROUTINE · +${salvage} CR`, 2400);
   if(streakBonus > 0) announceStreak(user.streak.count, streakBonus);
   if(unlocked.length) announceUnlocks(unlocked);
   refreshHubProgression();
@@ -2945,6 +4015,92 @@ function announceStreak(count, bonus){
 
 // ── HUB PROGRESSION UI ──
 // Streak chip in the hub bar, plus the badge shelf under the leaderboard.
+// ══════════════════════════════════════════════════════════════════════
+//  🔒 CLEARANCE LEVELS — the mission ladder
+// ══════════════════════════════════════════════════════════════════════
+// Twenty-one missions were open on the first visit, which is not generosity —
+// it is twenty-one identical-looking cards and no reason to pick any of them.
+// A new player's first decision was the hardest one the arcade ever asks, and
+// they made it with no information at all.
+//
+// The ladder is deliberately SHALLOW. Six missions are open immediately, the
+// rest arrive over the first handful of rounds, and everything is open by level
+// seven — which at a tenth of a point per XP is about six thousand lifetime
+// points, a single evening. It exists to stagger the introduction, not to gate
+// content: a player who wants Battle Bots on day one waits ten minutes, not a
+// week.
+//
+// Grouped by how much a mission has to EXPLAIN, not by difficulty. Click Frenzy
+// and Reaction Time need one sentence; Battle Bots needs a deck, an economy and
+// three lanes, and meeting it first is how a new player decides this arcade is
+// not for them.
+const MISSION_CLEARANCE = {
+  // 1 — one rule each, readable in a single sentence.
+  click: 1, reaction: 1, memory: 1, math: 1, dodge: 1, nebula: 1,
+  // 2 — one rule plus a control scheme to learn.
+  pong: 2, snake: 2, flappy: 2,
+  // 3 — a board that has state you have to plan against.
+  tetris: 3, breaker: 3, merge: 3,
+  // 4 — a puzzle with a rule you have to be told.
+  hacker: 4, path: 4, rhythm: 4,
+  // 5 — sustained runs with a resource to manage.
+  runner: 5, meteor: 5, uplink: 5,
+  // 6–7 — a console, an ability bar, an economy.
+  freq: 6, arena: 6,
+  battlebots: 7
+};
+const MISSION_MAX_CLEARANCE = Math.max(...Object.values(MISSION_CLEARANCE));
+
+// A mission the player has ALREADY scored in is never taken away. This is the
+// whole reason the ladder is safe to add to a live arcade: an established
+// profile lands on it with every mission it has ever played already open, so
+// the feature is invisible to everyone except the people it is for.
+const missionScored = gid => !!(user && ((user.runs && user.runs[gid] > 0) ||
+                                         (user.history && (user.history[gid] || []).length)));
+
+function missionClearance(gid){ return MISSION_CLEARANCE[gid] || 1; }
+function missionUnlocked(gid){
+  if(!user) return true;                       // pre-login: nothing to gate
+  if(missionScored(gid)) return true;
+  return xpLevel(user.xp || 0).level >= missionClearance(gid);
+}
+
+// Paints the grid. Called from enterHub and from refreshHubProgression, so a
+// level gained mid-session opens its cards without a reload.
+function paintMissionLocks(){
+  if(!user) return;
+  const lvl = xpLevel(user.xp || 0).level;
+  document.querySelectorAll('.game-card').forEach(card => {
+    const gid = card.dataset.game;
+    const need = missionClearance(gid);
+    const open = missionUnlocked(gid);
+    card.classList.toggle('locked', !open);
+    card.setAttribute('aria-disabled', String(!open));
+    let tag = card.querySelector('.gc-lock');
+    if(open){ if(tag) tag.remove(); return; }
+    if(!tag){
+      tag = document.createElement('span');
+      tag.className = 'gc-lock';
+      card.appendChild(tag);
+    }
+    // Says how far away it is, not just that it is shut. "CLEARANCE 3" is a
+    // locked door; "2 LEVELS AWAY" is a thing you are on your way to.
+    const gap = need - lvl;
+    tag.innerHTML = `<span class="gcl-ico">🔒</span>` +
+      `<span class="gcl-txt">CLEARANCE ${need}<em>${gap === 1 ? 'one level away' : `${gap} levels away`}</em></span>`;
+  });
+  // The sub-line under the grid label carries the summary, so a player can see
+  // at a glance whether anything is still shut without scanning the cards.
+  const lab = document.getElementById('mission-clearance');
+  if(lab){
+    const shut = Object.keys(SOLO_START).filter(g => !missionUnlocked(g)).length;
+    lab.textContent = shut
+      ? `LVL ${lvl} · ${shut} mission${shut === 1 ? '' : 's'} still classified`
+      : `LVL ${lvl} · full clearance`;
+    lab.classList.toggle('all-clear', !shut);
+  }
+}
+
 function refreshHubProgression(){
   if(!user) return;
   const bar = document.getElementById('h-credits');
@@ -2958,6 +4114,8 @@ function refreshHubProgression(){
     chip.className = 'hub-streak';
     bar.parentNode.insertBefore(chip, bar.nextSibling);
   }
+  paintMissionLocks();
+  if(typeof loadChallenges === 'function') loadChallenges();
   if(chip){
     chip.style.display = n > 0 ? '' : 'none';
     chip.textContent = `🔥 ${n}`;
@@ -3049,6 +4207,11 @@ const CARD_COLORS = {
 //  🛒 BLACK MARKET — CREDITS & COSMETICS
 // ════════════════════════════════════════════
 const CONV_RATE = 100; // 100 points = 1 credit (both directions)
+// 💱 Data Broker discounts the BUY side only. Selling credits back at the
+// discounted rate would be a loop — convert down, convert up, repeat — so the
+// rate the market pays for points and the rate it charges for them are two
+// separate questions and only the first one has a perk attached.
+const buyRate = () => hasPerk('perk-broker') ? 70 : CONV_RATE;
 
 const SHOP_ITEMS = {
   colors: [
@@ -3090,7 +4253,11 @@ const SHOP_ITEMS = {
     { id:'pu-dilator', name:'Time Dilator',   price:5,  emoji:'⏳', consumable:true, stack:9,
       desc:'Adds +3s to the active game timer. One shot, any mission with a clock.' },
     { id:'pu-shield',  name:'Shield Overlay', price:10, emoji:'🛡️', consumable:true, stack:9,
-      desc:'Absorbs one crash in Grid Snake or one hit in Flappy Drone.' }
+      desc:'Absorbs one fatal hit — a crash, a collision, a topped-out well — on any mission that can end in one.' },
+    { id:'pu-overclock', name:'Overclock Chip', price:14, emoji:'⚙️', consumable:true, stack:9,
+      desc:'Press it during a round and that round pays thirty percent more. Stacks with your tier, your perks and the modifier.' },
+    { id:'pu-dampener', name:'Chaos Dampener', price:8, emoji:'🧯', consumable:true, stack:9,
+      desc:'Shuts down every handicap running on the round. Windfalls are left exactly where they are.' }
   ],
 
   // ── 🎵 MUSIC DRIVES ──
@@ -3123,7 +4290,13 @@ const SHOP_ITEMS = {
     { id:'exit-matrix',  name:'Matrix Dissolve', price:9,  emoji:'🟩',
       desc:'The board dissolves into falling characters before it clears.', fx:'matrix' },
     { id:'exit-static',  name:'Static Explosion',price:12, emoji:'📺',
-      desc:'A CRT flash and a burst of static, then the points land.', fx:'static' }
+      desc:'A CRT flash and a burst of static, then the points land.', fx:'static' },
+    { id:'exit-glitch',  name:'Datamosh',        price:15, emoji:'🟪',
+      desc:'The picture tears into displaced blocks and shredded colour channels before it resolves.', fx:'glitch' },
+    { id:'exit-purge',   name:'Core Purge',      price:18, emoji:'⬜',
+      desc:'The board collapses to a single white line, holds, and blows out to nothing.', fx:'purge' },
+    { id:'exit-rewind',  name:'Tape Rewind',     price:20, emoji:'📼',
+      desc:'The round spools backwards through tracking noise, the way a tape does.', fx:'rewind' }
   ]
 };
 
@@ -3358,6 +4531,15 @@ function refreshMarketBalances(){
   document.getElementById('m-credits').textContent = crTxt;
   document.getElementById('h-pts').textContent = ptsTxt;
   document.getElementById('h-credits').textContent = crTxt;
+  // 💱 The headline rate is a fact about YOUR profile now that Data Broker can
+  // change it, so it is painted rather than written into the markup.
+  const rateEl = document.getElementById('conv-rate-buy');
+  if(rateEl){
+    const r = buyRate();
+    rateEl.textContent = `${r} PTS = 1 CR`;
+    rateEl.classList.toggle('perked', r !== CONV_RATE);
+    rateEl.title = r !== CONV_RATE ? '🌳 Data Broker — discounted from 100' : '';
+  }
 }
 
 document.querySelectorAll('.market-tab').forEach(tab=>{
@@ -3374,7 +4556,7 @@ const convCreditsInput = document.getElementById('conv-credits-input');
 
 convPtsInput.addEventListener('input',()=>{
   const v = Math.max(0, parseInt(convPtsInput.value)||0);
-  document.getElementById('conv-pts-preview').textContent = `= ${Math.floor(v/CONV_RATE)} CR`;
+  document.getElementById('conv-pts-preview').textContent = `= ${Math.floor(v/buyRate())} CR`;
 });
 convCreditsInput.addEventListener('input',()=>{
   const v = Math.max(0, parseInt(convCreditsInput.value)||0);
@@ -3384,10 +4566,10 @@ convCreditsInput.addEventListener('input',()=>{
 document.getElementById('btn-conv-to-credits').onclick = async ()=>{
   if(!user || !db){ toast('⚠️ Connection state unconfigured'); return }
   const v = Math.max(0, parseInt(convPtsInput.value)||0);
-  const credits = Math.floor(v/CONV_RATE);
-  if(credits<=0){ snd('deny'); toast(`⚠️ Enter at least ${CONV_RATE} points.`); return }
+  const credits = Math.floor(v/buyRate());
+  if(credits<=0){ snd('deny'); toast(`⚠️ Enter at least ${buyRate()} points.`); return }
   if(v>(user.totalPoints||0)){ snd('deny'); toast('⚠️ Insufficient points.'); return }
-  const spentPts = credits*CONV_RATE;
+  const spentPts = credits*buyRate();
   user.totalPoints -= spentPts;
   user.credits = (user.credits||0) + credits;
   await db.ref('players/'+user.uid).update({ totalPoints:user.totalPoints, credits:user.credits });
@@ -3491,7 +4673,7 @@ async function handleShopAction(act, cat, id){
 
     if(item.consumable){
       const held = powerHeld(id);
-      if(held >= (item.stack || 9)){ snd('deny'); toast('⚠️ Kit is full.'); return }
+      if(held >= stackCapFor(item)){ snd('deny'); toast('⚠️ Kit is full.'); return }
       user.credits -= price;
       user.powerups[id] = held + 1;
       await saveProfilePatch({ credits:user.credits, ['powerups/'+id]: user.powerups[id] });
@@ -3581,6 +4763,18 @@ function startNebula(){
   let projectiles = [], enemyProjectiles = [], enemies = [], powerups = [], particles = [], floatingTexts = [], backgroundStars = [];
   let enemySpawnTimer = 0, enemySpawnInterval = 1000, lastTime = performance.now();
   let shieldFlashTimer = 0; // red flash when hit
+  // 🛡️ The absorb path. Nebula's death is a DEPLETED BAR rather than a single
+  // fatal hit, so putting the player back at 1% would be a shield that bought
+  // one more projectile — this restores the bar and grants the same three second
+  // bubble a repair pickup does, which is what makes the save survivable.
+  function survivedNebulaHit(){
+    if(!survivedFatal()) return false;
+    shield = 60;
+    shieldBubbleActive = true;
+    shieldBubbleTimer = 180;
+    document.getElementById('prog-fill').style.width = `${shield}%`;
+    return true;
+  }
   let timeWarpActive = false, timeWarpTimer = 0;
   let shieldBubbleActive = false, shieldBubbleTimer = 0;
 
@@ -4099,7 +5293,7 @@ function startNebula(){
           snd('hurt');
           shield -= 20; screenShake = 16; shieldFlashTimer = 15;
           document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
-          enemyProjectiles.splice(i,1); if (shield <= 0) end(); continue;
+          enemyProjectiles.splice(i,1); if (shield <= 0 && !survivedNebulaHit()) end(); continue;
         }
         if (ep.y > BOARD_H + 20) { enemyProjectiles.splice(i,1); continue; }
 
@@ -4126,7 +5320,7 @@ function startNebula(){
           snd('shieldHit');
           shield -= 12; screenShake = 10; shieldFlashTimer = 10;
           document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
-          enemyProjectiles.splice(i,1); if (shield <= 0) end(); continue;
+          enemyProjectiles.splice(i,1); if (shield <= 0 && !survivedNebulaHit()) end(); continue;
         }
         // Same stale bound as the player's bullets: enemy lasers evaporated
         // over the right quarter of the board instead of reaching you.
@@ -4310,14 +5504,14 @@ function startNebula(){
         snd('shieldHit');
         enemies.splice(ei, 1); shield -= 15 * diffMod; screenShake = 10; shieldFlashTimer = 12;
         document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
-        if (shield <= 0) end(); continue;
+        if (shield <= 0 && !survivedNebulaHit()) end(); continue;
       }
       if (!shieldBubbleActive && collide({ x: player.x, y: player.y, w: player.w, h: player.h }, { x: e.x, y: e.y, w: e.w, h: e.h })) {
         explode(e.x + e.w/2, e.y + e.h/2, e.color, 20);
         snd('hurt');
         enemies.splice(ei, 1); shield -= 25 * diffMod; screenShake = 18; shieldFlashTimer = 18;
         document.getElementById('prog-fill').style.width = `${Math.max(0,shield)}%`;
-        if (shield <= 0) end(); continue;
+        if (shield <= 0 && !survivedNebulaHit()) end(); continue;
       }
       // Check player projectile hits
       let destroyed = false;
@@ -4450,7 +5644,22 @@ function startTetris(){
     if(!nextPiece) { player.matrix = getPiece(); nextPiece = getPiece(); }
     else { player.matrix = nextPiece; nextPiece = getPiece(); }
     player.pos.y = 0; player.pos.x = (arena[0].length/2|0) - (player.matrix[0].length/2|0);
-    if(collide(arena, player)) end();
+    if(collide(arena, player)){
+      // 🛡️ A top-out is absorbed by deleting the top five rows of the STACK
+      // — not the top five rows of the well, which are the empty air above it.
+      // Finding the highest occupied row first is what makes this give real
+      // headroom instead of quietly doing nothing.
+      if(survivedFatal()){
+        const rows = arena.length, wdt = arena[0].length;
+        let top = arena.findIndex(row => row.some(c => c !== 0));
+        if(top < 0) top = 0;
+        arena.splice(top, 5);
+        while(arena.length < rows) arena.unshift(new Array(wdt).fill(0));
+        player.pos.y = 0;
+        player.pos.x = (wdt/2|0) - (player.matrix[0].length/2|0);
+      }
+      else end();
+    }
   }
   
   function collide(a, p){
@@ -4790,7 +5999,13 @@ function startDodge(){
       aCtx.restore();
 
       const dx = o.x - player.x, dy = o.y - player.y;
-      if(Math.sqrt(dx*dx + dy*dy) < o.r + player.r){ isGameOver=true; snd('bigExplode'); end(); return; }
+      if(Math.sqrt(dx*dx + dy*dy) < o.r + player.r){
+        // 🛡️ Absorbing the hit sweeps the whole field. Clearing only the core
+        // that struck leaves its neighbours a frame away from killing you
+        // anyway, and a shield that buys one frame reads as a broken shield.
+        if(survivedFatal()){ obstacles.length = 0; break; }
+        isGameOver=true; snd('bigExplode'); end(); return;
+      }
       if(o.y > BOARD_H + 20) obstacles.splice(i,1);
     }
 
@@ -5369,7 +6584,7 @@ function startSnake(){
         // whatever it hit — it reverses instead, which is the only outcome that
         // leaves a survivable board: a wall bounce that kept going would be a
         // second crash next tick, and a self-hit has nowhere else to go.
-        if(powerConsume('pu-shield', 'CRASH ABSORBED')){
+        if(survivedFatal()){
           nextDir={x:-dir.x,y:-dir.y};
           snake.reverse();
           return;
@@ -5609,7 +6824,7 @@ function startFlappy(){
           // 🛡️ A shielded hit costs the shield and phases the drone through:
           // it is parked in the middle of the gap and its fall is cancelled, so
           // the save actually buys the column rather than a single frame of it.
-          if(powerConsume('pu-shield', 'FIREWALL PHASED')){
+          if(survivedFatal()){
             droneY=p.topH+GAP/2; droneVY=0; p.shielded=true;
           }else{
             drawDrone(droneY,true);snd('bigExplode');end();return;
@@ -5620,7 +6835,7 @@ function startFlappy(){
 
     // Floor / ceiling
     if(droneY+DRONE_H/2>H||droneY-DRONE_H/2<0){
-      if(powerConsume('pu-shield', 'IMPACT ABSORBED')){
+      if(survivedFatal()){
         droneY=Math.max(DRONE_H/2+2, Math.min(H-DRONE_H/2-2, droneY)); droneVY=0;
       }else{
         drawDrone(droneY,true);snd('bigExplode');end();return;
@@ -5841,6 +7056,10 @@ function startBreaker(){
   }
 
   function loseShield(){
+    // 🛡️ Asked BEFORE the shield is decremented, so an absorbed loss costs
+    // nothing at all — including the forty points an intact shield is worth
+    // on the results card.
+    if(shields<=1 && survivedFatal()){ combo=0; shake=14; stuck=true; trail=[]; return; }
     shields--; combo=0; shake=14;
     burst(ball.x, H-8, '#ff2442', 14);
     snd(shields<=0 ? 'gameOver' : 'hurt');
@@ -6584,6 +7803,10 @@ function startArena() {
       : hpPct > 0.25 ? 'linear-gradient(90deg,var(--gold),var(--orange))'
       : 'linear-gradient(90deg,var(--red),#ff6600)';
 
+    // 🛡️ Forty percent of maximum, not one hit point: the arena's bots are
+    // already on top of you by the time you die, and a revive at 1 HP is a
+    // shield spent on half a second.
+    if (player.hp <= 0 && survivedFatal()) player.hp = Math.max(1, Math.round(player.maxHp * 0.4));
     if (player.hp <= 0) endArena();
   }
 
@@ -7491,6 +8714,11 @@ function startRunner(){
     snd(hull<=0 ? 'bigExplode' : 'hurt');
     burst(visX, RIDE_Y, '#ff2442', 18);
     pop(visX, RIDE_Y-30, 'HULL BREACH', '#ff2442');
+    // 🛡️ An absorbed breach hands the last hull point back and doubles the
+    // invulnerability window — the bike is usually still inside the obstacle
+    // that hit it, and a one-point hull with 64 frames of grace dies to the
+    // same wall a moment later.
+    if(hull<=0 && survivedFatal()){ hull=1; invuln=128; }
     document.getElementById('prog-fill').style.width=`${Math.max(0,hull)/3*100}%`;
     if(hull<=0) end();
   }
@@ -10108,6 +11336,875 @@ function startFrequencyModulator(){
   gameLoopId=requestAnimationFrame(loop);
 }
 
+// ════════════════════════════════════════════
+//  🎵 GAME 19: PULSE SYNC
+// ════════════════════════════════════════════
+// The arcade had eighteen missions and not one of them was about TIME. Every
+// other mission asks where something is or what it is; this one asks only when,
+// which is why it earns a slot rather than being a reskin of Node Hacker.
+//
+// It is charted against the round soundtrack's actual tempo — SFX.bpm, which a
+// Music Drive retunes. That is the point of building it: the drives were four
+// cosmetics that changed what you heard and nothing else, and here a drive
+// bought in the market changes how a mission plays. Synthwave at 136 and a
+// slower dark-synth chart are genuinely different rounds.
+//
+// Three lanes, not four, because the shared control pad has exactly three
+// direction keys (◀ ACTION ▶) and a fourth lane would have needed a pad of its
+// own on every phone in the arcade.
+function startPulseSync(){
+  document.getElementById('g-canvas-holder').style.display = 'block';
+  setControls({ left: '◀', action: '●', right: '▶' });
+  setControlHint('TAP A LANE AS ITS PULSE CROSSES THE LINE',
+                 'A · S · D  or  ◀ ↓ ▶  —  strike on the line');
+  // After setControls, never before: fitCanvas() measures the pad to decide how
+  // much height the board gets, and run first it measures the pad the PREVIOUS
+  // round left standing.
+  fitCanvas();
+
+  const W = BOARD_W, H = BOARD_H;
+  const LANES = 3;
+  const LANE_W = W / LANES;
+  const HIT_Y = H - 96;                 // the strike line
+  const diff = getDifficultyModifier();
+
+  // Beats-per-second from the LIVE track. Falls back to the stock game tempo if
+  // the audio engine is muted or unsupported — the chart still has to exist.
+  const bpm = (window.SFX && SFX.bpm) || 136;
+  const beat = 60 / bpm;                // seconds per beat
+  // Notes fall for exactly two bars, so the read-ahead is a musical length
+  // rather than a pixel distance: at a slower drive they fall more slowly and
+  // the player gets the same number of beats of warning either way.
+  const FALL = beat * 8;
+  const SPEED = (HIT_Y + 40) / FALL;    // px per second
+
+  // Windows, in seconds. Generous on purpose: this is an arcade mission on a
+  // phone, not a rhythm sim, and the interesting failure is missing the note
+  // rather than being eleven milliseconds late on it.
+  const PERFECT = 0.075, GOOD = 0.145, LATE = 0.215;
+
+  let time = Math.round(50 * getTimeModifier());
+  let score = 0, combo = 0, bestCombo = 0, hits = 0, perfects = 0, misses = 0;
+  let over = false, t0 = performance.now(), flash = [0, 0, 0], shake = 0;
+  const notes = [];
+  const pops = [];
+
+  document.getElementById('g-time').textContent = time;
+
+  // ── THE CHART ──
+  // Generated rather than authored: a fixed chart would be the same round every
+  // time, and the seeded Daily Hack would have nothing to seed. Built in bars of
+  // eight eighth-notes with a density that climbs, so the round has an arc.
+  let chartT = beat * 4;                // one bar of lead-in before the first note
+  let bar = 0, lastLane = -1;
+  function chartAhead(until){
+    while(chartT < until){
+      const density = Math.min(0.82, 0.34 + bar * 0.045) * Math.min(1.25, diff);
+      for(let i = 0; i < 8; i++){
+        const at = chartT + i * beat / 2;
+        if(dailyRand() > density) continue;
+        // Never the same lane twice running: a repeated lane reads as one long
+        // note and the second tap feels like it did not register.
+        let lane = Math.floor(dailyRand() * LANES);
+        if(lane === lastLane) lane = (lane + 1 + Math.floor(dailyRand() * (LANES - 1))) % LANES;
+        lastLane = lane;
+        // Downbeats are doubles once the round has warmed up — the only place
+        // two lanes are ever live at the same instant, so it reads as emphasis.
+        const dbl = i === 0 && bar >= 4 && dailyRand() < 0.3;
+        notes.push({ lane, at, hit: false, dead: false });
+        if(dbl) notes.push({ lane: (lane + 2) % LANES, at, hit: false, dead: false });
+      }
+      chartT += beat * 4;
+      bar++;
+    }
+  }
+  chartAhead(FALL + beat * 8);
+
+  const now = () => (performance.now() - t0) / 1000;
+
+  function strike(lane){
+    if(over) return;
+    hideTouchHint();
+    flash[lane] = 1;
+    const t = now();
+    // The nearest live note in this lane, and only if it is inside the widest
+    // window — a tap into empty air is not a miss, it is just a tap. Punishing
+    // it would make the right strategy "play fewer notes".
+    let best = null, bestD = Infinity;
+    for(const n of notes){
+      if(n.lane !== lane || n.hit || n.dead) continue;
+      const d = Math.abs(n.at - t);
+      if(d < bestD){ bestD = d; best = n; }
+    }
+    if(!best || bestD > LATE){
+      // A strike into empty air is a MISS, not a free swing. That one rule is
+      // what makes mashing all three lanes a losing strategy rather than the
+      // optimal one: it holds the chain at 1× and it drags the accuracy bonus
+      // down, so the spammer ends up well short of a player who reads the chart.
+      snd('wrong');
+      combo = 0;
+      misses++;
+      return;
+    }
+    best.hit = true;
+    hits++;
+    const grade = bestD <= PERFECT ? 'PERFECT' : bestD <= GOOD ? 'GOOD' : 'LATE';
+    // Small per-note values on purpose: the chart is long, and the number that
+    // should decide the round is the CHAIN, not the count.
+    const base  = bestD <= PERFECT ? 6 : bestD <= GOOD ? 4 : 2;
+    if(grade === 'PERFECT') perfects++;
+    combo++;
+    bestCombo = Math.max(bestCombo, combo);
+    // Combo multiplies but saturates: an uninterrupted round should pay for
+    // being uninterrupted without making the first thirty seconds irrelevant.
+    const mult = 1 + Math.min(1, Math.floor(combo / 8) * 0.25);
+    const gain = Math.round(base * mult);
+    score += gain;
+    setLive(Math.min(1400, score));
+    snd(grade === 'PERFECT' ? 'match' : 'correct', { semi: Math.min(combo, 14) });
+    if(grade === 'PERFECT') shake = Math.max(shake, 4);
+    pops.push({ x: lane * LANE_W + LANE_W / 2, y: HIT_Y - 26, life: 1,
+                text: `${grade} +${gain}`, color: grade === 'PERFECT' ? '#39ff88' : grade === 'GOOD' ? '#00f5ff' : '#ffd700' });
+  }
+
+  window.onkeydown = e => {
+    const map = { KeyA: 0, KeyS: 1, KeyD: 2, ArrowLeft: 0, ArrowDown: 1, ArrowRight: 2, Space: 1 };
+    const lane = map[e.code];
+    if(lane == null) return;
+    e.preventDefault();
+    strike(lane);
+  };
+  document.getElementById('ctrl-left').onclick   = () => strike(0);
+  document.getElementById('ctrl-action').onclick = () => strike(1);
+  document.getElementById('ctrl-right').onclick  = () => strike(2);
+  bindCanvasDrag({ onDown(p){ strike(Math.max(0, Math.min(LANES - 1, Math.floor(p.x / LANE_W)))); } });
+
+  gTimer = setInterval(() => {
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time) / Math.round(50 * getTimeModifier()) * 100}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end();
+  }, 1000);
+
+  const LANE_COL = ['#ff0090', '#00f5ff', '#39ff88'];
+
+  function loop(){
+    if(over) return;
+    gameLoopId = requestAnimationFrame(loop);
+    const t = now();
+    chartAhead(t + FALL + beat * 8);
+
+    // Retire notes that fell past the window. A note is only a MISS once it is
+    // unhittable — retiring it at the line would punish the late-but-legal tap
+    // the LATE window exists to accept.
+    for(const n of notes){
+      if(n.hit || n.dead) continue;
+      if(t > n.at + LATE){ n.dead = true; misses++; combo = 0; snd('wrong'); shake = Math.max(shake, 6); }
+    }
+
+    aCtx.clearRect(0, 0, W, H);
+    aCtx.save();
+    if(shake > 0){
+      aCtx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+      shake *= 0.85; if(shake < 0.3) shake = 0;
+    }
+
+    // ── LANES ──
+    for(let i = 0; i < LANES; i++){
+      const x = i * LANE_W;
+      const g = aCtx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, 'rgba(255,255,255,0.02)');
+      g.addColorStop(1, `rgba(255,255,255,${0.03 + flash[i] * 0.12})`);
+      aCtx.fillStyle = g;
+      aCtx.fillRect(x + 3, 0, LANE_W - 6, H);
+      aCtx.strokeStyle = 'rgba(255,255,255,0.10)';
+      aCtx.lineWidth = 1;
+      aCtx.strokeRect(x + 3, 0, LANE_W - 6, H);
+      flash[i] = Math.max(0, flash[i] - 0.07);
+    }
+
+    // ── THE STRIKE LINE ──
+    // The one thing on screen that must never be ambiguous, so it gets the
+    // brightest treatment in the mission and a pad per lane under it.
+    for(let i = 0; i < LANES; i++){
+      const x = i * LANE_W, c = LANE_COL[i];
+      aCtx.save();
+      aCtx.shadowBlur = 18 + flash[i] * 28; aCtx.shadowColor = c;
+      aCtx.strokeStyle = c;
+      aCtx.lineWidth = 3 + flash[i] * 3;
+      aCtx.beginPath();
+      aCtx.roundRect(x + 10, HIT_Y - 20, LANE_W - 20, 40, 10);
+      aCtx.stroke();
+      aCtx.restore();
+    }
+    aCtx.save();
+    aCtx.strokeStyle = 'rgba(255,255,255,0.55)';
+    aCtx.lineWidth = 2;
+    aCtx.setLineDash([6, 6]);
+    aCtx.beginPath(); aCtx.moveTo(0, HIT_Y); aCtx.lineTo(W, HIT_Y); aCtx.stroke();
+    aCtx.restore();
+
+    // ── NOTES ──
+    for(const n of notes){
+      if(n.hit || n.dead) continue;
+      const dy = (n.at - t) * SPEED;
+      const y = HIT_Y - dy;
+      if(y < -40 || y > H + 40) continue;
+      const x = n.lane * LANE_W + LANE_W / 2;
+      const c = LANE_COL[n.lane];
+      // Closeness is drawn, not just positioned: the glow tightens as the note
+      // approaches so peripheral vision can time it without reading the gap.
+      const near = Math.max(0, 1 - Math.abs(dy) / 90);
+      aCtx.save();
+      aCtx.shadowBlur = 12 + near * 22; aCtx.shadowColor = c;
+      aCtx.fillStyle = c;
+      aCtx.beginPath();
+      aCtx.roundRect(x - LANE_W / 2 + 20, y - 13, LANE_W - 40, 26, 8);
+      aCtx.fill();
+      aCtx.fillStyle = `rgba(255,255,255,${0.25 + near * 0.5})`;
+      aCtx.beginPath();
+      aCtx.roundRect(x - LANE_W / 2 + 26, y - 9, LANE_W - 52, 7, 4);
+      aCtx.fill();
+      aCtx.restore();
+    }
+
+    // ── COMBO ──
+    if(combo >= 4){
+      aCtx.save();
+      aCtx.textAlign = 'center';
+      aCtx.font = '900 34px Orbitron,monospace';
+      const c = getEquippedColorHex();
+      aCtx.shadowBlur = 18; aCtx.shadowColor = c;
+      aCtx.fillStyle = c;
+      aCtx.fillText(`${combo}×`, W / 2, 64);
+      aCtx.font = 'bold 11px Orbitron,monospace';
+      aCtx.fillStyle = 'rgba(255,255,255,0.65)';
+      aCtx.shadowBlur = 0;
+      aCtx.fillText('CHAIN', W / 2, 82);
+      aCtx.restore();
+    }
+
+    for(let i = pops.length - 1; i >= 0; i--){
+      const p = pops[i];
+      p.life -= 0.03; p.y -= 0.9;
+      if(p.life <= 0){ pops.splice(i, 1); continue; }
+      aCtx.save();
+      aCtx.globalAlpha = Math.min(1, p.life * 1.6);
+      aCtx.textAlign = 'center';
+      aCtx.font = '900 15px Orbitron,monospace';
+      aCtx.fillStyle = p.color;
+      aCtx.shadowBlur = 10; aCtx.shadowColor = p.color;
+      aCtx.fillText(p.text, p.x, p.y);
+      aCtx.restore();
+    }
+
+    // Tempo readout — the mission's whole conceit is that it is charted to YOUR
+    // drive, so it says so.
+    aCtx.save();
+    aCtx.textAlign = 'left';
+    aCtx.font = 'bold 10px Orbitron,monospace';
+    aCtx.fillStyle = 'rgba(255,255,255,0.4)';
+    aCtx.fillText(`♪ ${Math.round(bpm)} BPM`, 10, 18);
+    aCtx.restore();
+
+    aCtx.restore();
+  }
+
+  function end(){
+    if(over) return; over = true;
+    clearCanvasDrag();
+    const acc = hits + misses > 0 ? hits / (hits + misses) : 0;
+    // Accuracy is worth points on the way out, so a clean round beats a longer
+    // sloppy one — the same shape as Ice Breaker paying for intact shields.
+    const bonus = Math.round(acc * 160);
+    const final = Math.min(1400, score + bonus);
+    showResults('rhythm', final, {
+      '🎵 Pulses Struck': `${hits}/${hits + misses}`,
+      '🎯 Perfect Sync': perfects,
+      '🔥 Longest Chain': `${bestCombo}×`,
+      '📊 Accuracy': `${Math.round(acc * 100)}% (+${bonus})`,
+      '♪ Charted At': `${Math.round(bpm)} BPM`,
+      '🏆 Score Accumulation': `${final} PTS`
+    }, { perfect: misses === 0 && hits > 0 });
+  }
+
+  gameLoopId = requestAnimationFrame(loop);
+}
+
+// ════════════════════════════════════════════
+//  🧮 GAME 20: CORE MERGE
+// ════════════════════════════════════════════
+// Everything else in the arcade is dexterity or recall under a clock. This one
+// is the arithmetic of a board you can stare at: every move is reversible in
+// your head before you make it, and the clock only decides how many moves you
+// get. It is the only mission where sitting still and thinking is the correct
+// play, which is the whole reason it is here.
+//
+// Scoring is the sum of every core produced, so a single 512 is worth more than
+// the entire sequence of 2s that built it — the board pays for depth, not for
+// activity.
+function startCoreMerge(){
+  document.getElementById('g-canvas-holder').style.display = 'block';
+  setControls({ left: '◀', action: '▲', drop: '▼', right: '▶' });
+  setControlHint('SWIPE TO COMPACT THE LATTICE', 'ARROW KEYS or WASD to compact the lattice');
+  fitCanvas();                       // after setControls — see startPulseSync()
+
+  const W = BOARD_W, H = BOARD_H;
+  const N = 4;
+  const PAD = 14, GAP = 10;
+  const BOARD = Math.min(W - PAD * 2, H - PAD * 2 - 70);
+  const CELL = (BOARD - GAP * (N + 1)) / N;
+  const OX = (W - BOARD) / 2, OY = (H - BOARD) / 2 + 24;
+
+  // Value → colour. Stops at 4096 because a board that reaches it has already
+  // beaten the clock several times over.
+  const TILE_COL = {
+    2:'#1d2233', 4:'#26304a', 8:'#2b7bff', 16:'#00f5ff', 32:'#39ff88',
+    64:'#ffd700', 128:'#ff9500', 256:'#ff6600', 512:'#ff0090',
+    1024:'#a855f7', 2048:'#ff2442', 4096:'#ffffff'
+  };
+  const tileCol = v => TILE_COL[v] || '#ffffff';
+  // Dark plates need light type and the bright ones need dark type, or half the
+  // board is unreadable at a glance — which is fatal in a game about scanning.
+  const tileInk = v => (v <= 4 ? 'rgba(255,255,255,0.92)' : 'rgba(5,7,15,0.92)');
+
+  let grid = [];
+  for(let i = 0; i < N * N; i++) grid.push(0);
+  let score = 0, best = 0, moves = 0, merges = 0, over = false;
+  let time = Math.round(100 * getTimeModifier());
+  const anims = [];
+
+  const at = (r, c) => grid[r * N + c];
+  const put = (r, c, v) => { grid[r * N + c] = v; };
+
+  function freeCells(){
+    const out = [];
+    for(let i = 0; i < N * N; i++) if(!grid[i]) out.push(i);
+    return out;
+  }
+  function spawn(){
+    const free = freeCells();
+    if(!free.length) return false;
+    const i = free[Math.floor(dailyRand() * free.length)];
+    grid[i] = dailyRand() < 0.88 ? 2 : 4;
+    anims.push({ i, t: 1, kind: 'spawn' });
+    return true;
+  }
+  spawn(); spawn();
+
+  document.getElementById('g-time').textContent = time;
+
+  // One slide routine, four directions, by reading the grid along the axis the
+  // move happens on. Writing four of these is how a 2048 board ends up with
+  // three of them subtly wrong.
+  function slide(dr, dc){
+    if(over) return;
+    let moved = false;
+    const gained = [];
+    // Iterate from the far edge so a merged cell can never merge twice in one
+    // move — the rule everyone gets wrong first, and the one that decides
+    // whether the board is beatable.
+    const order = [];
+    for(let r = 0; r < N; r++) for(let c = 0; c < N; c++) order.push([r, c]);
+    if(dr > 0) order.sort((a, b) => b[0] - a[0]);
+    if(dr < 0) order.sort((a, b) => a[0] - b[0]);
+    if(dc > 0) order.sort((a, b) => b[1] - a[1]);
+    if(dc < 0) order.sort((a, b) => a[1] - b[1]);
+
+    const locked = new Set();
+    for(const [r, c] of order){
+      const v = at(r, c);
+      if(!v) continue;
+      let rr = r, cc = c;
+      while(true){
+        const nr = rr + dr, nc = cc + dc;
+        if(nr < 0 || nr >= N || nc < 0 || nc >= N) break;
+        const nv = at(nr, nc);
+        if(nv === 0){ put(nr, nc, v); put(rr, cc, 0); rr = nr; cc = nc; moved = true; continue; }
+        if(nv === v && !locked.has(nr * N + nc)){
+          put(nr, nc, v * 2);
+          put(rr, cc, 0);
+          locked.add(nr * N + nc);
+          gained.push(v * 2);
+          moved = true;
+          anims.push({ i: nr * N + nc, t: 1, kind: 'merge' });
+        }
+        break;
+      }
+    }
+
+    if(!moved){ snd('deny'); return; }
+    moves++;
+    if(gained.length){
+      merges += gained.length;
+      const sum = gained.reduce((a, b) => a + b, 0);
+      score += sum;
+      best = Math.max(best, ...gained);
+      setLive(Math.min(1300, score));
+      // The chime climbs with the size of the core, so a 256 sounds like a 256.
+      snd('match', { semi: Math.min(16, Math.round(Math.log2(Math.max(...gained))) * 2) });
+    }else{
+      snd('move');
+    }
+    spawn();
+    if(!canMove()) end('gridlock');
+  }
+
+  function canMove(){
+    if(freeCells().length) return true;
+    for(let r = 0; r < N; r++) for(let c = 0; c < N; c++){
+      const v = at(r, c);
+      if(r + 1 < N && at(r + 1, c) === v) return true;
+      if(c + 1 < N && at(r, c + 1) === v) return true;
+    }
+    return false;
+  }
+
+  window.onkeydown = e => {
+    const map = { ArrowUp:[-1,0], KeyW:[-1,0], ArrowDown:[1,0], KeyS:[1,0],
+                  ArrowLeft:[0,-1], KeyA:[0,-1], ArrowRight:[0,1], KeyD:[0,1] };
+    const d = map[e.code];
+    if(!d) return;
+    e.preventDefault();
+    slide(d[0], d[1]);
+  };
+  document.getElementById('ctrl-left').onclick   = () => slide(0, -1);
+  document.getElementById('ctrl-right').onclick  = () => slide(0, 1);
+  document.getElementById('ctrl-action').onclick = () => slide(-1, 0);
+  document.getElementById('ctrl-drop').onclick   = () => slide(1, 0);
+
+  // Swipe. A threshold in BOARD units rather than pixels, so the gesture feels
+  // the same on a phone and on a 1.9×-scaled desktop board.
+  let sx = 0, sy = 0, swiping = false;
+  bindCanvasDrag({
+    onDown(p){ hideTouchHint(); sx = p.x; sy = p.y; swiping = true; },
+    onUp(p){
+      if(!swiping) return;
+      swiping = false;
+      const dx = p.x - sx, dy = p.y - sy;
+      if(Math.abs(dx) < 26 && Math.abs(dy) < 26) return;
+      if(Math.abs(dx) > Math.abs(dy)) slide(0, dx > 0 ? 1 : -1);
+      else slide(dy > 0 ? 1 : -1, 0);
+    }
+  });
+
+  gTimer = setInterval(() => {
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time) / Math.round(100 * getTimeModifier()) * 100}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end('timeout');
+  }, 1000);
+
+  function loop(){
+    if(over) return;
+    gameLoopId = requestAnimationFrame(loop);
+    aCtx.clearRect(0, 0, W, H);
+
+    // Well.
+    aCtx.save();
+    aCtx.fillStyle = 'rgba(255,255,255,0.03)';
+    aCtx.strokeStyle = 'rgba(255,255,255,0.10)';
+    aCtx.lineWidth = 2;
+    aCtx.beginPath(); aCtx.roundRect(OX, OY, BOARD, BOARD, 14); aCtx.fill(); aCtx.stroke();
+    aCtx.restore();
+
+    for(let i = anims.length - 1; i >= 0; i--){
+      anims[i].t -= 0.09;
+      if(anims[i].t <= 0) anims.splice(i, 1);
+    }
+    const animFor = i => anims.find(a => a.i === i);
+
+    for(let r = 0; r < N; r++) for(let c = 0; c < N; c++){
+      const x = OX + GAP + c * (CELL + GAP);
+      const y = OY + GAP + r * (CELL + GAP);
+      aCtx.save();
+      aCtx.fillStyle = 'rgba(255,255,255,0.035)';
+      aCtx.beginPath(); aCtx.roundRect(x, y, CELL, CELL, 9); aCtx.fill();
+      aCtx.restore();
+
+      const v = at(r, c);
+      if(!v) continue;
+      const a = animFor(r * N + c);
+      // A spawn grows in and a merge overshoots and settles. The two have to
+      // look different or the board reads as noise the moment it gets busy.
+      const k = !a ? 1
+        : a.kind === 'spawn' ? 1 - a.t
+        : 1 + Math.sin(a.t * Math.PI) * 0.16;
+      const s = CELL * k, ox = (CELL - s) / 2;
+      const col = tileCol(v);
+      aCtx.save();
+      aCtx.shadowBlur = v >= 64 ? 16 : 6; aCtx.shadowColor = col;
+      aCtx.fillStyle = col;
+      aCtx.beginPath(); aCtx.roundRect(x + ox, y + ox, s, s, 9); aCtx.fill();
+      aCtx.shadowBlur = 0;
+      aCtx.strokeStyle = 'rgba(255,255,255,0.22)';
+      aCtx.lineWidth = 1.5;
+      aCtx.beginPath(); aCtx.roundRect(x + ox, y + ox, s, s, 9); aCtx.stroke();
+      const txt = String(v);
+      aCtx.fillStyle = tileInk(v);
+      aCtx.textAlign = 'center';
+      aCtx.textBaseline = 'middle';
+      aCtx.font = `900 ${Math.round(CELL * (txt.length >= 4 ? 0.26 : txt.length === 3 ? 0.32 : 0.4))}px Orbitron,monospace`;
+      aCtx.fillText(txt, x + CELL / 2, y + CELL / 2 + 1);
+      aCtx.restore();
+    }
+
+    aCtx.save();
+    aCtx.textAlign = 'center';
+    aCtx.textBaseline = 'alphabetic';
+    aCtx.font = 'bold 12px Orbitron,monospace';
+    aCtx.fillStyle = 'rgba(255,255,255,0.5)';
+    aCtx.fillText(`LARGEST CORE  ${best || '—'}    ·    ${moves} MOVES`, W / 2, OY - 12);
+    aCtx.restore();
+  }
+
+  function end(reason){
+    if(over) return; over = true;
+    clearCanvasDrag();
+    // A core still standing on the board is worth a quarter of itself, so
+    // building one big core beats farming small merges right up to the buzzer.
+    const standing = Math.round(grid.reduce((a, b) => a + b, 0) * 0.25);
+    const final = Math.min(1300, score + standing);
+    showResults('merge', final, {
+      '🧮 Run Terminated': reason === 'gridlock' ? 'LATTICE GRIDLOCKED' : 'CLOCK EXPIRED',
+      '🔷 Largest Core': best || '—',
+      '🔗 Merges Executed': merges,
+      '♟️ Moves Made': moves,
+      '📦 Lattice Residue': `+${standing}`,
+      '🏆 Score Accumulation': `${final} PTS`
+    }, reason === 'gridlock' ? { sound: 'gameOver' } : {});
+  }
+
+  gameLoopId = requestAnimationFrame(loop);
+}
+
+// ════════════════════════════════════════════
+//  🛰️ GAME 21: ORBITAL UPLINK
+// ════════════════════════════════════════════
+// The arcade could not, until now, ask you to judge an ARC. Everything that
+// moves in it travels in a straight line or under your continuous control;
+// nothing was ever thrown. So this is the mission where you commit to a shot
+// and then watch it be right or wrong, which is a completely different kind of
+// tension from anything else on the grid.
+//
+// Drag from the launcher to aim — the pull-back is the power, the same gesture
+// on a phone and on a mouse, and the only control the mission has.
+function startOrbitalUplink(){
+  document.getElementById('g-canvas-holder').style.display = 'block';
+  setControls(null);                 // pure drag — no pad to steal board height
+  setControlHint('DRAG BACK FROM THE DISH AND RELEASE',
+                 'DRAG BACK FROM THE DISH AND RELEASE — the pull is the power');
+  showTouchHint('DRAG BACK FROM THE DISH TO LOB');
+  fitCanvas();                       // after setControls — see startPulseSync()
+
+  const W = BOARD_W, H = BOARD_H;
+  const GROUND = H - 46;
+  const PAD_X = 62, PAD_Y = GROUND - 12;
+  const G = 560;                         // px/s² — tuned so a full-power shot
+                                         // crosses the board in about a second
+  const MAX_PULL = 132;
+  const diff = getDifficultyModifier();
+
+  let time = Math.round(75 * getTimeModifier());
+  let score = 0, sunk = 0, shots = 0, streak = 0, bestStreak = 0, over = false;
+  let wind = 0, relays = [], packet = null, aiming = false, aim = { x: 0, y: 0 };
+  const sparks = [], pops = [];
+  let shake = 0, barrier = null;
+
+  document.getElementById('g-time').textContent = time;
+
+  // ── THE FIELD ──
+  // A relay to hit, and a firewall slab between you and it. The slab is what
+  // makes the mission about arcs rather than about aiming: a flat shot is
+  // always wrong, so every shot has to go over something.
+  function newField(){
+    const far = 210 + Math.random() * (W - 290);
+    relays = [{
+      x: Math.max(PAD_X + 170, Math.min(W - 40, far)),
+      y: GROUND - (20 + Math.random() * 190),
+      r: 20,
+      bob: Math.random() * Math.PI * 2
+    }];
+    const bx = PAD_X + 90 + Math.random() * 60;
+    barrier = { x: bx, w: 20, h: 90 + Math.random() * 130 * Math.min(1.4, diff) };
+    // Crosswind arrives only once the player has landed a few, so the mission
+    // teaches the arc before it starts moving it.
+    wind = sunk >= 3 ? (Math.random() * 2 - 1) * 90 * Math.min(1.5, diff) : 0;
+  }
+  newField();
+
+  function fire(vx, vy){
+    if(packet || over) return;
+    shots++;
+    packet = { x: PAD_X, y: PAD_Y - 12, vx, vy, trail: [], t: 0 };
+    snd('shoot');
+  }
+
+  bindCanvasDrag({
+    onDown(p){ hideTouchHint(); if(packet) return; aiming = true; aim = { x: p.x, y: p.y }; },
+    onMove(p){ if(aiming) aim = { x: p.x, y: p.y }; },
+    onUp(p){
+      if(!aiming) return;
+      aiming = false;
+      // Pull BACK to launch, catapult-style: the drag vector is inverted, which
+      // is the gesture every player already knows from a slingshot and needs no
+      // instruction beyond "drag back".
+      let dx = PAD_X - p.x, dy = (PAD_Y - 12) - p.y;
+      const len = Math.hypot(dx, dy);
+      if(len < 14) return;                         // a tap is not a shot
+      const pull = Math.min(MAX_PULL, len);
+      const k = (pull / MAX_PULL) * 760;
+      fire(dx / len * k, dy / len * k);
+    }
+  });
+
+  gTimer = setInterval(() => {
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time) / Math.round(75 * getTimeModifier()) * 100}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end();
+  }, 1000);
+
+  let last = performance.now();
+  function loop(now){
+    if(over) return;
+    gameLoopId = requestAnimationFrame(loop);
+    let dt = (now - last) / 1000; last = now;
+    if(!(dt > 0)) dt = 1 / 60;
+    if(dt > 0.05) dt = 0.05;
+
+    for(const rl of relays) rl.bob += dt * 1.6;
+
+    // ── PHYSICS ──
+    if(packet){
+      packet.t += dt;
+      packet.vy += G * dt;
+      packet.vx += wind * dt;
+      packet.x += packet.vx * dt;
+      packet.y += packet.vy * dt;
+      packet.trail.push({ x: packet.x, y: packet.y });
+      if(packet.trail.length > 48) packet.trail.shift();
+
+      let done = null;
+      for(const rl of relays){
+        const by = rl.y + Math.sin(rl.bob) * 8;
+        if(Math.hypot(packet.x - rl.x, packet.y - by) < rl.r + 6){ done = 'hit'; break; }
+      }
+      if(!done && packet.x > barrier.x && packet.x < barrier.x + barrier.w &&
+         packet.y > GROUND - barrier.h) done = 'wall';
+      if(!done && (packet.y > GROUND || packet.x > W + 60 || packet.x < -60 || packet.t > 9)) done = 'miss';
+
+      if(done === 'hit'){
+        const rl = relays[0];
+        sunk++; streak++;
+        bestStreak = Math.max(bestStreak, streak);
+        // Distance is the skill, so distance is the pay. Plus a streak bonus,
+        // because the second consecutive hit is the one that proves the first
+        // was not luck.
+        const dist = Math.round((rl.x - PAD_X) / 10);
+        const gain = 40 + dist * 2 + Math.min(80, (streak - 1) * 20);
+        score += gain;
+        setLive(Math.min(1000, score));
+        snd('correct', { semi: Math.min(14, streak * 2) });
+        shake = 8;
+        for(let i = 0; i < 26; i++) sparks.push({
+          x: rl.x, y: rl.y, vx: (Math.random() - 0.5) * 320, vy: (Math.random() - 0.5) * 320,
+          life: 0.6, color: '#39ff88'
+        });
+        pops.push({ x: rl.x, y: rl.y - 34, text: `UPLINK +${gain}`, color: '#39ff88', life: 1 });
+        packet = null;
+        newField();
+      }else if(done){
+        streak = 0;
+        snd(done === 'wall' ? 'shieldHit' : 'wrong');
+        shake = done === 'wall' ? 5 : 2;
+        for(let i = 0; i < 12; i++) sparks.push({
+          x: packet.x, y: Math.min(packet.y, GROUND), vx: (Math.random() - 0.5) * 180,
+          vy: -Math.random() * 180, life: 0.45, color: done === 'wall' ? '#ff2442' : '#5a6cff'
+        });
+        packet = null;
+      }
+    }
+
+    for(let i = sparks.length - 1; i >= 0; i--){
+      const s = sparks[i];
+      s.life -= dt * 1.8;
+      if(s.life <= 0){ sparks.splice(i, 1); continue; }
+      s.vy += G * 0.6 * dt;
+      s.x += s.vx * dt; s.y += s.vy * dt;
+    }
+    for(let i = pops.length - 1; i >= 0; i--){
+      pops[i].life -= dt * 1.4; pops[i].y -= dt * 34;
+      if(pops[i].life <= 0) pops.splice(i, 1);
+    }
+
+    // ── DRAW ──
+    aCtx.clearRect(0, 0, W, H);
+    aCtx.save();
+    if(shake > 0){
+      aCtx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+      shake *= 0.86; if(shake < 0.3) shake = 0;
+    }
+
+    // Ground.
+    aCtx.save();
+    const gg = aCtx.createLinearGradient(0, GROUND, 0, H);
+    gg.addColorStop(0, 'rgba(0,245,255,0.16)');
+    gg.addColorStop(1, 'rgba(0,245,255,0.02)');
+    aCtx.fillStyle = gg;
+    aCtx.fillRect(0, GROUND, W, H - GROUND);
+    aCtx.strokeStyle = 'rgba(0,245,255,0.55)';
+    aCtx.lineWidth = 2;
+    aCtx.beginPath(); aCtx.moveTo(0, GROUND); aCtx.lineTo(W, GROUND); aCtx.stroke();
+    aCtx.restore();
+
+    // Firewall slab.
+    aCtx.save();
+    aCtx.shadowBlur = 14; aCtx.shadowColor = '#ff2442';
+    aCtx.fillStyle = 'rgba(255,36,66,0.22)';
+    aCtx.strokeStyle = '#ff2442';
+    aCtx.lineWidth = 2;
+    aCtx.beginPath();
+    aCtx.roundRect(barrier.x, GROUND - barrier.h, barrier.w, barrier.h, 4);
+    aCtx.fill(); aCtx.stroke();
+    aCtx.restore();
+
+    // Relay.
+    for(const rl of relays){
+      const by = rl.y + Math.sin(rl.bob) * 8;
+      aCtx.save();
+      aCtx.shadowBlur = 20; aCtx.shadowColor = '#39ff88';
+      aCtx.strokeStyle = '#39ff88';
+      aCtx.lineWidth = 3;
+      aCtx.beginPath(); aCtx.arc(rl.x, by, rl.r, 0, Math.PI * 2); aCtx.stroke();
+      aCtx.fillStyle = 'rgba(57,255,136,0.18)';
+      aCtx.fill();
+      aCtx.beginPath(); aCtx.arc(rl.x, by, rl.r * 0.34, 0, Math.PI * 2);
+      aCtx.fillStyle = '#39ff88'; aCtx.fill();
+      // Mast down to the ground, so the relay reads as standing there rather
+      // than as floating in an unexplained way.
+      aCtx.shadowBlur = 0;
+      aCtx.strokeStyle = 'rgba(57,255,136,0.28)';
+      aCtx.lineWidth = 2;
+      aCtx.setLineDash([4, 6]);
+      aCtx.beginPath(); aCtx.moveTo(rl.x, by + rl.r); aCtx.lineTo(rl.x, GROUND); aCtx.stroke();
+      aCtx.restore();
+    }
+
+    // Launcher.
+    const mine = getEquippedColorHex();
+    aCtx.save();
+    aCtx.shadowBlur = 14; aCtx.shadowColor = mine;
+    aCtx.fillStyle = mine;
+    aCtx.beginPath(); aCtx.roundRect(PAD_X - 20, PAD_Y - 8, 40, 16, 5); aCtx.fill();
+    aCtx.beginPath(); aCtx.arc(PAD_X, PAD_Y - 12, 7, 0, Math.PI * 2); aCtx.fill();
+    aCtx.restore();
+    drawSkinBadge(PAD_X, PAD_Y - 32, 12);
+
+    // ── THE AIM ──
+    // A dotted preview of the first third of the flight. Not the whole arc: the
+    // mission is judging a trajectory, and drawing the answer would leave it
+    // with nothing to judge.
+    if(aiming && !packet){
+      let dx = PAD_X - aim.x, dy = (PAD_Y - 12) - aim.y;
+      const len = Math.hypot(dx, dy);
+      if(len > 8){
+        const pull = Math.min(MAX_PULL, len);
+        const k = (pull / MAX_PULL) * 760;
+        let px = PAD_X, py = PAD_Y - 12, pvx = dx / len * k, pvy = dy / len * k;
+        aCtx.save();
+        aCtx.fillStyle = `rgba(255,255,255,${0.25 + (pull / MAX_PULL) * 0.4})`;
+        for(let i = 0; i < 22; i++){
+          pvy += G * 0.03; pvx += wind * 0.03;
+          px += pvx * 0.03; py += pvy * 0.03;
+          if(py > GROUND) break;
+          aCtx.beginPath(); aCtx.arc(px, py, 2.4, 0, Math.PI * 2); aCtx.fill();
+        }
+        aCtx.restore();
+        // Power bar on the dish.
+        aCtx.save();
+        aCtx.fillStyle = 'rgba(255,255,255,0.14)';
+        aCtx.fillRect(PAD_X - 26, PAD_Y + 14, 52, 6);
+        aCtx.fillStyle = pull / MAX_PULL > 0.86 ? '#ff2442' : mine;
+        aCtx.fillRect(PAD_X - 26, PAD_Y + 14, 52 * (pull / MAX_PULL), 6);
+        aCtx.restore();
+      }
+    }
+
+    // Packet + wake.
+    if(packet){
+      aCtx.save();
+      aCtx.strokeStyle = 'rgba(255,255,255,0.28)';
+      aCtx.lineWidth = 2;
+      aCtx.beginPath();
+      packet.trail.forEach((p, i) => i ? aCtx.lineTo(p.x, p.y) : aCtx.moveTo(p.x, p.y));
+      aCtx.stroke();
+      aCtx.shadowBlur = 16; aCtx.shadowColor = mine;
+      aCtx.fillStyle = '#fff';
+      aCtx.beginPath(); aCtx.arc(packet.x, packet.y, 6, 0, Math.PI * 2); aCtx.fill();
+      aCtx.restore();
+    }
+
+    for(const s of sparks){
+      aCtx.save();
+      aCtx.globalAlpha = Math.max(0, s.life * 1.6);
+      aCtx.fillStyle = s.color;
+      aCtx.fillRect(s.x - 2, s.y - 2, 4, 4);
+      aCtx.restore();
+    }
+    for(const p of pops){
+      aCtx.save();
+      aCtx.globalAlpha = Math.min(1, p.life * 1.5);
+      aCtx.textAlign = 'center';
+      aCtx.font = '900 15px Orbitron,monospace';
+      aCtx.fillStyle = p.color;
+      aCtx.shadowBlur = 10; aCtx.shadowColor = p.color;
+      aCtx.fillText(p.text, p.x, p.y);
+      aCtx.restore();
+    }
+
+    // Wind readout — a shot cannot be aimed without it, so it is never subtle.
+    if(wind){
+      aCtx.save();
+      aCtx.textAlign = 'center';
+      aCtx.font = 'bold 11px Orbitron,monospace';
+      aCtx.fillStyle = 'rgba(255,255,255,0.55)';
+      const arrows = '▶'.repeat(Math.min(4, Math.round(Math.abs(wind) / 26)));
+      aCtx.fillText(wind > 0 ? `CROSSWIND ${arrows}` : `${arrows.replace(/▶/g, '◀')} CROSSWIND`, W / 2, 22);
+      aCtx.restore();
+    }
+    if(streak >= 2){
+      aCtx.save();
+      aCtx.textAlign = 'right';
+      aCtx.font = '900 18px Orbitron,monospace';
+      aCtx.fillStyle = '#39ff88';
+      aCtx.shadowBlur = 12; aCtx.shadowColor = '#39ff88';
+      aCtx.fillText(`${streak}× LINKED`, W - 12, 26);
+      aCtx.restore();
+    }
+
+    aCtx.restore();
+  }
+
+  function end(){
+    if(over) return; over = true;
+    clearCanvasDrag();
+    const acc = shots ? sunk / shots : 0;
+    const final = Math.min(1000, score);
+    showResults('uplink', final, {
+      '🛰️ Relays Linked': `${sunk}/${shots}`,
+      '🎯 Link Accuracy': `${Math.round(acc * 100)}%`,
+      '🔗 Longest Chain': `${bestStreak}×`,
+      '🏆 Score Accumulation': `${final} PTS`
+    });
+  }
+
+  gameLoopId = requestAnimationFrame(loop);
+}
+
 function fmtTime(s){
   const t = Math.max(0, s);
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
@@ -10151,64 +12248,244 @@ function saveProfilePatch(patch){
 //                        0.3s once every 1.5s. Purely visual: the round keeps
 //                        running underneath, which is the point.
 //
+//   📉 PACKET LOSS       one capture-phase listener on window drops a share of
+//                        the keystrokes and taps before any game sees them.
+//   📶 SIGNAL DEGRADATION a CSS filter over the play area. The round underneath
+//                        is pristine and no mission learns it happened.
+//   🌀 AXIS DRIFT        #board-frame rotates and boardPos() rotates the finger
+//                        back, so the picture lies and the aim does not.
+//   ⚡ 📦 🛡️ BOONS        pay, stock the kit, or absorb a fatal hit. Settled on
+//                        the results card, or armed as a free shield.
+//
 // Who ROLLS one is the caller's business. Boss Rush rolls per stage; the
 // Network Arena's host rolls once into the room record so every client reads
-// the same id; an ordinary mission never rolls at all.
+// the same id; and an ordinary mission rolls its own in prepGame() — but only
+// when the player has armed CHAOS PROTOCOL in the hub. Until that opt-in
+// existed, two thirds of this table was unreachable from the mission grid.
+// A modifier is a HAZARD or a BOON, and the split is the whole point of the
+// redesign. A pool of nothing but handicaps makes the roll something to dread:
+// the best outcome is "nothing happened", so a player learns to hope the dice
+// stay quiet. Mixing in modifiers that PAY turns the same roll into a gamble
+// worth taking, which is what makes arming it voluntarily (see chaosOptIn)
+// something anyone would ever do.
+//
+// `pay` is the multiplier the modifier adds to the final award. A hazard pays
+// because it cost you something; a boon pays because paying IS the boon.
 const CHAOS_MODS = [
-  { id:'inverse', icon:'🔄', name:'INVERSE CONTROLS',
+  // ── HAZARDS ──
+  { id:'inverse', icon:'🔄', name:'INVERSE CONTROLS', kind:'hazard', pay:1.25,
     desc:'Every direction you press comes out backwards.' },
-  { id:'double',  icon:'⏩', name:'DOUBLE SPEED',
+  { id:'double',  icon:'⏩', name:'DOUBLE SPEED', kind:'hazard', pay:1.25,
     desc:'Clocks and hazards run at twice the rate. Half the round, same target.' },
-  { id:'blind',   icon:'🕶️', name:'BLIND TERMINAL',
-    desc:'The feed cuts out for a third of a second, every second and a half.' }
+  { id:'blind',   icon:'🕶️', name:'BLIND TERMINAL', kind:'hazard', pay:1.25,
+    desc:'The feed cuts out for a third of a second, every second and a half.' },
+  { id:'packet',  icon:'📉', name:'PACKET LOSS', kind:'hazard', pay:1.3,
+    desc:'One input in seven never reaches the grid. You will not be told which.' },
+  { id:'lowband', icon:'📶', name:'SIGNAL DEGRADATION', kind:'hazard', pay:1.2,
+    desc:'The feed arrives smeared and torn. The round underneath is pristine.' },
+  { id:'drift',   icon:'🌀', name:'AXIS DRIFT', kind:'hazard', pay:1.3,
+    desc:'The display rotates slowly off true. Your aim follows the picture, not the grid.' },
+
+  // ── BOONS ──
+  { id:'surge',   icon:'⚡', name:'POINT SURGE', kind:'boon', pay:2.0,
+    desc:'The grid is paying double. Nothing else changes — go and take it.' },
+  { id:'surplus', icon:'📦', name:'SUPPLY DROP', kind:'boon', pay:1.1,
+    desc:'Finish the round and the grid pays out a consumable on top of the points.' },
+  { id:'bulwark', icon:'🛡️', name:'HARDENED SHELL', kind:'boon', pay:1.15,
+    desc:'One fatal hit this round is absorbed for free. Spend it well.' }
 ];
+
+// Two pools, because a stack of two must never be two boons — that is not a
+// gamble, it is a jackpot, and it would be the only roll anyone remembered.
+const CHAOS_HAZARDS = CHAOS_MODS.filter(m => m.kind === 'hazard');
+const CHAOS_BOONS   = CHAOS_MODS.filter(m => m.kind === 'boon');
 
 // Better than even, but not certain — a stage that comes up clean is what makes
 // the ones that don't feel like an event.
 const CHAOS_ODDS = 0.55;
+// How often a roll that DID fire comes up a boon. A third: often enough that
+// the pre-round banner is worth reading, rare enough that it still lands as
+// luck rather than as an entitlement. 🌳 Wildcard Protocol doubles it.
+const CHAOS_BOON_ODDS = 0.34;
 const CHAOS_BLIND_EVERY = 1500, CHAOS_BLIND_FOR = 300;
+// Meltdown stacks a SECOND modifier on top of the first. The tier already pays
+// double; this is what it costs.
+const CHAOS_STACK_TIER = 'meltdown';
 
 // Read by boardPos() on every pointer sample, so it is a bare boolean rather
 // than a lookup through the chaos record.
 let chaosInverse = false;
+// 🌀 AXIS DRIFT's current rotation, in radians. Read by boardPos() to undo the
+// tilt, so a finger lands on the thing it is pointing at rather than on where
+// that thing would have been if the board were straight. Zero when undrifted,
+// which makes the un-rotation a single cheap branch on every pointer sample.
+let chaosDrift = 0, chaosDriftTimer = 0;
+// 📉 PACKET LOSS. A capture-phase interceptor on window reads this; keeping it
+// a bare number rather than a lookup matters because it is consulted on every
+// keystroke and every tap of the round.
+let chaosDropOdds = 0;
+// 🛡️ HARDENED SHELL's free absorb, armed for the round and spent by the first
+// fatal event that asks for it. Separate from the shop's Shield Overlay so the
+// boon can never quietly eat a consumable the player paid for.
+let chaosFreeShield = false;
+// The ◀/▶ rebinding INVERSE CONTROLS performs, recorded so it can be put
+// back. See chaosDampen().
+let chaosPadSwap = null;
+// ⚙️ OVERCLOCK CHIP, armed for the round it was pressed in. Round-scoped
+// rather than profile state: it is spent the moment it is pressed, and what
+// survives is a fact about THIS round that the results card has to read after
+// stopGame() has already torn the round down.
+let runOverclock = 0;
 
 // `last` is what the round that just ENDED was played under. It exists because
 // stopGame() tears the modifier down before the results card is written — the
 // card and the achievement check both need to know what was running a moment
 // ago, and `active` is already null by then.
-const chaos = { active: null, last: null, blindTimer: 0, bannerTimer: 0 };
+//
+// `stack` is the live list — one modifier normally, two on Meltdown. `active`
+// stays the FIRST of them so every existing reader (the banner, the results
+// row, the achievement test, the Boss Rush log) keeps working unchanged, and
+// only the code that genuinely cares about the second one looks at the list.
+const chaos = { active: null, last: null, stack: [], lastStack: [], pending: [],
+                blindTimer: 0, bannerTimer: 0 };
 
 const chaosById  = id => CHAOS_MODS.find(m => m.id === id) || null;
-const chaosRoll  = () => Math.random() < CHAOS_ODDS
-  ? CHAOS_MODS[Math.floor(Math.random() * CHAOS_MODS.length)]
+
+// 🌳 Wildcard Protocol doubles a boon's share of the pool without touching how
+// often chaos fires at all — a perk that made chaos MORE frequent would be a
+// perk that made the arcade harder, which is not what a perk is for.
+function chaosBoonOdds(){
+  return Math.min(0.75, CHAOS_BOON_ODDS * (hasPerk('perk-wildcard') ? 2 : 1));
+}
+const chaosPickFrom = pool => pool[Math.floor(Math.random() * pool.length)];
+
+// One modifier or null. Still the shape the Network Arena publishes (a single
+// id into the room record) and the shape Boss Rush logs per stage, which is why
+// stacking is a separate function rather than a change to this one.
+const chaosRoll = () => Math.random() < CHAOS_ODDS
+  ? chaosPickFrom(Math.random() < chaosBoonOdds() ? CHAOS_BOONS : CHAOS_HAZARDS)
   : null;
 
+// The list an ordinary solo round is armed with. Meltdown stacks a second
+// modifier, and the second one is always a HAZARD: two boons at once is not a
+// gamble, it is a payday, and it would be the only roll anyone remembered.
+function chaosRollStack(){
+  const first = chaosRoll();
+  if(!first) return [];
+  if(currentDifficultyTier !== CHAOS_STACK_TIER) return [first];
+  const pool = CHAOS_HAZARDS.filter(m => m.id !== first.id);
+  const second = chaosPickFrom(pool);
+  return second ? [first, second] : [first];
+}
+
+// Exactly `n` modifiers, odds ignored. Boss Rush uses it to ESCALATE across a
+// chain: rolling each stage at the ordinary 55% could hand out five clean
+// stages or five loaded ones, so the shape of a run was luck rather than
+// design. At most one boon, and never two, for the same reason chaosRollStack()
+// refuses two boons — a stacked payday is the only roll anyone would remember.
+function chaosForce(n){
+  const out = [];
+  if(n <= 0) return out;
+  const wantBoon = Math.random() < chaosBoonOdds();
+  const pools = wantBoon ? [CHAOS_BOONS, CHAOS_HAZARDS] : [CHAOS_HAZARDS, CHAOS_HAZARDS];
+  for(let i = 0; i < n; i++){
+    const pool = (pools[i] || CHAOS_HAZARDS).filter(m => !out.some(o => o.id === m.id));
+    const pick = chaosPickFrom(pool.length ? pool : CHAOS_HAZARDS);
+    if(pick && !out.some(o => o.id === pick.id)) out.push(pick);
+  }
+  return out;
+}
+
+// What the round just played is worth. Multiplicative, so a stack of two is
+// genuinely worth stacking — and clamped, because Meltdown's own ×2 is already
+// riding on top of this.
+function chaosPayMult(list){
+  const stack = list || chaos.lastStack;
+  if(!stack || !stack.length) return 1;
+  return Math.min(2.6, stack.reduce((m, c) => m * (c.pay || 1), 1));
+}
+
+// Every reader that used to ask "what modifier?" and mean "name one" still
+// works; this is for the places that want to name all of them.
+const chaosLabel = list => (list || chaos.lastStack || [])
+  .map(c => `${c.icon} ${c.name}`).join(' · ');
 // Shown during the countdown, so the modifier is read BEFORE the round it
 // changes rather than discovered by losing to it.
+//
+// Takes one modifier or a list of them. The three elements the markup provides
+// are filled from the whole stack rather than one entry, because a Meltdown
+// round that armed two and announced one would be lying to the player about
+// what it was doing.
 function chaosAnnounce(mod){
   const el = document.getElementById('chaos-banner');
   if(!el) return;
   clearTimeout(chaos.bannerTimer);
-  if(!mod){ el.style.display = 'none'; el.className = ''; return; }
-  document.getElementById('chaos-icon').textContent = mod.icon;
-  document.getElementById('chaos-name').textContent = mod.name;
-  document.getElementById('chaos-desc').textContent = mod.desc;
+  const list = !mod ? [] : (Array.isArray(mod) ? mod.filter(Boolean) : [mod]);
+  if(!list.length){ el.style.display = 'none'; el.className = ''; chaosRerollBtn(null); return; }
+  const allBoon = list.every(c => c.kind === 'boon');
+  document.getElementById('chaos-icon').textContent = list.map(c => c.icon).join('');
+  document.getElementById('chaos-name').textContent = list.map(c => c.name).join('  +  ');
+  document.getElementById('chaos-desc').textContent = list.map(c => c.desc).join(' ');
   el.style.display = 'flex';
-  el.className = 'big';
-  snd('alarm');
-  toast(`🌀 CHAOS — ${mod.icon} ${mod.name}`, 3000);
+  // A boon has to LOOK different from the first glance, or the player reads the
+  // banner as bad news and plays the round defensively for nothing.
+  el.className = 'big' + (allBoon ? ' chaos-boon' : ' chaos-hazard');
+  snd(allBoon ? 'powerup' : 'alarm');
+  const pay = chaosPayMult(list);
+  toast(`${allBoon ? '🎁 WINDFALL' : '🌀 CHAOS'} — ${chaosLabel(list)} · ×${pay.toFixed(2)} PAY`, 3000);
+  chaosRerollBtn(list);
   // Shrinks to a chip rather than disappearing: mid-round is exactly when a
   // player looks up wondering why the controls feel wrong.
   chaos.bannerTimer = setTimeout(() => el.classList.replace('big', 'chip'), 3200);
 }
 
+// 🌳 Signal Filter. The reroll is a control on the BANNER rather than a button
+// somewhere in the hub, because the only moment the choice is live is the one
+// where you have read what you rolled and the round has not started — which is
+// exactly how long the banner is up at full size.
+let chaosRerollLeft = 0;
+function chaosRerollBtn(list){
+  const el = document.getElementById('chaos-banner');
+  let btn = document.getElementById('chaos-reroll');
+  if(!el) return;
+  // Never in a Network Arena round. The room's host rolls ONE modifier into the
+  // room record and every client reads that id — a local reroll would leave the
+  // two boards running different games while both believed the duel was fair.
+  // (The perk is not wasted there: mp rounds do not consume the reroll either.)
+  if(!list || mp || !hasPerk('perk-filter') || chaosRerollLeft <= 0){ if(btn) btn.remove(); return; }
+  if(!btn){
+    btn = document.createElement('button');
+    btn.id = 'chaos-reroll';
+    btn.className = 'chaos-reroll';
+    el.appendChild(btn);
+  }
+  btn.textContent = `🎲 REROLL (${chaosRerollLeft})`;
+  btn.onclick = () => {
+    if(chaosRerollLeft <= 0) return;
+    chaosRerollLeft--;
+    snd('flip');
+    // Rerolled into a stack of the same SHAPE: a Meltdown reroll that handed
+    // back a single modifier would be a way to buy the tier's penalty off.
+    const stacked = chaos.pending && chaos.pending.length > 1;
+    let next = stacked ? chaosRollStack() : [chaosPickFrom(Math.random() < chaosBoonOdds() ? CHAOS_BOONS : CHAOS_HAZARDS)];
+    if(stacked && !next.length) next = chaos.pending;
+    chaos.pending = next;
+    chaosAnnounce(chaos.pending);
+  };
+}
+
 // Installed the moment the countdown ends, before the game starts.
+// Accepts one modifier or a list; everything downstream reads chaos.stack.
 function chaosArm(mod){
-  chaos.active = chaos.last = mod || null;
-  if(!mod) return;
-  if(mod.id === 'inverse') chaosInverse = true;
-  if(mod.id === 'double')  chaosSpeedMul = 1.5;
-  if(mod.id === 'blind'){
+  const list = !mod ? [] : (Array.isArray(mod) ? mod.filter(Boolean) : [mod]);
+  chaos.stack = chaos.lastStack = list;
+  chaos.active = chaos.last = list[0] || null;
+  if(!list.length) return;
+  const on = id => list.some(c => c.id === id);
+
+  if(on('inverse')) chaosInverse = true;
+  if(on('double'))  chaosSpeedMul = 1.5;
+  if(on('blind')){
     const area = document.querySelector('.g-area');
     chaos.blindTimer = setInterval(() => {
       if(!area) return;
@@ -10216,8 +12493,154 @@ function chaosArm(mod){
       setTimeout(() => area.classList.remove('blind-out'), CHAOS_BLIND_FOR);
     }, CHAOS_BLIND_EVERY);
   }
+  // 📉 PACKET LOSS. One interceptor in the capture phase, not twenty-one games
+  // learning to ignore an input: a listener on window's capture phase sits
+  // ahead of every bubble-phase handler in the document INCLUDING the
+  // `window.onkeydown` property each game assigns, so stopping propagation
+  // there is genuinely "this input never arrived".
+  if(on('packet')){
+    chaosDropOdds = 1 / 7;
+    installPacketLoss();
+  }
+  // 📶 SIGNAL DEGRADATION is pure CSS over the play area. Nothing about the
+  // round changes — which is the honest version of a rendering fault, and the
+  // reason it can be armed over any of the twenty-one missions without one of
+  // them knowing it exists.
+  if(on('lowband')) document.querySelector('.g-area')?.classList.add('sig-degraded');
+  // 🌀 AXIS DRIFT tilts the BOARD and boardPos() untilts the finger, so the
+  // picture lies and the aim does not. Driven on a slow interval rather than in
+  // a frame loop because there is no shared frame loop to hang it off — the DOM
+  // missions have none at all.
+  if(on('drift')){
+    const frame = document.getElementById('board-frame');
+    const area  = document.querySelector('.g-area');
+    let phase = Math.random() * Math.PI * 2;
+    chaosDriftTimer = setInterval(() => {
+      phase += 0.065;
+      chaosDrift = Math.sin(phase) * 0.20 + Math.sin(phase * 0.37) * 0.09;   // about 17 degrees
+      const deg = (chaosDrift * 180 / Math.PI).toFixed(2);
+      if(frame) frame.style.transform = `rotate(${deg}deg)`;
+      else if(area) area.style.transform = `rotate(${deg}deg)`;
+    }, 60);
+  }
+  // 🛡️ HARDENED SHELL arms the free absorb. Spent by chaosAbsorb() at whichever
+  // fatal point asks first.
+  if(on('bulwark')){
+    chaosFreeShield = true;
+    toast('🛡️ HARDENED SHELL ARMED — one fatal hit absorbed', 2600);
+  }
+  // ⚡ POINT SURGE and 📦 SUPPLY DROP arm nothing: they are entirely a fact
+  // about what the round pays, and they are settled on the results card.
 }
 
+// The spend side of 🛡️ HARDENED SHELL, and the first thing every fatal point in
+// the arcade asks before it asks about the shop's Shield Overlay — a free
+// absorb must never be outlived by a consumable the player paid credits for.
+function chaosAbsorb(){
+  if(!chaosFreeShield) return false;
+  chaosFreeShield = false;
+  snd('shield');
+  toast('🛡️ HARDENED SHELL ABSORBED THE HIT', 2000);
+  return true;
+}
+
+// The one question every fatal point in the arcade should ask: "does anything
+// stand between the player and this crash?" Free absorb first, then the paid
+// consumable — and the caller does not need to know which one answered.
+function survivedFatal(){
+  return chaosAbsorb() || powerConsume('pu-shield', 'SHIELD ABSORBED');
+}
+
+// 🧯 CHAOS DAMPENER. Takes the handicaps off a round that is already running and
+// leaves the windfalls alone, which is the whole reason it is worth buying: the
+// stack you want to dampen is exactly the one that rolled a boon you would like
+// to keep alongside a handicap you would not.
+//
+// Everything here is reversible BY CONSTRUCTION except one thing, and it is
+// worth naming: DOUBLE SPEED halves every setInterval the game installed inside
+// its own start() call, and those intervals were created once and cannot be
+// slowed back down without reaching into each of twenty-one games. The
+// hazard-speed multiplier that drives the frame-loop games does come back, so
+// the round de-escalates — it just keeps whatever head start its clock took.
+function chaosDampen(){
+  const hazards = (chaos.stack || []).filter(c => c.kind === 'hazard');
+  if(!hazards.length) return 0;
+
+  chaosInverse = false;
+  chaosSpeedMul = 1;
+  removePacketLoss();
+
+  clearInterval(chaos.blindTimer); chaos.blindTimer = 0;
+  clearInterval(chaosDriftTimer);  chaosDriftTimer = 0; chaosDrift = 0;
+
+  const frame = document.getElementById('board-frame');
+  if(frame) frame.style.transform = '';
+  const area = document.querySelector('.g-area');
+  if(area){
+    area.style.transform = '';
+    area.classList.remove('blind-out', 'sig-degraded', 'pkt-drop');
+  }
+
+  // Put the two arrow buttons back the way the game bound them.
+  if(chaosPadSwap){
+    const { L, R, lc, rc, lp, rp } = chaosPadSwap;
+    if(L && R){
+      L.onclick = lc; R.onclick = rc;
+      if(lp && rp){ bindHold(L, lp.down, lp.up); bindHold(R, rp.down, rp.up); }
+    }
+    chaosPadSwap = null;
+  }
+
+  // The stack keeps only what survived, so the results card pays for the boon
+  // and stops pretending the handicaps were endured.
+  chaos.stack = chaos.lastStack = (chaos.stack || []).filter(c => c.kind !== 'hazard');
+  chaos.active = chaos.last = chaos.stack[0] || null;
+  chaosAnnounce(chaos.stack.length ? chaos.stack : null);
+  return hazards.length;
+}
+
+let _packetBound = null;
+function installPacketLoss(){
+  if(_packetBound) return;
+  const drop = e => {
+    if(!chaosDropOdds) return;
+    if(Math.random() >= chaosDropOdds) return;
+    // A keystroke is always fair game. A pointer input only counts when it
+    // lands on the play surface — dropping a press on Quit or on the power-up
+    // dock would be a modifier that eats the controls of the arcade itself
+    // rather than the controls of the round.
+    const t = e.target;
+    if(e.type !== 'keydown'){
+      const area = document.querySelector('.g-area');
+      if(!area || !t || !area.contains(t)) return;
+      if(t.closest && t.closest('#pu-dock')) return;
+    }
+    // touchstart's own preventDefault never runs now that the game will not see
+    // it, so do it here: otherwise the browser synthesises a mouse event and
+    // the "dropped" tap arrives anyway, down the other path.
+    if(e.cancelable && e.type === 'touchstart') e.preventDefault();
+    e.stopImmediatePropagation();
+    e.stopPropagation();
+    flashPacketLoss();
+  };
+  const types = ['keydown', 'click', 'mousedown', 'touchstart'];
+  types.forEach(t => window.addEventListener(t, drop, true));
+  _packetBound = () => types.forEach(t => window.removeEventListener(t, drop, true));
+}
+function removePacketLoss(){
+  chaosDropOdds = 0;
+  if(_packetBound){ _packetBound(); _packetBound = null; }
+}
+// Deliberately a whisper, not an alert. The modifier's whole character is that
+// you cannot tell a dropped input from your own mistake until the pattern adds
+// up — a big red "DROPPED" would turn it into a fair, readable handicap.
+function flashPacketLoss(){
+  const area = document.querySelector('.g-area');
+  if(!area) return;
+  area.classList.remove('pkt-drop');
+  void area.offsetWidth;
+  area.classList.add('pkt-drop');
+}
 // Runs a game's start function under the active modifier.
 //
 // The setInterval swap is scoped to the SYNCHRONOUS call: every game installs
@@ -10226,7 +12649,10 @@ function chaosArm(mod){
 // rotation ticker, the versus pacer) — all of which were created long before
 // this line and are never re-created here.
 function chaosRun(startFn){
-  const doubling = chaos.active && chaos.active.id === 'double';
+  // Reads the STACK, not the first entry: on Meltdown the doubling can be
+  // the second modifier of two, and asking chaos.active would have quietly
+  // dropped it on exactly the tier that rolled it.
+  const doubling = chaos.stack.some(c => c.id === 'double');
   const realSetInterval = window.setInterval;
   if(doubling){
     window.setInterval = function(fn, ms, ...rest){
@@ -10265,6 +12691,13 @@ function chaosRun(startFn){
         bindHold(L, rp.down, rp.up);
         bindHold(R, lp.down, lp.up);
       }
+      // Recorded so 🧯 CHAOS DAMPENER can put them back. Everything else the
+      // inversion does is a flag boardPos() and the key shim read live, so
+      // clearing chaosInverse undoes it on the next input — the pad is the one
+      // part that was a permanent rebinding, and a dampener that fixed the
+      // stick and the keyboard while leaving the two arrows crossed would be
+      // worse than one that did nothing.
+      chaosPadSwap = { L, R, lc, rc, lp, rp };
     }
   }
 }
@@ -10278,6 +12711,11 @@ const CHAOS_KEY_SWAP = {
   a:'d', d:'a', w:'s', s:'w', A:'D', D:'A', W:'S', S:'W'
 };
 function chaosMirrorKey(e){
+  // The wrapper installed by chaosRun() cannot be un-installed — the handler it
+  // wrapped is a property the game assigned and there is no way to hand it back.
+  // So the mirroring is decided HERE, on every event, off the live flag: clear
+  // chaosInverse and the very next keystroke arrives untouched.
+  if(!chaosInverse) return e;
   const code = CHAOS_KEY_SWAP[e.code] || e.code;
   const key  = CHAOS_KEY_SWAP[e.key]  || e.key;
   if(code === e.code && key === e.key) return e;   // not a direction — pass it straight through
@@ -10293,14 +12731,97 @@ function chaosMirrorKey(e){
 function chaosClear(){
   chaosInverse = false;
   chaosSpeedMul = 1;
+  chaosFreeShield = false;
+  removePacketLoss();
   clearInterval(chaos.blindTimer); chaos.blindTimer = 0;
   clearTimeout(chaos.bannerTimer); chaos.bannerTimer = 0;
-  document.querySelector('.g-area')?.classList.remove('blind-out');
+  // 🌀 AXIS DRIFT leaves a transform on a SHARED element. Left behind it tilts
+  // the next round, the results card behind it and the hub — and nothing in
+  // those places would ever explain why, because the round that caused it is
+  // over. Cleared to the empty string rather than 'none' so the stylesheet's
+  // own transform, if it ever gains one, still applies.
+  clearInterval(chaosDriftTimer); chaosDriftTimer = 0; chaosDrift = 0;
+  const frame = document.getElementById('board-frame');
+  if(frame) frame.style.transform = '';
+  const area = document.querySelector('.g-area');
+  if(area){
+    area.style.transform = '';
+    area.classList.remove('blind-out', 'sig-degraded', 'pkt-drop');
+  }
   const el = document.getElementById('chaos-banner');
   if(el){ el.style.display = 'none'; el.className = ''; }
-  chaos.last = chaos.active;      // survives into the results card
+  document.getElementById('chaos-reroll')?.remove();
+  // IDEMPOTENT, and it has to be. stopGame() runs this, and stopGame() legitimately
+  // runs more than once per round — Boss Rush stops the finished stage itself
+  // before showResults() stops it again, a duel that ends as it is quit hits
+  // both paths, and every ending that tidies up before reporting does the same.
+  // Rolling `active` into `last` unconditionally meant the SECOND call recorded
+  // "no modifier", so the results card silently dropped the chaos row and paid
+  // the round at ×1 — a modifier the player had just spent the whole round
+  // fighting, unpaid and unmentioned. Only a live stack is worth remembering.
+  if(chaos.stack.length || chaos.active){
+    chaos.last = chaos.active;      // survives into the results card
+    chaos.lastStack = chaos.stack;  // and so does the whole stack
+  }
   chaos.active = null;
+  chaos.stack = [];
 }
+
+// ══════════════════════════════════════════════════════════════════════
+//  🌀 CHAOS PROTOCOL — the opt-in
+// ══════════════════════════════════════════════════════════════════════
+// Until now a solo player could only meet a modifier inside Boss Rush or a
+// Network Arena room, which meant the pool was invisible from the one screen
+// anybody spends time on. Arming it here rolls one before every mission.
+//
+// It is deliberately NOT a third difficulty tier. The stability dial is a
+// straight trade — more speed for more points, chosen in advance and the same
+// every round. This is a gamble: you do not know what you are getting, a third
+// of the pool is in your favour, and both halves pay. Two different appetites,
+// two different controls, and a player can arm either, both or neither.
+//
+// Local, not on the profile: it is a preference about how you like to play
+// rather than a fact about what you have earned, and it should follow the
+// machine you are sitting at.
+const CHAOS_OPTIN_KEY = 'pi_chaos_optin';
+let chaosOptIn = (() => {
+  try{ return localStorage.getItem(CHAOS_OPTIN_KEY) === '1'; }catch(e){ return false; }
+})();
+
+function setChaosOptIn(on){
+  chaosOptIn = !!on;
+  try{ localStorage.setItem(CHAOS_OPTIN_KEY, chaosOptIn ? '1' : '0'); }catch(e){}
+  paintChaosToggle();
+}
+
+function paintChaosToggle(){
+  const btn = document.getElementById('chaos-toggle');
+  const sel = document.getElementById('chaos-selector');
+  const state = document.getElementById('chaos-state');
+  const note = document.getElementById('chaos-note');
+  if(!btn) return;
+  btn.classList.toggle('on', chaosOptIn);
+  btn.setAttribute('aria-checked', String(chaosOptIn));
+  sel?.classList.toggle('armed', chaosOptIn);
+  if(state) state.textContent = chaosOptIn ? 'ARMED' : 'DISARMED';
+  if(note){
+    // Says what it will actually do at the tier that is selected right now,
+    // because "one modifier" and "two modifiers" are very different offers and
+    // the stability dial is the thing that decides which one you get.
+    note.textContent = !chaosOptIn
+      ? 'Roll a modifier before every mission — handicaps and windfalls both pay.'
+      : currentDifficultyTier === CHAOS_STACK_TIER
+        ? `Rolling ${Math.round(CHAOS_ODDS * 100)}% of rounds · MELTDOWN STACKS TWO · up to ×2.6 pay`
+        : `Rolling ${Math.round(CHAOS_ODDS * 100)}% of rounds · ${CHAOS_HAZARDS.length} handicaps, ${CHAOS_BOONS.length} windfalls`;
+  }
+}
+
+document.getElementById('chaos-toggle')?.addEventListener('click', () => {
+  setChaosOptIn(!chaosOptIn);
+  snd(chaosOptIn ? 'alarm' : 'click');
+  if(chaosOptIn) toast('🌀 CHAOS PROTOCOL ARMED — every mission rolls the dice', 2800);
+});
+paintChaosToggle();
 
 // ══════════════════════════════════════════════════════════════════════
 //  📈 LEVELS & THE PERK TREE
@@ -10324,13 +12845,64 @@ function xpLevel(xp){
 const perkPointsEarned = xp => xpLevel(xp).level - 1;
 const perkPointsLeft   = () => user ? perkPointsEarned(user.xp) - (user.perkSpent || 0) : 0;
 
+// A TREE, not a shelf. Two things make it one: `needs` names the node that has
+// to be owned first, and cost rises with depth — so a point spent at the top is
+// a decision about which branch you are going down rather than a purchase you
+// were always going to make.
+//
+// The shape is deliberate. Every tier-1 node is an unconditional, boring,
+// always-on percentage: those are the ones a new player can evaluate without
+// knowing anything about the arcade. Everything below them is CONDITIONAL — it
+// pays when you beat a ghost, when you roll a modifier, when you keep a streak
+// — and a conditional bonus is only worth a point once you know you are the
+// sort of player who meets that condition. The tree teaches its own economy in
+// the order you walk it.
+//
+// `effect` is the one-line rule. `desc` is why it exists and what it interacts
+// with; the tree shows both, because a perk whose interactions are invisible is
+// a perk nobody can plan around.
 const PERKS = [
+  // ── TIER 1 · the unconditional percentages ──
   { id:'perk-score', icon:'📈', name:'Signal Amplifier', cost:1, tier:1,
     effect:'+5% score on arcade missions',
-    desc:'Every solo mission and Boss Rush chain pays five percent more. Duel awards are untouched — a duel is already paying a win bonus.' },
+    desc:'Every solo mission and Boss Rush chain pays five percent more. Duel awards are untouched — a duel is already paying a win bonus, and Netrunner is the node for those.' },
   { id:'perk-ram',   icon:'🧠', name:'Accelerated RAM',  cost:1, tier:1,
     effect:'+25% RAM regen in Battle Bots',
-    desc:'The siege economy fills faster, and the throughput upgrades you buy scale with it.' }
+    desc:'The siege economy fills faster, and the throughput upgrades you buy scale with it.' },
+  { id:'perk-duel',  icon:'⚔️', name:'Netrunner',        cost:1, tier:1,
+    effect:'+8% on every Network Arena award',
+    desc:'The mirror of Signal Amplifier, on the side of the arcade it deliberately skips. Applies to a win and a loss alike: showing up to a duel you lose is still the hardest points in the game to earn.' },
+  { id:'perk-xp',    icon:'🧬', name:'Neural Uplink',    cost:1, tier:1,
+    effect:'+25% XP from every finished round',
+    desc:'The only node that buys more nodes. Worth taking first if you intend to take many — and worth skipping entirely if you are here for one branch.' },
+
+  // ── TIER 2 · the conditional ones ──
+  { id:'perk-echo',    icon:'👻', name:'Echo Trace',     cost:2, tier:2, needs:'perk-score',
+    effect:'+10% on any run that beats your pace ghost',
+    desc:'Pays for the run you were already proud of. Needs a personal best on that mission and tier to race, so it is worth nothing on a mission you have never played and a great deal on the one you keep coming back to.' },
+  { id:'perk-broker',  icon:'💱', name:'Data Broker',    cost:2, tier:2, needs:'perk-score',
+    effect:'Points convert to credits at 70 instead of 100',
+    desc:'A thirty percent discount on every cosmetic, consumable and exit state in the market. Converting the other way is unchanged — the broker buys, it does not sell.' },
+  { id:'perk-filter',  icon:'🎲', name:'Signal Filter',  cost:2, tier:2, needs:'perk-xp',
+    effect:'One chaos reroll per round',
+    desc:'A REROLL button appears on the chaos banner while it is still full size. Rerolls into a stack of the same size, so a Meltdown round cannot buy its second modifier off.' },
+  { id:'perk-pockets', icon:'🎒', name:'Deep Pockets',   cost:2, tier:2, needs:'perk-duel',
+    effect:'Your kit holds twice as many of each consumable',
+    desc:'Nine of each becomes eighteen. Matters most for Supply Drop, which refuses to pay out into a full kit.' },
+  { id:'perk-cold',    icon:'❄️', name:'Cold Storage',   cost:2, tier:2, needs:'perk-xp',
+    effect:'A streak survives one missed day',
+    desc:'Thirty days running is the longest commitment the arcade asks for, and it used to end on one bad Tuesday. Two missed days in a row still breaks it.' },
+
+  // ── TIER 3 · the ones that change how you play ──
+  { id:'perk-wildcard', icon:'🃏', name:'Wildcard Protocol', cost:3, tier:3, needs:'perk-filter',
+    effect:'Chaos rolls a windfall twice as often',
+    desc:'Does not make chaos more frequent — makes more of it good. Together with Signal Filter it turns an armed Chaos Protocol from a tax into an edge.' },
+  { id:'perk-salvage',  icon:'♻️', name:'Salvage Routine',  cost:3, tier:3, needs:'perk-broker',
+    effect:'+1 credit for any run that takes 60% of a mission cap',
+    desc:'The first income in the arcade that is not an achievement or a streak — a slow, reliable trickle for playing well rather than for playing long.' },
+  { id:'perk-reserve',  icon:'⏳', name:'Chrono Reserve',   cost:3, tier:3, needs:'perk-pockets',
+    effect:'A free Time Dilator in your kit each day',
+    desc:'Collected the first time you reach the hub on a new UTC day, and skipped when the kit is already full of them.' }
 ];
 
 const hasPerk = id => !!(user && user.perks && user.perks[id]);
@@ -10338,8 +12910,10 @@ const hasPerk = id => !!(user && user.perks && user.perks[id]);
 // 🌳 Perk A. Applied in showResultsCard(), which is the one place a raw score
 // becomes an award — the same seam the stability tier uses.
 function perkScoreMult(gid, opts){
+  // ⚔️ A duel card is the one place Signal Amplifier deliberately does not
+  // reach, which is exactly why Netrunner exists — same seam, other side.
+  if(opts && opts.internal) return hasPerk('perk-duel') ? 1.08 : 1;
   if(!hasPerk('perk-score')) return 1;
-  if(opts && opts.internal) return 1;              // a duel card, not an arcade run
   if(!SOLO_START[gid] && gid !== 'bossrush') return 1;
   return 1.05;
 }
@@ -10350,7 +12924,11 @@ const perkRamMult = () => hasPerk('perk-ram') ? 1.25 : 1;
 function awardXp(award){
   if(!user || !(award > 0)) return;
   const before = xpLevel(user.xp || 0).level;
-  user.xp = Math.max(0, Math.floor((user.xp || 0) + award * XP_RATE));
+  // 🌳 Neural Uplink. Applied to the GRANT rather than to the level threshold,
+  // so a profile that owns it and a profile that does not still mean the same
+  // thing by "level 12" — one of them just got there faster.
+  const xpMult = hasPerk('perk-xp') ? 1.25 : 1;
+  user.xp = Math.max(0, Math.floor((user.xp || 0) + award * XP_RATE * xpMult));
   const after = xpLevel(user.xp).level;
   user.level = after;
   saveProfilePatch({ xp: user.xp, level: after });
@@ -10359,7 +12937,14 @@ function awardXp(award){
     // sting the round is still playing.
     setTimeout(() => {
       snd('levelUp');
-      toast(`📈 LEVEL ${after} — +${after - before} PERK POINT${after - before === 1 ? '' : 'S'}`, 3200);
+      const opened = Object.keys(SOLO_START)
+        .filter(g => missionClearance(g) > before && missionClearance(g) <= after);
+      toast(`📈 LEVEL ${after} — +${after - before} PERK POINT${after - before === 1 ? '' : 'S'}` +
+            (opened.length ? ` · 🔓 ${opened.length} MISSION${opened.length === 1 ? '' : 'S'} DECLASSIFIED` : ''), 3600);
+      // 🔒 Repaint straight away: the card the level just opened is on screen
+      // behind the results card, and finding it still locked when you get back
+      // to the hub reads as the level-up not having happened.
+      paintMissionLocks();
     }, 1500);
   }
   paintXpRail();
@@ -10386,7 +12971,19 @@ function paintXpRail(){
     btn.classList.toggle('xp-perk-btn', left > 0);
   }
   document.getElementById('xp-rail')?.classList.toggle('has-points', left > 0);
+  // 🎖️ The season button carries its own progress, and it lives on this rail,
+  // so it repaints with it rather than needing its own hook on every path that
+  // changes a score.
+  if(typeof paintSeasonRail === 'function') paintSeasonRail();
 }
+
+// A node is OPEN when its prerequisite is owned and you can afford it, LOCKED
+// when you cannot afford it, and BARRED when the branch above it is not yet
+// unlocked. Three states rather than two, because "you have the points but not
+// the parent" and "you have the parent but not the points" are different
+// problems and a player has to be able to tell which one they are looking at.
+const perkParent = p => p.needs ? PERKS.find(x => x.id === p.needs) : null;
+const perkOpen   = p => !p.needs || hasPerk(p.needs);
 
 function renderPerkTree(){
   const wrap = document.getElementById('perk-tree');
@@ -10394,36 +12991,108 @@ function renderPerkTree(){
   const left = perkPointsLeft();
   const sub = document.getElementById('perk-sub');
   const st = xpLevel(user.xp || 0);
+  const owned = PERKS.filter(p => hasPerk(p.id)).length;
   if(sub){
     sub.textContent = left > 0
-      ? `Level ${st.level} · ${left} point${left === 1 ? '' : 's'} to spend`
-      : `Level ${st.level} · ${st.need - st.into} XP to the next point`;
+      ? `Level ${st.level} · ${left} point${left === 1 ? '' : 's'} to spend · ${owned}/${PERKS.length} nodes`
+      : `Level ${st.level} · ${st.need - st.into} XP to the next point · ${owned}/${PERKS.length} nodes`;
   }
   wrap.innerHTML = '';
-  PERKS.forEach(p => {
-    const owned = hasPerk(p.id);
-    const afford = left >= p.cost;
-    const node = document.createElement('div');
-    node.className = 'perk-node' + (owned ? ' owned' : afford ? ' open' : ' locked');
-    node.innerHTML =
-      `<span class="perk-ico">${p.icon}</span>` +
-      `<div class="perk-name">${esc(p.name)}</div>` +
-      `<div class="perk-effect">${esc(p.effect)}</div>` +
-      `<div class="perk-desc">${esc(p.desc)}</div>` +
-      (owned
-        ? `<div class="perk-tag">✔ ACTIVE</div>`
-        : `<button class="btn btn-primary btn-sm perk-buy" data-perk="${p.id}"${afford ? '' : ' disabled'}>` +
-          `${afford ? `Unlock · ${p.cost} PT` : 'Needs a perk point'}</button>`);
-    wrap.appendChild(node);
+
+  // Drawn tier by tier so the tree reads down the page in the order it is
+  // walked. The rows are what make it a tree on screen — a flat list of twelve
+  // cards would hide the one thing that matters about them, which is that half
+  // of them cannot be bought yet.
+  const TIER_LABEL = {
+    1: { name: 'FOUNDATION', note: 'Always on. No conditions, no branches — take what you want first.' },
+    2: { name: 'SPECIALISATION', note: 'Each one needs a foundation node. These pay when you meet their condition.' },
+    3: { name: 'DOCTRINE', note: 'The deep nodes. Each changes how a whole system behaves rather than what it pays.' }
+  };
+
+  [1, 2, 3].forEach(tier => {
+    const nodes = PERKS.filter(p => p.tier === tier);
+    if(!nodes.length) return;
+    const meta = TIER_LABEL[tier] || { name: `TIER ${tier}`, note: '' };
+    const row = document.createElement('div');
+    row.className = 'perk-row';
+    row.innerHTML =
+      `<div class="perk-tier-hdr"><span class="perk-tier-name">${esc(meta.name)}</span>` +
+      `<span class="perk-tier-cost">${nodes[0].cost} PT${nodes[0].cost === 1 ? '' : 'S'} EACH</span>` +
+      `<span class="perk-tier-note">${esc(meta.note)}</span></div>` +
+      `<div class="perk-row-nodes"></div>`;
+    const holder = row.querySelector('.perk-row-nodes');
+
+    nodes.forEach(p => {
+      const own = hasPerk(p.id);
+      const open = perkOpen(p);
+      const afford = left >= p.cost;
+      const parent = perkParent(p);
+      const state = own ? 'owned' : !open ? 'barred' : afford ? 'open' : 'locked';
+      const node = document.createElement('div');
+      node.className = `perk-node ${state}`;
+      // The children a node unlocks are named on the node itself. Without it a
+      // tier-1 perk looks like four interchangeable percentages, and the choice
+      // of which to take first — which is the only real decision in the tree —
+      // is being made blind.
+      const kids = PERKS.filter(x => x.needs === p.id);
+      node.innerHTML =
+        `<span class="perk-ico">${p.icon}</span>` +
+        `<div class="perk-name">${esc(p.name)}</div>` +
+        `<div class="perk-effect">${esc(p.effect)}</div>` +
+        `<div class="perk-desc">${esc(p.desc)}</div>` +
+        (parent ? `<div class="perk-needs${open ? ' met' : ''}">` +
+                  `${open ? '✔' : '🔒'} needs ${parent.icon} ${esc(parent.name)}</div>` : '') +
+        (kids.length ? `<div class="perk-kids">→ unlocks ${kids.map(k => `${k.icon} ${esc(k.name)}`).join(', ')}</div>` : '') +
+        (own
+          ? `<div class="perk-tag">✔ ACTIVE</div>`
+          : `<button class="btn ${open && afford ? 'btn-primary' : 'btn-secondary'} btn-sm perk-buy" data-perk="${p.id}"` +
+            `${open && afford ? '' : ' disabled'}>` +
+            `${!open ? `Locked behind ${esc(parent.name)}`
+                     : afford ? `Unlock · ${p.cost} PT${p.cost === 1 ? '' : 'S'}`
+                              : `Needs ${p.cost - left} more point${p.cost - left === 1 ? '' : 's'}`}</button>`);
+      holder.appendChild(node);
+    });
+    wrap.appendChild(row);
   });
+
   wrap.querySelectorAll('.perk-buy').forEach(b => {
     b.onclick = () => buyPerk(b.dataset.perk);
   });
 }
 
+// ⏳ Chrono Reserve's payout. Collected on reaching the hub rather than on a
+// timer, because "each day" has to mean "the first time you turn up that day"
+// for a profile that is only open for ten minutes at a time.
+function perkDailyGrant(){
+  if(!user || !hasPerk('perk-reserve')) return;
+  const today = dayKey();
+  if(user.perkDay === today) return;
+  user.perkDay = today;
+  const item = findItem('powerups', 'pu-dilator');
+  const held = powerHeld('pu-dilator');
+  // A full kit is not an error and must not burn the day's grant silently —
+  // leaving perkDay unwritten means it is offered again on the next visit,
+  // once something has been spent.
+  if(item && held >= stackCapFor(item)){ user.perkDay = null; return; }
+  user.powerups['pu-dilator'] = held + 1;
+  saveProfilePatch({ perkDay: today, ['powerups/pu-dilator']: user.powerups['pu-dilator'] });
+  snd('purchase');
+  toast(`⏳ CHRONO RESERVE — a Time Dilator has been added to your kit`, 3000);
+  paintPowerKit();
+}
+
 async function buyPerk(id){
   const perk = PERKS.find(p => p.id === id);
   if(!perk || !user || hasPerk(id)) return;
+  // Checked here as well as in the markup: the button is the polite refusal,
+  // this is the real one. A tree whose prerequisites live only in the rendering
+  // is a tree anyone can walk past with a console open.
+  if(!perkOpen(perk)){
+    const parent = perkParent(perk);
+    snd('deny');
+    toast(`🔒 ${perk.name} needs ${parent ? parent.name : 'an earlier node'} first.`, 2800);
+    return;
+  }
   if(perkPointsLeft() < perk.cost){ snd('deny'); toast('⚠️ Not enough perk points.'); return; }
   user.perks[id] = true;
   user.perkSpent = (user.perkSpent || 0) + perk.cost;
@@ -10437,7 +13106,7 @@ async function buyPerk(id){
 // ══════════════════════════════════════════════════════════════════════
 //  ⚡ POWER-UPS — the consumable kit
 // ══════════════════════════════════════════════════════════════════════
-// Two consumables, two very different shapes, and the difference is the whole
+// Four consumables, three different shapes, and the difference is the whole
 // design:
 //
 //   ⏳ TIME DILATOR   is PRESSED. It needs a live clock to add to, and the one
@@ -10446,9 +13115,24 @@ async function buyPerk(id){
 //                     No game exposes its timer variable and none needs to.
 //
 //   🛡️ SHIELD OVERLAY is not pressed at all. It is armed for the round and
-//                     spent by the crash it absorbs, which is why Grid Snake
-//                     and Flappy Drone call powerConsume() at their collision
-//                     points instead of the dock doing anything.
+//                     spent by the crash it absorbs — which is why every fatal
+//                     point in the arcade calls survivedFatal() rather than the
+//                     dock doing anything. It used to be honoured by two
+//                     missions out of eighteen, so a player bought a shield and
+//                     then watched it not work in the sixteen places they
+//                     happened to die; it now covers every mission that can end
+//                     in a single fatal event, in both renderers.
+//
+//   ⚙️ OVERCLOCK CHIP is pressed and then does NOTHING for the rest of the
+//                     round: it is a fact about what this round PAYS, settled on
+//                     the results card next to the tier and the perk. That makes
+//                     it the one consumable with no mission-specific behaviour
+//                     at all, so it works on all twenty-one including the two
+//                     that run on an infinite clock.
+//
+//   🧯 CHAOS DAMPENER is pressed and reaches back into the modifier engine —
+//                     see chaosDampen(), which is written to be reversible for
+//                     exactly this reason.
 const powerHeld = id => (user && user.powerups && +user.powerups[id]) || 0;
 
 // Spends one, if there is one. Returns whether it fired, so a caller can use it
@@ -10463,6 +13147,31 @@ function powerConsume(id, label){
   flashPowerDock(id);
   paintPowerDock();
   return true;
+}
+
+// 🌳 Deep Pockets raises what the kit will HOLD rather than what anything costs,
+// which is the only version of that perk that is worth a point: credits already
+// buy consumables, so a discount is just a slower version of playing more.
+function stackCapFor(item){
+  const base = (item && item.stack) || 9;
+  return hasPerk('perk-pockets') ? base * 2 : base;
+}
+
+// 📦 SUPPLY DROP's payout, and the one path into the kit that is not a purchase.
+// Refuses to hand over something the kit has no room for, and says so — a boon
+// that silently evaporated would read as a bug in the boon.
+function grantRandomConsumable(){
+  if(!user) return null;
+  const pool = SHOP_ITEMS.powerups.filter(i => powerHeld(i.id) < stackCapFor(i));
+  if(!pool.length){ toast('📦 SUPPLY DROP REFUSED — kit is full', 2600); return null; }
+  const item = pool[Math.floor(Math.random() * pool.length)];
+  user.powerups[item.id] = powerHeld(item.id) + 1;
+  saveProfilePatch({ ['powerups/' + item.id]: user.powerups[item.id] });
+  snd('purchase');
+  toast(`📦 SUPPLY DROP — ${item.emoji} ${item.name} added to your kit`, 3000);
+  paintPowerKit();
+  paintPowerDock();
+  return item;
 }
 
 // ── THE IN-GAME DOCK ──
@@ -10488,11 +13197,16 @@ function paintPowerDock(){
   // it says "armed", and the crash that spends it is what presses it.
   dock.style.display = 'flex';
   dock.innerHTML = stock.map(i => {
-    const passive = i.id === 'pu-shield';
+    // The shield is the only PASSIVE one: it is spent by the crash it absorbs
+    // rather than by a press, so its button is a readout. An overclocked round
+    // reads the same way once the chip has been spent — there is nothing left
+    // to press, and a live-looking button that refuses every press is worse
+    // than one that says what it already did.
+    const passive = i.id === 'pu-shield' || (i.id === 'pu-overclock' && runOverclock);
     return `<button class="pu-btn${passive ? ' passive' : ''}" data-pu="${i.id}"${passive ? ' disabled' : ''}
                     title="${esc(i.desc)}">
               <span class="pu-emoji">${i.emoji}</span>
-              <span class="pu-label">${passive ? 'ARMED' : esc(i.name)}</span>
+              <span class="pu-label">${passive ? (i.id === 'pu-overclock' ? 'RUNNING' : 'ARMED') : esc(i.name)}</span>
               <span class="pu-count">${powerHeld(i.id)}</span>
             </button>`;
   }).join('');
@@ -10511,7 +13225,11 @@ function flashPowerDock(id){
 
 const TIME_DILATOR_SECONDS = 3;
 
+const OVERCLOCK_CHIP_MULT = 1.3;
+
 function usePowerUp(id){
+  if(id === 'pu-overclock') return useOverclockChip();
+  if(id === 'pu-dampener')  return useChaosDampener();
   if(id !== 'pu-dilator') return;
   const el = document.getElementById('g-time');
   const raw = el ? el.textContent.trim() : '';
@@ -10538,6 +13256,35 @@ function usePowerUp(id){
   }
   document.querySelector('.g-area')?.classList.add('dilated');
   setTimeout(() => document.querySelector('.g-area')?.classList.remove('dilated'), 700);
+}
+
+// ⚙️ OVERCLOCK CHIP. Unlike the dilator it asks nothing of the round — no clock
+// to read, no state to write — so it is the one consumable that works on all
+// twenty-one missions with no exceptions, including the two that run on ∞.
+function useOverclockChip(){
+  if(runOverclock){ snd('deny'); toast('⚙️ This round is already overclocked.', 2200); return; }
+  if(!document.getElementById('game-screen').classList.contains('active')){
+    snd('deny'); toast('⚙️ Nothing to overclock — start a round first.', 2400); return;
+  }
+  if(!powerConsume('pu-overclock', `OVERCLOCKED · +${Math.round((OVERCLOCK_CHIP_MULT - 1) * 100)}%`)) return;
+  runOverclock = OVERCLOCK_CHIP_MULT;
+  document.querySelector('.g-area')?.classList.add('overclocked-run');
+}
+
+// 🧯 CHAOS DAMPENER. Refuses rather than burns itself when there is nothing to
+// dampen — a clean round and a round carrying only a windfall both have zero
+// handicaps on them, and spending eight credits to confirm that is not a
+// purchase anyone would make twice.
+function useChaosDampener(){
+  const hazards = (chaos.stack || []).filter(c => c.kind === 'hazard').length;
+  if(!hazards){
+    snd('deny');
+    toast('🧯 Nothing to dampen — no handicap running.', 2400);
+    return;
+  }
+  if(!powerConsume('pu-dampener', 'HANDICAPS DAMPENED')) return;
+  const killed = chaosDampen();
+  toast(`🧯 ${killed} HANDICAP${killed === 1 ? '' : 'S'} SHUT DOWN`, 2600);
 }
 
 // The shared clock element carries three shapes: a plain count of seconds, an
@@ -10884,7 +13631,8 @@ function renderAchievementMatrix(){
 // One host element, three classes. Every style ends by calling `done`, and a
 // hard timeout calls it too — a cosmetic that failed to finish must never be
 // the reason a player never sees their score.
-const EXIT_MS = { bsod: 2200, matrix: 1500, static: 900 };
+const EXIT_MS = { bsod: 2200, matrix: 1500, static: 900,
+                  glitch: 1200, purge: 1300, rewind: 1500 };
 
 function playExitFx(gid, pts, opts, done){
   const stage = document.getElementById('exit-fx');
@@ -10959,6 +13707,35 @@ function playExitFx(gid, pts, opts, done){
     body.innerHTML = `<div class="crt-flash"></div><div class="crt-noise"></div><div class="crt-roll"></div>`;
     snd('bigExplode');
     setTimeout(finish, EXIT_MS.static);
+  }
+  else if(fx === 'glitch'){
+    // Displaced bands rather than one sheared image: a datamosh is the picture
+    // arriving in the wrong ORDER, so each band gets its own offset, its own
+    // delay and its own channel tint, and the eye reassembles a broken stream.
+    const bands = 14;
+    let html = '<div class="gl-rgb"></div>';
+    for(let i = 0; i < bands; i++){
+      const off = (Math.random() * 2 - 1) * 22;
+      html += `<span class="gl-band" style="top:${(i / bands) * 100}%;height:${100 / bands + 0.4}%;` +
+              `--gx:${off.toFixed(1)}%;animation-delay:${(Math.random() * 0.45).toFixed(2)}s"></span>`;
+    }
+    body.innerHTML = html;
+    snd('glitch');
+    setTimeout(finish, EXIT_MS.glitch);
+  }
+  else if(fx === 'purge'){
+    body.innerHTML = `<div class="pg-line"></div><div class="pg-flash"></div>`;
+    snd('bigExplode');
+    setTimeout(finish, EXIT_MS.purge);
+  }
+  else if(fx === 'rewind'){
+    // The tracking bar is the whole effect — a band of noise walking UP the
+    // picture is what a tape looks like running backwards, and it reads as that
+    // instantly without a single frame of video.
+    body.innerHTML = `<div class="rw-noise"></div><div class="rw-track"></div>` +
+                     `<div class="rw-lbl">◀◀ REWIND</div>`;
+    snd('glitch');
+    setTimeout(finish, EXIT_MS.rewind);
   }
   else finish();
 
@@ -11239,6 +14016,20 @@ document.getElementById('btn-perks')?.addEventListener('click',
 document.getElementById('perk-close')?.addEventListener('click', () => closeOverlay('perk-overlay'));
 document.getElementById('perk-overlay')?.addEventListener('click', e => {
   if(e.target.id === 'perk-overlay') closeOverlay('perk-overlay');
+});
+
+document.getElementById('btn-season')?.addEventListener('click',
+  () => openOverlay('season-overlay', renderSeasonTrack));
+document.getElementById('season-close')?.addEventListener('click', () => closeOverlay('season-overlay'));
+document.getElementById('season-overlay')?.addEventListener('click', e => {
+  if(e.target.id === 'season-overlay') closeOverlay('season-overlay');
+});
+
+document.getElementById('btn-dossier')?.addEventListener('click',
+  () => openOverlay('dossier-overlay', renderDossier));
+document.getElementById('dossier-close')?.addEventListener('click', () => closeOverlay('dossier-overlay'));
+document.getElementById('dossier-overlay')?.addEventListener('click', e => {
+  if(e.target.id === 'dossier-overlay') closeOverlay('dossier-overlay');
 });
 
 // Escape closes whichever is open — the feedback modal already trains that.
@@ -11839,6 +14630,21 @@ const MP_MODES = {
     gid:'battlebots', icon:'🤖', name:'SIEGE RACE', seconds:200, kind:'race',
     desc:'Two lanes, two Glitches, one RAM economy each. Push your siege further than they push theirs.',
     meta:'UP TO 1200 PTS · HIGH SCORE WINS'
+  },
+  rhythmrace: {
+    gid:'rhythm', icon:'🎵', name:'SYNC-OFF', seconds:70, kind:'race',
+    desc:'Two charts off the same tempo, two chains to keep alive. Whoever drops a pulse first hands the round over.',
+    meta:'UP TO 1400 PTS · HIGH SCORE WINS'
+  },
+  mergerace: {
+    gid:'merge', icon:'🧮', name:'LATTICE RACE', seconds:120, kind:'race',
+    desc:'Two lattices, one clock. Build the deeper core before either board gridlocks.',
+    meta:'UP TO 1300 PTS · HIGH SCORE WINS'
+  },
+  uplinkrace: {
+    gid:'uplink', icon:'🛰️', name:'RELAY RACE', seconds:95, kind:'race',
+    desc:'Same crosswind, same firewall, two dishes. Link more relays than the operative lobbing beside you.',
+    meta:'UP TO 1000 PTS · HIGH SCORE WINS'
   }
 };
 // Every race row runs the same engine, so it is filled in here rather than
@@ -17457,11 +20263,15 @@ const COARSE = (() => {
     // A touchscreen laptop is NOT a phone. `'ontouchstart' in window` is true on
     // every Windows machine with a digitiser — a perfectly ordinary desktop can
     // report ten touch points — so the old test dropped those machines to the
-    // MOBILE tier: render scale capped at 1.0 while the display asks for 1.5 or
-    // 2.0, half the skyline, a 0.48MP scene cap and surface detail at 55%. The
-    // symptom is a soft board carrying plain-looking buildings, on hardware with
-    // the headroom to draw neither — and it is invisible in testing, because a
-    // dev machine without a digitiser takes the other branch.
+    // MOBILE tier, and it is invisible in testing, because a dev machine
+    // without a digitiser takes the other branch.
+    //
+    // What the MOBILE tier still costs is worth knowing before adding anything
+    // to it: half the skyline, a smaller particle ceiling, three bloom mips
+    // instead of five, and no grain or scanline. It no longer costs RESOLUTION
+    // — that cap is gone, see `baseRung` and PIXEL_CAP below — because a static
+    // "phones are slow" rule is a floor the governor cannot lift, and on a
+    // modern handset it was simply wrong.
     //
     // The honest signal is the PRIMARY pointer together with hover: a machine
     // driven by a mouse or trackpad reports a fine pointer that can hover,
@@ -17481,15 +20291,27 @@ const rung = v => { let i = 0; while(i + 1 < LADDER.length && LADDER[i + 1] <= v
 // A hard ceiling on the scene target regardless of scale. A tablet in landscape
 // has a board several times a phone's area, and a per-CSS-pixel ratio alone
 // would happily ask a mobile GPU for two megapixels of HDR.
-const PIXEL_CAP = COARSE ? 480000 : 4200000;
+//
+// The phone number used to be 480000, and on its own it was enough to make the
+// board permanently soft on every modern handset. A portrait phone board is
+// roughly 380×680 CSS px = 258k CSS pixels, so a 480k cap allowed
+// sqrt(480000/258400) = 1.36 device pixels per CSS pixel — and the `baseRung`
+// cap below held it to 1.0 anyway. On a dpr-3 panel that is ONE NINTH of the
+// pixels the display is asking for, upscaled by the browser. It is not a
+// governor decision that can be earned back; it is a floor, and it is why the
+// live site reads sharp on desktop and blurry on a phone no matter what the
+// frame clock says. The governor is what protects a slow device — that is its
+// entire job — so the static cap only has to stop something absurd.
+const PIXEL_CAP = COARSE ? 1500000 : 4200000;
 
 const dpr = () => window.devicePixelRatio || 1;
-// The governor may climb, but not all the way back to a desktop's ceiling on a
-// handset: a phone that posts fast frames for three quarters of a second is
-// usually cold, and the reward for believing it is a round that starts sharp
-// and then throttles in the player's hands. 1.5 on a phone board is already a
-// quarter-megapixel of HDR.
-const MAX_RUNG = rung(COARSE ? 1.5 : 2.0);
+// The ceiling the governor may climb to. This is deliberately the SAME on a
+// phone as on a desktop now. The old code stopped a handset at 1.5, which
+// combined with the `baseRung` cap of 1.0 below meant the constant was dead
+// code — the board could never get within reach of it. Whether a phone can
+// afford its own panel is a question the frame clock answers in about a
+// second and a half; hard-coding "no" answers it wrongly for every flagship.
+const MAX_RUNG = rung(2.0);
 
 // The rung is derived, not stored: `baseIdx` is the sharpest rung THIS DISPLAY
 // can actually show, and `penalty` is how many rungs the governor has given up
@@ -17504,7 +20326,12 @@ const MAX_RUNG = rung(COARSE ? 1.5 : 2.0);
 // board at two thirds of the display's resolution and let the browser upscale
 // it — a permanently soft picture, on a machine with the headroom to draw it
 // sharp, with nothing in the game to say why.
-const baseRung = () => rung(Math.min(dpr(), COARSE ? 1.0 : 2.0));
+// COARSE no longer clamps this to 1.0. That clamp was the mobile blur: it is
+// applied to `baseIdx`, and `baseIdx` is the upper bound of `qIdx()`, so a
+// phone could not render above one device pixel per CSS pixel even when the
+// GPU was idle. A phone opens at its panel's own rung like everything else and
+// the governor takes resolution back if — and only if — the frames say so.
+const baseRung = () => rung(Math.min(dpr(), 2.0));
 let baseIdx = baseRung();
 // Detail is shed BEFORE resolution and restored after it. It is fragment ALU
 // with no effect on silhouette or legibility, and the player sees a soft board
@@ -17517,7 +20344,29 @@ const DLAST = DETAIL_STEPS.length - 1;
 // procedural surface detail; every step beyond that gives up a rung of render
 // resolution. Linearising the two is what lets the governor remember WHICH
 // level it could not hold, in a single array indexed by qStep -- see `fails`.
-let qStep = 0;
+//
+// THE OPENING BID is remembered across page loads. Everything else the
+// governor learns is deliberately per-session, but the opening frames are the
+// one moment it has no evidence to act on, and starting every session at the
+// panel's native rung means a genuinely slow handset spends the first second
+// or two of its FIRST round at single-digit frame rates before the governor
+// can see anything. What it settled on last time is the one honest guess
+// available.
+//
+// Stored ONE STEP OPTIMISTIC, and `fails` is deliberately NOT persisted, so
+// this can only ever shorten the climb — never stand in for it. A device that
+// was throttled, or plugged in, or sharing the GPU with something else last
+// time re-proves the level within a few seconds instead of inheriting a verdict
+// it never earned. That distinction is the whole reason this is a bid and not
+// a cap.
+const LS_QSTEP = 'pi_render_qstep';
+let qStep = (() => {
+  try{
+    const v = parseInt(localStorage.getItem(LS_QSTEP), 10);
+    if(v > 0) return Math.min(Math.max(0, v - 1), DLAST + baseIdx);
+  }catch(e){}
+  return 0;
+})();
 const maxStep   = () => DLAST + baseIdx;
 const detailIdx = () => Math.min(DLAST, qStep);
 const penalty   = () => Math.max(0, qStep - DLAST);
@@ -17550,9 +20399,15 @@ function pushQuality(){
     scanline:   COARSE ? 0 : Infinity,
     aberration: COARSE ? 0.8 : Infinity,
     // Procedural surface detail is per-pixel ALU on every surface in the
-    // frame. A dense phone panel cannot resolve the plate seams anyway, so it
-    // starts at just over half strength there.
-    detail:     (COARSE ? 0.55 : 1) * DETAIL_STEPS[detailIdx()]
+    // frame. This used to open at 0.55 on a phone, justified by the panel not
+    // being able to resolve the plate seams — which was only true BECAUSE the
+    // render scale was pinned to 1.0 there. A board drawn at the panel's own
+    // resolution resolves them fine, and the flat 0.55 was the difference
+    // between plated hulls and plain ones on hardware with room for both.
+    // DETAIL_STEPS below is the governor's own handle on exactly this, and it
+    // is the FIRST thing it spends, so a phone that cannot afford full detail
+    // still loses it within a window — on evidence rather than on assumption.
+    detail:     DETAIL_STEPS[detailIdx()]
   });
 }
 
@@ -17628,14 +20483,50 @@ const budget = () => Math.max(REFRESH_MS, TARGET_MS);
 // thing at 60Hz, at 144Hz and on a tab the OS has throttled to 30.
 const SLOW_X = 1.5, FAST_X = 1.15;
 const WINDOW = 45;                     // ~0.75s of evidence before either move
+// …but 45 FRAMES is only 0.75s while the frames are arriving on time, and the
+// whole point of this code is the case where they are not. A device rendering
+// at 4fps needs ELEVEN SECONDS to fill a 45-frame window, so the governor that
+// exists to rescue it sits and watches, unable to act until the round is a
+// sixth over. A window therefore closes on 45 frames OR 0.75s of wall clock,
+// whichever comes first, with a floor of MIN_WINDOW samples so the median is
+// still a median. The worse the device, the faster the governor now reacts —
+// which is the correct direction for that relationship to run.
+const WINDOW_MS = 750, MIN_WINDOW = 8;
+// Same argument for warm-up. 30 frames is shader compilation and first-touch
+// buffer allocation on a healthy device; on a struggling one it is 7.5s of
+// unplayable frames the governor has been told to ignore.
+const WARM_MS = 1200;
 // Consecutive good windows required before a step comes back. Asymmetric on
 // purpose: the player feels a stutter immediately, so a cut is made on the
 // first bad window, but they do not mind waiting for sharpness — and a board
 // whose resolution visibly changes every few seconds is worse than one that is
 // a rung soft. Detail is subtle and cheap to move, so it climbs quickly;
 // resolution has to earn it.
-const CLIMB_DETAIL = 2, CLIMB_RES = 24;
-let costs = [], lastT = 0, warmup = 0, coolDown = 0;
+// CLIMB_RES was 24 windows — EIGHTEEN SECONDS of unbroken good frames to earn
+// back one rung, with `goodRun` reset to zero by any single bad window. A round
+// serves up a wave, a boss or a chained explosion far more often than every
+// eighteen seconds, so the counter was reset before it could ever arrive and
+// the climb branch, though reachable in principle, never fired in practice.
+// Measured over a twelve-round session on a retina desktop: the board saw its
+// native rung during the first twelve seconds of round one and never again.
+// 6 windows is ~4.5s, which fits between heavy moments instead of spanning
+// them.
+const CLIMB_DETAIL = 2, CLIMB_RES = 6;
+// Consecutive bad windows before a RESOLUTION rung is given up. Detail still
+// goes on the first one — it is cheap to restore and nearly invisible — but
+// resolution is the thing the player actually sees, and a four-second wave
+// must not be able to buy a permanent rung of it with 0.75s of evidence.
+const CUT_RES_WINDOWS = 2;
+// …except when the miss is severe. A window at two and a half times the budget
+// is not a wave passing through, it is a device that cannot draw this board at
+// this size, and making it prove that twice only spends the player's frames:
+// a 22ms-per-frame handset opening at its panel's native rung is at 15fps, and
+// every window of "evidence" is another 0.75s of that. Severe misses cut at
+// once; marginal ones wait.
+const PANIC_X = 2.5;
+let costs = [], lastT = 0, warmup = 0, coolDown = 0, badRun = 0;
+// Wall-clock accumulators for the two limits above.
+let winMs = 0, warmMs = 0;
 // Per-level memory: how many times a climb INTO that step had to be undone.
 // Each failure doubles the evidence needed to try it again, so a device sitting
 // exactly at the edge of a rung settles there instead of pumping between two.
@@ -17647,15 +20538,26 @@ let fails = [], goodRun = 0, lastClimbTo = -1, sinceClimb = 99;
 let slideMed = 0, slideSteps = 0;
 
 function qualityReset(){
-  costs = []; lastT = 0; warmup = 30; coolDown = 0;
+  // Runs at the START of a round, so `qStep` here is still the level the LAST
+  // round ended on — which is exactly the settled value worth remembering.
+  try{ localStorage.setItem(LS_QSTEP, String(qStep)); }catch(e){}
+  costs = []; lastT = 0; warmup = 30; coolDown = 0; badRun = 0; winMs = 0; warmMs = 0;
   goodRun = 0; lastClimbTo = -1; sinceClimb = 99; slideSteps = 0;
-  // Hand back one step of whatever the governor took, every round. What it
-  // learned in the last mission is evidence about THAT mission — a skyline at
-  // Meltdown tier says nothing about the grid the player picked next — and
-  // without this the session-long state is still a one-way ratchet even once
-  // the climb works, because a round that happened to END in an explosion
-  // carries the penalty into the next one. Starting optimistic and re-proving
-  // the need costs at most one extra cut (~1.5s) on a device at its limit.
+  // Hand back what the governor took, every round. What it learned in the last
+  // mission is evidence about THAT mission — a skyline at Meltdown tier says
+  // nothing about the grid the player picked next — and without this the
+  // session-long state is still a one-way ratchet even once the climb works,
+  // because a round that happened to END in an explosion carries the penalty
+  // into the next one.
+  //
+  // One step, not the whole penalty. Handing back all of the RESOLUTION
+  // penalty here was tried and is actively worse: a handset that genuinely
+  // needs three rungs then reopens every single round at its panel's native
+  // size, which for a 22ms-per-frame device is 15fps for the first seconds of
+  // play and for a really slow one is 4. The climb below is what undoes a
+  // penalty that is no longer deserved; this only has to stop the LAST
+  // moment of a round — which is often an explosion — from being treated as
+  // the opening state of the next one.
   if(qStep > 0){ qStep--; syncSize(); }
 }
 
@@ -17666,19 +20568,26 @@ function qualitySample(){
   // spent time behind another window came back permanently downgraded, and the
   // player got a soft board on hardware that was never the problem. Throw the
   // window away rather than learning from it.
-  if(document.visibilityState !== 'visible'){ lastT = 0; costs = []; return; }
+  if(document.visibilityState !== 'visible'){ lastT = 0; costs = []; winMs = 0; return; }
   const now = performance.now();
   const dt = lastT ? now - lastT : 0;
   lastT = now;
   // A round's opening frames are shader warm-up and first-touch buffer
   // allocation; judging the device on those downgrades everybody.
-  if(warmup > 0){ warmup--; return; }
+  if(warmup > 0){
+    warmMs += dt;
+    if(--warmup > 0 && warmMs < WARM_MS) return;
+    warmup = 0; warmMs = 0;
+    return;
+  }
   if(dt <= 0 || dt > 500) return;      // tab was away — not evidence of anything
   costs.push(dt);
-  if(costs.length < WINDOW) return;
+  winMs += dt;
+  const n = costs.length;
+  if(n < WINDOW && !(n >= MIN_WINDOW && winMs >= WINDOW_MS)) return;
   const sorted = costs.slice().sort((a, b) => a - b);
-  const med = sorted[costs.length >> 1];
-  costs = [];
+  const med = sorted[n >> 1];
+  costs = []; winMs = 0;
   if(coolDown > 0){ coolDown--; return; }
 
   // A window whose FASTEST frames beat what the probe reported means the probe
@@ -17686,12 +20595,20 @@ function qualitySample(){
   // under it. The low percentile can only ever reveal a FASTER display, never a
   // slower one, so following it down is always safe; the slide detector below
   // is what catches the estimate being too low.
-  const p10 = sorted[Math.floor(WINDOW * 0.1)];
+  // Indexed off the window's ACTUAL length, not the nominal one: a window that
+  // closed early on the wall clock has fewer than WINDOW samples, and
+  // sorted[4] of an 8-sample window is its median, not its tenth percentile.
+  const p10 = sorted[Math.floor(n * 0.1)];
   if(p10 >= 3 && p10 < REFRESH_MS - 0.6) REFRESH_MS = p10;
   sinceClimb++;
 
   if(med > budget() * SLOW_X){
-    goodRun = 0;
+    // DECAYED, not wiped. A single heavy moment is not evidence that the
+    // device cannot hold the level it is heading for, and zeroing the counter
+    // here is half of why the climb never completed: progress toward a rung
+    // had to survive a whole round without one bad window.
+    goodRun = Math.max(0, goodRun - 2);
+    badRun++;
     // THE SLIDE DETECTOR, checked BEFORE this window's cut and never after.
     // `med` was measured with whatever the previous cut left in place, so
     // testing it here is the only way to judge cuts that have actually been
@@ -17708,26 +20625,81 @@ function qualitySample(){
     // rungs, so a number that refuses to move means quality was never the
     // problem. Adopt the cadence as the budget and give back what the slide
     // cost.
+    //
+    // ⚠️ "RUNGS" MEANS RESOLUTION RUNGS, and `slideSteps` counts only those —
+    // see the increment below. It used to count every qStep, which made the
+    // first three cuts of any slide the two DETAIL steps plus one rung. Detail
+    // is bounded at a quarter of fragment cost (`0.75 + 0.25 * detail`), far
+    // too little to move a frame out of its vsync bucket, so the median was
+    // GUARANTEED not to have moved and this fired on ordinary GPU-bound
+    // hardware. The damage is not a soft board but a locked-in slow one: it
+    // adopts the missed cadence as REFRESH_MS, so budget() becomes 33.3ms,
+    // 30fps becomes "on time", and the governor spends the rest of the session
+    // perfectly content. Three RESOLUTION rungs is a genuine 4× cut in pixels;
+    // a median that survives that really is not the renderer's doing.
     if(slideSteps >= 3 && med > slideMed * 0.96){
       REFRESH_MS = Math.max(4, Math.min(med, 40));
       qStep = Math.max(0, qStep - slideSteps);
-      slideSteps = 0; fails = []; applyQuality();
+      slideSteps = 0; badRun = 0; fails = []; applyQuality();
       return;
     }
+    // Resolution needs SUSTAINED evidence; detail does not. `qStep >= DLAST`
+    // is exactly the test for "the next step down spends a rung" — penalty()
+    // is max(0, qStep - DLAST) — so below that line this falls straight
+    // through and sheds detail on the first bad window as before.
+    //
+    // Two exceptions take the cut immediately. A severe miss (PANIC_X) has
+    // nothing to wait for. And a rung the governor climbed into a moment ago
+    // is a rung it was EXPERIMENTING with — this bad window is the experiment's
+    // answer, so undoing it at once is what makes probing upward cheap enough
+    // to keep doing. Without that second case a device sitting on the boundary
+    // between two rungs pays four windows of stutter for every probe.
+    const probeFailed = (lastClimbTo === qStep && sinceClimb <= 2);
+    if(qStep >= DLAST && badRun < CUT_RES_WINDOWS &&
+       med < budget() * PANIC_X && !probeFailed) return;
     // A level we climbed into and immediately lost is a level that needs more
     // proof next time. A level that held for a while and then met a genuinely
     // heavy moment is not — that is the load talking, not the hardware.
+    // Counted only where the cut is actually taken, so the two bad windows
+    // that authorise one resolution cut do not record two failures for it.
     if(lastClimbTo === qStep && sinceClimb <= 8) fails[qStep] = (fails[qStep] || 0) + 1;
-    if(slideSteps === 0) slideMed = med;
-    if(qStep < maxStep()){ qStep++; slideSteps++; applyQuality(); }
+    if(qStep < maxStep()){
+      // Only a cut that raises penalty() spends a resolution rung, and only
+      // those are evidence for the slide detector above. `slideMed` is taken
+      // from the window that triggered the FIRST rung of the run, which is the
+      // last median measured before any pixels were given up.
+      const spendsRung = (qStep >= DLAST);
+      qStep++;
+      if(spendsRung){ if(slideSteps === 0) slideMed = med; slideSteps++; }
+      applyQuality();
+    }
+    badRun = 0;
     return;
   }
   slideSteps = 0;
+  badRun = 0;
 
   if(med < budget() * FAST_X){
+    // A level that has now been held comfortably for a long stretch has earned
+    // its record back. Without this, one unlucky failure early in a session
+    // (the shader cache still cold, another tab busy) barred that rung for as
+    // long as the page stayed open, because `fails` is deliberately kept
+    // across rounds and nothing ever decremented it.
+    //
+    // `qStep === lastClimbTo` is load-bearing: the decay must only fire while
+    // the governor is actually SITTING on the level it climbed into. Keyed on
+    // sinceClimb alone it also fired while waiting BELOW that level for the
+    // climb counter to fill, which handed back the very failure record that
+    // was supposed to be holding the retry off — and turned the damping into
+    // a two-state oscillation between a sharp rung at 30fps and a soft one
+    // at 60.
+    if(sinceClimb === 40 && qStep === lastClimbTo && fails[lastClimbTo] > 0) fails[lastClimbTo]--;
     if(qStep === 0){ goodRun = 0; return; }
     const tgt = qStep - 1;
-    const need = (tgt >= DLAST ? CLIMB_RES : CLIMB_DETAIL) << Math.min(fails[tgt] || 0, 5);
+    // Cap the doubling at 3 (8×, ~36s) rather than 5 (32×, ~9.6 MINUTES). At
+    // the old ceiling a rung that failed five times was gone for the session,
+    // which is a ratchet however fast the base climb is.
+    const need = (tgt >= DLAST ? CLIMB_RES : CLIMB_DETAIL) << Math.min(fails[tgt] || 0, 3);
     if(++goodRun < need) return;
     qStep--; goodRun = 0; lastClimbTo = qStep; sinceClimb = 0; applyQuality();
   }
@@ -17738,7 +20710,7 @@ function qualitySample(){
 function applyQuality(){
   // Two windows of grace after a change: the resize itself reallocates every
   // target, and that frame is never representative of the new level.
-  coolDown = 2; warmup = 12; costs = [];
+  coolDown = 2; warmup = 12; costs = []; winMs = 0; warmMs = 0;
   syncSize();          // pushQuality() inside picks up the new detail step
 }
 
@@ -18690,6 +21662,15 @@ P.games.nebula = function(){
     bar.style.width = Math.max(0, shield) + '%';
     snd(shield <= 0 ? 'bigExplode' : 'hurt');
     w.burst(at, '#ff2442', 16, { speed: 8, life: 0.5 });
+    // 🛡️ Death here is a DEPLETED BAR, so an absorb has to hand back enough of
+    // it to matter — 1% would be a shield that bought one more projectile.
+    if(shield <= 0 && survivedFatal()){
+      shield = 60;
+      bar.style.width = shield + '%';
+      w.kick(2.2);
+      w.burst(at, '#a855f7', 40, { speed: 14, life: 0.9 });
+      w.pop([0, 3.4, 0], 'SHIELD ABSORBED', '#a855f7', { size: 20, life: 1.4 });
+    }
     if(shield <= 0) end('destroyed');
   }
 
@@ -19024,6 +22005,14 @@ P.games.dodge = function(){
       if(c.z > 12){ cores.splice(i, 1); continue; }
       const dx = c.x - me.x, dz = c.z - me.z, dy = c.y - 1.0;
       if(dx*dx + dz*dz + dy*dy < (c.r + me.r) * (c.r + me.r)){
+        // 🛡️ Sweeps the field for the same reason the 2D build does: the core
+        // that hit you is rarely the only one within a frame of doing so.
+        if(survivedFatal()){
+          w.kick(2.0);
+          w.burst([me.x, 1, me.z], '#a855f7', 40, { speed: 14, life: 0.9 });
+          cores.length = 0;
+          break;
+        }
         over = true;
         snd('bigExplode');
         w.kick(3.2);
@@ -19169,7 +22158,20 @@ P.games.tetris = function(){
     next = make();
     piece.x = ((COLS / 2) | 0) - ((piece.m[0].length / 2) | 0);
     piece.y = 0;
-    if(hits(piece.m, piece.x, piece.y)) end();
+    if(hits(piece.m, piece.x, piece.y)){
+      // 🛡️ Deletes the top five rows of the STACK, not of the well. Same
+      // reasoning as the 2D build: clearing the empty air above the stack is
+      // an absorb that visibly does nothing.
+      if(survivedFatal()){
+        let top = grid.findIndex(row => row.some(c => c !== null));
+        if(top < 0) top = 0;
+        grid.splice(top, 5);
+        while(grid.length < ROWS) grid.unshift(new Array(COLS).fill(null));
+        piece.x = ((COLS / 2) | 0) - ((piece.m[0].length / 2) | 0);
+        piece.y = 0;
+      }
+      else end();
+    }
   }
   function make(){
     const k = BAG[(Math.random() * BAG.length) | 0];
@@ -19755,10 +22757,24 @@ P.games.snake = function(){
       const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
       if(head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS
          || snake.some(s => s.x === head.x && s.y === head.y)){
-        w.burst([wx(snake[0].x), 0.8, wz(snake[0].y)], '#ff2442', 40, { speed: 13, life: 0.9 });
-        w.kick(2.4);
-        end('crash');
-        return false;
+        // 🛡️ The absorb has to leave a state the very next tick can survive,
+        // and there is exactly one arrangement that is valid whatever killed
+        // you: a single segment heading back the way it came. Off a wall that
+        // points inward; off your own body there is no body left to hit. It
+        // costs the whole chain — the eaten count, and so the score, is not
+        // touched, which is the right price for a crash you did not take.
+        if(!survivedFatal()){
+          w.burst([wx(snake[0].x), 0.8, wz(snake[0].y)], '#ff2442', 40, { speed: 13, life: 0.9 });
+          w.kick(2.4);
+          end('crash');
+          return false;
+        }
+        w.burst([wx(snake[0].x), 0.9, wz(snake[0].y)], '#a855f7', 40, { speed: 13, life: 0.9 });
+        w.kick(2.0);
+        snake.length = 1;
+        dir = nextDir = { x: -dir.x, y: -dir.y };
+        head.x = snake[0].x + dir.x;
+        head.y = snake[0].y + dir.y;
       }
       snake.unshift(head);
       if(head.x === food.x && head.y === food.y){
@@ -20056,6 +23072,17 @@ P.games.flappy = function(){
 
   function die(){
     if(over) return;
+    // 🛡️ Levels the drone off in the middle of the shaft and clears the gate
+    // it was inside. Absorbing a clip while still wedged in the column just
+    // spends the shield on the next frame instead.
+    if(survivedFatal()){
+      y = 0; vy = 0;
+      for(let i = gates.length - 1; i >= 0; i--) if(Math.abs(gates[i].z) < 6) gates.splice(i, 1);
+      w.kick(2.0);
+      w.burst([0, 0, 0], '#a855f7', 40, { speed: 14, life: 0.9 });
+      w.pop([0, 2.4, 0], 'SHIELD ABSORBED', '#a855f7', { size: 20, life: 1.4 });
+      return;
+    }
     over = true;
     snd('bigExplode');
     w.kick(3);
@@ -20143,6 +23170,13 @@ P.games.breaker = function(){
   }, 1000);
 
   function loseShield(){
+    // 🛡️ Asked before the decrement, so an absorbed loss costs nothing at all
+    // — including the forty points an intact shield is worth on the card.
+    if(shields <= 1 && survivedFatal()){
+      combo = 0; flash = 1; stuck = true;
+      ballX = pad; ballZ = ZP - 2; bvx = rnd(-5, 5); bvz = -15 * diff;
+      return;
+    }
     shields--;
     combo = 0;
     flash = 1;
@@ -20384,6 +23418,9 @@ P.games.runner = function(){
   }
 
   function takeHit(){
+    // 🛡️ Hands the last hull point back and doubles the grace window: the
+    // bike is usually still inside the obstacle that hit it.
+    if(hull <= 1 && survivedFatal()){ invuln = 2.2; w.kick(2.0); return; }
     hull--;
     invuln = 1.1;
     w.kick(2.6);
@@ -21231,6 +24268,55 @@ const FONT = {
   '=':['00000','11111','00000','00000','00000','11111','00000'],
   '?':['11111','10001','00001','00111','00100','00000','00100'],
   '/':['00001','00011','00110','01100','11000','10000','00000'],
+  // ── LETTERS ──
+  // Added 2026-09-11, with § 7. The set was digits-and-symbols only, so every
+  // worded label in the 3D layer came out as a row of '?' — which is what the
+  // fallback in drawText3D() does, silently and at full brightness.
+  //
+  // Drawn the same way the digits are: FIVE by SEVEN, strokes at least one full
+  // cell thick, and diagonals doubled up wherever the letter allows it. A
+  // single-cell diagonal is the one thing this typeface genuinely cannot do —
+  // bloom rounds each cube into a dot and the stroke reads as scattered specks
+  // rather than a line — so K, M, N, W, X, Y and Z all carry thickened
+  // shoulders that a paper font would not need.
+  'A':['01110','10001','10001','11111','10001','10001','10001'],
+  'B':['11110','10001','10001','11110','10001','10001','11110'],
+  'C':['01111','10000','10000','10000','10000','10000','01111'],
+  'D':['11110','10001','10001','10001','10001','10001','11110'],
+  'E':['11111','10000','10000','11110','10000','10000','11111'],
+  'F':['11111','10000','10000','11110','10000','10000','10000'],
+  'G':['01111','10000','10000','10111','10001','10001','01111'],
+  'H':['10001','10001','10001','11111','10001','10001','10001'],
+  'I':['11111','00100','00100','00100','00100','00100','11111'],
+  'J':['00111','00010','00010','00010','00010','10010','01100'],
+  'K':['10011','10010','10100','11000','10100','10010','10011'],
+  'L':['10000','10000','10000','10000','10000','10000','11111'],
+  'M':['10001','11011','10101','10101','10001','10001','10001'],
+  'N':['10001','11001','11101','10111','10011','10001','10001'],
+  'O':['01110','10001','10001','10001','10001','10001','01110'],
+  'P':['11110','10001','10001','11110','10000','10000','10000'],
+  'Q':['01110','10001','10001','10001','10101','10011','01111'],
+  'R':['11110','10001','10001','11110','10100','10010','10011'],
+  'S':['01111','10000','10000','01110','00001','00001','11110'],
+  'T':['11111','00100','00100','00100','00100','00100','00100'],
+  'U':['10001','10001','10001','10001','10001','10001','01110'],
+  'V':['10001','10001','10001','10001','11011','01110','00100'],
+  'W':['10001','10001','10001','10101','10101','11011','10001'],
+  'X':['11011','11011','01110','00100','01110','11011','11011'],
+  'Y':['10001','11011','01110','00100','00100','00100','00100'],
+  'Z':['11111','00011','00110','01100','11000','11000','11111'],
+  // Punctuation the labels in §§ 3–7 actually use. Anything not here still
+  // falls back to '?', which is the right failure: visible, not invisible.
+  '.':['00000','00000','00000','00000','00000','01100','01100'],
+  ',':['00000','00000','00000','00000','01100','01100','01000'],
+  ':':['00000','01100','01100','00000','01100','01100','00000'],
+  '!':['00100','00100','00100','00100','00100','00000','00100'],
+  '%':['11001','11010','00010','00100','01000','01011','10011'],
+  '<':['00011','00110','01100','11000','01100','00110','00011'],
+  '>':['11000','01100','00110','00011','00110','01100','11000'],
+  '(':['00110','01100','01000','01000','01000','01100','00110'],
+  ')':['01100','00110','00010','00010','00010','00110','01100'],
+  '#':['01010','01010','11111','01010','11111','01010','01010'],
   ' ':['00000','00000','00000','00000','00000','00000','00000']
 };
 const GLYPH_W = 5, GLYPH_H = 7;
@@ -21245,6 +24331,10 @@ function textCells(str){ return str.length * (GLYPH_W + 1) - 1; }
 // than printed.
 function drawText3D(r, str, pos, cell, o){
   o = o || {};
+  // The face is a single-case typeface, so fold here rather than asking every
+  // call site to shout. A lowercase letter that fell through to '?' was the
+  // exact failure the alphabet was added to stop.
+  str = String(str).toUpperCase();
   const col = o.color || '#ffffff';
   const em = o.emissiveStrength != null ? o.emissiveStrength : 1.5;
   const depth = o.depth || cell * 1.6;
@@ -21277,6 +24367,12 @@ function drawText3D(r, str, pos, cell, o){
     }
   }
 }
+
+// Published onto the shared kit so §7's missions can carve type the same way
+// §4's do. Sections are concatenated in order, so anything below this line can
+// read it — the same contract keyRig and labelRig use.
+K.drawText3D = drawText3D;
+K.textCells = textCells;
 
 // The plate a line of type is carved into — a bevelled slab with a lit edge.
 // Sized off the string so it always frames it.
@@ -21349,9 +24445,10 @@ function labelRig(){
     destroy(){ list.forEach(o => o.el.remove()); list.length = 0; }
   };
 }
-// Published onto the shared kit for the Network Arena's 3D views (§6), which
-// need exactly this to pin a rival's name over their core.
+// Published onto the shared kit for the Network Arena's 3D views (§6) and §7's
+// missions, which need exactly this to pin a label over a moving object.
 K.labelRig = labelRig;
+K.typePlate = typePlate;
 
 // ══════════════════════════════════════════════
 //  🧠 MEMORY MATCH 3D — the pair vault
@@ -22993,6 +26090,12 @@ P.games.arena = function(){
     snd('hurt');
     shake = Math.max(shake, 1.1);
     w.burst([player.x, 1.2, player.z], '#ff2442', 12, { speed: 8, life: 0.5, size: 0.3 });
+    // 🛡️ Forty percent of maximum rather than one hit point — the bots that
+    // killed you are still standing on top of you.
+    if(player.hp <= 0 && survivedFatal()){
+      player.hp = Math.max(1, Math.round(player.maxHp * 0.4));
+      invT = Math.max(invT, 1.6);
+    }
     hpBar();
     if(player.hp <= 0) end();
   }
@@ -24735,6 +27838,810 @@ P.duels.click = function(cfg){
       w.end();
     }
   };
+};
+
+})();
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  § 7/7  MISSIONS IV      games3d_d
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ══════════════════════════════════════════════════════════════════════
+//  🚀 POINT INVADERS — 3D MISSIONS, PART IV
+// ══════════════════════════════════════════════════════════════════════
+// The three missions added after the 3D layer already existed: PULSE SYNC,
+// CORE MERGE and ORBITAL UPLINK. They are built here rather than shipped 2D-only
+// because "every mission has a 3D build" is a promise the mode picker makes —
+// a player who chose the 3D renderer and lands on a flat canvas has been told
+// the arcade is one thing and handed another.
+//
+// Each keeps its 2D scoring contract exactly: same clock, same cap, same
+// showResults id, same breakdown rows. A 3D score and a 2D score are the same
+// score, which is what lets one leaderboard rank both.
+//
+// ⚠️ NO SHADOWS, and NO CAMERA YAW. Both for the reasons set out in § 3.
+
+(function(){
+'use strict';
+
+const P = window.PI3D;
+if(!P) return;
+const K = P.kit;
+const { begin3d, runLoop, mine, nx, ny, rnd, clamp, seeded, NEON } = K;
+const drawText3D = K.drawText3D, keyRig = K.keyRig;
+
+const CITY_NIGHT = {
+  env:  { zenith:'#04061a', horizon:'#3a1050', ground:'#05060f', intensity: 1.35 },
+  fog:  { color:'#0d0722', density: 0.0052 },
+  sun:  { dir:[-0.4, -0.85, -0.5], color:'#6f7dff', intensity: 0.7 },
+  grade:{ exposure: 0.95, bloom: 0.42, threshold: 1.6, knee: 0.5, radius: 0.9,
+          vignette: 0.44, aberration: 0.45, grain: 0.028, scanline: 0.014, saturation: 1.12 }
+};
+
+// ══════════════════════════════════════════════
+//  🎵 PULSE SYNC 3D — the beat corridor
+// ══════════════════════════════════════════════
+// The 2D build is three columns and a line. In 3D the columns become a
+// CORRIDOR the pulses fly down, which turns the game's one variable — time to
+// the line — into distance, the thing depth perception is actually for. A pulse
+// eight beats out is small and deep in the fog; a pulse on the beat is filling
+// the gate in front of you. You can read the chart a bar ahead without counting.
+//
+// The camera sits just behind and above the strike gate and never moves. It
+// cannot: the whole mission is judging one moment in one place, and a camera
+// that drifted would make the same note arrive at a different screen position
+// depending on when in the round it fell.
+P.games.rhythm = function(){
+  const w = begin3d(Object.assign({ ease: 0.3 }, CITY_NIGHT, {
+    env: { zenith:'#04051c', horizon:'#4a0d3a', ground:'#05060f', intensity: 1.3 },
+    fog: { color:'#0c0520', density: 0.0075 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  const LANES = 3;
+  const LANE_X = [-4.6, 0, 4.6];
+  const LANE_COL = ['#ff0090', '#00f5ff', '#39ff88'];
+  const diff = (typeof getDifficultyModifier === 'function') ? getDifficultyModifier() : 1;
+
+  const bpm = (window.SFX && SFX.bpm) || 136;
+  const beat = 60 / bpm;
+  const FALL = beat * 8;
+  const FAR = 150;                       // world units a pulse travels in FALL
+  const SPEED = FAR / FALL;
+
+  const PERFECT = 0.075, GOOD = 0.145, LATE = 0.215;
+
+  let time = Math.round(50 * getTimeModifier());
+  let score = 0, combo = 0, bestCombo = 0, hits = 0, perfects = 0, misses = 0;
+  let over = false, t0 = performance.now(), shake = 0;
+  const flash = [0, 0, 0];
+  const notes = [];
+
+  document.getElementById('g-time').textContent = time;
+  setControls({ left: '◀', action: '●', right: '▶' });
+  setControlHint('TAP A LANE AS ITS PULSE REACHES THE GATE',
+                 'A · S · D  or  ◀ ↓ ▶  —  strike at the gate');
+
+  // Same generator as the 2D build, same seeded stream, so the Daily Hack deals
+  // both renderers the identical chart.
+  let chartT = beat * 4, bar = 0, lastLane = -1;
+  function chartAhead(until){
+    while(chartT < until){
+      const density = Math.min(0.82, 0.34 + bar * 0.045) * Math.min(1.25, diff);
+      for(let i = 0; i < 8; i++){
+        const at = chartT + i * beat / 2;
+        if(dailyRand() > density) continue;
+        let lane = Math.floor(dailyRand() * LANES);
+        if(lane === lastLane) lane = (lane + 1 + Math.floor(dailyRand() * (LANES - 1))) % LANES;
+        lastLane = lane;
+        const dbl = i === 0 && bar >= 4 && dailyRand() < 0.3;
+        notes.push({ lane, at, hit: false, dead: false });
+        if(dbl) notes.push({ lane: (lane + 2) % LANES, at, hit: false, dead: false });
+      }
+      chartT += beat * 4;
+      bar++;
+    }
+  }
+  chartAhead(FALL + beat * 8);
+
+  const now = () => (performance.now() - t0) / 1000;
+
+  function strike(lane){
+    if(over) return;
+    hideTouchHint();
+    flash[lane] = 1;
+    const t = now();
+    let best = null, bestD = Infinity;
+    for(const n of notes){
+      if(n.lane !== lane || n.hit || n.dead) continue;
+      const d = Math.abs(n.at - t);
+      if(d < bestD){ bestD = d; best = n; }
+    }
+    if(!best || bestD > LATE){
+      snd('wrong'); combo = 0; misses++;
+      w.kick(0.4);
+      return;
+    }
+    best.hit = true;
+    hits++;
+    const grade = bestD <= PERFECT ? 'PERFECT' : bestD <= GOOD ? 'GOOD' : 'LATE';
+    const base  = bestD <= PERFECT ? 6 : bestD <= GOOD ? 4 : 2;
+    if(grade === 'PERFECT') perfects++;
+    combo++;
+    bestCombo = Math.max(bestCombo, combo);
+    const mult = 1 + Math.min(1, Math.floor(combo / 8) * 0.25);
+    const gain = Math.round(base * mult);
+    score += gain;
+    setLive(Math.min(1400, score));
+    snd(grade === 'PERFECT' ? 'match' : 'correct', { semi: Math.min(combo, 14) });
+    const col = grade === 'PERFECT' ? '#39ff88' : grade === 'GOOD' ? '#00f5ff' : '#ffd700';
+    w.burst([LANE_X[lane], 1.2, 0], col, grade === 'PERFECT' ? 34 : 18,
+            { speed: 11, life: 0.6, size: 0.34 });
+    w.pop([LANE_X[lane], 3.4, 0], `${grade} +${gain}`, col, { size: 17, life: 0.9 });
+    w.kick(grade === 'PERFECT' ? 0.9 : 0.5);
+  }
+
+  window.onkeydown = e => {
+    const map = { KeyA: 0, KeyS: 1, KeyD: 2, ArrowLeft: 0, ArrowDown: 1, ArrowRight: 2, Space: 1 };
+    const lane = map[e.code];
+    if(lane == null) return;
+    e.preventDefault();
+    strike(lane);
+  };
+  document.getElementById('ctrl-left').onclick   = () => strike(0);
+  document.getElementById('ctrl-action').onclick = () => strike(1);
+  document.getElementById('ctrl-right').onclick  = () => strike(2);
+  // Board coordinates, exactly as the 2D build reads them — INVERSE CONTROLS
+  // and AXIS DRIFT are both applied inside boardPos(), so a 3D round obeys the
+  // modifiers without knowing they exist.
+  bindCanvasDrag({ onDown(p){ strike(Math.max(0, Math.min(LANES - 1, Math.floor(p.x / (BOARD_W / LANES))))); } });
+
+  gTimer = setInterval(() => {
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time) / Math.round(50 * getTimeModifier()) * 100}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end();
+  }, 1000);
+
+  // Well below the rails and wide of them: the skyline is depth, not scenery
+  // to fly through, and a tower inside the corridor would occlude a pulse.
+  w.buildCity({ seed: 9119, count: 72, spread: 150, hole: 30, y: -16 });
+
+  runLoop(dt => {
+    if(over) return false;
+    const t = now();
+    chartAhead(t + FALL + beat * 8);
+
+    for(const n of notes){
+      if(n.hit || n.dead) continue;
+      if(t > n.at + LATE){
+        n.dead = true; misses++; combo = 0;
+        snd('wrong'); w.kick(0.7);
+      }
+    }
+    for(let i = 0; i < LANES; i++) flash[i] = Math.max(0, flash[i] - dt * 4);
+
+    // Fixed camera. The mission is one moment in one place; a camera that
+    // drifted would put the same note at a different screen position depending
+    // on when in the round it arrived.
+    w.goal.eye[0] = 0; w.goal.eye[1] = 7.4; w.goal.eye[2] = 15.5;
+    w.goal.target[0] = 0; w.goal.target[1] = 1.6; w.goal.target[2] = -26;
+    w.goal.fov = 62;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+    w.drawCity(t * 3);
+    // The corridor itself. Two pylon walls and a floor grid that scrolls toward
+    // the camera at the pulse speed, so the floor and the notes agree about how
+    // fast time is passing — that agreement is most of what makes the beat
+    // readable from the periphery.
+    w.drawGrid({ y: -1.2, halfX: 8.5, halfZ: FAR, step: SPEED * beat / 2,
+                 color:'#8a2fb0', emissive: 1.5, scroll: t * SPEED,
+                 floorColor:'#120a24', floorRough: 0.22, floorZ: -FAR / 2 });
+
+    // ── LANE RAILS ──
+    for(let i = 0; i < LANES; i++){
+      const c = LANE_COL[i];
+      const x = LANE_X[i];
+      for(const s of [-1, 1]){
+        r.beam([x + s * 2.1, -1.15, 2], [x + s * 2.1, -1.15, -FAR], 0.06,
+               { color: c, emissive: c, emissiveStrength: 1.1 + flash[i] * 2.4, height: 0.06 });
+      }
+    }
+
+    // ── THE GATE ──
+    // The one thing on screen that must never be ambiguous, so it gets the
+    // brightest treatment in the mission: a lit arch per lane at z = 0.
+    for(let i = 0; i < LANES; i++){
+      const c = LANE_COL[i], x = LANE_X[i], f = flash[i];
+      r.draw('cube', { pos:[x, 0.2, 0], scale:[4.0, 0.34, 0.7],
+                       color: c, emissive: c, emissiveStrength: 1.7 + f * 1.3 });
+      r.draw('cube', { pos:[x, 3.4, 0], scale:[4.0, 0.24, 0.55],
+                       color:'#0c1020', metallic: 0.9, roughness: 0.28,
+                       emissive: c, emissiveStrength: 0.5 + f * 1.6 });
+      for(const s of [-1, 1]){
+        r.draw('cube', { pos:[x + s * 1.95, 1.7, 0], scale:[0.3, 3.2, 0.55],
+                         color:'#0c1020', metallic: 0.88, roughness: 0.3,
+                         emissive: c, emissiveStrength: 0.9 + f * 1.5 });
+      }
+      r.glow([x, 0.3, 0], 2.2 + f * 1.0, c, 0.5 + f * 0.8);
+      if(f > 0.02) r.light({ pos:[x, 1.6, 1.5], color: c, intensity: 400 * f, range: 20 });
+    }
+    r.light({ pos:[0, 8, 8], color:'#8fa6ff', intensity: 130, range: 34 });
+
+    // ── PULSES ──
+    for(const n of notes){
+      if(n.hit || n.dead) continue;
+      const z = -(n.at - t) * SPEED;
+      if(z < -FAR - 4 || z > 6) continue;
+      const c = LANE_COL[n.lane], x = LANE_X[n.lane];
+      // Closeness is drawn as well as positioned: the emissive tightens as the
+      // pulse approaches, so the beat can be felt in peripheral vision without
+      // reading the gap.
+      const near = clamp(1 - Math.abs(z) / 26, 0, 1);
+      r.draw('techblock', { pos:[x, 0.85, z], scale:[3.5, 0.85, 1.5],
+                            color: c, metallic: 0.6, roughness: 0.3, rim: 1.4,
+                            emissive: c, emissiveStrength: 0.75 + near * 0.75 });
+      r.draw('box', { pos:[x, 1.34, z], scale:[3.0, 0.1, 1.0],
+                      color:'#ffffff', emissive:'#ffffff', emissiveStrength: 0.6 + near * 0.7 });
+      r.glow([x, 0.9, z], 1.5, c, 0.28 + near * 0.22);
+      if(near > 0.55) r.light({ pos:[x, 1.6, z], color: c, intensity: 150 * near, range: 16 });
+    }
+
+    // ── CHAIN ──
+    if(combo >= 4){
+      drawText3D(r, `${combo}X`, [0, 6.4, -6], 0.34,
+                 { color: mine(), emissiveStrength: 2.4, depth: 0.5 });
+    }
+    drawText3D(r, `${Math.round(bpm)} BPM`, [0, 9.4, -34], 0.22,
+               { color:'#8fa6ff', emissiveStrength: 0.9, depth: 0.3 });
+
+    w.end();
+    if(shake > 0) shake *= 0.9;
+  });
+
+  function end(){
+    if(over) return; over = true;
+    clearCanvasDrag();
+    const acc = hits + misses > 0 ? hits / (hits + misses) : 0;
+    const bonus = Math.round(acc * 160);
+    const final = Math.min(1400, score + bonus);
+    showResults('rhythm', final, {
+      '🎵 Pulses Struck': `${hits}/${hits + misses}`,
+      '🎯 Perfect Sync': perfects,
+      '🔥 Longest Chain': `${bestCombo}×`,
+      '📊 Accuracy': `${Math.round(acc * 100)}% (+${bonus})`,
+      '♪ Charted At': `${Math.round(bpm)} BPM`,
+      '🏆 Score Accumulation': `${final} PTS`
+    }, { perfect: misses === 0 && hits > 0 });
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🧮 CORE MERGE 3D — the lattice vault
+// ══════════════════════════════════════════════
+// The 2D board is sixteen squares with numbers in them, and the number is the
+// only thing carrying the value. Here the value is carried by HEIGHT: a core
+// stands one step taller every time it doubles, so a 512 is a pillar you can
+// see across the vault and a board full of 2s is a flat floor. That turns
+// "where is my biggest core" — the only question that matters in this game —
+// from reading sixteen labels into one glance at a skyline.
+//
+// The camera is fixed, low and slightly raked. Raked, because a top-down view
+// would throw the height read away, and low because the pillars ARE the board.
+P.games.merge = function(){
+  const w = begin3d(Object.assign({ ease: 0.2 }, CITY_NIGHT, {
+    env: { zenith:'#050718', horizon:'#2a1050', ground:'#05060f', intensity: 1.25 },
+    fog: { color:'#0a0720', density: 0.009 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  const N = 4, STEP = 3.4;
+  const cx = c => (c - (N - 1) / 2) * STEP;
+  const cz = rr => (rr - (N - 1) / 2) * STEP;
+
+  const TILE_COL = {
+    2:'#2b3350', 4:'#3a4568', 8:'#2b7bff', 16:'#00f5ff', 32:'#39ff88',
+    64:'#ffd700', 128:'#ff9500', 256:'#ff6600', 512:'#ff0090',
+    1024:'#a855f7', 2048:'#ff2442', 4096:'#ffffff'
+  };
+  const tileCol = v => TILE_COL[v] || '#ffffff';
+  // Height is the read, so the ramp has to be gentle enough that a full board
+  // of 1024s still fits in frame: log2 rather than anything steeper.
+  const tileH = v => 0.5 + Math.log2(v) * 0.62;
+
+  let grid = new Array(N * N).fill(0);
+  let score = 0, best = 0, moves = 0, merges = 0, over = false;
+  let time = Math.round(100 * getTimeModifier());
+  const anims = [];
+
+  const at = (rr, c) => grid[rr * N + c];
+  const put = (rr, c, v) => { grid[rr * N + c] = v; };
+
+  function freeCells(){
+    const out = [];
+    for(let i = 0; i < N * N; i++) if(!grid[i]) out.push(i);
+    return out;
+  }
+  function spawn(){
+    const free = freeCells();
+    if(!free.length) return false;
+    const i = free[Math.floor(dailyRand() * free.length)];
+    grid[i] = dailyRand() < 0.88 ? 2 : 4;
+    anims.push({ i, t: 1, kind: 'spawn' });
+    return true;
+  }
+  spawn(); spawn();
+
+  document.getElementById('g-time').textContent = time;
+  setControls({ left: '◀', action: '▲', drop: '▼', right: '▶' });
+  setControlHint('SWIPE TO COMPACT THE LATTICE', 'ARROW KEYS or WASD to compact the lattice');
+
+  function slide(dr, dc){
+    if(over) return;
+    let moved = false;
+    const gained = [];
+    const order = [];
+    for(let rr = 0; rr < N; rr++) for(let c = 0; c < N; c++) order.push([rr, c]);
+    if(dr > 0) order.sort((a, b) => b[0] - a[0]);
+    if(dr < 0) order.sort((a, b) => a[0] - b[0]);
+    if(dc > 0) order.sort((a, b) => b[1] - a[1]);
+    if(dc < 0) order.sort((a, b) => a[1] - b[1]);
+
+    const locked = new Set();
+    for(const [rr, c] of order){
+      const v = at(rr, c);
+      if(!v) continue;
+      let cr = rr, cc = c;
+      while(true){
+        const nr = cr + dr, nc = cc + dc;
+        if(nr < 0 || nr >= N || nc < 0 || nc >= N) break;
+        const nv = at(nr, nc);
+        if(nv === 0){ put(nr, nc, v); put(cr, cc, 0); cr = nr; cc = nc; moved = true; continue; }
+        if(nv === v && !locked.has(nr * N + nc)){
+          put(nr, nc, v * 2);
+          put(cr, cc, 0);
+          locked.add(nr * N + nc);
+          gained.push(v * 2);
+          moved = true;
+          anims.push({ i: nr * N + nc, t: 1, kind: 'merge' });
+        }
+        break;
+      }
+    }
+
+    if(!moved){ snd('deny'); return; }
+    moves++;
+    if(gained.length){
+      merges += gained.length;
+      const sum = gained.reduce((a, b) => a + b, 0);
+      score += sum;
+      best = Math.max(best, ...gained);
+      setLive(Math.min(1300, score));
+      snd('match', { semi: Math.min(16, Math.round(Math.log2(Math.max(...gained))) * 2) });
+      w.kick(Math.min(1.6, 0.3 + Math.log2(Math.max(...gained)) * 0.12));
+      for(const [rr, c] of order){
+        const i = rr * N + c;
+        if(!anims.some(a => a.i === i && a.kind === 'merge')) continue;
+        const v = at(rr, c);
+        w.burst([cx(c), tileH(v), cz(rr)], tileCol(v), 22, { speed: 9, life: 0.6, size: 0.3 });
+        w.pop([cx(c), tileH(v) + 1.6, cz(rr)], `+${v}`, tileCol(v), { size: 17, life: 1 });
+      }
+    }else{
+      snd('move');
+    }
+    spawn();
+    if(!canMove()) end('gridlock');
+  }
+
+  function canMove(){
+    if(freeCells().length) return true;
+    for(let rr = 0; rr < N; rr++) for(let c = 0; c < N; c++){
+      const v = at(rr, c);
+      if(rr + 1 < N && at(rr + 1, c) === v) return true;
+      if(c + 1 < N && at(rr, c + 1) === v) return true;
+    }
+    return false;
+  }
+
+  window.onkeydown = e => {
+    const map = { ArrowUp:[-1,0], KeyW:[-1,0], ArrowDown:[1,0], KeyS:[1,0],
+                  ArrowLeft:[0,-1], KeyA:[0,-1], ArrowRight:[0,1], KeyD:[0,1] };
+    const d = map[e.code];
+    if(!d) return;
+    e.preventDefault();
+    slide(d[0], d[1]);
+  };
+  document.getElementById('ctrl-left').onclick   = () => slide(0, -1);
+  document.getElementById('ctrl-right').onclick  = () => slide(0, 1);
+  document.getElementById('ctrl-action').onclick = () => slide(-1, 0);
+  document.getElementById('ctrl-drop').onclick   = () => slide(1, 0);
+
+  // Screen-right is +X and screen-down is +Z for the whole round — the camera
+  // never yaws — so a swipe in board coordinates maps straight onto a grid
+  // direction with no projection and no inverse matrix.
+  let sx = 0, sy = 0, swiping = false;
+  bindCanvasDrag({
+    onDown(p){ hideTouchHint(); sx = p.x; sy = p.y; swiping = true; },
+    onUp(p){
+      if(!swiping) return;
+      swiping = false;
+      const dx = p.x - sx, dy = p.y - sy;
+      if(Math.abs(dx) < 26 && Math.abs(dy) < 26) return;
+      if(Math.abs(dx) > Math.abs(dy)) slide(0, dx > 0 ? 1 : -1);
+      else slide(dy > 0 ? 1 : -1, 0);
+    }
+  });
+
+  gTimer = setInterval(() => {
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time) / Math.round(100 * getTimeModifier()) * 100}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end('timeout');
+  }, 1000);
+
+  w.buildCity({ seed: 2048, count: 64, spread: 120, hole: 34, y: -22 });
+
+  runLoop(dt => {
+    if(over) return false;
+    for(let i = anims.length - 1; i >= 0; i--){
+      anims[i].t -= dt * 3.4;
+      if(anims[i].t <= 0) anims.splice(i, 1);
+    }
+    const animFor = i => anims.find(a => a.i === i);
+
+    // Low and raked, and fixed. A top-down camera would throw away the height
+    // read the whole design rests on.
+    w.goal.eye[0] = 0; w.goal.eye[1] = 10.8; w.goal.eye[2] = 13.4;
+    w.goal.target[0] = 0; w.goal.target[1] = 1.6; w.goal.target[2] = -0.8;
+    w.goal.fov = 58;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+    w.drawCity(w.t * 0.6);
+
+    // The vault floor and its rim.
+    r.draw('ground', { pos:[0, -0.7, 0], scale:[46, 1, 46],
+                       color:'#05070f', metallic: 0.92, roughness: 0.22, rim: 0.3 });
+    const HALF = (N * STEP) / 2 + 0.6;
+    for(const s of [-1, 1]){
+      r.beam([-HALF, -0.24, s * HALF], [HALF, -0.24, s * HALF], 0.1,
+             { color:'#00f5ff', emissive:'#00f5ff', emissiveStrength: 1.6, height: 0.1 });
+      r.beam([s * HALF, -0.24, -HALF], [s * HALF, -0.24, HALF], 0.1,
+             { color:'#00f5ff', emissive:'#00f5ff', emissiveStrength: 1.6, height: 0.1 });
+    }
+
+    // Empty sockets, so the board reads as a 4×4 lattice even when it is nearly
+    // empty — without them a two-core board is two objects floating in a room.
+    for(let rr = 0; rr < N; rr++) for(let c = 0; c < N; c++){
+      if(at(rr, c)) continue;
+      r.draw('slab', { pos:[cx(c), -0.42, cz(rr)], scale:[STEP * 0.84, 0.2, STEP * 0.84],
+                       color:'#0d1426', metallic: 0.88, roughness: 0.32, rim: 1.8,
+                       emissive:'#12335c', emissiveStrength: 0.22 });
+      // A lit lip around each socket. Without it the empty half of the board is
+      // the same black as the floor and the lattice stops being legible as a
+      // grid — which is fatal in a game whose whole skill is scanning it.
+      const q = STEP * 0.38;
+      for(const sg of [-1, 1]){
+        r.beam([cx(c) - q, -0.3, cz(rr) + sg * q], [cx(c) + q, -0.3, cz(rr) + sg * q], 0.045,
+               { color:'#1e6fa8', emissive:'#1e6fa8', emissiveStrength: 0.85, height: 0.045 });
+        r.beam([cx(c) + sg * q, -0.3, cz(rr) - q], [cx(c) + sg * q, -0.3, cz(rr) + q], 0.045,
+               { color:'#1e6fa8', emissive:'#1e6fa8', emissiveStrength: 0.85, height: 0.045 });
+      }
+    }
+
+    // ── THE CORES ──
+    // Sorted so the tallest gets a light: MAX_LIGHTS is 10 and a full board of
+    // sixteen emitters would silently drop most of them anyway.
+    const lit = [];
+    for(let rr = 0; rr < N; rr++) for(let c = 0; c < N; c++){
+      const v = at(rr, c);
+      if(!v) continue;
+      const a = animFor(rr * N + c);
+      const k = !a ? 1 : a.kind === 'spawn' ? 1 - a.t : 1 + Math.sin(a.t * Math.PI) * 0.2;
+      const h = tileH(v) * k;
+      const col = tileCol(v);
+      const em = v >= 64 ? 0.9 + Math.min(0.6, Math.log2(v / 64) * 0.14) : 0.2;
+      r.draw('techblock', {
+        pos:[cx(c), h / 2 - 0.3, cz(rr)],
+        scale:[STEP * 0.84 * k, h, STEP * 0.84 * k],
+        color: col, metallic: 0.7, roughness: 0.3, rim: 1.3,
+        emissive: col, emissiveStrength: em
+      });
+      // Lit cap — the part that actually reads as "this core is live".
+      r.draw('box', { pos:[cx(c), h - 0.3 + 0.06, cz(rr)],
+                      scale:[STEP * 0.6 * k, 0.1, STEP * 0.6 * k],
+                      color: col, emissive: col, emissiveStrength: 1.6 + em });
+      // The number, carved into a plate standing on the cap and facing the
+      // camera. Height says how big the core is at a glance; this says exactly.
+      const s = String(v);
+      drawText3D(r, s, [cx(c), h + 0.5, cz(rr) + 0.1], Math.min(0.2, 0.62 / s.length),
+                 { color:'#ffffff', emissiveStrength: 1.9, depth: 0.14 });
+      if(v >= 64) lit.push({ v, pos:[cx(c), h + 0.4, cz(rr)], col });
+    }
+    lit.sort((a, b) => b.v - a.v).slice(0, 5).forEach(o => {
+      r.light({ pos: o.pos, color: o.col, intensity: 110 + Math.log2(o.v) * 26, range: 20 });
+    });
+    r.light({ pos:[-8, 14, 12], color:'#7d8cff', intensity: 180, range: 42 });
+    r.light({ pos:[9, 8, 8], color:'#ff5bd0', intensity: 90, range: 32 });
+
+    // Sits over the far rim of the vault rather than up in the skyline, where
+    // the city's own lit windows were reading straight through it.
+    drawText3D(r, `BEST ${best || 0}   ${moves} MOVES`, [0, 4.3, -10.2], 0.19,
+               { color:'#9fd0ff', emissiveStrength: 1.7, depth: 0.2 });
+
+    w.end();
+  });
+
+  function end(reason){
+    if(over) return; over = true;
+    clearCanvasDrag();
+    const standing = Math.round(grid.reduce((a, b) => a + b, 0) * 0.25);
+    const final = Math.min(1300, score + standing);
+    showResults('merge', final, {
+      '🧮 Run Terminated': reason === 'gridlock' ? 'LATTICE GRIDLOCKED' : 'CLOCK EXPIRED',
+      '🔷 Largest Core': best || '—',
+      '🔗 Merges Executed': merges,
+      '♟️ Moves Made': moves,
+      '📦 Lattice Residue': `+${standing}`,
+      '🏆 Score Accumulation': `${final} PTS`
+    }, reason === 'gridlock' ? { sound: 'gameOver' } : {});
+  }
+};
+
+// ══════════════════════════════════════════════
+//  🛰️ ORBITAL UPLINK 3D — the lob range
+// ══════════════════════════════════════════════
+// A side-on range, seen from far enough out that the arc is the subject. The
+// trajectory lives entirely in the z = 0 plane, which is the only choice that
+// keeps the mission honest: a shot that could also move in depth would be
+// unaimable from a fixed camera, and a camera that followed the packet would
+// change what "up" means halfway through the flight.
+//
+// What 3D buys here is the thing the 2D build cannot have — a REAL distance
+// between the dish and the relay, laid out along the screen with a city behind
+// it, so the arc has somewhere to be long.
+P.games.uplink = function(){
+  const w = begin3d(Object.assign({ ease: 0.16 }, CITY_NIGHT, {
+    env: { zenith:'#04061a', horizon:'#35104a', ground:'#05060f', intensity: 1.3 },
+    fog: { color:'#0b0620', density: 0.0042 }
+  }));
+  if(!w) return;
+  const r = w.r;
+
+  // World units. The board is BOARD_W × BOARD_H; the range is WIDE × TALL, and
+  // boardPos() → world is one scale factor per axis so the drag reads the same
+  // as it does in 2D.
+  const WIDE = 44, TALL = 30;
+  const bx2w = bx => (bx / BOARD_W - 0.5) * WIDE;
+  const by2w = by => (1 - by / BOARD_H) * TALL - 2;
+
+  const PAD = [-17.5, 0.6, 0];
+  const G = 34;                          // world units/s² — the 2D 560px/s²
+                                         // rewritten at this scale
+  const MAX_PULL = 132;                  // board units, as in the 2D build
+  const V_MAX = 60;
+  const diff = (typeof getDifficultyModifier === 'function') ? getDifficultyModifier() : 1;
+
+  let time = Math.round(75 * getTimeModifier());
+  let score = 0, sunk = 0, shots = 0, streak = 0, bestStreak = 0, over = false;
+  let wind = 0, relay = null, barrier = null, packet = null;
+  let aiming = false, aim = { x: 0, y: 0 };
+  const wake = [];
+
+  document.getElementById('g-time').textContent = time;
+  setControls(null);
+  setControlHint('DRAG BACK FROM THE DISH AND RELEASE',
+                 'DRAG BACK FROM THE DISH AND RELEASE — the pull is the power');
+  showTouchHint('DRAG BACK FROM THE DISH TO LOB');
+
+  function newField(){
+    relay = { x: rnd(-2, 19), y: rnd(3, 20), r: 1.5, bob: Math.random() * Math.PI * 2 };
+    barrier = { x: PAD[0] + rnd(6, 12), h: rnd(6, 6 + 10 * Math.min(1.4, diff)) };
+    wind = sunk >= 3 ? rnd(-1, 1) * 5.5 * Math.min(1.5, diff) : 0;
+  }
+  newField();
+
+  bindCanvasDrag({
+    onDown(p){ hideTouchHint(); if(packet) return; aiming = true; aim = { x: p.x, y: p.y }; },
+    onMove(p){ if(aiming) aim = { x: p.x, y: p.y }; },
+    onUp(p){
+      if(!aiming) return;
+      aiming = false;
+      // The pull is measured in BOARD units against the dish's projected
+      // position, so the gesture is identical in both renderers: pull back from
+      // the dish, and how far back you pulled is how hard it goes.
+      const px = (PAD[0] / WIDE + 0.5) * BOARD_W;
+      const py = (1 - (PAD[1] + 2) / TALL) * BOARD_H;
+      const dx = px - p.x, dy = py - p.y;
+      const len = Math.hypot(dx, dy);
+      if(len < 14) return;
+      const k = (Math.min(MAX_PULL, len) / MAX_PULL) * V_MAX;
+      shots++;
+      wake.length = 0;
+      packet = { x: PAD[0], y: PAD[1] + 0.8, vx: dx / len * k, vy: -dy / len * k, t: 0 };
+      snd('shoot');
+      w.kick(0.5);
+    }
+  });
+
+  gTimer = setInterval(() => {
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time) / Math.round(75 * getTimeModifier()) * 100}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end();
+  }, 1000);
+
+  w.buildCity({ seed: 6161, count: 78, spread: 130, hole: 40, y: -14 });
+
+  runLoop(dt => {
+    if(over) return false;
+    relay.bob += dt * 1.6;
+
+    if(packet){
+      packet.t += dt;
+      packet.vy -= G * dt;
+      packet.vx += wind * dt;
+      packet.x += packet.vx * dt;
+      packet.y += packet.vy * dt;
+      wake.push([packet.x, packet.y, 0]);
+      if(wake.length > 40) wake.shift();
+
+      const by = relay.y + Math.sin(relay.bob) * 0.7;
+      let done = null;
+      if(Math.hypot(packet.x - relay.x, packet.y - by) < relay.r + 0.5) done = 'hit';
+      else if(Math.abs(packet.x - barrier.x) < 0.8 && packet.y < barrier.h) done = 'wall';
+      else if(packet.y < 0 || packet.x > WIDE || packet.x < -WIDE || packet.t > 9) done = 'miss';
+
+      if(done === 'hit'){
+        sunk++; streak++;
+        bestStreak = Math.max(bestStreak, streak);
+        const dist = Math.round((relay.x - PAD[0]) * 2.4);
+        const gain = 40 + dist * 2 + Math.min(80, (streak - 1) * 20);
+        score += gain;
+        setLive(Math.min(1000, score));
+        snd('correct', { semi: Math.min(14, streak * 2) });
+        w.kick(1.8);
+        w.burst([relay.x, by, 0], '#39ff88', 40, { speed: 13, life: 0.9, size: 0.4 });
+        w.pop([relay.x, by + 2.4, 0], `UPLINK +${gain}`, '#39ff88', { size: 20, life: 1.3 });
+        packet = null;
+        newField();
+      }else if(done){
+        streak = 0;
+        snd(done === 'wall' ? 'shieldHit' : 'wrong');
+        w.kick(done === 'wall' ? 1.1 : 0.4);
+        w.burst([packet.x, Math.max(0.2, packet.y), 0],
+                done === 'wall' ? '#ff2442' : '#5a6cff', 16, { speed: 9, life: 0.5 });
+        packet = null;
+      }
+    }
+
+    // A fixed, level camera looking straight down −Z. Screen-right is +X and
+    // screen-up is +Y for the whole round, which is what makes the drag mapping
+    // above a pair of divisions rather than a projection.
+    w.goal.eye[0] = 1; w.goal.eye[1] = 10.5; w.goal.eye[2] = 37;
+    w.goal.target[0] = 1; w.goal.target[1] = 9.5; w.goal.target[2] = 0;
+    w.goal.fov = 58;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+    w.drawCity(w.t * 0.4);
+    w.drawGrid({ y: 0, halfX: 30, halfZ: 30, step: 5, color:'#00f5ff',
+                 emissive: 0.8, floorColor:'#05070f', floorRough: 0.28 });
+
+    // ── THE DISH ──
+    const col = mine();
+    r.draw('cylinder', { pos:[PAD[0], 0.35, 0], scale:[4.0, 0.7, 4.0],
+                         color:'#0c1020', metallic: 0.9, roughness: 0.3, rim: 1.6 });
+    r.draw('cube', { pos:[PAD[0], 1.2, 0], scale:[1.1, 1.4, 1.1],
+                     color:'#141a2e', metallic: 0.85, roughness: 0.32, rim: 1.4 });
+    r.draw('cone', { pos:[PAD[0], 2.5, 0], rot:[Math.PI, 0, 0], scale:[3.0, 2.4, 3.0],
+                     color: col, metallic: 0.5, roughness: 0.26,
+                     emissive: col, emissiveStrength: 0.95 });
+    r.draw('sphere', { pos:[PAD[0], 2.9, 0], scale: 0.42,
+                       color:'#ffffff', emissive: col, emissiveStrength: 1.8 });
+    r.glow([PAD[0], 2.6, 0], 2.2, col, 0.55);
+    keyRig(w, [PAD[0], 2.6, 0], col);
+
+    // ── FIREWALL ──
+    // A real slab with depth rather than a line, so the shot that clips it
+    // clearly clipped something.
+    r.draw('cube', { pos:[barrier.x, barrier.h / 2, 0], scale:[1.0, barrier.h, 3.4],
+                     color:'#180810', metallic: 0.8, roughness: 0.34, rim: 1.5,
+                     emissive:'#ff2442', emissiveStrength: 0.55 });
+    r.draw('box', { pos:[barrier.x, barrier.h, 0], scale:[1.3, 0.16, 3.6],
+                    color:'#ff2442', emissive:'#ff2442', emissiveStrength: 2.6 });
+    r.light({ pos:[barrier.x, barrier.h + 1, 4], color:'#ff2442', intensity: 120, range: 22 });
+
+    // ── RELAY ──
+    const by = relay.y + Math.sin(relay.bob) * 0.7;
+    r.draw('torus', { pos:[relay.x, by, 0], rot:[0, 0, w.t * 0.8], scale: relay.r * 2.3,
+                      color:'#d8ffe8', metallic: 0.85, roughness: 0.2,
+                      emissive:'#39ff88', emissiveStrength: 1.35 });
+    r.draw('thintorus', { pos:[relay.x, by, 0], rot:[Math.PI / 2, w.t * 1.4, 0], scale: relay.r * 2.9,
+                          color:'#d8e2f5', metallic: 1, roughness: 0.12,
+                          emissive:'#39ff88', emissiveStrength: 0.8 });
+    r.draw('sphere', { pos:[relay.x, by, 0], scale: relay.r * 0.55,
+                       color:'#39ff88', emissive:'#39ff88', emissiveStrength: 1.1 });
+    r.glow([relay.x, by, 0], relay.r * 2.0, '#39ff88', 0.55);
+    r.light({ pos:[relay.x, by, 3], color:'#39ff88', intensity: 170, range: 26 });
+    // Mast to the ground: a target that floats with nothing under it reads as
+    // decoration, and the eye stops treating it as a place.
+    r.beam([relay.x, 0, 0], [relay.x, by - relay.r, 0], 0.06,
+           { color:'#39ff88', emissive:'#39ff88', emissiveStrength: 0.5, height: 0.06 });
+
+    // ── AIM PREVIEW ──
+    // The first third of the flight only. The mission is judging a trajectory;
+    // drawing the whole one leaves it with nothing to judge.
+    if(aiming && !packet){
+      const px = (PAD[0] / WIDE + 0.5) * BOARD_W;
+      const py = (1 - (PAD[1] + 2) / TALL) * BOARD_H;
+      const dx = px - aim.x, dy = py - aim.y;
+      const len = Math.hypot(dx, dy);
+      if(len > 8){
+        const pull = Math.min(MAX_PULL, len);
+        const k = (pull / MAX_PULL) * V_MAX;
+        let sx = PAD[0], sy = PAD[1] + 0.8, svx = dx / len * k, svy = -dy / len * k;
+        for(let i = 0; i < 20; i++){
+          svy -= G * 0.045; svx += wind * 0.045;
+          sx += svx * 0.045; sy += svy * 0.045;
+          if(sy < 0) break;
+          // Bigger and brighter than they look like they need to be: these dots
+          // are 30-odd units from the camera and they are the only feedback the
+          // gesture has.
+          r.glow([sx, sy, 0], 0.62, '#ffffff', 0.75 + (pull / MAX_PULL) * 0.5);
+        }
+        // Above the dish, not below it — at y = -1.4 the readout was under the
+        // ground plane, where the floor drew straight over it.
+        drawText3D(r, `${Math.round((pull / MAX_PULL) * 100)}%`, [PAD[0], 6.4, 0], 0.42,
+                   { color: pull / MAX_PULL > 0.86 ? '#ff2442' : col, emissiveStrength: 2, depth: 0.3 });
+      }
+    }
+
+    // ── PACKET + WAKE ──
+    if(packet){
+      for(let i = 0; i < wake.length; i++){
+        const a = i / wake.length;
+        r.glow(wake[i], 0.24 * a + 0.06, col, 0.5 * a);
+      }
+      r.draw('sphere', { pos:[packet.x, packet.y, 0], scale: 0.55,
+                         color:'#ffffff', emissive: col, emissiveStrength: 2.6 });
+      r.light({ pos:[packet.x, packet.y, 2], color: col, intensity: 140, range: 14 });
+    }
+
+    if(wind){
+      drawText3D(r, wind > 0 ? 'WIND >>' : '<< WIND', [1, 26, -6], 0.34,
+                 { color:'#8fa6ff', emissiveStrength: 1.1, depth: 0.3 });
+    }
+    if(streak >= 2){
+      drawText3D(r, `${streak}X LINKED`, [1, 23.4, -6], 0.3,
+                 { color:'#39ff88', emissiveStrength: 2, depth: 0.3 });
+    }
+
+    w.end();
+  });
+
+  function end(){
+    if(over) return; over = true;
+    clearCanvasDrag();
+    const acc = shots ? sunk / shots : 0;
+    const final = Math.min(1000, score);
+    showResults('uplink', final, {
+      '🛰️ Relays Linked': `${sunk}/${shots}`,
+      '🎯 Link Accuracy': `${Math.round(acc * 100)}%`,
+      '🔗 Longest Chain': `${bestStreak}×`,
+      '🏆 Score Accumulation': `${final} PTS`
+    });
+  }
 };
 
 })();

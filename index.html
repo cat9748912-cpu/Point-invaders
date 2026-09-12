@@ -22,7 +22,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=22">
+<link rel="stylesheet" href="style.css?v=26">
 </head>
 <body>
 
@@ -117,6 +117,19 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     </div>
     <span class="diff-mult" id="diff-mult">×1.0 PTS</span>
   </div>
+  <!-- 🌀 CHAOS PROTOCOL — the opt-in. Chaos used to reach a solo player only
+       through Boss Rush and the Network Arena, which left two thirds of the
+       modifier pool unreachable from the mission grid entirely. Arming it is a
+       GAMBLE rather than a difficulty setting: the pool now carries boons as
+       well as handicaps, and both pay, so the dial next to it (stability) is
+       still the place you go to make the arcade harder on purpose. -->
+  <div class="chaos-selector" id="chaos-selector">
+    <span class="diff-label">🌀 CHAOS PROTOCOL</span>
+    <button class="chaos-toggle" id="chaos-toggle" role="switch" aria-checked="false">
+      <span class="chaos-knob"></span><span class="chaos-state" id="chaos-state">DISARMED</span>
+    </button>
+    <span class="chaos-note" id="chaos-note">Roll a modifier before every mission — handicaps and windfalls both pay.</span>
+  </div>
   <!-- 📈 OPERATIVE RAIL — the profile's level, its XP bar, and the two doors
        into what that level bought. Sits under the stability dial because it is
        the OTHER thing that scales what a round is worth, and the two belong
@@ -133,6 +146,11 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <span class="xp-num" id="xp-num">0 / 100 XP</span>
     <button class="btn btn-secondary btn-sm" id="btn-perks">🌳 PERK TREE</button>
     <button class="btn btn-secondary btn-sm" id="btn-achievements">🏆 ACHIEVEMENTS</button>
+    <!-- 🎖️ and 📁 belong on this rail for the same reason the perk and
+         achievement buttons do: they are PROFILE state, and the hub bar above
+         is already within a few pixels of wrapping onto a second row. -->
+    <button class="btn btn-secondary btn-sm" id="btn-season">🎖️ SEASON</button>
+    <button class="btn btn-secondary btn-sm" id="btn-dossier">📁 DOSSIER</button>
   </div>
   <div class="hub-body">
     <div>
@@ -169,7 +187,10 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         </div>
         <button class="btn btn-primary" id="btn-daily-hack">📅 DAILY HACK</button>
       </div>
-      <div class="sec-label">⚡ SELECT MISSION</div>
+      <!-- 🔒 The clearance summary. Painted by paintMissionLocks(); says how many
+           missions are still shut so a player can tell at a glance without
+           scanning twenty-one cards for a padlock. -->
+      <div class="sec-label">⚡ SELECT MISSION <em class="mission-clearance" id="mission-clearance"></em></div>
       <div class="games-grid">
         <div class="game-card" data-game="click" data-c="cyan">
           <span class="gc-icon">🖱️</span>
@@ -279,6 +300,24 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
           <div class="gc-desc">Match the amplitude and frequency of the target signal to stabilize the node array!</div>
           <span class="gc-pts" data-c="cyan">UP TO 950 PTS</span>
         </div>
+        <div class="game-card" data-game="rhythm" data-c="pink">
+          <span class="gc-icon">🎵</span>
+          <div class="gc-name" data-c="pink">PULSE SYNC</div>
+          <div class="gc-desc">Strike three lanes of pulses on the beat — charted live against your equipped Music Drive!</div>
+          <span class="gc-pts" data-c="pink">UP TO 1400 PTS</span>
+        </div>
+        <div class="game-card" data-game="merge" data-c="gold">
+          <span class="gc-icon">🧮</span>
+          <div class="gc-name" data-c="gold">CORE MERGE</div>
+          <div class="gc-desc">Compact the data lattice and fuse matching cores into deeper ones before it gridlocks!</div>
+          <span class="gc-pts" data-c="gold">UP TO 1300 PTS</span>
+        </div>
+        <div class="game-card" data-game="uplink" data-c="lime">
+          <span class="gc-icon">🛰️</span>
+          <div class="gc-name" data-c="lime">ORBITAL UPLINK</div>
+          <div class="gc-desc">Lob data packets over the firewall into the orbital relays — mind the crosswind!</div>
+          <span class="gc-pts" data-c="lime">UP TO 1000 PTS</span>
+        </div>
       </div>
     </div>
     <div>
@@ -293,6 +332,16 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <div class="sec-label dh-lb-label">📅 DAILY LEADERBOARD <em class="dh-reset" id="dh-reset">—</em></div>
       <div class="lb-panel dh-lb-panel" id="dh-lb-panel">
         <div class="lb-empty">No runs logged for today yet.</div>
+      </div>
+
+      <!-- ⚔️ RIVAL CHALLENGES — the asynchronous half of the arena. Posted runs
+           other operatives have left standing; take one and you race their
+           pace curve on the same HUD the personal-best ghost uses. Discovered
+           through the player list the leaderboard already reads, which is why
+           there is no new database node for it. -->
+      <div class="sec-label">⚔️ RIVAL CHALLENGES</div>
+      <div class="lb-panel chal-panel" id="chal-panel">
+        <div class="lb-empty">Reading the challenge board…</div>
       </div>
 
       <!-- 📟 GRID TERMINAL — the arcade's ambient noise. Wired to Firebase when
@@ -505,7 +554,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <div class="convert-grid">
         <div class="card convert-card">
           <div class="input-label">Points → Credits</div>
-          <div class="convert-rate">100 PTS = 1 CR</div>
+          <div class="convert-rate" id="conv-rate-buy">100 PTS = 1 CR</div>
           <input type="number" class="input" id="conv-pts-input" placeholder="Points to convert" min="0" step="100">
           <div class="convert-preview" id="conv-pts-preview">= 0 CR</div>
           <button class="btn btn-primary btn-full" id="btn-conv-to-credits">Convert to Credits</button>
@@ -545,6 +594,11 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <div class="stat-pill" id="mp-ping-pill" style="display:none;">📶 <em id="mp-ping">—</em></div>
       <div class="stat-pill">⏱️ <em id="g-time">—</em></div>
       <div class="stat-pill">⭐ <em id="g-pts">0</em></div>
+      <!-- 👀 PACE GHOST — how far ahead of (or behind) your own best run you
+           are RIGHT NOW, on every mission rather than only the four that have a
+           position to trail. Hidden until there is a personal best to race.
+           Built by Ghost.paintPace(). -->
+      <div class="ghost-pace" id="ghost-pace" style="display:none"></div>
       <button class="btn btn-secondary btn-sm btn-sound" id="btn-sound-game" title="Audio">🔊</button>
       <button class="btn btn-secondary btn-sm" id="btn-fs-game" title="Toggle Fullscreen">⛶</button>
     </div>
@@ -694,6 +748,10 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <!-- 📋 The run, as a string. Sits with the two navigation buttons because
            it belongs to the run that just ended, not to the hub. -->
       <button class="btn btn-secondary" id="btn-replay-export">📋 Export Replay Code</button>
+      <!-- ⚔️ Posts this run as a standing challenge. Lives with the replay export
+           for the same reason: both are things you do WITH the run that just
+           ended. Shown only when the run is postable — see showResultsCard(). -->
+      <button class="btn btn-secondary" id="btn-post-chal" style="display:none">⚔️ Post As Challenge</button>
     </div>
     <div class="res-replay" id="res-replay"></div>
   </div>
@@ -727,6 +785,39 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <div class="fb-sub" id="perk-sub">—</div>
     </div>
     <div class="perk-tree" id="perk-tree"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     🎖️ SEASON TRACK — ten tiers off the weekly point total. The weekly
+     bucket already existed and only ranked the board, which made it a reward
+     for being the single best player on the grid and a statistic for everyone
+     else. Tiers pay on YOUR own total instead.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay season-tint" id="season-overlay" aria-hidden="true">
+  <div class="fb-modal season-modal" role="dialog" aria-modal="true" aria-labelledby="season-heading">
+    <button class="fb-close" id="season-close" aria-label="Close season track">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="season-heading">🎖️ SEASON TRACK</div>
+      <div class="fb-sub" id="season-sub">—</div>
+    </div>
+    <div class="season-track" id="season-track"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     📁 THE OPERATIVE DOSSIER — read-only. Everything the profile already
+     recorded and had nowhere to say: lifetime totals, an activity heatmap, and
+     a per-mission record ranked by how close each best run came to the cap.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay dossier-tint" id="dossier-overlay" aria-hidden="true">
+  <div class="fb-modal dossier-modal" role="dialog" aria-modal="true" aria-labelledby="dossier-heading">
+    <button class="fb-close" id="dossier-close" aria-label="Close dossier">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="dossier-heading">📁 OPERATIVE DOSSIER</div>
+      <div class="fb-sub" id="dossier-sub">—</div>
+    </div>
+    <div class="dossier-body" id="dossier-body"></div>
   </div>
 </div>
 
@@ -844,7 +935,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=22"></script>
+<script src="app.js?v=26"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker
