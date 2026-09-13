@@ -15452,7 +15452,60 @@ function makeRng(seed){
 }
 
 const dailySeed  = (day = dayKey()) => hashStr('daily:' + day);
-const dailyGid   = (day = dayKey()) => DAILY_POOL[dailySeed(day) % DAILY_POOL.length];
+
+// ══ 📅 WHICH MISSION, ON WHICH DAY ══
+// This was `DAILY_POOL[dailySeed(day) % DAILY_POOL.length]` — an independent
+// draw every day. The seed changed daily and so did the mission, so it was not
+// broken, but an independent draw from seven options is LUMPY in exactly the
+// way people notice: over three weeks it gave Ice Cutter and Signal Trace five
+// slots each while Defrag and Packet Sort got one, and it repeated the same
+// mission on consecutive days about one day in seven. A daily that serves the
+// same game two days running reads as "the daily is stuck" no matter what the
+// seed says.
+//
+// A SHUFFLED BAG fixes both. Each 7-day cycle is a deterministic permutation of
+// the pool, so every mission appears exactly once per cycle — a real rotation
+// rather than a sequence of coin flips — and the boundary check below stops a
+// cycle from opening with the mission the previous one closed on.
+//
+// Still a pure function of the date: every player worldwide gets the same
+// mission on the same UTC day, which is the whole point of the mode. Nothing is
+// stored, so there is no state to migrate or drift.
+const DAY_MS = 86400000;
+const dayIndex = (day = dayKey()) => Math.floor(Date.parse(day + 'T00:00:00Z') / DAY_MS);
+
+// The raw permutation for a cycle. Fisher-Yates off the same mulberry32 the
+// seeded rounds use, so it is identical on every engine.
+function dailyBagRaw(cycle){
+  const rng = makeRng(hashStr('dailybag:' + cycle));
+  const bag = DAILY_POOL.slice();
+  for(let i = bag.length - 1; i > 0; i--){
+    const j = Math.floor(rng() * (i + 1));
+    const t = bag[i]; bag[i] = bag[j]; bag[j] = t;
+  }
+  return bag;
+}
+
+// ⚠️ The boundary fix compares against the RAW previous bag on purpose, and
+// that is not a shortcut — it is what keeps this non-recursive. The adjustment
+// only ever swaps positions 0 and 1, and with a pool of 7 neither is the last
+// position, so a cycle's LAST entry is always its raw last entry. Comparing
+// against the raw bag is therefore exactly equivalent to comparing against the
+// adjusted one, without dailyBag() having to call itself back through history.
+function dailyBag(cycle){
+  const bag = dailyBagRaw(cycle);
+  if(cycle > 0 && bag.length > 1){
+    const prevLast = dailyBagRaw(cycle - 1)[DAILY_POOL.length - 1];
+    if(bag[0] === prevLast){ const t = bag[0]; bag[0] = bag[1]; bag[1] = t; }
+  }
+  return bag;
+}
+
+const dailyGid = (day = dayKey()) => {
+  const n = DAILY_POOL.length;
+  const idx = dayIndex(day);
+  return dailyBag(Math.floor(idx / n))[((idx % n) + n) % n];
+};
 const dailySeedLabel = (day = dayKey()) => `${day} · #${(dailySeed(day) % 100000).toString().padStart(5, '0')}`;
 // Used by the seeded games. Outside a Daily Hack it is plain Math.random, so a
 // game can call it unconditionally and an ordinary round is unaffected.
@@ -15662,6 +15715,38 @@ function paintDailyBanner(){
   if(reset) reset.textContent = `RESETS IN ${rotationLabel()}`;
   document.getElementById('dh-banner')?.classList.toggle('done', !!mine);
 }
+
+// ══ 🕒 THE ROLLOVER ══
+// Everything about the Daily Hack is a pure function of dayKey(), so the day
+// genuinely turns over at UTC midnight with no stored state to reset — but
+// NOTHING WAS WATCHING THE CLOCK. paintDailyBanner() ran only on entering the
+// hub and after settling a run, so a tab left open across midnight kept showing
+// yesterday's mission behind a "RESETS IN 0m" that never moved, and the button
+// started yesterday's hack. It corrected itself on the next reload, which is a
+// poor way to find out.
+//
+// A minute is fine: the countdown it repaints is displayed in whole minutes, so
+// there is nothing to see in between. Comparing the KEY rather than counting
+// down also means a laptop that was asleep across the boundary rolls over on
+// its first tick after waking — a setTimeout aimed at midnight would not.
+let _dhDay = dayKey();
+setInterval(() => {
+  const now = dayKey();
+  const rolled = now !== _dhDay;
+  if(rolled) _dhDay = now;
+  // Only touch the DOM while the hub is actually on screen: the elements do not
+  // exist to repaint otherwise, and a round in progress must not be disturbed.
+  if(!document.getElementById('hub-screen')?.classList.contains('active')) return;
+  paintDailyBanner();
+  if(rolled){
+    // The shop's featured stock is keyed to the same day, and the board is
+    // per-day too, so both are stale the moment the key changes.
+    try{ if(typeof paintFeatured === 'function') paintFeatured(); }catch(e){}
+    try{ if(typeof loadDailyBoard === 'function') loadDailyBoard(); }catch(e){}
+    const g = dailyGid(now);
+    toast('📅 NEW DAILY HACK — ' + META[g].emoji + ' ' + META[g].name + ' is live.', 4200);
+  }
+}, 60000);
 
 // ══════════════════════════════════════════════════════════════════════
 //  🏆 ACHIEVEMENT MATRIX — the shelf, opened out
@@ -21582,8 +21667,18 @@ float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123
 // Local contrast below EITHER of these is left alone: an absolute floor, so a
 // flat area costs five taps and nothing else, and a relative one, so a bright
 // region is not filtered on contrast invisible against its own brightness.
-const float EDGE_MIN   = 0.0312;
-const float EDGE_MUL   = 0.125;
+//
+// ⚠️ These were 0.0312 / 0.125, which are the MOST aggressive values in the
+// FXAA 3.11 preset table (NVIDIA ships 0.0833/0.166 as the default, 0.0625/0.125
+// as "high quality", and calls 0.0312 the "visible limit — slowest"). On an
+// RGBA8 gamma-encoded target 0.0312 is about 8 code values of luma across a 3x3
+// neighbourhood, so the filter fired on gradients nobody would call an edge —
+// and with SPAN_MAX 8 every one of those blends across +/-4 texels. On content
+// that is mostly long shallow neon lines that is most of the frame. Raised to
+// the high-quality preset: every real edge still resolves, the near-flat ones
+// stop being smeared.
+const float EDGE_MIN   = 0.0625;
+const float EDGE_MUL   = 0.166;
 const float SPAN_MAX   = 8.0;
 const float REDUCE_MUL = 0.125;
 const float REDUCE_MIN = 0.0078125;
@@ -22669,6 +22764,34 @@ const MAX_RUNG = rung(3.0);
 const baseRung = () => rung(Math.min(dpr(), 3.0));
 let baseIdx = baseRung();
 
+// ⚠️ baseIdx IS A CACHE OF A NUMBER THAT CHANGES WITHOUT TELLING YOU.
+//
+// It is initialised at module load, and if the display's dpr changes after that
+// the cache goes stale and EVERY 3D board is allocated against the wrong panel
+// — at zero governor penalty, with nothing in the quality readout to say why.
+// Measured on the shipped build: a dpr-1.5 display whose page had loaded while
+// the pane reported dpr 1 drew the 3D board into a 484×432 buffer for a 488×436
+// CSS box (0.99 device px per CSS px) while the 2D board beside it, which reads
+// devicePixelRatio per fit, was at 1.488. Same screen, 2.25x fewer pixels, and
+// it looked exactly like the governor having spent resolution when the governor
+// had spent nothing.
+//
+// watchDisplay() below does listen for this, and its listeners are not
+// trustworthy on their own: there is no 'devicepixelratiochange' event, the
+// matchMedia(resolution) trick has to be re-pinned after every change, and a
+// resize event does not fire for every zoom on every browser. So the cache is
+// ALSO refreshed from syncSize(), which runs on every mount and every board
+// fit. Events make it fast; the pull makes it correct.
+function refreshBaseRung(){
+  const b = baseRung();
+  if(b === baseIdx) return false;
+  baseIdx = b;
+  // Same clamp watchDisplay() applies: a display that got LESS sharp must not
+  // leave the governor holding steps that no longer exist on the ladder.
+  qStep = Math.min(qStep, maxStep());
+  return true;
+}
+
 // ── 🔒 THE SHARPNESS FLOOR ──
 // ⚠️ READ THIS BEFORE TOUCHING THE LADDER, THE PENALTY OR `qIdx`.
 //
@@ -23171,8 +23294,7 @@ function applyQuality(){
 function watchDisplay(){
   let mq = null;
   const onChange = () => {
-    const b = baseRung();
-    if(b !== baseIdx){ baseIdx = b; qStep = Math.min(qStep, maxStep()); applyQuality(); }
+    if(refreshBaseRung()) applyQuality();
     // The refresh rate is a property of the display too, not just its dpr.
     probeRefresh();
     bind();
@@ -23290,16 +23412,65 @@ function syncSize(){
   // answer: a stale size is a frame or two of wrong aspect, a 2×2 one is a
   // black board.
   if(cw < 2 || ch < 2) return;
-  let s = Math.min(Q.scale, dpr());
+  // Before anything reads the rung: it is derived from baseIdx, and baseIdx is a
+  // cache of a number that changes without telling you. See refreshBaseRung().
+  refreshBaseRung();
+
+  // ══ ⚠️ THE RENDER SCALE IS A RATIO OF THE PANEL, NEVER AN ABSOLUTE ══
+  //
+  // This line used to be `let s = Math.min(Q.scale, dpr())`, and that was the
+  // last permanent, penalty-free, 3D-only source of a soft board.
+  //
+  // `rung()` rounds DOWN to the nearest LADDER entry, so `Q.scale` at zero
+  // penalty equals the display's own ratio ONLY when that ratio happens to be
+  // one of 1.0 / 1.25 / 1.5 / 2.0 / 2.5 / 3.0. Every other value renders below
+  // native forever, with the governor reporting `steps: 0` because it has
+  // genuinely spent nothing. Off-ladder ratios are not exotic — they are the
+  // common case:
+  //     dpr 1.75 (Windows 175%)  → rendered 1.5   = 73% of the panel's pixels
+  //     dpr 2.25 (Windows 225%)  → rendered 2.0   = 79%
+  //     dpr 1.1  (110% browser zoom on a 1x panel) → 1.0 = 83%
+  //     dpr 2.75 / 3.5 (many Android phones)       → 2.5 / 3.0 = 83% / 73%
+  // ANY browser zoom step knocks a display off the ladder.
+  //
+  // Measured on the shipped build with dpr forced to 1.75: the 3D board drew at
+  // 1.501 device px per CSS px while the 2D board beside it — which uses the
+  // raw, unquantised `Math.min(devicePixelRatio, 3)` in fitCanvas — drew at
+  // 1.7495. Same rectangle, same screen, 26% of the panel thrown away. That is
+  // exactly the "2D is sharp and 3D is soft" comparison, and it is invisible on
+  // a machine that happens to sit on a rung, which is why it survived four
+  // rounds of fixes: the dev display was 1.0 and 1.5, both exact.
+  //
+  // So the LADDER keeps doing what it is good at — giving the governor discrete,
+  // stable steps to reason about — but what reaches the framebuffer is the
+  // panel's own ratio scaled by how far down the ladder the governor has walked.
+  // At zero penalty that is exactly 1.0, on every display that exists.
+  const native = Math.min(dpr(), 3.0);
+  // Clamped to 0.85 because the ladder is NOT uniform: 2.0 → 1.5 is a 25% linear
+  // cut (44% of the pixels) while 3.0 → 2.5 is 17%. A governor step should cost
+  // the same wherever it lands, and 15% is the most that reads as "unchanged"
+  // behind the FXAA resolve. This is also what the MAX_RES_DROP comment claims,
+  // which was not true of raw ladder ratios.
+  const ratio = Math.max(0.85, LADDER[qIdx()] / LADDER[baseIdx]);
+  let s = native * ratio;
+
+  // The absolute pixel ceiling, for a board so large that even one rung down is
+  // more fragments than a mobile GPU should be asked for.
   const cap = Q.pixelCap / Math.max(1, cw * ch);
   if(s * s > cap) s = Math.sqrt(cap);
-  // The cap is subject to the sharpness floor as well — see FLOOR_RUNG. It is
-  // the second, independent path to a sub-native board: it is applied AFTER the
-  // ladder, so it can undo the floor silently for any board whose CSS area is
-  // large enough for it to bind below 1.0. Nothing ships a board that big (it
-  // would need 2.6M CSS pixels on a phone, 4.2M on a desktop), which is exactly
-  // why this would go unnoticed until a future board or cap made it reachable.
-  s = Math.max(s, Math.min(1, dpr()));
+
+  // ⚠️ AND THE CAP IS SUBJECT TO THE SHARPNESS FLOOR TOO.
+  // This line used to be `Math.max(s, Math.min(1, dpr()))`, which is a NO-OP for
+  // every dpr >= 1 — it only ever did anything for a zoomed-out window. So the
+  // cap was a second, independent, unbounded path to a sub-native board, and the
+  // old comment's reasoning about it was wrong: the cap binds when
+  // `area * s² > CAP`, not when `area > CAP`. A 1060×946 board at dpr 3 on the
+  // desktop cap lands on s = 2.05 — 46% of the panel's pixels — and a COARSE
+  // tablet at dpr 3 on a full board lands on 1.61, which is 29%.
+  // Flooring it at the governor's OWN floor rung means the cap can cost at most
+  // the same single step the governor can, and never more.
+  s = Math.max(s, native * Math.max(0.85, LADDER[floorIdx()] / LADDER[baseIdx]));
+
   pushQuality();
   R.resize(Math.max(2, Math.round(cw * s)), Math.max(2, Math.round(ch * s)));
 }
@@ -23958,7 +24129,21 @@ function drawPylons(w, halfX, scroll, colour, opts){
   const far = opts.far || 190;
   const y0 = opts.y != null ? opts.y : -6;
   const h = opts.height || 15;
-  const off = ((scroll % step) + step) % step;
+  // ⚠️ NEGATED, AND THAT IS THE WHOLE POINT OF THIS LINE.
+  // The camera looks down −Z, so +Z is toward the player. The pattern's phase
+  // is (10 - off) mod step, so with off = scroll mod step the phase DECREASES
+  // as scroll grows and the pylons march off toward the horizon — backwards.
+  // Every other moving thing in these three games travels the other way:
+  // w.drawGrid's lateral lines, w.drawCity's towers, and the runner's own
+  // obstacles, which advance with it.z += speed * dt. So the pylons were the
+  // one element contradicting the forward motion, and a strong repeating
+  // vertical rhythm running the wrong way is very good at cancelling the
+  // illusion the rest of the scene builds.
+  // Negating scroll makes the phase (10 + scroll) mod step, which advances
+  // toward the camera. The range of the loop's start is unchanged —
+  // (10 - step, 10] either way — so coverage in front of the camera is exactly
+  // what it was.
+  const off = ((-scroll % step) + step) % step;
   for(let z = 10 - off; z > -far; z -= step){
     const fade = clamp(1 - (10 - z) / far, 0.15, 1);
     for(const s of [-1, 1]){

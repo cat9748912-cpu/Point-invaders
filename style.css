@@ -3217,7 +3217,20 @@ body.mode-3d #gl-canvas{
     0 26px 40px -16px rgba(0,0,0,.95),
     inset 0 1px 0 rgba(255,255,255,.14);
 }
-body.mode-3d #board-frame{transform-style:preserve-3d}
+/* ⚠️ DO NOT PUT transform-style:preserve-3d BACK ON #board-frame.
+   It was here, it is the canvas's direct parent, and it existed ONLY in 3D mode
+   — which is the exact shape of "the 3D board is soft and the 2D one is not".
+   A preserve-3d ancestor makes the element a 3D rendering context, and Blink
+   stops pixel-snapping descendants of one (snapping would break coplanarity),
+   so the canvas quad goes through the general-transform path with bilinear
+   filtering instead of the axis-aligned fast path. #board-frame is
+   width:fit-content centred in .g-area, so a fractional left edge is the normal
+   case, not the exception — and half-pixel bilinear resampling of a 1:1 texture
+   is exactly the uniform softness that gets reported.
+   It bought nothing: every child (#tetris-next-wrap, #arcade-canvas, #gl-canvas,
+   #gl-fx, #touch-hint, #mp-overlay, .gl-pop/.gl-label/.gl-stick) was checked at
+   runtime and in the stylesheet, and not one uses a 3D transform. The bezel look
+   is the box-shadow stack above, which is untouched by this. */
 
 /* ══ REDUCED MOTION ══
    The geometry stays — it is what the interface IS now, and a static solid is
@@ -3382,7 +3395,18 @@ html.reduced-motion .g-area.pkt-drop{animation:none}
 
 /* ⚙️ OVERCLOCK CHIP — a standing tint for the rest of the round, so the board
    itself says the points are running hot. */
-.g-area.overclocked-run{filter:saturate(1.12) brightness(1.04)}
+/* ⚠️ NOT `filter:` ON .g-area — that is an ancestor of the GL canvas, and any
+   non-none filter pulls the whole subtree into an offscreen filter surface and
+   resamples it on the way back. Spending a full render surface over a WebGL
+   board to buy a 12% saturation bump is a bad trade. The tint is painted by an
+   overlay that sits on top of the board instead, so the canvas is never inside
+   a filtered subtree. */
+.g-area.overclocked-run{position:relative}
+.g-area.overclocked-run::after{
+  content:'';position:absolute;inset:0;pointer-events:none;z-index:5;
+  background:radial-gradient(ellipse at 50% 55%,rgba(255,145,0,.07),rgba(255,60,0,.10) 70%);
+  mix-blend-mode:screen;
+}
 
 /* ══════════════════════════════════════════════════════════════
    👻 PACE GHOST
