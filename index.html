@@ -22,7 +22,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=29">
+<link rel="stylesheet" href="style.css?v=33">
 </head>
 <body>
 
@@ -151,7 +151,18 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
          is already within a few pixels of wrapping onto a second row. -->
     <button class="btn btn-secondary btn-sm" id="btn-season">🎖️ SEASON</button>
     <button class="btn btn-secondary btn-sm" id="btn-dossier">📁 DOSSIER</button>
+    <!-- 🎓 The tutorial is REPLAYABLE, which is most of why it is worth having:
+         a guided run you can only see once is a thing you skipped. 📳 and 🎮
+         are per-device input switches and belong with the other per-device
+         settings, which is this rail rather than the hub bar. -->
+    <button class="btn btn-secondary btn-sm" id="btn-tutorial">🎓 TUTORIAL</button>
+    <button class="btn btn-secondary btn-sm inp-toggle" id="btn-haptics" aria-pressed="false">📳 HAPTICS</button>
+    <button class="btn btn-secondary btn-sm inp-toggle" id="btn-pad" aria-pressed="true">🎮 PAD</button>
   </div>
+  <!-- 🎒 LOADOUT RAIL — the one-tap swap. Chips rather than a dropdown, because
+       a loadout is a thing you switch BETWEEN and a select would make every
+       swap two interactions. Built by paintLoadoutRail(). -->
+  <div class="loadout-rail" id="loadout-rail"></div>
   <div class="hub-body">
     <div>
       <!-- 🌐 NETWORK ARENA — the door to live head-to-head play. Sits above the
@@ -186,6 +197,29 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
           <div class="mp-banner-sub" id="dh-banner-sub">One seeded run, identical for every operative on the grid. Resets at 00:00 UTC.</div>
         </div>
         <button class="btn btn-primary" id="btn-daily-hack">📅 DAILY HACK</button>
+      </div>
+      <!-- ♾️ ENDLESS PROTOCOL — any mission, no finish line, difficulty climbing
+           until your integrity is gone. Its own banner rather than a card for
+           the same reason Boss Rush has one: it is a different KIND of thing
+           from a single round, and it asks which mission first. -->
+      <div class="mp-banner en-banner" id="en-banner">
+        <span class="mp-banner-icon">♾️</span>
+        <div class="mp-banner-txt">
+          <div class="mp-banner-title">ENDLESS PROTOCOL</div>
+          <div class="mp-banner-sub" id="en-banner-sub">Score in any mission once and its endless lane opens. No clock, no cap — it ramps until it wins.</div>
+        </div>
+        <button class="btn btn-primary" id="btn-endless">♾️ PICK A LANE</button>
+      </div>
+      <!-- 🌒 WEEKLY ANOMALY — one CURATED modifier stack and one mission, fixed
+           for the whole ISO week and the same for every operative on the grid.
+           The Daily Hack fixes the board; this fixes the RULES. -->
+      <div class="mp-banner an-banner" id="an-banner">
+        <span class="mp-banner-icon" id="an-banner-icon">🌒</span>
+        <div class="mp-banner-txt">
+          <div class="mp-banner-title" id="an-banner-title">WEEKLY ANOMALY</div>
+          <div class="mp-banner-sub" id="an-banner-sub">One curated modifier stack, one mission, all week. Resets on Monday.</div>
+        </div>
+        <button class="btn btn-primary" id="btn-anomaly">🌒 RUN THE ANOMALY</button>
       </div>
       <!-- 🔒 The clearance summary. Painted by paintMissionLocks(); says how many
            missions are still shut so a player can tell at a glance without
@@ -318,6 +352,41 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
           <div class="gc-desc">Lob data packets over the firewall into the orbital relays — mind the crosswind!</div>
           <span class="gc-pts" data-c="lime">UP TO 1000 PTS</span>
         </div>
+        <!-- ❄️🗂️📡🧹🌡️ THE PATIENCE WING. Five missions whose verb is not
+             "react". They sit at the end of the grid rather than being
+             interleaved because the grid is read top-to-bottom by a new
+             operative and the ladder above already orders it by how much a
+             mission has to explain. -->
+        <div class="game-card" data-game="cutter" data-c="cyan">
+          <span class="gc-icon">❄️</span>
+          <div class="gc-name" data-c="cyan">ICE CUTTER</div>
+          <div class="gc-desc">Slip between sweeping patrol cones and tag every data node without being lit up once!</div>
+          <span class="gc-pts" data-c="cyan">UP TO 1250 PTS</span>
+        </div>
+        <div class="game-card" data-game="sorter" data-c="orange">
+          <span class="gc-icon">🗂️</span>
+          <div class="gc-name" data-c="orange">PACKET SORT</div>
+          <div class="gc-desc">Route packets off the conveyor into the right port — and re-learn the rule every twenty seconds!</div>
+          <span class="gc-pts" data-c="orange">UP TO 1150 PTS</span>
+        </div>
+        <div class="game-card" data-game="trace" data-c="lime">
+          <span class="gc-icon">📡</span>
+          <div class="gc-name" data-c="lime">SIGNAL TRACE</div>
+          <div class="gc-desc">Deduce a four-slot cipher from feedback pegs alone. No reflexes — just cold logic!</div>
+          <span class="gc-pts" data-c="lime">UP TO 900 PTS</span>
+        </div>
+        <div class="game-card" data-game="defrag" data-c="gold">
+          <span class="gc-icon">🧹</span>
+          <div class="gc-name" data-c="gold">DEFRAG</div>
+          <div class="gc-desc">Sweep corrupted sectors off the volume by reading the neighbour counts — before the clock kills it!</div>
+          <span class="gc-pts" data-c="gold">UP TO 1050 PTS</span>
+        </div>
+        <div class="game-card" data-game="coolant" data-c="red">
+          <span class="gc-icon">🌡️</span>
+          <div class="gc-name" data-c="red">COOLANT</div>
+          <div class="gc-desc">One thruster, real inertia, one cooling shaft. Nothing stops when you let go!</div>
+          <span class="gc-pts" data-c="red">UP TO 1350 PTS</span>
+        </div>
       </div>
     </div>
     <div>
@@ -332,6 +401,20 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <div class="sec-label dh-lb-label">📅 DAILY LEADERBOARD <em class="dh-reset" id="dh-reset">—</em></div>
       <div class="lb-panel dh-lb-panel" id="dh-lb-panel">
         <div class="lb-empty">No runs logged for today yet.</div>
+      </div>
+
+      <!-- ♾️ 🌒 THE LANE BOARDS. Both are derived client-side from the same
+           broad players read the live leaderboard already makes — no new
+           top-level database node, because an unnamed one is refused outright
+           by the rules and the refusal reads exactly like a code bug. -->
+      <div class="sec-label">♾️ ENDLESS BOARD</div>
+      <div class="lb-panel dh-lb-panel" id="en-lb-panel">
+        <div class="lb-empty">No endless runs banked yet.</div>
+      </div>
+
+      <div class="sec-label dh-lb-label">🌒 ANOMALY BOARD <em class="dh-reset" id="an-reset">—</em></div>
+      <div class="lb-panel dh-lb-panel" id="an-lb-panel">
+        <div class="lb-empty">No anomaly runs logged this week yet.</div>
       </div>
 
       <!-- ⚔️ RIVAL CHALLENGES — the asynchronous half of the arena. Posted runs
@@ -548,6 +631,10 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <button class="market-tab" data-tab="skins">🤖 Skins</button>
     <button class="market-tab" data-tab="drives">🎵 Music Drives</button>
     <button class="market-tab" data-tab="exits">💀 Exit States</button>
+    <!-- 🎒 Not a tab — a door. A loadout is not stock, it is a saved
+         arrangement of the stock you already own, so it opens the same overlay
+         the hub rail does rather than pretending to be a seventh shelf. -->
+    <button class="market-tab market-tab-door" id="btn-market-loadouts">🎒 Loadouts</button>
   </div>
   <div class="market-body">
     <div class="market-panel active" id="panel-convert">
@@ -599,7 +686,20 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
            position to trail. Hidden until there is a personal best to race.
            Built by Ghost.paintPace(). -->
       <div class="ghost-pace" id="ghost-pace" style="display:none"></div>
+    </div>
+    <!-- ⚙️ THE ACTION CLUSTER — a HEADER item, deliberately not a .g-stats one.
+         These three were loose children of .g-stats, which wraps: on a phone the
+         readout pills pushed Audio onto a second line, Photo onto a third and
+         Fullscreen onto a fourth ALONE, and the header ate 168px of an 812px
+         screen. They are the controls a player actually has to hit mid-round
+         (mute, and the way back out of fullscreen), so they get a slot of their
+         own in the grid that the readouts cannot reach into: beside the pills
+         when there is room, beside Quit when there is not. -->
+    <div class="g-actions">
       <button class="btn btn-secondary btn-sm btn-sound" id="btn-sound-game" title="Audio">🔊</button>
+      <!-- 📸 PHOTO MODE. 3D only, and it says so rather than doing nothing when
+           the player is in 2D. -->
+      <button class="btn btn-secondary btn-sm" id="btn-photo" title="Photo mode">📸</button>
       <button class="btn btn-secondary btn-sm" id="btn-fs-game" title="Toggle Fullscreen">⛶</button>
     </div>
   </div>
@@ -634,6 +734,10 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <span class="mp-hud-name" id="mp-hud-opp-name">RIVAL</span>
     </div>
   </div>
+
+  <!-- 🎓 The guided run's coach line. Over the board, one sentence at a time,
+       and out of the way the rest of the round. -->
+  <div class="ob-coach" id="ob-coach" aria-live="polite"></div>
 
   <div class="g-area">
 
@@ -691,6 +795,19 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <label class="freq-lbl" for="freq-len">〰️ WAVELENGTH <em id="freq-len-val">0</em></label>
         <input class="freq-range" type="range" id="freq-len" min="40" max="180" step="1" value="110">
       </div>
+    </div>
+
+    <!-- 🗂️ PACKET SORT's rule strip. A sibling of the holder for the same
+         reason #bb-deck and #g-freq-ctl are: the holder becomes a flex ROW in
+         landscape, and a child would end up beside the board instead of under
+         it. It carries the ONE thing the player has to re-read every twenty
+         seconds, so it is DOM rather than painted into the board — it has to be
+         legible at a glance in both renderers, and in 3D the board is a room.
+         Built by the sort missions; fitCanvas() measures it by id. -->
+    <div id="g-sort-rule" style="display:none">
+      <span class="sr-tag" id="sr-tag">SORT RULE</span>
+      <span class="sr-txt" id="sr-txt">—</span>
+      <span class="sr-next" id="sr-next">—</span>
     </div>
 
     <div id="g-memory" class="memory-grid" style="display:none"></div>
@@ -762,6 +879,21 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      Reuses the .fb-overlay shell so it inherits the modal behaviour
      (backdrop, escape-to-close, scroll containment) already tuned there.
      ══════════════════════════════════════════════════════════════ -->
+<!-- ══════════════════════════════════════════════
+     📖 MISSION BRIEFING — what the ⓘ on a game card opens.
+     Summary, controls, a numbered tutorial and the tips, for all twenty-six.
+     Built by briefingHTML(); opened by openBriefing().
+     ══════════════════════════════════════════════ -->
+<div class="fb-overlay brief-tint" id="brief-overlay" aria-hidden="true">
+  <div class="fb-modal brief-modal" role="dialog" aria-modal="true" aria-labelledby="brief-heading">
+    <button class="fb-close" id="brief-close" aria-label="Close briefing">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="brief-heading">📖 MISSION BRIEFING</div>
+    </div>
+    <div class="brief-body" id="brief-body"></div>
+  </div>
+</div>
+
 <div class="fb-overlay ach-tint" id="ach-overlay" aria-hidden="true">
   <div class="fb-modal ach-modal" role="dialog" aria-modal="true" aria-labelledby="ach-heading">
     <button class="fb-close" id="ach-close" aria-label="Close achievements">✕</button>
@@ -818,6 +950,65 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <div class="fb-sub" id="dossier-sub">—</div>
     </div>
     <div class="dossier-body" id="dossier-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     ♾️ ENDLESS PICKER — which mission's lane. Shows your best on each and
+     greys out the ones you have never finished, because the choice is
+     "which of the ones you are already good at".
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay endless-tint" id="endless-overlay" aria-hidden="true">
+  <div class="fb-modal dossier-modal" role="dialog" aria-modal="true" aria-labelledby="endless-heading">
+    <button class="fb-close" id="endless-close" aria-label="Close endless picker">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="endless-heading">♾️ ENDLESS PROTOCOL</div>
+      <div class="fb-sub" id="endless-sub">—</div>
+    </div>
+    <div class="dossier-body" id="endless-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     🎒 LOADOUTS — name and save a kit, swap it in one tap.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay loadout-tint" id="loadout-overlay" aria-hidden="true">
+  <div class="fb-modal dossier-modal" role="dialog" aria-modal="true" aria-labelledby="loadout-heading">
+    <button class="fb-close" id="loadout-close" aria-label="Close loadouts">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="loadout-heading">🎒 LOADOUTS</div>
+      <div class="fb-sub" id="loadout-sub">—</div>
+    </div>
+    <div class="dossier-body" id="loadout-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     🎓 FIRST-RUN ONBOARDING — four beats and a real round.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay onboard-tint" id="onboard-overlay" aria-hidden="true">
+  <div class="fb-modal ob-modal" role="dialog" aria-modal="true" aria-labelledby="onboard-heading">
+    <button class="fb-close" id="onboard-close" aria-label="Skip the tutorial">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="onboard-heading">🎓 FIRST RUN</div>
+      <div class="fb-sub">About thirty seconds</div>
+    </div>
+    <div class="ob-body-wrap" id="onboard-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     📸 PHOTO MODE CAPTURE — the frame, with the run's replay code
+     stamped into the image itself.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay photo-tint" id="photo-overlay" aria-hidden="true">
+  <div class="fb-modal photo-modal" role="dialog" aria-modal="true" aria-labelledby="photo-heading">
+    <button class="fb-close" id="photo-close" aria-label="Close capture">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="photo-heading">📸 CAPTURE</div>
+      <div class="fb-sub">The replay code is stamped into the image</div>
+    </div>
+    <div class="photo-body" id="photo-body"></div>
   </div>
 </div>
 
@@ -935,7 +1126,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=29"></script>
+<script src="app.js?v=33"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker

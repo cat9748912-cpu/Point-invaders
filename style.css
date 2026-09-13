@@ -465,16 +465,71 @@ textarea::-webkit-scrollbar-thumb,select::-webkit-scrollbar-thumb,.input::-webki
    those four items nearly fill the 700px row, so there is no width left to
    centre the title reliably. It gets its own line instead: dead-centre,
    identical in every game, with Quit and the pills on the row beneath. */
-.g-hdr{display:grid;grid-template-columns:auto 1fr;align-items:center;column-gap:16px;row-gap:12px;width:100%;max-width:max(var(--board-w,560px),560px);margin-bottom:12px}
+/* THREE tracks on the control row, not two: Quit, the readouts, and the action
+   cluster. The cluster used to live inside .g-stats and therefore inside the
+   readouts' track, which meant a long readout row could push it around, break
+   it up, or shove it off the edge. Its own track cannot be reached into. */
+.g-hdr{display:grid;grid-template-columns:auto 1fr auto;align-items:center;column-gap:16px;row-gap:12px;width:100%;max-width:max(var(--board-w,560px),560px);margin-bottom:12px}
 .g-title{grid-column:1/-1;grid-row:1;text-align:center;font-family:var(--fd);font-size:.95rem;font-weight:700;letter-spacing:.05em}
 .g-hdr > #btn-quit{grid-column:1;grid-row:2;justify-self:start}
+.g-hdr > .g-actions{grid-column:3;grid-row:2;justify-self:end}
 /* The reserved slots below cost this row width, and the busiest one it ever
    carries — LEVEL + ping + clock + score, in a Matrix Stack-Off duel — has only
    520px to live in (the header keeps a 20px notch inset each side). So the
    pills tighten by the few px the slots take back: the row then fits that duel
    at any score, which it did NOT before — a five-digit score used to push it
    ~18px past the board edge. */
-.g-stats{grid-column:2;grid-row:2;justify-self:end;display:flex;align-items:center;gap:6px}
+.g-stats{grid-column:2;grid-row:2;justify-self:end;display:flex;align-items:center;gap:6px;
+  /* Wrapping is allowed at EVERY width now, not only on a phone. The readouts
+     are a variable-length list — Boss Rush and Endless each insert a pill at
+     the front, Tetris adds LEVEL, a duel adds ping — so the row can outgrow
+     its track on a desktop too, and a row that cannot wrap overflows the board
+     edge instead. What made wrapping look broken was never the wrap: it was
+     the BUTTONS wrapping one at a time. They are one item now (.g-actions), so
+     a wrap can only ever put the pills on their own line. */
+  flex-wrap:wrap;justify-content:flex-end;row-gap:6px}
+
+/* ══ 📐 THE COMPACTION TIERS — applied by fitHud(), never by hand ══
+   Three steps of increasingly aggressive tightening, added one at a time and
+   cumulatively until the readout row fits on ONE line. See fitHud() in app.js
+   for why the header cannot simply be made wider.
+   Tier 1 takes only padding and gaps — nothing is lost, and it is enough on its
+   own for the common case of a 560px board carrying a pace ghost. */
+.g-hdr.hud-t1{column-gap:10px}
+.g-hdr.hud-t1 .g-stats{gap:5px}
+.g-hdr.hud-t1 .stat-pill{padding:4px 7px}
+.g-hdr.hud-t1 .ghost-pace{padding:4px 8px;gap:5px}
+.g-hdr.hud-t1 .g-actions{gap:5px}
+.g-hdr.hud-t1 .g-actions .btn-sm{min-width:30px;min-height:30px;padding:4px 6px}
+
+/* Tier 2 drops the pace ghost's TARGET — "PB 1,200". It is the only thing in
+   the row that never changes during a round, so it is the only thing a player
+   can afford to lose: the delta beside it still says everything actionable,
+   and the target is on the results card at the end either way. */
+.g-hdr.hud-t2 .gp-target{display:none}
+.g-hdr.hud-t2 .ghost-pace{gap:4px}
+
+/* Tier 3 is a genuinely full row on a genuinely narrow board — Boss Rush with a
+   pace ghost, say. The ghost icon goes (the colour already says ahead/behind)
+   and everything shrinks a step. The delta keeps a fixed slot, just a tighter
+   one: it must not start moving again. */
+.g-hdr.hud-t3 .gp-ico{display:none}
+.g-hdr.hud-t3 .stat-pill,
+.g-hdr.hud-t3 .ghost-pace{font-size:.53rem;padding:4px 6px}
+.g-hdr.hud-t3 .gp-delta{min-width:8ch}
+
+/* ⚙️ THE ACTION CLUSTER — audio, photo, fullscreen.
+   One flex item, never broken up, never squeezed: these are the only controls
+   on the screen the player NEEDS to be able to hit mid-round (mute, and the
+   way back out of fullscreen), so they are the one thing in the header that is
+   not allowed to move somewhere else when the readouts beside them grow. */
+.g-actions{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;flex-shrink:0}
+/* A comfortable, EQUAL target for all three. They were sized by their glyphs
+   before, so 🔊 / 📸 / ⛶ came out three different widths and the cluster read
+   as an accident rather than a set. 34px is the smallest square that still
+   looks deliberate beside a 24px pill; the phone block below takes it to 44. */
+.g-actions .btn-sm{min-width:34px;min-height:34px;display:inline-flex;
+  align-items:center;justify-content:center;padding:5px 8px;line-height:1}
 .stat-pill{background:var(--s2);border:1px solid var(--border);border-radius:20px;padding:5px 10px;font-family:var(--fd);font-size:.6rem;font-weight:700;white-space:nowrap;
   /* Equal-width digits: without this a 1 is narrower than a 0 and the readout
      twitches on every tick even when the digit COUNT hasn't changed. */
@@ -772,6 +827,40 @@ textarea::-webkit-scrollbar-thumb,select::-webkit-scrollbar-thumb,.input::-webki
 }
 .freq-range:focus-visible{box-shadow:0 0 0 2px rgba(0,245,255,.45)}
 
+/* ── 🗂️ PACKET SORT RULE STRIP ──
+   Same geometry as the two consoles above: a full-width row under the board,
+   tracking the BOARD's width rather than the screen's. It carries the one fact
+   the mission re-writes every twenty seconds, so it is loud on purpose — the
+   flip has to be noticed peripherally, while the player's eyes are on a packet
+   halfway down a conveyor. .flip is a one-shot pulse the mission adds and
+   removes; the transition on the text is what makes a changed rule read as an
+   EVENT rather than as a value that was always that. */
+#g-sort-rule{
+  display:flex;align-items:center;gap:12px;width:100%;
+  max-width:max(var(--board-w,560px),560px);margin-top:10px;flex-shrink:0;
+  background:var(--s1);border:1px solid var(--border);border-radius:var(--r);
+  padding:9px 14px;overflow:hidden
+}
+.sr-tag{
+  font-family:var(--fd);font-size:.55rem;font-weight:700;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--dim);border:1px solid var(--border);
+  border-radius:999px;padding:3px 9px;flex-shrink:0;white-space:nowrap
+}
+.sr-txt{
+  flex:1;min-width:0;font-family:var(--fd);font-size:.86rem;font-weight:700;
+  letter-spacing:.05em;text-transform:uppercase;color:var(--orange);
+  text-shadow:0 0 12px rgba(255,102,0,.55);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  transition:color .18s ease,text-shadow .18s ease,transform .18s ease
+}
+.sr-next{
+  font-family:var(--fd);font-size:.62rem;font-weight:700;letter-spacing:.08em;
+  color:var(--dim);flex-shrink:0;white-space:nowrap
+}
+#g-sort-rule.flip{border-color:var(--orange);box-shadow:0 0 22px rgba(255,102,0,.30)}
+#g-sort-rule.flip .sr-txt{color:#fff;text-shadow:0 0 18px var(--orange);transform:scale(1.04)}
+#g-sort-rule.warn .sr-next{color:var(--gold)}
+
 /* ── RESULTS SCREEN ── */
 #results-screen .res-card{max-width:560px;width:100%;text-align:center}
 .res-emoji{font-size:4.5rem;display:block;margin-bottom:18px}
@@ -863,6 +952,12 @@ textarea::-webkit-scrollbar-thumb,select::-webkit-scrollbar-thumb,.input::-webki
 .btn-sound.snd-off:hover{background:rgba(255,255,255,.1);border-color:var(--border2);box-shadow:none}
 
 .fb-overlay{position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(2,2,10,.82);backdrop-filter:blur(7px);opacity:0;pointer-events:none;transition:opacity .22s ease}
+/* 📴 The offline banner is position:fixed at bottom:0 with z-index 9000 — above
+   every overlay — so a full-height modal ran its last ~60px underneath it. That
+   is invisible on the overlays whose bottom row is just text, and not invisible
+   at all on the briefing, whose bottom row is CLOSE and PLAY IT. The overlay
+   gives the bar its own room instead of the modal having to know about it. */
+html.is-offline .fb-overlay{padding-bottom:calc(20px + 3.4rem + env(safe-area-inset-bottom, 0px))}
 .fb-overlay.show{opacity:1;pointer-events:auto}
 
 .fb-modal{position:relative;width:100%;max-width:470px;max-height:90vh;overflow-y:auto;padding:28px 26px 26px;border:1px solid rgba(57,255,20,.4);border-radius:var(--rl);background:linear-gradient(160deg,rgba(11,14,30,.97),rgba(4,4,14,.99));box-shadow:0 0 70px rgba(57,255,20,.13),inset 0 0 0 1px rgba(255,255,255,.03);transform:translateY(18px) scale(.97);transition:transform .26s cubic-bezier(.2,.9,.3,1.25)}
@@ -1075,14 +1170,33 @@ body { overscroll-behavior: none; }
      the room comes out of the padding instead. */
   .stat-pill { padding: 5px 8px; font-size: .55rem; }
   /* The pace ghost is an extra pill that shows up only once the mission has a
-     personal best to race, and on a phone it is the one that pushes Audio and
-     Fullscreen clean off the right edge: .g-stats is a flex line inside a grid
-     track, and a grid item will not shrink below its content unless it is told
-     to. Let the row wrap instead. Nothing has to be re-measured for it — the
-     board sizes itself from the header's real bottom edge, so a second line
-     costs the play field exactly its own height and no more. */
+     personal best to race, and on a phone it is the one that used to push Audio
+     and Fullscreen clean off the right edge: .g-stats is a flex line inside a
+     grid track, and a grid item will not shrink below its content unless it is
+     told to. Letting the row wrap fixed the overflow and created a worse
+     problem — the three buttons wrapped INDIVIDUALLY, one per line, and a
+     375×812 phone carrying a pace ghost got a four-row, 168px header with
+     Fullscreen sitting alone on the last row. A fifth of the screen, spent on
+     chrome, before the board got a pixel.
+     Two things fix it and both are above: the delta owns a fixed slot so the
+     pill stops resizing at all, and the buttons are ONE item so a wrap can
+     only ever break between the pills and the cluster. Two rows, worst case.
+     Nothing has to be re-measured for it — the board sizes itself from the
+     header's real bottom edge, so a second line costs the play field exactly
+     its own height and no more. */
   .g-hdr, .g-hdr > * { min-width: 0; }
-  .g-stats { flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; }
+  /* A phone cannot fit Quit, the readouts and the cluster on one line, so the
+     header stops pretending: the two groups of CONTROLS share the row, and the
+     READOUTS — which nobody taps — get the line beneath. Four rows in total,
+     none of them ragged, and the tallest thing on the control row is a 44px
+     thumb target instead of a 23px pill. */
+  .g-hdr > .g-actions { grid-column: 3; grid-row: 2; }
+  .g-stats { grid-column: 1 / -1; grid-row: 3; justify-content: flex-end; }
+  .g-controls { grid-row: 4; }
+  .g-stats > .stat-pill, .g-stats > .ghost-pace { flex-shrink: 0; }
+  /* A real thumb target on the one row the player has to hit while playing. */
+  .g-actions { gap: 8px; }
+  .g-actions .btn-sm { min-width: 44px; min-height: 44px; font-size: .9rem; }
   .prog-bar { margin-bottom: 10px; }
   .g-area { max-width: 100%; }
   #arcade-controls { max-width: 100%; }
@@ -1135,10 +1249,13 @@ body { overscroll-behavior: none; }
   /* Back to a single row — height is the scarce thing here, and with the hint
      gone the title is the only flexible item. It sits in the middle track so
      it stays clear of Quit and the pills without ever overflowing the row. */
-  .g-hdr { grid-template-columns: auto 1fr auto; column-gap: 12px; row-gap: 0; }
+  .g-hdr { grid-template-columns: auto 1fr auto auto; column-gap: 12px; row-gap: 0; }
   .g-hdr > #btn-quit { grid-column: 1; grid-row: 1; }
   .g-title { grid-column: 2; grid-row: 1; font-size: .7rem; }
   .g-stats { grid-column: 3; grid-row: 1; }
+  /* A fourth track, because the cluster is its own header item now. Landscape
+     has the width for all four — it is height that is scarce here. */
+  .g-hdr > .g-actions { grid-column: 4; grid-row: 1; }
   .prog-bar { margin-bottom: 6px; height: 4px; }
 
   /* Landscape has width to spare and no height at all, so the pad moves to the
@@ -1173,6 +1290,9 @@ body { overscroll-behavior: none; }
      scarce thing in landscape. */
   #g-freq-ctl { margin-top: 6px; gap: 8px; }
   .freq-slider { padding: 5px 10px 7px; }
+  #g-sort-rule { margin-top: 6px; gap: 8px; padding: 6px 10px; }
+  .sr-txt { font-size: .72rem; }
+  .sr-next { font-size: .55rem; }
   .freq-lbl { margin-bottom: 5px; font-size: .5rem; }
 
   /* Overclock Path is not a canvas game, so it is laid out by .path-board's own
@@ -2067,6 +2187,308 @@ body.mode-3d .hub-bar::after{
   .mode-note{display:none}
 }
 
+
+/* ══════════════════════════════════════════════════════════════════════
+   § 10 — THE LANES: endless, anomaly, loadouts, tutorial, photo mode
+   ══════════════════════════════════════════════════════════════════════
+   Everything here reuses furniture that already exists — .mp-banner for the two
+   new lanes, .lb-row for their boards, .fb-overlay for their modals — so the
+   arcade gains four screens and the eye has nothing new to learn. Only the
+   accents are new. The 3D chrome block at the end of this file picks the new
+   selectors up by adding them to the lists that were already there. */
+
+/* ── ♾️ 🌒 THE TWO LANE BANNERS ── */
+.en-banner{border-color:rgba(0,245,255,.34);background:linear-gradient(135deg,rgba(0,245,255,.08),rgba(168,85,247,.05))}
+.en-banner .mp-banner-title{color:var(--cyan)}
+.an-banner{border-color:rgba(168,85,247,.36);background:linear-gradient(135deg,rgba(168,85,247,.10),rgba(255,0,144,.05))}
+.an-banner .mp-banner-title{color:var(--purple)}
+.en-banner.done,.an-banner.done{opacity:.78}
+#btn-endless:disabled{opacity:.45;cursor:not-allowed}
+.lb-tag{font-style:normal;font-size:.62rem;opacity:.62;letter-spacing:.06em;margin-left:6px}
+
+/* ── ♾️ THE ENDLESS PILL ── the integrity bar Boss Rush already models. */
+.en-pill em{color:var(--cyan)}
+.res-bonus-endless{color:var(--cyan);border-color:var(--cyan);background:rgba(0,245,255,.08)}
+
+/* ── ♾️ THE PICKER ── */
+.en-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:10px}
+.en-card{
+  display:flex;flex-direction:column;align-items:flex-start;gap:4px;
+  padding:12px 14px;text-align:left;cursor:pointer;
+  background:var(--s1);border:1px solid var(--border);border-radius:var(--r);
+  color:var(--txt);font-family:var(--fb);transition:border-color .16s,transform .16s
+}
+.en-card:hover:not(.locked){border-color:var(--cyan);transform:translateY(-2px)}
+.en-card.locked{opacity:.4;cursor:not-allowed}
+.en-ico{font-size:1.5rem;line-height:1}
+.en-name{font-family:var(--fd);font-size:.72rem;font-weight:700;letter-spacing:.06em}
+.en-best{font-size:.66rem;color:var(--dim);letter-spacing:.04em}
+
+/* ── 🎒 THE LOADOUT RAIL ── */
+.loadout-rail{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  max-width:1060px;margin:0 auto 10px;padding:8px 14px;
+  background:var(--s1);border:1px solid var(--border);border-radius:var(--r)
+}
+.lo-lbl{font-family:var(--fd);font-size:.58rem;font-weight:700;letter-spacing:.12em;color:var(--dim)}
+.lo-none{font-size:.72rem;color:var(--dim)}
+.lo-chip{
+  font-family:var(--fd);font-size:.62rem;font-weight:700;letter-spacing:.08em;
+  padding:5px 12px;border-radius:999px;cursor:pointer;
+  background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--txt);
+  transition:border-color .15s,color .15s,background .15s
+}
+.lo-chip:hover{border-color:var(--cyan);color:var(--cyan)}
+.lo-chip.on{border-color:var(--lime);color:var(--lime);background:rgba(57,255,20,.09)}
+.loadout-rail .btn{margin-left:auto}
+
+/* ── 🎒 THE SHELF ── */
+.lo-new{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.lo-name{flex:1;min-width:180px;text-transform:uppercase;letter-spacing:.08em}
+.lo-now{
+  font-size:.72rem;color:var(--dim);padding:8px 12px;margin-bottom:14px;
+  background:rgba(255,255,255,.03);border:1px dashed var(--border);border-radius:var(--r)
+}
+.lo-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.lo-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r);padding:12px 14px}
+.lo-card-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:6px}
+.lo-card-name{font-family:var(--fd);font-size:.78rem;font-weight:700;letter-spacing:.07em;color:var(--cyan)}
+.lo-card-body{font-size:.7rem;color:var(--dim);line-height:1.5;margin-bottom:8px}
+.lo-warn{
+  font-size:.66rem;color:var(--gold);line-height:1.45;margin-bottom:8px;
+  padding:6px 8px;background:rgba(255,215,0,.07);border-left:2px solid var(--gold);border-radius:4px
+}
+.lo-card-btns{display:flex;gap:8px}
+
+/* ── 🎓 THE HOW FACE ──
+   A second face on the card, not a second element beside it, so the 3D chrome's
+   extruded card treatment applies to it unchanged. .game-card gets
+   transform-style:preserve-3d in the 3D block; here the flip is a plain
+   rotateY, which reads correctly flat as well. */
+/* The flip needs a perspective on the CARD, in both chromes. perspective is a
+   property of the parent and does not need preserve-3d on it, so this works
+   under the base .game-card overflow:hidden as well as under the 3D block that
+   re-declares it visible. */
+.game-card{position:relative;perspective:900px}
+/* ⚠️ THE CARD'S OWN TEXT MUST NOT EAT THE BADGE'S CLICKS.
+   Every one of these is decorative — an emoji, a name, a blurb, a points chip.
+   None of them has a handler; the CARD does. But .gc-icon is a full-width block
+   68px tall, and in the 3D chrome it carries translateZ(26px) while the badge
+   sat at translateZ(0) — and inside a preserve-3d parent, elements are sorted
+   by their position in SPACE, not by z-index. So the icon rendered and
+   hit-tested ON TOP of the badge and covered 67% of it: measured with
+   elementFromPoint, the badge's own CENTRE returned .gc-icon, and only a ~8px
+   sliver along its top edge was actually clickable. That is the whole of "the
+   ⓘ is very hard to click", and no amount of z-index would have fixed it.
+   Clicks fall through to the card, which is what should have been handling
+   them all along. */
+.game-card > .gc-icon,
+.game-card > .gc-name,
+.game-card > .gc-desc,
+.game-card > .gc-pts,
+.game-card > .gc-lock,
+.game-card > .gc-spark{ pointer-events:none }
+
+.gc-howbtn{
+  position:absolute;top:8px;right:8px;z-index:3;
+  width:30px;height:30px;line-height:28px;padding:0;text-align:center;
+  border-radius:50%;cursor:pointer;font-size:1rem;
+  background:rgba(255,255,255,.06);border:1px solid var(--border);color:var(--dim);
+  transition:color .15s,border-color .15s,background .15s
+}
+/* The target is bigger than the circle. A 30px dot in a card corner is a small
+   thing to hit with a mouse and a hopeless one with a thumb, and growing the
+   VISIBLE dot enough to fix that would make it the loudest thing on the card. */
+.gc-howbtn::after{content:'';position:absolute;inset:-9px;border-radius:50%}
+.gc-howbtn:hover{color:var(--cyan);border-color:var(--cyan);background:rgba(0,245,255,.1)}
+/* A real target on a phone. The badge is the only way into the briefing that
+   does not require holding the card down for half a second, and at 24px it was
+   below every touch-target guideline there is — which is exactly why the long
+   press had to exist. It still does, but it is now a shortcut rather than the
+   thing that rescues a missed tap. */
+@media (pointer: coarse){
+  .gc-howbtn{width:40px;height:40px;line-height:38px;font-size:1.15rem;top:6px;right:6px}
+  .gc-howbtn::after{inset:-6px}
+}
+
+/* ══════════════════════════════════════════════
+   📖 MISSION BRIEFING
+   The overlay the ⓘ opens. It replaced a flip on the card face, which could
+   hold one paragraph and no controls — see buildHowFaces(). Sections are
+   ordered summary → controls → steps → tips so a first-timer can stop reading
+   at the steps and a returning player can scroll straight to the tips.
+   ══════════════════════════════════════════════ */
+.brief-modal{max-width:560px;border-color:rgba(0,245,255,.42);
+  box-shadow:0 0 70px rgba(0,245,255,.13),inset 0 0 0 1px rgba(255,255,255,.03)}
+.brief-modal::before{background:linear-gradient(90deg,transparent,var(--cyan),transparent);
+  box-shadow:0 0 12px var(--cyan)}
+.brief-body{display:flex;flex-direction:column;gap:16px;text-align:left}
+
+.brf-hero{display:flex;align-items:center;gap:14px}
+.brf-ico{font-size:2.4rem;line-height:1;flex-shrink:0}
+.brf-name{font-family:var(--fd);font-size:1rem;font-weight:900;letter-spacing:.08em;color:var(--cyan)}
+.brf-hook{font-size:.8rem;line-height:1.45;color:var(--dim);margin-top:3px}
+/* line-height is explicit because the display face has tall caps and this line
+   wraps to two of them on a phone — at the UA default the descenders of the
+   second line sat on the border. */
+.brf-locked{font-family:var(--fd);font-size:.58rem;letter-spacing:.1em;line-height:1.6;color:var(--gold);
+  background:rgba(255,215,0,.08);border:1px solid rgba(255,215,0,.3);border-radius:8px;padding:9px 11px}
+
+.brf-sec{display:flex;flex-direction:column;gap:8px}
+.brf-h{font-family:var(--fd);font-size:.6rem;font-weight:700;letter-spacing:.16em;color:var(--dimmer)}
+.brf-p{font-size:.86rem;line-height:1.6;color:var(--txt);margin:0}
+
+.brf-ctrls{display:flex;flex-direction:column;gap:7px}
+/* Grid, not flex: the two tags must share ONE column width so the control text
+   starts at the same x on both rows. Auto-width tags put "TOUCH" and "KEYS" a
+   few px apart and the block read as two unrelated lines. */
+.brf-ctrl{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:baseline;
+  background:var(--s2);border:1px solid var(--border);border-radius:9px;padding:9px 12px}
+.brf-ctag{font-family:var(--fd);font-size:.5rem;letter-spacing:.12em;color:var(--dimmer);white-space:nowrap}
+.brf-ctxt{font-size:.78rem;line-height:1.45;color:var(--txt)}
+
+.brf-steps{margin:0;padding-left:0;list-style:none;counter-reset:brf;
+  display:flex;flex-direction:column;gap:9px}
+.brf-steps li{counter-increment:brf;position:relative;padding-left:32px;
+  font-size:.84rem;line-height:1.55;color:var(--txt)}
+.brf-steps li::before{content:counter(brf);position:absolute;left:0;top:-1px;
+  width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-family:var(--fd);font-size:.6rem;font-weight:700;
+  background:rgba(0,245,255,.12);border:1px solid rgba(0,245,255,.45);color:var(--cyan)}
+
+.brf-tips{margin:0;padding-left:0;list-style:none;display:flex;flex-direction:column;gap:9px}
+.brf-tips li{position:relative;padding-left:24px;font-size:.82rem;line-height:1.55;color:var(--dim)}
+.brf-tips li::before{content:'▸';position:absolute;left:6px;top:0;color:var(--lime)}
+
+.brf-foot{font-family:var(--fd);font-size:.58rem;letter-spacing:.1em;color:var(--dimmer);
+  border-top:1px solid var(--border);padding-top:13px}
+.brf-foot em{font-style:normal;color:var(--gold)}
+.brf-actions{display:flex;gap:10px}
+.brf-actions .btn{flex:1;min-height:42px}
+
+@media (max-width: 640px){
+  .brief-modal{padding:22px 16px 18px}
+  .brf-ico{font-size:1.9rem}
+  .brf-name{font-size:.85rem}
+  /* The tag goes above the text on a narrow screen — side by side, a long key
+     list wrapped to three ragged lines beside a one-word label. */
+  .brf-ctrl{grid-template-columns:1fr;gap:4px}
+}
+
+/* ── 🎓 ONBOARDING ── */
+.ob-modal{max-width:520px;text-align:center}
+.ob-body-wrap{padding:6px 4px 2px}
+.ob-ico{font-size:3rem;line-height:1;margin-bottom:10px}
+.ob-title{font-family:var(--fd);font-size:1.05rem;font-weight:900;letter-spacing:.1em;color:var(--cyan);margin-bottom:10px}
+.ob-body{font-size:.88rem;line-height:1.65;color:var(--txt);margin-bottom:18px}
+.ob-dots{display:flex;gap:7px;justify-content:center;margin-bottom:18px}
+.ob-dot{width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.16);transition:background .2s,transform .2s}
+.ob-dot.on{background:var(--cyan);transform:scale(1.35)}
+.ob-btns{display:flex;gap:10px;justify-content:center}
+.ob-coach{
+  position:relative;z-index:6;max-width:min(620px,94vw);margin:0 auto 6px;
+  padding:9px 16px;border-radius:999px;text-align:center;
+  font-family:var(--fb);font-size:.8rem;font-weight:600;letter-spacing:.03em;color:#04040e;
+  background:linear-gradient(90deg,var(--cyan),var(--lime));
+  box-shadow:0 6px 24px rgba(0,245,255,.35);
+  opacity:0;transform:translateY(-6px);pointer-events:none;
+  transition:opacity .28s ease,transform .28s ease
+}
+.ob-coach.show{opacity:1;transform:translateY(0)}
+
+/* ── 📸 PHOTO MODE ── */
+#photo-bar{
+  position:fixed;left:50%;bottom:max(16px,env(safe-area-inset-bottom));transform:translateX(-50%);
+  z-index:120;display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;
+  max-width:94vw;padding:9px 14px;border-radius:999px;
+  background:rgba(6,8,18,.92);border:1px solid var(--cyan);
+  box-shadow:0 10px 40px rgba(0,0,0,.6),0 0 26px rgba(0,245,255,.22)
+}
+.pb-tag{font-family:var(--fd);font-size:.6rem;font-weight:700;letter-spacing:.14em;color:var(--cyan)}
+/* The HUD is hidden by class rather than by inline style, so RESUME puts it
+   back by removing one class and cannot leave a stat pill stranded. */
+body.photo-nohud .g-hdr,
+body.photo-nohud .prog-bar,
+body.photo-nohud #pu-dock,
+body.photo-nohud #chaos-banner,
+body.photo-nohud #mp-hud,
+body.photo-nohud .ghost-pace,
+body.photo-nohud #arcade-controls,
+body.photo-nohud #gl-fx{opacity:0;pointer-events:none;transition:opacity .2s}
+body.photo-mode #board-frame{cursor:grab}
+body.photo-mode #board-frame:active{cursor:grabbing}
+.photo-modal{max-width:820px}
+.photo-body{display:flex;flex-direction:column;gap:12px;align-items:center}
+.ph-img{max-width:100%;border-radius:var(--r);border:1px solid var(--border)}
+.ph-code{
+  font-family:monospace;font-size:.66rem;word-break:break-all;text-align:center;
+  color:var(--gold);background:rgba(255,215,0,.06);border:1px solid rgba(255,215,0,.24);
+  border-radius:var(--r);padding:8px 12px;max-width:100%
+}
+.ph-btns{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+
+/* ── 🎮 THE VIRTUAL POINTER ── */
+#pad-cursor{
+  position:fixed;left:0;top:0;width:22px;height:22px;border-radius:50%;
+  z-index:115;pointer-events:none;display:none;
+  border:2px solid var(--cyan);background:rgba(0,245,255,.16);
+  box-shadow:0 0 14px rgba(0,245,255,.6);
+  transition:background .08s,transform .02s linear
+}
+#pad-cursor.down{background:rgba(0,245,255,.55);box-shadow:0 0 22px rgba(0,245,255,.9)}
+.ctrl-btn.pad-lit{filter:brightness(1.45)}
+.inp-toggle.on{border-color:var(--lime);color:var(--lime)}
+
+/* ── 📁 THE MISSION DOSSIER PAGE ── */
+.dos-mission[data-dos]{cursor:pointer;transition:border-color .16s,transform .16s}
+.dos-mission[data-dos]:hover,
+.dos-mission[data-dos]:focus-visible{border-color:var(--cyan);transform:translateY(-2px);outline:none}
+.dos-back{margin-bottom:12px}
+.dos-hero{display:flex;align-items:center;gap:14px;margin-bottom:16px}
+.dos-hero-ico{font-size:2.6rem;line-height:1}
+.dos-hero-name{font-family:var(--fd);font-size:1.05rem;font-weight:900;letter-spacing:.08em;color:var(--cyan)}
+.dos-hero-sub{font-size:.76rem;line-height:1.5;color:var(--dim);margin-top:4px}
+.dos-pace{width:100%;height:180px;display:block;background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:var(--r)}
+.dos-axes{display:flex;justify-content:space-between;font-size:.6rem;color:var(--dim);padding:4px 2px 0}
+.dos-legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.dl-chip{
+  font-family:var(--fd);font-size:.58rem;font-weight:700;letter-spacing:.07em;
+  padding:3px 9px;border-radius:999px;color:var(--c);border:1px solid var(--c);background:rgba(255,255,255,.03)
+}
+.dos-ends{display:flex;align-items:flex-end;gap:4px;height:120px;padding:8px 4px 0;
+  background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:var(--r)}
+.de-bar{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%;gap:4px}
+.de-bar>span{
+  width:100%;border-radius:3px 3px 0 0;
+  background:linear-gradient(180deg,var(--cyan),rgba(0,245,255,.18))
+}
+.de-bar>em{font-style:normal;font-size:.52rem;color:var(--dim)}
+.dos-endnote{font-size:.72rem;color:var(--dim);margin-top:8px;line-height:1.5}
+.dos-endnote b{color:var(--cyan);font-weight:700}
+.dos-last{display:flex;align-items:flex-end;gap:5px;height:96px;padding:8px 4px 0;
+  background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:var(--r)}
+.dl-cell{flex:1;height:var(--h);min-height:6px;border-radius:3px 3px 0 0;position:relative;
+  background:linear-gradient(180deg,var(--lime),rgba(57,255,20,.16))}
+.dl-cell>em{position:absolute;inset:auto 0 -16px;font-style:normal;font-size:.5rem;color:var(--dim);text-align:center}
+.dos-mbtns{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
+
+/* Overlay tints — one variable each, the same shape the existing tints use. */
+.endless-tint .fb-modal{border-color:rgba(0,245,255,.34)}
+.loadout-tint .fb-modal{border-color:rgba(57,255,20,.3)}
+.onboard-tint .fb-modal{border-color:rgba(0,245,255,.4)}
+.photo-tint .fb-modal{border-color:rgba(255,215,0,.32)}
+.market-tab-door{margin-left:auto}
+
+@media (max-width:760px){
+  .loadout-rail{margin-left:10px;margin-right:10px}
+  .loadout-rail .btn{margin-left:0}
+  .en-grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
+  .dos-ends{height:96px}
+  #photo-bar{gap:6px;padding:7px 10px}
+  .pb-tag{display:none}
+  .ob-coach{font-size:.72rem;padding:7px 12px}
+}
+
 /* ══════════════════════════════════════════════════════════════════════
    🧊 3D CHROME — the whole interface as physical objects
    ══════════════════════════════════════════════════════════════════════
@@ -2166,6 +2588,7 @@ body.mode-3d .market-bar,
 body.mode-3d .mp-bar,
 body.mode-3d .g-hdr,
 body.mode-3d .freq-slider,
+body.mode-3d #g-sort-rule,
 body.mode-3d .hack-readout,
 body.mode-3d .path-readout,
 body.mode-3d .res-bd,
@@ -2495,6 +2918,7 @@ body.mode-3d .market-bar,
 body.mode-3d .mp-bar,
 body.mode-3d .g-hdr,
 body.mode-3d .freq-slider,
+body.mode-3d #g-sort-rule,
 body.mode-3d .hack-readout,
 body.mode-3d .path-readout,
 body.mode-3d .res-bd,
@@ -2970,11 +3394,35 @@ html.reduced-motion .g-area.pkt-drop{animation:none}
   display:flex;align-items:center;gap:7px;white-space:nowrap;
   background:var(--s2);border:1px solid var(--border);border-radius:20px;
   padding:5px 11px;font-family:var(--fd);font-size:.6rem;font-weight:700;
+  /* Only the BORDER and the shadow may animate. Width must not: see below. */
   transition:border-color .25s ease,box-shadow .25s ease;
+  /* Equal-width digits, same reason as .stat-pill — and here it matters far
+     more, because this readout is repainted on EVERY frame. */
+  font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;
+  flex-shrink:0;
 }
-.ghost-pace .gp-ico{font-size:.8rem;line-height:1}
-.ghost-pace .gp-delta{letter-spacing:.06em}
-.ghost-pace .gp-target{font-size:.5rem;color:var(--dimmer);letter-spacing:.1em}
+.ghost-pace .gp-ico{font-size:.8rem;line-height:1;flex-shrink:0}
+/* ⚠️ THE FIXED DELTA SLOT — do not remove the min-width.
+   .g-stats is a RIGHT-ALIGNED flex row, so anything that changes width in it
+   drags everything to its left along with it. paintPace() rewrites this span
+   from a requestAnimationFrame tick, and the delta is the one number in the
+   header that moves continuously — so an auto-width span here re-flowed the
+   whole row up to sixty times a second. Measured on the shipped build: the
+   pill swung 124.6px → 162px between "+0" and "-99,999", sliding the clock and
+   the score pills 37px left and back while the player was trying to read them.
+   That is the "the pace ghost bar keeps moving" report, and on a phone it was
+   also what tipped .g-stats into wrapping mid-round.
+   The slot is sized for the widest thing the span can ever hold: an arrow, a
+   sign and Cyber Arena's five-digit score with its separator — "▼ − 99,999".
+   The score is right-aligned inside it so the digits stay put as they grow. */
+.ghost-pace .gp-delta{
+  letter-spacing:.06em;
+  min-width:9ch;text-align:right;flex-shrink:0;
+}
+/* No reserved slot needed: the target is the personal best being raced, which
+   is fixed for the whole round — it is written once by beginPace() and never
+   changes again until the next round. */
+.ghost-pace .gp-target{font-size:.5rem;color:var(--dimmer);letter-spacing:.1em;flex-shrink:0}
 .ghost-pace.ahead{border-color:rgba(57,255,20,.5);box-shadow:0 0 14px rgba(57,255,20,.16)}
 .ghost-pace.ahead .gp-delta{color:var(--lime)}
 .ghost-pace.behind{border-color:rgba(255,36,66,.45)}
@@ -3302,3 +3750,88 @@ html.reduced-motion .game-card.gc-flash{animation:none;box-shadow:0 0 0 2px var(
 .br-int-pill.mid .br-int-bar span{background:var(--gold)}
 .br-int-pill.low .br-int-bar span{background:var(--red)}
 .br-int-pill.low{border-color:rgba(255,36,66,.6);box-shadow:0 0 14px rgba(255,36,66,.25)}
+
+
+/* ══════════════════════════════════════════════════════════════
+   🧊 § 10 IN THE SOLID INTERFACE
+   ══════════════════════════════════════════════════════════════
+   ⚠️ EVERY SELECTOR HERE IS SCOPED TO `body.mode-3d`, like everything else in
+   this section. An unscoped rule added down here is a control that stays
+   extruded in 2D CLASSIC — the exact bug the scoping exists to prevent.
+
+   The new controls reuse the shells that were already modelled (.btn, .lb-row,
+   .mp-banner, .fb-modal), so most of them are already solid. These are the
+   three that are genuinely new geometry: the loadout rail (a ground plane, like
+   the other bars), its chips (small keycaps), and the photo-mode bar (a raised
+   console floating over the board). The HOW face has to keep preserve-3d or the
+   flip collapses to a cross-fade. */
+body.mode-3d .loadout-rail,
+body.mode-3d #photo-bar{
+  background-image:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,0) 70%);
+  box-shadow:
+    0 1px 0 #10162a,0 2px 0 #10162a,0 3px 0 #070a14,0 4px 0 #070a14,
+    0 14px 22px -12px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.11),inset 0 -1px 0 rgba(0,0,0,.5);
+}
+body.mode-3d .loadout-rail,
+body.mode-3d .en-card,
+body.mode-3d .lo-card{ transform-style:preserve-3d; }
+
+/* Small keycaps: a short wall and a lit top lip, the same vocabulary .btn uses,
+   at chip scale. */
+body.mode-3d .lo-chip,
+body.mode-3d .gc-howbtn{
+  box-shadow:
+    0 1px 0 #131a2e,0 2px 0 #0a0e1c,
+    0 6px 10px -6px rgba(0,0,0,.8),
+    inset 0 1px 0 rgba(255,255,255,.14),inset 0 -1px 0 rgba(0,0,0,.45);
+  transition:transform .12s ease,box-shadow .12s ease,border-color .15s,color .15s;
+}
+body.mode-3d .lo-chip:hover{ transform:translateY(-1px); }
+body.mode-3d .lo-chip:active{
+  transform:translateY(2px);
+  box-shadow:0 0 0 #131a2e,inset 0 2px 5px rgba(0,0,0,.6);
+}
+
+/* The badge needs its OWN transforms in this mode, split out from .lo-chip
+   above, because every one of them has to keep the translateZ. The card is
+   preserve-3d and its contents are lifted off the face — the icon by 26px, the
+   text by 10px — so a badge at Z 0 is behind all of them, both visually and for
+   hit-testing. 34px puts it in front of the tallest of them. */
+body.mode-3d .gc-howbtn{ transform:translateZ(34px); }
+body.mode-3d .gc-howbtn:hover{ transform:translateZ(34px) translateY(-1px); }
+body.mode-3d .gc-howbtn:active{
+  transform:translateZ(34px) translateY(2px);
+  box-shadow:0 0 0 #131a2e,inset 0 2px 5px rgba(0,0,0,.6);
+}
+
+/* The briefing modal is a slab standing off the backdrop, like every other
+   overlay in this mode — it replaced a flip FACE on the card, which is why the
+   preserve-3d above no longer names it. */
+body.mode-3d .brief-modal{
+  background-image:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,0) 60%);
+  box-shadow:0 0 70px rgba(0,245,255,.13),
+             inset 0 1px 0 rgba(255,255,255,.10),inset 0 -2px 6px rgba(0,0,0,.6),
+             0 22px 44px -18px rgba(0,0,0,.92);
+}
+body.mode-3d .brf-ctrl{
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.07),inset 0 -1px 0 rgba(0,0,0,.4);
+}
+
+/* The endless cards and loadout cards are objects on a shelf, like .shop-card. */
+body.mode-3d .en-card,
+body.mode-3d .lo-card{
+  background-image:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,0) 62%);
+  box-shadow:
+    0 1px 0 #10162a,0 2px 0 #070a14,0 3px 0 #070a14,
+    0 16px 26px -14px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.09);
+}
+body.mode-3d .en-card:hover:not(.locked){ transform:translateY(-3px); }
+
+/* The coach strip is a lit pill standing off the board, not a label on it. */
+body.mode-3d .ob-coach{
+  box-shadow:0 6px 24px rgba(0,245,255,.35),
+             0 2px 0 rgba(0,0,0,.5),
+             inset 0 1px 0 rgba(255,255,255,.4);
+}
