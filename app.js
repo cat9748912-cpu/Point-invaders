@@ -20013,15 +20013,60 @@ function hexToLinear(hex){
 // .blend files are fetched — the site stays a static drop-in that works offline
 // and from file://, which is a hard constraint inherited from the 2D build.
 //
-// Builders return { pos:[...], nrm:[...], uv:[...], idx:[...] } in a
+// Builders return { pos:[...], nrm:[...], uv:[...], idx:[...], part:[...] } in a
 // right-handed Y-up space, centred on the origin, with CCW front faces.
+//
+// ⚠️ `part` IS ONE ENTRY PER VERTEX, ALWAYS. Every builder pushes one alongside
+// every position, including faceQuad/faceTri, because a mesh that is assembled
+// partly by hand and partly by mergeMesh would otherwise have its material parts
+// silently shifted onto the wrong vertices.
 
-function emptyMesh(){ return { pos:[], nrm:[], uv:[], idx:[] }; }
+// ── 🧩 MATERIAL PARTS ──
+// A merged hull is ONE geometry drawn with ONE instance material, which is what
+// keeps a fleet of them to a single draw call — and it is also why every model
+// here used to be a single flat paint job: the canopy was the same chrome as the
+// wings, the tank's tracks were the same armour as its turret, and a gun barrel
+// was the same colour as the plate it was bolted to. Nothing reads as a real
+// machine like that.
+//
+// So each vertex now carries a PART id, and the fragment shader derives that
+// part's material FROM the instance's own (see applyPart in FS_MESH). PAINT is
+// the instance material exactly as the mission drew it, so a hit-flash tint, a
+// team colour or a shop colour still lands where it always did; the other parts
+// are physically-plausible finishes layered relative to it. No call site in any
+// mission had to change.
+//
+// ⚠️ LAMP only lights when the INSTANCE is drawn with an emissive. Several
+// missions (Pong, Meteor Shield) draw a model plain and then draw their own
+// emitter strip beside it; a lamp that glowed in the albedo colour regardless
+// would put a second, wrong-coloured light on those models. The NAV_* lights are
+// the exception on purpose — aviation lights are a fixed colour in reality.
+const PART = {
+  PAINT:     0,   // the instance material, untouched
+  TRIM:      1,   // bare structural metal: frames, joints, housings, recesses
+  GLASS:     2,   // canopy / lens / visor: dark glossy dielectric
+  CHROME:    3,   // bright machined metal: rails, pistons, hubs
+  RUBBER:    4,   // tracks, tyres, bumpers, feet: black rough dielectric
+  LAMP:      5,   // an emitter in the instance's emissive colour (unlit without one)
+  NAV_RED:   6,   // port / aviation-obstruction light — fixed red
+  NAV_GREEN: 7,   // starboard light — fixed green
+  NAV_WHITE: 8,   // tail strobe — fixed white
+  HEAT:      9,   // exhaust nozzle interior: heat-tinted metal
+  GUNMETAL: 10    // blued / parkerised steel: barrels, muzzle brakes
+};
+
+function emptyMesh(){ return { pos:[], nrm:[], uv:[], idx:[], part:[] }; }
 
 // Appends `src` into `dst`, offsetting indices. Lets a hull be assembled out of
-// several primitives and still ship as ONE instanced geometry.
+// several primitives and still ship as ONE instanced geometry. `xform.part`
+// stamps a material part onto every vertex of `src`; without it the source's
+// own parts are kept (so a sub-assembly can be merged whole).
 function mergeMesh(dst, src, xform){
   const base = dst.pos.length / 3;
+  if(!dst.part) dst.part = [];
+  while(dst.part.length < base) dst.part.push(0);
+  const stamp = (xform && xform.part != null) ? xform.part : null;
+  const sp = src.part;
   for(let i=0;i<src.pos.length;i+=3){
     let x = src.pos[i], y = src.pos[i+1], z = src.pos[i+2];
     let nx = src.nrm[i], ny = src.nrm[i+1], nz = src.nrm[i+2];
@@ -20047,6 +20092,8 @@ function mergeMesh(dst, src, xform){
     const nl = Math.hypot(nx,ny,nz) || 1;
     dst.pos.push(x,y,z);
     dst.nrm.push(nx/nl, ny/nl, nz/nl);
+    const vi = i / 3;
+    dst.part.push(stamp != null ? stamp : ((sp && vi < sp.length) ? sp[vi] : 0));
   }
   for(let i=0;i<src.uv.length;i++) dst.uv.push(src.uv[i]);
   // A MIRRORING transform (an odd number of negative scale axes) reverses
@@ -20066,18 +20113,21 @@ function mergeMesh(dst, src, xform){
   return dst;
 }
 
+// The six faces of a unit cube, each with a (u, v) basis whose cross product is
+// the face normal — so a grid laid out in increasing u and v winds CCW outward.
+const FACES6 = [
+  { n:[ 0, 0, 1], u:[ 1,0, 0], v:[0,1, 0] },
+  { n:[ 0, 0,-1], u:[-1,0, 0], v:[0,1, 0] },
+  { n:[ 1, 0, 0], u:[ 0,0,-1], v:[0,1, 0] },
+  { n:[-1, 0, 0], u:[ 0,0, 1], v:[0,1, 0] },
+  { n:[ 0, 1, 0], u:[ 1,0, 0], v:[0,0,-1] },
+  { n:[ 0,-1, 0], u:[ 1,0, 0], v:[0,0, 1] }
+];
+
 // Unit cube, hard-edged. The workhorse: blocks, panels, girders, neon strips.
 function buildBox(){
   const m = emptyMesh();
-  const faces = [
-    { n:[ 0, 0, 1], u:[1,0,0], v:[0,1,0] },
-    { n:[ 0, 0,-1], u:[-1,0,0],v:[0,1,0] },
-    { n:[ 1, 0, 0], u:[0,0,-1],v:[0,1,0] },
-    { n:[-1, 0, 0], u:[0,0,1], v:[0,1,0] },
-    { n:[ 0, 1, 0], u:[1,0,0], v:[0,0,-1] },
-    { n:[ 0,-1, 0], u:[1,0,0], v:[0,0,1] }
-  ];
-  faces.forEach(f => {
+  FACES6.forEach(f => {
     const b = m.pos.length/3;
     for(let j=0;j<4;j++){
       const su = (j===1||j===2) ? 0.5 : -0.5;
@@ -20087,53 +20137,67 @@ function buildBox(){
                  f.n[2]*0.5 + f.u[2]*su + f.v[2]*sv);
       m.nrm.push(f.n[0], f.n[1], f.n[2]);
       m.uv.push(su+0.5, sv+0.5);
+      m.part.push(0);
     }
     m.idx.push(b, b+1, b+2, b, b+2, b+3);
   });
   return m;
 }
 
-// A cube with rounded, bevelled edges — built by pushing a subdivided cube's
-// vertices out onto the surface of a rounded box. Bevels are the single biggest
-// reason a render looks "real": a perfectly sharp edge catches no specular
-// highlight, so it dies in shadowless lighting. Almost all the hardware in the
-// 3D arcade uses this rather than buildBox.
+// A cube with rounded, bevelled edges: a flat core box swept by a sphere of
+// `radius`. Bevels are the single biggest reason a render looks "real": a
+// perfectly sharp edge catches no specular highlight, so it dies in shadowless
+// lighting. Almost all the hardware in the 3D arcade uses this.
+//
+// ⚠️ THE FACES ARE FLAT, AND THAT IS THE WHOLE POINT OF THIS VERSION.
+// The first build spread its vertices EVENLY across each face and aimed every
+// one of them at the corner direction, so the normal tilted continuously from
+// the middle of a face to its rim — by 26° half-way across a `cube`. The
+// geometry stayed almost flat while the shading curved, and every box in the
+// arcade was lit like an inflated cushion: a soft gradient across each face, a
+// milky rim where the tilted normals met the Fresnel term, and no crisp edge
+// anywhere. That is most of why the hardware read as moulded plastic.
+//
+// Here each axis is sampled at STATIONS: the bevel arc from -45° to 0°, then the
+// flat span, then 0° to +45°. The flat span carries the exact face normal, so a
+// face is lit as a plane; the curvature lives only inside the bevel, where it
+// puts a thin highlight on every edge. Neighbouring faces share their 45° seam
+// stations exactly, so there are no cracks.
 function buildRoundedBox(radius, seg){
-  radius = radius == null ? 0.12 : radius;
+  radius = radius == null ? 0.12 : Math.max(0, Math.min(radius, 0.5));
   seg = seg || 4;
   const m = emptyMesh();
   const half = 0.5 - radius;
-  const faces = [
-    { n:[0,0,1],  u:[1,0,0],  v:[0,1,0] },
-    { n:[0,0,-1], u:[-1,0,0], v:[0,1,0] },
-    { n:[1,0,0],  u:[0,0,-1], v:[0,1,0] },
-    { n:[-1,0,0], u:[0,0,1],  v:[0,1,0] },
-    { n:[0,1,0],  u:[1,0,0],  v:[0,0,-1] },
-    { n:[0,-1,0], u:[1,0,0],  v:[0,0,1] }
-  ];
-  faces.forEach(f => {
+  const bs = radius > 0 ? Math.max(1, Math.ceil(seg / 2)) : 0;
+  const st = [];
+  for(let k = bs; k >= 1; k--) st.push([-half, -Math.tan((k / bs) * Math.PI / 4)]);
+  st.push([-half, 0]);
+  st.push([ half, 0]);
+  for(let k = 1; k <= bs; k++) st.push([ half, Math.tan((k / bs) * Math.PI / 4)]);
+  const N = st.length;
+  FACES6.forEach(f => {
     const base = m.pos.length/3;
-    for(let iy=0; iy<=seg; iy++){
-      for(let ix=0; ix<=seg; ix++){
-        const su = (ix/seg)*2-1, sv = (iy/seg)*2-1;
-        // Clamp to the flat core, then offset along the normalised corner
-        // direction — the classic "rounded box = box core + sphere sweep".
-        const cx = f.n[0]*half + f.u[0]*su*half + f.v[0]*sv*half;
-        const cy = f.n[1]*half + f.u[1]*su*half + f.v[1]*sv*half;
-        const cz = f.n[2]*half + f.u[2]*su*half + f.v[2]*sv*half;
-        const dx = f.n[0] + f.u[0]*su + f.v[0]*sv;
-        const dy = f.n[1] + f.u[1]*su + f.v[1]*sv;
-        const dz = f.n[2] + f.u[2]*su + f.v[2]*sv;
-        const dl = Math.hypot(dx,dy,dz) || 1;
+    for(let iy = 0; iy < N; iy++){
+      const cv = st[iy][0], wv = st[iy][1];
+      for(let ix = 0; ix < N; ix++){
+        const cu = st[ix][0], wu = st[ix][1];
+        const dx = f.n[0] + f.u[0]*wu + f.v[0]*wv;
+        const dy = f.n[1] + f.u[1]*wu + f.v[1]*wv;
+        const dz = f.n[2] + f.u[2]*wu + f.v[2]*wv;
+        const dl = Math.hypot(dx, dy, dz) || 1;
         const nx = dx/dl, ny = dy/dl, nz = dz/dl;
-        m.pos.push(cx + nx*radius, cy + ny*radius, cz + nz*radius);
+        const px = f.n[0]*half + f.u[0]*cu + f.v[0]*cv + nx*radius;
+        const py = f.n[1]*half + f.u[1]*cu + f.v[1]*cv + ny*radius;
+        const pz = f.n[2]*half + f.u[2]*cu + f.v[2]*cv + nz*radius;
+        m.pos.push(px, py, pz);
         m.nrm.push(nx, ny, nz);
-        m.uv.push(ix/seg, iy/seg);
+        m.uv.push(px*f.u[0] + py*f.u[1] + pz*f.u[2] + 0.5, px*f.v[0] + py*f.v[1] + pz*f.v[2] + 0.5);
+        m.part.push(0);
       }
     }
-    for(let iy=0; iy<seg; iy++){
-      for(let ix=0; ix<seg; ix++){
-        const a = base + iy*(seg+1) + ix, b = a+1, c = a+seg+1, d = c+1;
+    for(let iy = 0; iy < N-1; iy++){
+      for(let ix = 0; ix < N-1; ix++){
+        const a = base + iy*N + ix, b = a+1, c = a+N, d = c+1;
         m.idx.push(a, b, d, a, d, c);
       }
     }
@@ -20153,6 +20217,7 @@ function buildSphere(segU, segV){
       m.pos.push(nx*0.5, ny*0.5, nz*0.5);
       m.nrm.push(nx, ny, nz);
       m.uv.push(u, v);
+      m.part.push(0);
     }
   }
   for(let iy=0; iy<segV; iy++){
@@ -20168,42 +20233,187 @@ function buildSphere(segU, segV){
   return m;
 }
 
-// Cylinder along Y, height 1, radius 0.5, capped.
-function buildCylinder(seg, topR, botR){
+// Cylinder along Y, height 1, radius 0.5, capped. Smooth-sided — for anything
+// faceted, see buildPrism.
+//
+// `bevel` rounds both cap edges with a real fillet (an arc tangent to the cap
+// and to the wall), which is what makes a barrel, a hub or a motor can read as
+// MACHINED: a hard 90° rim catches no light at all. 0 keeps the old hard rim.
+function buildCylinder(seg, topR, botR, bevel){
   seg = seg || 24;
   topR = topR == null ? 0.5 : topR;
   botR = botR == null ? 0.5 : botR;
   const m = emptyMesh();
-  const slope = (botR - topR);
-  for(let iy=0; iy<=1; iy++){
-    const r = iy ? topR : botR, y = iy ? 0.5 : -0.5;
+  const sl = (botR - topR);
+  const snl = Math.hypot(1, sl) || 1;
+  const sr = 1 / snl, sy = sl / snl;              // wall normal: radial, vertical
+  const bB = bevel ? Math.min(bevel, botR * 0.45, 0.25) : 0;
+  const bT = bevel ? Math.min(bevel, topR * 0.45, 0.25) : 0;
+  const fs = 2;                                   // arc steps per fillet
+  // Profile rings, bottom to top: [radius, y, normal radial, normal y].
+  const prof = [];
+  const aSide = Math.atan2(sy, sr);
+  if(bB > 1e-5){
+    const cx = botR - bB * (1 + sy) / sr, cy = -0.5 + bB;
+    for(let k = 0; k <= fs; k++){
+      const a = -Math.PI / 2 + (aSide + Math.PI / 2) * (k / fs);
+      const nr = Math.cos(a), ny = Math.sin(a);
+      prof.push([cx + nr * bB, cy + ny * bB, nr, ny]);
+    }
+  }else{
+    prof.push([botR, -0.5, sr, sy]);
+  }
+  if(bT > 1e-5){
+    const cx = topR - bT * (1 - sy) / sr, cy = 0.5 - bT;
+    for(let k = 0; k <= fs; k++){
+      const a = aSide + (Math.PI / 2 - aSide) * (k / fs);
+      const nr = Math.cos(a), ny = Math.sin(a);
+      prof.push([cx + nr * bT, cy + ny * bT, nr, ny]);
+    }
+  }else{
+    prof.push([topR, 0.5, sr, sy]);
+  }
+  const R = seg + 1;
+  for(let j = 0; j < prof.length; j++){
+    const [r, y, nr, ny] = prof[j];
     for(let ix=0; ix<=seg; ix++){
       const t = ix/seg, a = t*Math.PI*2;
       const cx = Math.cos(a), cz = Math.sin(a);
-      const nl = Math.hypot(1, slope) || 1;
       m.pos.push(cx*r, y, cz*r);
-      m.nrm.push(cx/nl, slope/nl, cz/nl);
-      m.uv.push(t, iy);
+      m.nrm.push(cx*nr, ny, cz*nr);
+      m.uv.push(t, (y + 0.5));
+      m.part.push(0);
     }
   }
-  for(let ix=0; ix<seg; ix++){
-    const a = ix, b = ix+1, c = ix+seg+1, d = c+1;
-    m.idx.push(a, c, b, b, c, d);
+  for(let j = 0; j < prof.length - 1; j++){
+    for(let ix=0; ix<seg; ix++){
+      const a = j*R + ix, b = a+1, c = a+R, d = c+1;
+      m.idx.push(a, c, b, b, c, d);
+    }
   }
-  // Caps, each with its own flat-normal ring so the rim stays a hard edge.
-  [[0.5, topR, 1], [-0.5, botR, -1]].forEach(([y, r, dir]) => {
-    if(r <= 0) return;
+  // Caps, each with its own flat-normal ring so the cap stays a true plane.
+  const capB = prof[0][0], capT = prof[prof.length-1][0];
+  [[0.5, capT, 1], [-0.5, capB, -1]].forEach(([y, r, dir]) => {
+    if(r <= 1e-4) return;
     const centre = m.pos.length/3;
-    m.pos.push(0, y, 0); m.nrm.push(0, dir, 0); m.uv.push(0.5, 0.5);
+    m.pos.push(0, y, 0); m.nrm.push(0, dir, 0); m.uv.push(0.5, 0.5); m.part.push(0);
     for(let ix=0; ix<=seg; ix++){
       const a = (ix/seg)*Math.PI*2;
       m.pos.push(Math.cos(a)*r, y, Math.sin(a)*r);
       m.nrm.push(0, dir, 0);
       m.uv.push(Math.cos(a)*0.5+0.5, Math.sin(a)*0.5+0.5);
+      m.part.push(0);
     }
     for(let ix=0; ix<seg; ix++){
       if(dir > 0) m.idx.push(centre, centre+2+ix, centre+1+ix);
       else        m.idx.push(centre, centre+1+ix, centre+2+ix);
+    }
+  });
+  return m;
+}
+
+// A FACETED prism or frustum along Y (height 1, circumradius 0.5), with bevelled
+// vertical edges and bevelled cap edges.
+//
+// ⚠️ This is what every "hexagonal hull" in this file was supposed to be. They
+// were built with buildCylinder(6), and buildCylinder shares one smooth normal
+// per column — so a hexagon was LIT as a round tube and only its silhouette was
+// hexagonal. The interceptor's "chine edges running its whole length", the
+// tank's "sloped armour", the octagonal plinth: none of those hard lines existed
+// in the shading, and in the model studio the ship read as a bundle of pipes.
+//
+// Each facet here has its own flat normal. `edge` is the share of each facet's
+// width (per side) given to the rounded strip where two facets meet, `cap` is
+// the height of the chamfer round each cap. Corners sit at the same angles
+// buildCylinder used, so every silhouette in the arcade is unchanged.
+function buildPrism(seg, topR, botR, edge, cap){
+  seg = seg || 6;
+  topR = topR == null ? 0.5 : topR;
+  botR = botR == null ? 0.5 : botR;
+  edge = edge == null ? 0.07 : Math.max(0, Math.min(edge, 0.3));
+  cap  = cap  == null ? 0.03 : Math.max(0, cap);
+  const m = emptyMesh();
+  const TAU = Math.PI * 2;
+  const capB = Math.min(cap, botR * 0.35), capT = Math.min(cap, topR * 0.35);
+  const rAt = y => botR + (topR - botR) * (y + 0.5);
+  const cornerAt = (i, y, rr) => { const a = (i / seg) * TAU, r = rr != null ? rr : rAt(y); return [Math.cos(a) * r, y, Math.sin(a) * r]; };
+  // Columns: every facet contributes a START and an END column, inset from its
+  // two corners along the facet, so the strip between one facet's end and the
+  // next one's start is the rounded vertical edge.
+  const cols = [];
+  for(let i = 0; i < seg; i++){
+    const b0 = cornerAt(i, -0.5), b1 = cornerAt(i + 1, -0.5);
+    const t0 = topR > 1e-4 ? cornerAt(i, 0.5) : [0, 0.5, 0];
+    const e1 = [b1[0]-b0[0], b1[1]-b0[1], b1[2]-b0[2]];
+    const e2 = [t0[0]-b0[0], t0[1]-b0[1], t0[2]-b0[2]];
+    let n = [e2[1]*e1[2]-e2[2]*e1[1], e2[2]*e1[0]-e2[0]*e1[2], e2[0]*e1[1]-e2[1]*e1[0]];
+    const nl = Math.hypot(n[0], n[1], n[2]) || 1;
+    n = [n[0]/nl, n[1]/nl, n[2]/nl];
+    const tl = Math.hypot(e1[0], e1[2]) || 1;
+    const tan = [e1[0]/tl, 0, e1[2]/tl];
+    cols.push({ i, end: 0, n, tan });
+    cols.push({ i, end: 1, n, tan });
+  }
+  // Column position on a ring of circumradius r. A cap chamfer is an INSET
+  // POLYGON — the same polygon with its apothem reduced by the chamfer, i.e. its
+  // circumradius by inset / cos(π/seg) — with the edge columns laid out along it
+  // in the same proportions. (Offsetting each column along its own facet normal
+  // instead looks equivalent and is not: near a corner the two columns either
+  // side of the rounded edge are closer together than the inset, so they cross
+  // and the strip between them turns inside out. That is exactly what the
+  // narrow end of every tapered prism did.)
+  const colPos = (c, y, r) => {
+    const p = cornerAt(c.i + c.end, y, r), d = edge * 2 * r * Math.sin(Math.PI / seg) * (c.end ? -1 : 1);
+    return [p[0] + c.tan[0] * d, y, p[2] + c.tan[2] * d];
+  };
+  const apo = Math.cos(Math.PI / seg);
+  // Rings, bottom to top: [y on the wall, inset toward the axis, normal mode]
+  // mode 0 = facet normal, -1 = down, +1 = up.
+  const rings = [];
+  if(capB > 1e-5){ rings.push([-0.5 + capB, capB, -1]); rings.push([-0.5 + capB, 0, 0]); }
+  else rings.push([-0.5, 0, 0]);
+  if(capT > 1e-5){ rings.push([0.5 - capT, 0, 0]); rings.push([0.5 - capT, capT, 1]); }
+  else rings.push([0.5, 0, 0]);
+  const C = cols.length, RN = rings.length;
+  for(let k = 0; k < RN; k++){
+    const [yw, inset, mode] = rings[k];
+    for(let ci = 0; ci < C; ci++){
+      const c = cols[ci];
+      const y = mode === 0 ? yw : (mode < 0 ? -0.5 : 0.5);
+      const p = colPos(c, y, Math.max(0, rAt(yw) - inset / apo));
+      m.pos.push(p[0], y, p[2]);
+      if(mode === 0) m.nrm.push(c.n[0], c.n[1], c.n[2]);
+      else m.nrm.push(0, mode, 0);
+      m.uv.push(ci / C, k / Math.max(1, RN - 1));
+      m.part.push(0);
+    }
+  }
+  for(let k = 0; k < RN - 1; k++){
+    for(let ci = 0; ci < C; ci++){
+      const cj = (ci + 1) % C;
+      // Odd columns are facet ENDS, so (odd → next even) is an edge strip —
+      // zero-width when edge is 0, and skipped rather than emitted degenerate.
+      if(edge <= 0 && (ci & 1)) continue;
+      const a = k*C + ci, b = k*C + cj, c = (k+1)*C + ci, d = (k+1)*C + cj;
+      m.idx.push(a, c, b, b, c, d);
+    }
+  }
+  // Caps: a fan over the outermost cap ring, with its own flat normal.
+  [[RN - 1, 0.5, 1, topR], [0, -0.5, -1, botR]].forEach(([k, y, dir, r]) => {
+    if(r <= 1e-4) return;
+    const centre = m.pos.length / 3;
+    m.pos.push(0, y, 0); m.nrm.push(0, dir, 0); m.uv.push(0.5, 0.5); m.part.push(0);
+    for(let ci = 0; ci < C; ci++){
+      const src = k*C + ci;
+      m.pos.push(m.pos[src*3], y, m.pos[src*3+2]);
+      m.nrm.push(0, dir, 0);
+      m.uv.push(ci / C, dir > 0 ? 1 : 0);
+      m.part.push(0);
+    }
+    for(let ci = 0; ci < C; ci++){
+      const cj = (ci + 1) % C;
+      if(dir > 0) m.idx.push(centre, centre+1+cj, centre+1+ci);
+      else        m.idx.push(centre, centre+1+ci, centre+1+cj);
     }
   });
   return m;
@@ -20223,6 +20433,7 @@ function buildTorus(R, r, segU, segV){
       m.pos.push(ca*(R + r*cb), r*sb, sa*(R + r*cb));
       m.nrm.push(nx, ny, nz);
       m.uv.push(u, v);
+      m.part.push(0);
     }
   }
   for(let i=0; i<segU; i++){
@@ -20240,7 +20451,8 @@ function buildQuad(){
     pos:[-0.5,-0.5,0,  0.5,-0.5,0,  0.5,0.5,0,  -0.5,0.5,0],
     nrm:[0,0,1, 0,0,1, 0,0,1, 0,0,1],
     uv: [0,0, 1,0, 1,1, 0,1],
-    idx:[0,1,2, 0,2,3]
+    idx:[0,1,2, 0,2,3],
+    part:[0,0,0,0]
   };
 }
 
@@ -20254,6 +20466,7 @@ function buildGround(seg){
       m.pos.push(ix/seg - 0.5, 0, iz/seg - 0.5);
       m.nrm.push(0,1,0);
       m.uv.push(ix/seg, iz/seg);
+      m.part.push(0);
     }
   }
   for(let iz=0; iz<seg; iz++){
@@ -20265,40 +20478,104 @@ function buildGround(seg){
   return m;
 }
 
-// Low-poly faceted rock — flat-shaded, seeded so it is stable across frames.
-// Meteors and destructible cores.
+// A weathered rock — seeded, so it is stable across frames and mounts. Meteors,
+// asteroids and destructible cores.
+//
+// The first version displaced a 14×10 sphere at random per VERTEX and then gave
+// every triangle its own flat normal, which is how you model cut crystal: 252
+// mirror-flat shards at unrelated angles, each flashing on and off as it
+// tumbled. A real rock is the opposite — a smooth, lumpy mass (low-frequency
+// shape), a few impact craters and fracture planes (mid-frequency), and grain
+// (high-frequency, which is the MINERAL surface style's job, not the mesh's).
+// So: seeded 3D value-noise fbm for the mass, carved craters with raised rims,
+// two planar fracture faces, and smooth normals welded across the UV seam.
 function buildRock(seed){
-  const base = buildSphere(14, 10);
-  let s = seed || 1;
+  let s = (seed || 1) >>> 0;
   const rnd = () => (s = (s*1664525 + 1013904223) >>> 0) / 4294967296;
-  // Displace along the normal, then rebuild flat normals from the triangles so
-  // the silhouette reads as chipped stone rather than a dented ball.
-  const disp = [];
-  for(let i=0;i<base.pos.length;i+=3){
-    const k = 0.72 + rnd()*0.5;
-    disp.push(base.pos[i]*k, base.pos[i+1]*k, base.pos[i+2]*k);
-  }
+  // Seeded lattice for value noise.
+  const perm = new Uint16Array(512), vals = new Float32Array(256);
+  for(let i = 0; i < 256; i++){ perm[i] = i; vals[i] = rnd(); }
+  for(let i = 255; i > 0; i--){ const j = (rnd() * (i + 1)) | 0; const t = perm[i]; perm[i] = perm[j]; perm[j] = t; }
+  for(let i = 0; i < 256; i++) perm[256 + i] = perm[i];
+  const lat = (x, y, z) => vals[perm[(perm[(perm[x & 255] + y) & 255] + z) & 255]];
+  const fade = t => t * t * (3 - 2 * t);
+  const noise3 = (x, y, z) => {
+    const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+    const fx = fade(x - xi), fy = fade(y - yi), fz = fade(z - zi);
+    const L = (a, b, t) => a + (b - a) * t;
+    return L(L(L(lat(xi,yi,zi),   lat(xi+1,yi,zi),   fx), L(lat(xi,yi+1,zi),   lat(xi+1,yi+1,zi),   fx), fy),
+             L(L(lat(xi,yi,zi+1), lat(xi+1,yi,zi+1), fx), L(lat(xi,yi+1,zi+1), lat(xi+1,yi+1,zi+1), fx), fy), fz);
+  };
+  const fbm = (x, y, z, oct) => { let a = 0.5, f = 1, sum = 0, norm = 0; for(let o = 0; o < oct; o++){ sum += a * noise3(x*f, y*f, z*f); norm += a; a *= 0.5; f *= 2.03; } return sum / norm; };
+  const off = [rnd() * 50, rnd() * 50, rnd() * 50];
+  const randDir = () => { const u = rnd() * 2 - 1, th = rnd() * Math.PI * 2, q = Math.sqrt(1 - u*u); return [q*Math.cos(th), u, q*Math.sin(th)]; };
+  const craters = [];
+  const nc = 3 + ((rnd() * 3) | 0);
+  for(let i = 0; i < nc; i++) craters.push({ d: randDir(), rad: 0.28 + rnd() * 0.32, depth: 0.035 + rnd() * 0.05 });
+  const planes = [];
+  for(let i = 0; i < 2; i++) planes.push({ n: randDir(), c: 0.40 + rnd() * 0.06 });
+  const stretch = [0.92 + rnd() * 0.2, 0.84 + rnd() * 0.16, 0.95 + rnd() * 0.2];
+
+  const segU = 30, segV = 20;
   const m = emptyMesh();
-  for(let i=0;i<base.idx.length;i+=3){
-    const ia=base.idx[i]*3, ib=base.idx[i+1]*3, ic=base.idx[i+2]*3;
-    const ax=disp[ia],ay=disp[ia+1],az=disp[ia+2];
-    const bx=disp[ib],by=disp[ib+1],bz=disp[ib+2];
-    const cx=disp[ic],cy=disp[ic+1],cz=disp[ic+2];
-    const nx = (by-ay)*(cz-az) - (bz-az)*(cy-ay);
-    const ny = (bz-az)*(cx-ax) - (bx-ax)*(cz-az);
-    const nz = (bx-ax)*(cy-ay) - (by-ay)*(cx-ax);
-    const nl = Math.hypot(nx,ny,nz) || 1;
-    const b = m.pos.length/3;
-    m.pos.push(ax,ay,az, bx,by,bz, cx,cy,cz);
-    for(let k=0;k<3;k++) m.nrm.push(nx/nl, ny/nl, nz/nl);
-    m.uv.push(0,0, 1,0, 0,1);
-    m.idx.push(b, b+1, b+2);
+  const ids = [];
+  for(let iy = 0; iy <= segV; iy++){
+    const phi = (iy / segV) * Math.PI;
+    for(let ix = 0; ix <= segU; ix++){
+      const th = (ix / segU) * Math.PI * 2;
+      const d = [Math.sin(phi) * Math.cos(th), Math.cos(phi), Math.sin(phi) * Math.sin(th)];
+      let r = 0.5 * (1 + 0.30 * (fbm(d[0]*1.45 + off[0], d[1]*1.45 + off[1], d[2]*1.45 + off[2], 3) - 0.5)
+                       + 0.10 * (fbm(d[0]*4.2 + off[1], d[1]*4.2 + off[2], d[2]*4.2 + off[0], 3) - 0.5));
+      for(const c of craters){
+        const cosA = d[0]*c.d[0] + d[1]*c.d[1] + d[2]*c.d[2];
+        const ang = Math.acos(Math.max(-1, Math.min(1, cosA)));
+        const t = ang / c.rad;
+        if(t < 1.35){
+          const bowl = t < 1 ? (1 - t * t) : 0;
+          const rim = Math.exp(-Math.pow((t - 1.0) / 0.18, 2));
+          r += c.depth * (-bowl + 0.45 * rim);
+        }
+      }
+      let p = [d[0] * r * stretch[0], d[1] * r * stretch[1], d[2] * r * stretch[2]];
+      for(const pl of planes){
+        const dd = p[0]*pl.n[0] + p[1]*pl.n[1] + p[2]*pl.n[2];
+        if(dd > pl.c){ const k = dd - pl.c; p = [p[0] - pl.n[0]*k, p[1] - pl.n[1]*k, p[2] - pl.n[2]*k]; }
+      }
+      m.pos.push(p[0], p[1], p[2]);
+      m.nrm.push(0, 0, 0);
+      m.uv.push(ix / segU, iy / segV);
+      m.part.push(0);
+      ids.push(iy === 0 ? 0 : iy === segV ? 1 : 2 + (iy - 1) * segU + (ix % segU));
+    }
+  }
+  for(let iy = 0; iy < segV; iy++){
+    for(let ix = 0; ix < segU; ix++){
+      const a = iy*(segU+1)+ix, b = a+1, c = a+segU+1, d = c+1;
+      if(iy) m.idx.push(a, b, d);
+      if(iy !== segV-1) m.idx.push(a, d, c);
+    }
+  }
+  // Area-weighted smooth normals, accumulated per WELDED vertex so the UV seam
+  // and the two poles do not show as creases.
+  const acc = new Float64Array((2 + (segV - 1) * segU) * 3);
+  for(let t = 0; t < m.idx.length; t += 3){
+    const ia = m.idx[t], ib = m.idx[t+1], ic = m.idx[t+2];
+    const ax = m.pos[ia*3], ay = m.pos[ia*3+1], az = m.pos[ia*3+2];
+    const ux = m.pos[ib*3]-ax, uy = m.pos[ib*3+1]-ay, uz = m.pos[ib*3+2]-az;
+    const vx = m.pos[ic*3]-ax, vy = m.pos[ic*3+1]-ay, vz = m.pos[ic*3+2]-az;
+    const nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+    for(const v of [ia, ib, ic]){ const k = ids[v]*3; acc[k] += nx; acc[k+1] += ny; acc[k+2] += nz; }
+  }
+  for(let v = 0; v < ids.length; v++){
+    const k = ids[v]*3;
+    const l = Math.hypot(acc[k], acc[k+1], acc[k+2]) || 1;
+    m.nrm[v*3] = acc[k]/l; m.nrm[v*3+1] = acc[k+1]/l; m.nrm[v*3+2] = acc[k+2]/l;
   }
   return m;
 }
 
 // ── HARD-SURFACE HELPERS ──
-// Push a single flat-shaded face. Every hull below is built out of these rather
+// Push a single flat-shaded face. The wing below is built out of these rather
 // than out of stretched spheres, because a flat face with a hard edge is the
 // only thing that gives a shadowless renderer a crisp silhouette line to put
 // the rim light on — a rounded box has no edge, so it reads as a lozenge.
@@ -20313,6 +20590,7 @@ function faceQuad(m, a, b, c, d){
     m.pos.push(q[i][0],q[i][1],q[i][2]);
     m.nrm.push(nx,ny,nz);
     m.uv.push((i===1||i===2)?1:0, (i>=2)?1:0);
+    if(m.part) m.part.push(0);
   }
   m.idx.push(b0,b0+1,b0+2, b0,b0+2,b0+3);
 }
@@ -20323,7 +20601,7 @@ function faceTri(m, a, b, c){
   const l=Math.hypot(nx,ny,nz)||1; nx/=l; ny/=l; nz/=l;
   const b0=m.pos.length/3;
   const q=[a,b,c];
-  for(let i=0;i<3;i++){ m.pos.push(q[i][0],q[i][1],q[i][2]); m.nrm.push(nx,ny,nz); m.uv.push(i===1?1:0, i===2?1:0); }
+  for(let i=0;i<3;i++){ m.pos.push(q[i][0],q[i][1],q[i][2]); m.nrm.push(nx,ny,nz); m.uv.push(i===1?1:0, i===2?1:0); if(m.part) m.part.push(0); }
   m.idx.push(b0,b0+1,b0+2);
 }
 // Bridge two closed rings of equal length into a tube wall.
@@ -20375,6 +20653,13 @@ function buildWing(o){
   return m;
 }
 
+// A small lamp lens: a squashed sphere, for navigation lights, sensor LEDs and
+// status lamps. Tiny on purpose — at gameplay distance it is a point of light,
+// which is exactly what a real navigation light reads as.
+function lampAt(m, p, r, part){
+  mergeMesh(m, buildSphere(8, 6), { pos: p, scale: [r, r, r], part });
+}
+
 // ── ASSEMBLED HULLS ──
 // Multi-part models built out of the primitives above. Each is one geometry, so
 // a fleet of them is still a single instanced draw call.
@@ -20387,6 +20672,12 @@ function buildWing(o){
 // only where a highlight is wanted, and they carry RECESSES the games can sit a
 // glow inside. They also lean on the procedural surface detail (SURF.HULL /
 // SURF.TECH), which supplies the plating so the geometry does not have to.
+//
+// 2026-09-16: faceted parts are real facets now (buildPrism), and every model
+// carries material PARTS — glass, trim, gunmetal, rubber, lamps — so it reads as
+// an assembled machine rather than one moulded colour. ⚠️ Every anchor a mission
+// hangs a glow or a lamp off (the ship's nozzles, the raider's eye, the drone's
+// rotor hubs) is kept at exactly its old position.
 
 // Player interceptor. Nose points at -Z, which is "into the screen" for every
 // 3D game here. Hexagonal fuselage cross-section: the two chine edges running
@@ -20394,24 +20685,27 @@ function buildWing(o){
 // they give the rim light one hard line to trace from nose to tail.
 function buildShip(){
   const m = emptyMesh();
-  const hex6 = buildCylinder(6);
+  const hex6 = buildPrism(6, 0.5, 0.5, 0.06, 0.02);
   const rb   = buildRoundedBox(0.07, 2);
-  const cyl  = buildCylinder(16);
   const RX   = Math.PI/2;
 
   // Fuselage: mid body, then a tapered nose section forward of it.
   mergeMesh(m, hex6, { pos:[0, 0, 0.16], scale:[0.40, 1.15, 0.30], rot:[RX, 0, 0] });
-  mergeMesh(m, buildCylinder(6, 0.14, 0.5),
+  mergeMesh(m, buildPrism(6, 0.14, 0.5, 0.06, 0.02),
                     { pos:[0, 0, -0.74], scale:[0.40, 0.60, 0.30], rot:[-RX, 0, 0] });
+  // Radome tip — the nose used to stop in a flat hexagonal cut.
+  mergeMesh(m, buildSphere(12, 8), { pos:[0, 0, -1.045], scale:[0.10, 0.08, 0.08], part: PART.TRIM });
   // Dorsal spine and a ventral keel strake — thin, hard, full length.
   mergeMesh(m, rb, { pos:[0, 0.15, 0.20], scale:[0.075, 0.10, 1.30] });
-  mergeMesh(m, rb, { pos:[0, -0.14, 0.26], scale:[0.10, 0.09, 1.05] });
+  mergeMesh(m, rb, { pos:[0, -0.14, 0.26], scale:[0.10, 0.09, 1.05], part: PART.TRIM });
 
-  // Canopy: a faceted blister in a recessed collar, not a glued-on ball. The
-  // collar is what gives the games a rim to bounce the cockpit glow off.
-  mergeMesh(m, rb,   { pos:[0, 0.14, -0.30], scale:[0.26, 0.10, 0.52] });
-  mergeMesh(m, buildCylinder(6, 0.30, 0.5),
-                     { pos:[0, 0.20, -0.32], scale:[0.21, 0.44, 0.17], rot:[RX, 0, 0] });
+  // Canopy: a glass bubble seated in a trim collar. It used to be a hexagonal
+  // blister in the same chrome as the wings, which is why nothing on the hull
+  // said "cockpit" — glass has to be a different MATERIAL, not a different shape.
+  mergeMesh(m, rb,   { pos:[0, 0.14, -0.30], scale:[0.26, 0.10, 0.52], part: PART.TRIM });
+  mergeMesh(m, buildSphere(20, 12), { pos:[0, 0.205, -0.33], scale:[0.19, 0.15, 0.44], part: PART.GLASS });
+  // Canopy bow and spine frame.
+  mergeMesh(m, rb,   { pos:[0, 0.275, -0.33], scale:[0.022, 0.016, 0.40], part: PART.TRIM });
 
   [-1, 1].forEach(s => {
     // Main delta, swept back with a real taper and a hard leading edge.
@@ -20428,15 +20722,21 @@ function buildShip(){
     // Engine: nacelle, then a nozzle ring left OPEN so the games' thruster glow
     // sits inside a housing instead of floating behind a capped cylinder.
     mergeMesh(m, hex6, { pos:[s*0.36, -0.02, 0.44], scale:[0.21, 0.60, 0.21], rot:[RX, 0, 0] });
-    mergeMesh(m, buildCylinder(12, 0.5, 0.34),
-                       { pos:[s*0.36, -0.02, 0.76], scale:[0.25, 0.16, 0.25], rot:[-RX, 0, 0] });
+    mergeMesh(m, buildCylinder(12, 0.5, 0.34, 0.06),
+                       { pos:[s*0.36, -0.02, 0.76], scale:[0.25, 0.16, 0.25], rot:[-RX, 0, 0], part: PART.TRIM });
+    // Nozzle throat — heat-tinted, set just inside the bell's open end.
+    mergeMesh(m, buildCylinder(12), { pos:[s*0.36, -0.02, 0.842], scale:[0.150, 0.012, 0.150], rot:[RX, 0, 0], part: PART.HEAT });
     // Intake lip forward of the nacelle.
-    mergeMesh(m, buildCylinder(12, 0.34, 0.5),
-                       { pos:[s*0.36, -0.02, 0.12], scale:[0.23, 0.13, 0.23], rot:[-RX, 0, 0] });
+    mergeMesh(m, buildCylinder(12, 0.34, 0.5, 0.05),
+                       { pos:[s*0.36, -0.02, 0.12], scale:[0.23, 0.13, 0.23], rot:[-RX, 0, 0], part: PART.TRIM });
     // Under-wing hardpoint and a stub cannon barrel.
-    mergeMesh(m, rb,  { pos:[s*0.50, -0.12, 0.16], scale:[0.09, 0.09, 0.40] });
-    mergeMesh(m, cyl, { pos:[s*0.50, -0.13, -0.18], scale:[0.045, 0.42, 0.045], rot:[RX, 0, 0] });
+    mergeMesh(m, rb,  { pos:[s*0.50, -0.12, 0.16], scale:[0.09, 0.09, 0.40], part: PART.TRIM });
+    mergeMesh(m, buildCylinder(16, 0.5, 0.5, 0.08), { pos:[s*0.50, -0.13, -0.18], scale:[0.045, 0.42, 0.045], rot:[RX, 0, 0], part: PART.GUNMETAL });
+    // Navigation lights on the wing tips: red to port (-X), green to starboard.
+    lampAt(m, [s*0.79, -0.115, 0.43], 0.024, s < 0 ? PART.NAV_RED : PART.NAV_GREEN);
   });
+  // Tail strobe at the end of the spine.
+  lampAt(m, [0, 0.205, 0.855], 0.02, PART.NAV_WHITE);
   return m;
 }
 
@@ -20450,10 +20750,12 @@ function buildRaider(){
   const RX = Math.PI/2, RZ = Math.PI/2;
 
   // Core wedge: broad at the back, tapering to a beak at +Z.
-  mergeMesh(m, buildCylinder(5, 0.16, 0.5),
+  mergeMesh(m, buildPrism(5, 0.16, 0.5, 0.05, 0.02),
                     { pos:[0, 0, 0.10], scale:[0.62, 0.90, 0.44], rot:[-RX, 0, 0] });
   // Rear engine block.
-  mergeMesh(m, buildCylinder(5), { pos:[0, 0, -0.42], scale:[0.46, 0.26, 0.34], rot:[-RX, 0, 0] });
+  mergeMesh(m, buildPrism(5, 0.5, 0.5, 0.05, 0.03), { pos:[0, 0, -0.42], scale:[0.46, 0.26, 0.34], rot:[-RX, 0, 0], part: PART.TRIM });
+  // Twin exhaust throats in the engine block's rear face.
+  [-1, 1].forEach(s => mergeMesh(m, buildCylinder(12), { pos:[s*0.10, 0, -0.557], scale:[0.10, 0.012, 0.10], rot:[RX, 0, 0], part: PART.HEAT }));
   // Dorsal crest, raked back. Rolled 90 degrees about Z so the wing's SPAN
   // becomes the vertical axis and its chord stays fore-aft — which is what
   // makes it a centreline fin. (Rolling it about X instead, as the first cut
@@ -20475,17 +20777,17 @@ function buildRaider(){
     // instead — as the first cut did, by reading `sweep` as if it were the tip
     // position — left both barbs floating a quarter of a unit off the model.
     mergeMesh(m, buildWing({ span:1, rootC:0.34, tipC:0.05, sweep:0.30, rootT:0.055, tipT:0.015 }),
-              { pos:[s*0.80, -0.02, 0.135], scale:[s*0.30, 0.26, 0.42], rot:[0, -s*0.70, s*0.24] });
+              { pos:[s*0.80, -0.02, 0.135], scale:[s*0.30, 0.26, 0.42], rot:[0, -s*0.70, s*0.24], part: PART.GUNMETAL });
     // Outboard drive pod, canted out and down.
-    mergeMesh(m, buildCylinder(6), { pos:[s*0.34, -0.13, -0.34], scale:[0.15, 0.44, 0.15], rot:[RX, 0, s*0.18] });
+    mergeMesh(m, buildPrism(6, 0.5, 0.5, 0.06, 0.03), { pos:[s*0.34, -0.13, -0.34], scale:[0.15, 0.44, 0.15], rot:[RX, 0, s*0.18], part: PART.TRIM });
     // Cheek armour along the wedge.
     mergeMesh(m, rb, { pos:[s*0.22, 0.05, 0.08], scale:[0.10, 0.15, 0.60], rot:[0, s*0.16, 0] });
   });
 
   // Sensor eye, sunk into a brow socket. The games light this with a high
   // emissive; the surrounding brow is what stops it blooming into a bare dot.
-  mergeMesh(m, buildCylinder(8), { pos:[0, 0.05, 0.40], scale:[0.30, 0.16, 0.26], rot:[RX, 0, 0] });
-  mergeMesh(m, buildSphere(14, 9), { pos:[0, 0.05, 0.50], scale:[0.20, 0.16, 0.18] });
+  mergeMesh(m, buildPrism(8, 0.5, 0.5, 0.05, 0.04), { pos:[0, 0.05, 0.40], scale:[0.30, 0.16, 0.26], rot:[RX, 0, 0], part: PART.TRIM });
+  mergeMesh(m, buildSphere(14, 9), { pos:[0, 0.05, 0.50], scale:[0.20, 0.16, 0.18], part: PART.LAMP });
   return m;
 }
 
@@ -20494,18 +20796,22 @@ function buildRaider(){
 // rather than one because the single biggest tell that a city is procedural is
 // every building being the same shape at a different scale — the eye reads the
 // repeat long before it reads any surface detail. They all take SURF.WINDOWS,
-// which supplies the storeys.
+// which supplies the storeys. Roof plant and masts are TRIM, so the facade
+// pattern stays on the facade, and every mast carries a red aviation
+// obstruction light — which is what a real skyline's crown actually looks like
+// at night.
 
 // Setback block: the workhorse. Slab, one setback, plant room, mast.
 function buildTower(){
   const m = emptyMesh();
   const rb = buildRoundedBox(0.03, 2), cyl = buildCylinder(8);
   mergeMesh(m, rb,  { pos:[0, -0.06, 0], scale:[1.0, 0.88, 1.0] });
-  mergeMesh(m, rb,  { pos:[0, 0.40,  0], scale:[0.82, 0.10, 0.82] });   // setback lip
+  mergeMesh(m, rb,  { pos:[0, 0.40,  0], scale:[0.82, 0.10, 0.82], part: PART.TRIM });   // setback lip
   mergeMesh(m, rb,  { pos:[0, 0.56,  0], scale:[0.70, 0.24, 0.70] });
-  mergeMesh(m, rb,  { pos:[0, 0.72,  0], scale:[0.40, 0.12, 0.40] });   // plant room
-  mergeMesh(m, cyl, { pos:[0, 0.92,  0], scale:[0.03, 0.34, 0.03] });   // mast
-  mergeMesh(m, rb,  { pos:[0, 0.79,  0], scale:[0.16, 0.04, 0.16] });   // collar
+  mergeMesh(m, rb,  { pos:[0, 0.72,  0], scale:[0.40, 0.12, 0.40], part: PART.TRIM });   // plant room
+  mergeMesh(m, cyl, { pos:[0, 0.92,  0], scale:[0.03, 0.34, 0.03], part: PART.TRIM });   // mast
+  mergeMesh(m, rb,  { pos:[0, 0.79,  0], scale:[0.16, 0.04, 0.16], part: PART.TRIM });   // collar
+  lampAt(m, [0, 1.093, 0], 0.012, PART.NAV_RED);
   return m;
 }
 
@@ -20516,8 +20822,10 @@ function buildTowerSlab(){
   const rb = buildRoundedBox(0.02, 2);
   mergeMesh(m, rb, { pos:[0, 0, 0],      scale:[1.0, 1.0, 0.52] });
   mergeMesh(m, rb, { pos:[0, 0.02, 0],   scale:[0.34, 1.05, 0.60] });   // core spine
-  mergeMesh(m, rb, { pos:[0, 0.53, 0],   scale:[1.02, 0.05, 0.56] });   // crown band
-  mergeMesh(m, rb, { pos:[0.36, 0.58, 0],scale:[0.14, 0.10, 0.30] });   // roof plant
+  mergeMesh(m, rb, { pos:[0, 0.53, 0],   scale:[1.02, 0.05, 0.56], part: PART.TRIM });   // crown band
+  mergeMesh(m, rb, { pos:[0.36, 0.58, 0],scale:[0.14, 0.10, 0.30], part: PART.TRIM });   // roof plant
+  lampAt(m, [-0.46, 0.563, 0], 0.012, PART.NAV_RED);
+  lampAt(m, [ 0.46, 0.563, 0], 0.012, PART.NAV_RED);
   return m;
 }
 
@@ -20525,13 +20833,14 @@ function buildTowerSlab(){
 // silhouette, and the one that gives a skyline its tallest, most distinct peaks.
 function buildTowerStepped(){
   const m = emptyMesh();
-  const rb = buildRoundedBox(0.025, 2), cyl = buildCylinder(6);
+  const rb = buildRoundedBox(0.025, 2);
   mergeMesh(m, rb,  { pos:[0, -0.24, 0], scale:[1.0,  0.52, 1.0]  });
   mergeMesh(m, rb,  { pos:[0,  0.10, 0], scale:[0.76, 0.20, 0.76] });
   mergeMesh(m, rb,  { pos:[0,  0.34, 0], scale:[0.56, 0.30, 0.56] });
   mergeMesh(m, rb,  { pos:[0,  0.58, 0], scale:[0.34, 0.22, 0.34] });
-  mergeMesh(m, cyl, { pos:[0,  0.82, 0], scale:[0.16, 0.28, 0.16] });   // crown
-  mergeMesh(m, cyl, { pos:[0,  1.00, 0], scale:[0.025, 0.22, 0.025] });
+  mergeMesh(m, buildPrism(6, 0.5, 0.5, 0.06, 0.04), { pos:[0,  0.82, 0], scale:[0.16, 0.28, 0.16], part: PART.TRIM });   // crown
+  mergeMesh(m, buildCylinder(8), { pos:[0,  1.00, 0], scale:[0.025, 0.22, 0.025], part: PART.TRIM });
+  lampAt(m, [0, 1.112, 0], 0.012, PART.NAV_RED);
   return m;
 }
 
@@ -20541,13 +20850,14 @@ function buildTowerSpire(){
   const m = emptyMesh();
   const cyl = buildCylinder(12), rb = buildRoundedBox(0.03, 2);
   mergeMesh(m, buildCylinder(12, 0.42, 0.5), { pos:[0, -0.05, 0], scale:[1.0, 0.94, 1.0] });
-  mergeMesh(m, cyl, { pos:[0, 0.30, 0], scale:[1.14, 0.05, 1.14] });    // sky-lobby collar
+  mergeMesh(m, cyl, { pos:[0, 0.30, 0], scale:[1.14, 0.05, 1.14], part: PART.TRIM });    // sky-lobby collar
   mergeMesh(m, cyl, { pos:[0, 0.52, 0], scale:[0.80, 0.16, 0.80] });
-  mergeMesh(m, cyl, { pos:[0, 0.64, 0], scale:[0.34, 0.12, 0.34] });
+  mergeMesh(m, cyl, { pos:[0, 0.64, 0], scale:[0.34, 0.12, 0.34], part: PART.TRIM });
   [0, 1, 2].forEach(i => {
     const a = i * 2.094;
-    mergeMesh(m, rb, { pos:[Math.cos(a)*0.13, 0.82, Math.sin(a)*0.13], scale:[0.02, 0.32, 0.02] });
+    mergeMesh(m, rb, { pos:[Math.cos(a)*0.13, 0.82, Math.sin(a)*0.13], scale:[0.02, 0.32, 0.02], part: PART.TRIM });
   });
+  lampAt(m, [Math.cos(0)*0.13, 0.985, Math.sin(0)*0.13], 0.012, PART.NAV_RED);
   return m;
 }
 
@@ -20556,28 +20866,30 @@ function buildTowerSpire(){
 // which at any distance read as four floating hoops rather than as lift.
 function buildDrone(){
   const m = emptyMesh();
-  const rb  = buildRoundedBox(0.12, 3), cyl = buildCylinder(12);
+  const rb  = buildRoundedBox(0.12, 3);
   const tor = buildTorus(0.42, 0.055, 16, 7);
   const RZ  = Math.PI/2;
   // Body: a hexagonal pod with a sensor turret slung under the nose.
-  mergeMesh(m, buildCylinder(6), { pos:[0, 0, 0.02], scale:[0.52, 0.70, 0.34], rot:[Math.PI/2, 0, 0] });
-  mergeMesh(m, rb,  { pos:[0, 0.14, 0.06], scale:[0.34, 0.14, 0.46] });          // avionics deck
-  mergeMesh(m, buildCylinder(10, 0.28, 0.5),
-                    { pos:[0, -0.13, -0.24], scale:[0.26, 0.18, 0.26] });        // sensor ball housing
-  mergeMesh(m, buildSphere(14, 9), { pos:[0, -0.22, -0.24], scale:[0.20, 0.18, 0.20] });
+  mergeMesh(m, buildPrism(6, 0.5, 0.5, 0.07, 0.04), { pos:[0, 0, 0.02], scale:[0.52, 0.70, 0.34], rot:[Math.PI/2, 0, 0] });
+  mergeMesh(m, rb,  { pos:[0, 0.14, 0.06], scale:[0.34, 0.14, 0.46], part: PART.TRIM });          // avionics deck
+  mergeMesh(m, buildCylinder(10, 0.28, 0.5, 0.04),
+                    { pos:[0, -0.13, -0.24], scale:[0.26, 0.18, 0.26], part: PART.TRIM });        // sensor ball housing
+  mergeMesh(m, buildSphere(14, 9), { pos:[0, -0.22, -0.24], scale:[0.20, 0.18, 0.20], part: PART.GLASS });
   [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sz]) => {
     const bx = sx*0.40, bz = sz*0.36, rx = sx*0.54, rz = sz*0.46;
-    mergeMesh(m, cyl, { pos:[bx, 0.05, bz], scale:[0.05, 0.42, 0.05], rot:[0, 0, RZ] });
-    mergeMesh(m, cyl, { pos:[rx, 0.06, rz], scale:[0.11, 0.10, 0.11] });          // motor can
+    mergeMesh(m, buildCylinder(12, 0.5, 0.5, 0.06), { pos:[bx, 0.05, bz], scale:[0.05, 0.42, 0.05], rot:[0, 0, RZ], part: PART.TRIM });
+    mergeMesh(m, buildCylinder(12, 0.5, 0.5, 0.08), { pos:[rx, 0.06, rz], scale:[0.11, 0.10, 0.11], part: PART.CHROME });   // motor can
     mergeMesh(m, tor, { pos:[rx, 0.08, rz], scale:[0.60, 0.60, 0.60] });          // duct ring
     // Two blades per rotor, set at a pitch angle so they catch the light.
     [0, 1].forEach(b => {
       const a = b * Math.PI/2 + (sx*sz > 0 ? 0.4 : -0.4);
       mergeMesh(m, buildWing({ span:1, rootC:0.30, tipC:0.16, sweep:0.06, rootT:0.05, tipT:0.02 }),
-                { pos:[rx, 0.08, rz], scale:[0.24, 0.24, 0.24], rot:[0, a, 0.22] });
+                { pos:[rx, 0.08, rz], scale:[0.24, 0.24, 0.24], rot:[0, a, 0.22], part: PART.TRIM });
       mergeMesh(m, buildWing({ span:1, rootC:0.30, tipC:0.16, sweep:0.06, rootT:0.05, tipT:0.02 }),
-                { pos:[rx, 0.08, rz], scale:[-0.24, 0.24, 0.24], rot:[0, a, -0.22] });
+                { pos:[rx, 0.08, rz], scale:[-0.24, 0.24, 0.24], rot:[0, a, -0.22], part: PART.TRIM });
     });
+    // Arm lights, aviation convention: red on the left arms, green on the right.
+    lampAt(m, [rx, 0.118, rz], 0.018, sx < 0 ? PART.NAV_RED : PART.NAV_GREEN);
   });
   return m;
 }
@@ -20589,15 +20901,19 @@ function buildDrone(){
 // stretched cube.
 function buildTurret(){
   const m = emptyMesh();
-  const rb = buildRoundedBox(0.05, 2), cyl = buildCylinder(14);
+  const rb = buildRoundedBox(0.05, 2);
   const RX = Math.PI/2;
-  mergeMesh(m, buildCylinder(8, 0.40, 0.5), { pos:[0, -0.34, 0], scale:[1.0, 0.32, 1.0] });  // plinth
-  mergeMesh(m, cyl, { pos:[0, -0.16, 0], scale:[0.66, 0.10, 0.66] });                         // race ring
-  mergeMesh(m, buildCylinder(6), { pos:[0, 0.02, 0.02], scale:[0.66, 0.34, 0.72], rot:[0, Math.PI/6, 0] }); // mantlet
-  mergeMesh(m, rb,  { pos:[0, 0.22, 0.04], scale:[0.40, 0.16, 0.44] });                       // sight block
+  mergeMesh(m, buildPrism(8, 0.40, 0.5, 0.05, 0.03), { pos:[0, -0.34, 0], scale:[1.0, 0.32, 1.0] });   // plinth
+  mergeMesh(m, buildCylinder(14, 0.5, 0.5, 0.05), { pos:[0, -0.16, 0], scale:[0.66, 0.10, 0.66], part: PART.TRIM });    // race ring
+  mergeMesh(m, buildPrism(6, 0.5, 0.5, 0.06, 0.04), { pos:[0, 0.02, 0.02], scale:[0.66, 0.34, 0.72], rot:[0, Math.PI/6, 0] }); // mantlet
+  mergeMesh(m, rb,  { pos:[0, 0.22, 0.04], scale:[0.40, 0.16, 0.44], part: PART.TRIM });                       // sight block
+  // Sight lens on the block's front face.
+  mergeMesh(m, buildCylinder(12, 0.5, 0.5, 0.1), { pos:[0.09, 0.225, -0.185], scale:[0.09, 0.03, 0.09], rot:[RX, 0, 0], part: PART.GLASS });
   [-1, 1].forEach(s => {
-    mergeMesh(m, cyl, { pos:[s*0.17, 0.0, -0.44], scale:[0.085, 0.62, 0.085], rot:[RX, 0, 0] });
-    mergeMesh(m, buildCylinder(10, 0.5, 0.36), { pos:[s*0.17, 0.0, -0.76], scale:[0.11, 0.14, 0.11], rot:[-RX, 0, 0] });
+    // Barrel with a recoil sleeve at the root and a muzzle brake at the tip.
+    mergeMesh(m, buildCylinder(14, 0.5, 0.5, 0.05), { pos:[s*0.17, 0.0, -0.44], scale:[0.085, 0.62, 0.085], rot:[RX, 0, 0], part: PART.GUNMETAL });
+    mergeMesh(m, buildCylinder(14, 0.5, 0.5, 0.08), { pos:[s*0.17, 0.0, -0.34], scale:[0.12, 0.12, 0.12], rot:[RX, 0, 0], part: PART.TRIM });
+    mergeMesh(m, buildCylinder(10, 0.5, 0.36, 0.06), { pos:[s*0.17, 0.0, -0.76], scale:[0.11, 0.14, 0.11], rot:[-RX, 0, 0], part: PART.GUNMETAL });
   });
   return m;
 }
@@ -20608,17 +20924,17 @@ function buildTurret(){
 // "unstable core" read than a glowing ball.
 function buildCore(){
   const m = emptyMesh();
-  const rb = buildRoundedBox(0.04, 2), cyl = buildCylinder(10);
+  const rb = buildRoundedBox(0.04, 2);
   // Six meridian ribs.
   for(let i=0;i<6;i++){
     const a = i * Math.PI/6;
     mergeMesh(m, buildTorus(0.46, 0.045, 20, 6), { pos:[0,0,0], scale:[1,1,1], rot:[Math.PI/2, a, 0] });
   }
   // Polar caps and an equatorial band.
-  mergeMesh(m, buildTorus(0.46, 0.06, 24, 7), { pos:[0,0,0], scale:[1,1,1] });
+  mergeMesh(m, buildTorus(0.46, 0.06, 24, 7), { pos:[0,0,0], scale:[1,1,1], part: PART.TRIM });
   [-1, 1].forEach(s => {
-    mergeMesh(m, cyl, { pos:[0, s*0.44, 0], scale:[0.24, 0.12, 0.24] });
-    mergeMesh(m, rb,  { pos:[0, s*0.54, 0], scale:[0.16, 0.10, 0.16] });
+    mergeMesh(m, buildCylinder(10, 0.5, 0.5, 0.06), { pos:[0, s*0.44, 0], scale:[0.24, 0.12, 0.24], part: PART.TRIM });
+    mergeMesh(m, rb,  { pos:[0, s*0.54, 0], scale:[0.16, 0.10, 0.16], part: PART.TRIM });
   });
   return m;
 }
@@ -20627,69 +20943,95 @@ function buildCore(){
 // SKYLINE geometry — which was survivable while a tower was a featureless
 // block, and stopped being survivable the moment towers grew lit windows and
 // every titan on the field marched around wearing office glazing. Faces -Z.
+// The legs now have hip, knee and ankle joints: the old thigh, shin and foot
+// were three blocks that only touched at their corners, so the walker read as
+// a stack of boxes rather than as something articulated.
 function buildMech(){
   const m = emptyMesh();
-  const rb = buildRoundedBox(0.06, 2), cyl = buildCylinder(10);
-  const RX = Math.PI/2;
+  const rb = buildRoundedBox(0.06, 2);
+  const RX = Math.PI/2, RZ = Math.PI/2;
   // Torso: a broad armoured chest over a narrow waist, with a reactor recess.
-  mergeMesh(m, buildCylinder(6), { pos:[0, 0.30, 0], scale:[0.78, 0.46, 0.62], rot:[0, Math.PI/6, 0] });
-  mergeMesh(m, rb,  { pos:[0, 0.02, 0], scale:[0.42, 0.28, 0.36] });
-  mergeMesh(m, cyl, { pos:[0, 0.30, -0.28], scale:[0.22, 0.14, 0.22], rot:[RX, 0, 0] });   // chest core
+  mergeMesh(m, buildPrism(6, 0.5, 0.5, 0.06, 0.04), { pos:[0, 0.30, 0], scale:[0.78, 0.46, 0.62], rot:[0, Math.PI/6, 0] });
+  mergeMesh(m, rb,  { pos:[0, 0.02, 0], scale:[0.42, 0.28, 0.36], part: PART.TRIM });
+  mergeMesh(m, buildCylinder(12, 0.5, 0.5, 0.06), { pos:[0, 0.30, -0.28], scale:[0.22, 0.14, 0.22], rot:[RX, 0, 0], part: PART.LAMP });   // chest core
   // Head: a sensor block set low between the shoulders, visor facing -Z.
   mergeMesh(m, rb,  { pos:[0, 0.58, -0.06], scale:[0.30, 0.20, 0.28] });
-  mergeMesh(m, rb,  { pos:[0, 0.58, -0.20], scale:[0.24, 0.09, 0.06] });                   // visor slot
+  mergeMesh(m, rb,  { pos:[0, 0.58, -0.20], scale:[0.24, 0.09, 0.06], part: PART.GLASS });                  // visor slot
   [-1, 1].forEach(s => {
     // Shoulder pauldron and an arm-mounted cannon.
-    mergeMesh(m, buildCylinder(6), { pos:[s*0.46, 0.42, 0], scale:[0.34, 0.30, 0.34], rot:[0, 0, RX] });
+    mergeMesh(m, buildPrism(6, 0.5, 0.5, 0.06, 0.04), { pos:[s*0.46, 0.42, 0], scale:[0.34, 0.30, 0.34], rot:[0, 0, RX] });
     mergeMesh(m, rb,  { pos:[s*0.52, 0.14, -0.02], scale:[0.20, 0.34, 0.22] });
-    mergeMesh(m, cyl, { pos:[s*0.52, 0.10, -0.36], scale:[0.09, 0.46, 0.09], rot:[RX, 0, 0] });
-    mergeMesh(m, buildCylinder(8, 0.5, 0.34), { pos:[s*0.52, 0.10, -0.62], scale:[0.12, 0.12, 0.12], rot:[-RX, 0, 0] });
-    // Leg: thigh, reverse-jointed shin, splayed foot.
+    mergeMesh(m, buildCylinder(12, 0.5, 0.5, 0.06), { pos:[s*0.52, 0.10, -0.36], scale:[0.09, 0.46, 0.09], rot:[RX, 0, 0], part: PART.GUNMETAL });
+    mergeMesh(m, buildCylinder(8, 0.5, 0.34, 0.06), { pos:[s*0.52, 0.10, -0.62], scale:[0.12, 0.12, 0.12], rot:[-RX, 0, 0], part: PART.GUNMETAL });
+    // Leg: hip joint, thigh, knee joint, reverse-jointed shin, ankle, splayed foot.
+    mergeMesh(m, buildCylinder(12, 0.5, 0.5, 0.08), { pos:[s*0.22, -0.07, 0.0],  scale:[0.19, 0.20, 0.19], rot:[0, 0, RZ], part: PART.TRIM });
     mergeMesh(m, rb,  { pos:[s*0.22, -0.26, 0.04], scale:[0.24, 0.40, 0.26], rot:[-0.18, 0, 0] });
+    mergeMesh(m, buildCylinder(12, 0.5, 0.5, 0.08), { pos:[s*0.22, -0.44, 0.03], scale:[0.16, 0.22, 0.16], rot:[0, 0, RZ], part: PART.TRIM });
     mergeMesh(m, rb,  { pos:[s*0.22, -0.62, -0.06], scale:[0.20, 0.42, 0.22], rot:[0.22, 0, 0] });
+    mergeMesh(m, buildCylinder(12, 0.5, 0.5, 0.08), { pos:[s*0.22, -0.80, -0.10], scale:[0.11, 0.16, 0.11], rot:[0, 0, RZ], part: PART.TRIM });
     mergeMesh(m, rb,  { pos:[s*0.22, -0.84, -0.16], scale:[0.26, 0.10, 0.38] });
+    mergeMesh(m, rb,  { pos:[s*0.22, -0.885, -0.16], scale:[0.24, 0.02, 0.36], part: PART.RUBBER });        // sole
   });
   return m;
 }
 
 // A tracked assault tank. Hull, two track units, a traversing turret with a
 // long barrel. Faces -Z.
+// ⚠️ The old road wheels were entirely INSIDE the track block (a 0.10-wide
+// wheel centred in a 0.22-wide run), so the tank had no visible wheels at all.
+// The running gear now sits on the track's outer face: five road wheels, a
+// drive sprocket at the rear and an idler at the front, under a fender.
 function buildTank(){
   const m = emptyMesh();
-  const rb = buildRoundedBox(0.05, 2), cyl = buildCylinder(12);
+  const rb = buildRoundedBox(0.05, 2);
   const RX = Math.PI/2, RZ = Math.PI/2;
   // Glacis-plated hull: a hexagonal prism laid flat reads as sloped armour.
-  mergeMesh(m, buildCylinder(6), { pos:[0, 0.06, 0], scale:[0.62, 1.10, 0.34], rot:[RX, 0, 0] });
+  mergeMesh(m, buildPrism(6, 0.5, 0.5, 0.05, 0.03), { pos:[0, 0.06, 0], scale:[0.62, 1.10, 0.34], rot:[RX, 0, 0] });
   mergeMesh(m, rb, { pos:[0, 0.20, 0.10], scale:[0.56, 0.14, 0.70] });
+  // Engine deck grille at the rear.
+  mergeMesh(m, rb, { pos:[0, 0.275, 0.36], scale:[0.40, 0.02, 0.18], part: PART.TRIM });
   [-1, 1].forEach(s => {
-    // Track unit: a rounded run with three road wheels showing.
-    mergeMesh(m, rb,  { pos:[s*0.42, -0.10, 0], scale:[0.22, 0.30, 1.06] });
-    [-0.34, 0, 0.34].forEach(z => {
-      mergeMesh(m, cyl, { pos:[s*0.42, -0.16, z], scale:[0.20, 0.10, 0.20], rot:[0, 0, RZ] });
+    // Track run: the belt itself.
+    mergeMesh(m, buildRoundedBox(0.12, 3), { pos:[s*0.42, -0.10, 0], scale:[0.20, 0.30, 1.06], part: PART.RUBBER });
+    // Fender over the track.
+    mergeMesh(m, rb, { pos:[s*0.42, 0.065, 0.0], scale:[0.25, 0.035, 1.10] });
+    // Road wheels, sprocket and idler on the OUTER face.
+    const xo = s * (0.42 + 0.10 + 0.012);
+    [-0.30, -0.15, 0, 0.15, 0.30].forEach(z => {
+      mergeMesh(m, buildCylinder(14, 0.5, 0.5, 0.12), { pos:[xo, -0.155, z], scale:[0.13, 0.026, 0.13], rot:[0, 0, RZ], part: PART.TRIM });
+      mergeMesh(m, buildCylinder(10, 0.5, 0.5, 0.2),  { pos:[xo + s*0.016, -0.155, z], scale:[0.045, 0.012, 0.045], rot:[0, 0, RZ], part: PART.CHROME });
     });
+    mergeMesh(m, buildCylinder(14, 0.5, 0.5, 0.1), { pos:[xo, -0.075, 0.44], scale:[0.15, 0.03, 0.15], rot:[0, 0, RZ], part: PART.GUNMETAL });   // sprocket
+    mergeMesh(m, buildCylinder(14, 0.5, 0.5, 0.1), { pos:[xo, -0.075, -0.44], scale:[0.13, 0.03, 0.13], rot:[0, 0, RZ], part: PART.TRIM });    // idler
   });
   // Turret and gun.
-  mergeMesh(m, buildCylinder(8), { pos:[0, 0.36, 0.04], scale:[0.60, 0.26, 0.62] });
-  mergeMesh(m, rb,  { pos:[0, 0.48, 0.10], scale:[0.26, 0.12, 0.30] });                    // cupola
-  mergeMesh(m, cyl, { pos:[0, 0.34, -0.52], scale:[0.09, 0.86, 0.09], rot:[RX, 0, 0] });
-  mergeMesh(m, cyl, { pos:[0, 0.34, -0.86], scale:[0.13, 0.16, 0.13], rot:[RX, 0, 0] });   // muzzle brake
+  mergeMesh(m, buildPrism(8, 0.5, 0.5, 0.05, 0.04), { pos:[0, 0.36, 0.04], scale:[0.60, 0.26, 0.62] });
+  mergeMesh(m, rb,  { pos:[0, 0.48, 0.10], scale:[0.26, 0.12, 0.30], part: PART.TRIM });                    // cupola
+  mergeMesh(m, rb,  { pos:[0, 0.50, -0.02], scale:[0.12, 0.05, 0.03], part: PART.GLASS });                  // periscope
+  mergeMesh(m, rb,  { pos:[0, 0.34, -0.29], scale:[0.24, 0.18, 0.08], part: PART.TRIM });                   // gun mantlet
+  mergeMesh(m, buildCylinder(14, 0.5, 0.5, 0.04), { pos:[0, 0.34, -0.52], scale:[0.09, 0.86, 0.09], rot:[RX, 0, 0], part: PART.GUNMETAL });
+  mergeMesh(m, buildCylinder(14, 0.5, 0.5, 0.08), { pos:[0, 0.34, -0.86], scale:[0.13, 0.16, 0.13], rot:[RX, 0, 0], part: PART.GUNMETAL });   // muzzle brake
   return m;
 }
 
 // A deployable shield barrier: an armoured panel on buttress legs with an
 // emitter frame around it. Wide face points -Z, so it reads as cover.
+// ⚠️ The buttress legs were rotated the wrong way (+0.55 about X), which raked
+// their TOPS back and their feet forward — so they floated behind the plate and
+// read as loose blocks lying on the ground. -0.55 leans each leg from the
+// plate's back face down to its foot, which is what a buttress is.
 function buildBarrier(){
   const m = emptyMesh();
-  const rb = buildRoundedBox(0.05, 2), cyl = buildCylinder(8);
+  const rb = buildRoundedBox(0.05, 2);
   mergeMesh(m, rb, { pos:[0, 0.10, 0], scale:[1.10, 0.86, 0.20] });          // main plate
-  mergeMesh(m, rb, { pos:[0, 0.56, 0], scale:[1.18, 0.10, 0.28] });          // top rail
-  mergeMesh(m, rb, { pos:[0, -0.34, 0], scale:[1.18, 0.10, 0.28] });         // bottom rail
+  mergeMesh(m, rb, { pos:[0, 0.56, 0], scale:[1.18, 0.10, 0.28], part: PART.TRIM });          // top rail
+  mergeMesh(m, rb, { pos:[0, -0.34, 0], scale:[1.18, 0.10, 0.28], part: PART.TRIM });         // bottom rail
   [-1, 1].forEach(s => {
-    mergeMesh(m, rb,  { pos:[s*0.58, 0.10, 0], scale:[0.16, 1.02, 0.30] });  // emitter post
-    mergeMesh(m, cyl, { pos:[s*0.58, 0.64, 0], scale:[0.18, 0.16, 0.18] });  // emitter head
+    mergeMesh(m, rb,  { pos:[s*0.58, 0.10, 0], scale:[0.16, 1.02, 0.30], part: PART.TRIM });  // emitter post
+    mergeMesh(m, buildCylinder(10, 0.5, 0.5, 0.08), { pos:[s*0.58, 0.64, 0], scale:[0.18, 0.16, 0.18], part: PART.LAMP });  // emitter head
     // Buttress legs raking back.
-    mergeMesh(m, rb,  { pos:[s*0.42, -0.30, 0.26], scale:[0.12, 0.44, 0.14], rot:[0.55, 0, 0] });
-    mergeMesh(m, rb,  { pos:[s*0.42, -0.50, 0.44], scale:[0.20, 0.10, 0.30] });
+    mergeMesh(m, rb,  { pos:[s*0.42, -0.30, 0.26], scale:[0.12, 0.44, 0.14], rot:[-0.55, 0, 0], part: PART.TRIM });
+    mergeMesh(m, rb,  { pos:[s*0.42, -0.50, 0.44], scale:[0.20, 0.10, 0.30], part: PART.RUBBER });
   });
   return m;
 }
@@ -20703,7 +21045,8 @@ function buildBarrier(){
 //
 // Deliberately built from buildBox (24 verts) for the rim bars rather than from
 // rounded boxes: this geometry is instanced by the couple of hundred, so its
-// vertex count is multiplied by every block on the board.
+// vertex count is multiplied by every block on the board. It stays ALL PAINT:
+// Tetris and Breaker identify a piece by its colour, so none of it is trim.
 function buildTechBlock(){
   const m = emptyMesh();
   const box = buildBox();
@@ -20737,26 +21080,29 @@ function buildTechBlock(){
 // than the rubble falling on it. Front face is +Z.
 function buildServerRack(){
   const m = emptyMesh();
-  const box = buildBox(), rb = buildRoundedBox(0.04, 2), cyl = buildCylinder(8);
+  const box = buildBox(), rb = buildRoundedBox(0.04, 2);
   // Cabinet shell, slightly inset at the front so the door sits in a frame.
   mergeMesh(m, rb, { pos:[0, 0, -0.06], scale:[1.0, 1.0, 0.88] });
   // Door frame: four bars around the front opening.
   [[0, 0.45, 1.0, 0.10], [0, -0.45, 1.0, 0.10], [0.45, 0, 0.10, 1.0], [-0.45, 0, 0.10, 1.0]]
-    .forEach(([x, y, w, h]) => mergeMesh(m, box, { pos:[x, y, 0.40], scale:[w, h, 0.12] }));
-  // Rack units behind the door — six shelves, each with a drive bay lip. These
-  // are what give the cabinet its horizontal read at distance.
+    .forEach(([x, y, w, h]) => mergeMesh(m, rb, { pos:[x, y, 0.40], scale:[w, h, 0.12], part: PART.TRIM }));
+  // Rack units behind the door — six server faceplates, each with a drive bay
+  // handle and a status LED. These are what give the cabinet its horizontal
+  // read at distance.
   for(let i=0;i<6;i++){
     const y = -0.36 + i * 0.145;
-    mergeMesh(m, box, { pos:[0, y, 0.34], scale:[0.80, 0.10, 0.06] });
-    mergeMesh(m, box, { pos:[-0.28, y, 0.38], scale:[0.16, 0.05, 0.04] });   // bay handle
+    mergeMesh(m, box, { pos:[0, y, 0.34], scale:[0.80, 0.10, 0.06], part: PART.TRIM });
+    mergeMesh(m, box, { pos:[-0.28, y, 0.38], scale:[0.16, 0.05, 0.04], part: PART.CHROME });   // bay handle
+    mergeMesh(m, box, { pos:[0.08, y, 0.372], scale:[0.30, 0.055, 0.01], part: PART.RUBBER });  // drive bays
+    lampAt(m, [0.33, y, 0.375], 0.016, PART.LAMP);
   }
   // Cable spine and cooling stack up the back.
-  mergeMesh(m, rb,  { pos:[0, 0, -0.50], scale:[0.30, 0.94, 0.18] });
-  [-1, 1].forEach(s => mergeMesh(m, cyl, { pos:[s*0.30, 0, -0.50], scale:[0.14, 0.86, 0.14] }));
+  mergeMesh(m, rb,  { pos:[0, 0, -0.50], scale:[0.30, 0.94, 0.18], part: PART.RUBBER });
+  [-1, 1].forEach(s => mergeMesh(m, buildCylinder(12, 0.5, 0.5, 0.05), { pos:[s*0.30, 0, -0.50], scale:[0.14, 0.86, 0.14], part: PART.CHROME }));
   // Roof plenum and levelling feet.
-  mergeMesh(m, rb, { pos:[0, 0.53, -0.04], scale:[1.06, 0.10, 0.94] });
+  mergeMesh(m, rb, { pos:[0, 0.53, -0.04], scale:[1.06, 0.10, 0.94], part: PART.TRIM });
   [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([a,b]) =>
-    mergeMesh(m, box, { pos:[a*0.40, -0.55, b*0.34], scale:[0.14, 0.12, 0.14] }));
+    mergeMesh(m, buildCylinder(10, 0.5, 0.5, 0.1), { pos:[a*0.40, -0.55, b*0.34], scale:[0.14, 0.12, 0.14], part: PART.RUBBER }));
   return m;
 }
 
@@ -20765,11 +21111,13 @@ function buildServerRack(){
 // and, rotated, the bat in Breaker. The end caps are what make it read as a
 // piece of equipment: a bare slab has no ends, so it looks like a UI element
 // lying on the board rather than an object standing on it.
+// No LAMP parts: every mission that draws this draws its OWN emitter strip in
+// the player's colour, in the channel between the lips.
 function buildPaddle(){
   const m = emptyMesh();
-  const rb = buildRoundedBox(0.10, 3), box = buildBox(), cyl = buildCylinder(10);
+  const rb = buildRoundedBox(0.10, 3), box = buildBox();
   // Spine and the two emitter lips that frame the channel.
-  mergeMesh(m, rb, { pos:[0, 0, 0], scale:[0.52, 0.66, 0.86] });
+  mergeMesh(m, rb, { pos:[0, 0, 0], scale:[0.52, 0.66, 0.86], part: PART.TRIM });
   [1, -1].forEach(s => {
     mergeMesh(m, box, { pos:[s*0.34, 0.28, 0], scale:[0.34, 0.16, 0.90] });   // upper lip
     mergeMesh(m, box, { pos:[s*0.34, -0.28, 0], scale:[0.34, 0.16, 0.90] });  // lower lip
@@ -20777,16 +21125,22 @@ function buildPaddle(){
   // End caps with a bumper roller, so the paddle has a top and a bottom end.
   [1, -1].forEach(s => {
     mergeMesh(m, rb,  { pos:[0, 0, s*0.46], scale:[0.62, 0.80, 0.14] });
-    mergeMesh(m, cyl, { pos:[0, 0, s*0.53], scale:[0.34, 0.20, 0.34], rot:[Math.PI/2, 0, 0] });
+    mergeMesh(m, buildCylinder(10, 0.5, 0.5, 0.12), { pos:[0, 0, s*0.53], scale:[0.34, 0.20, 0.34], rot:[Math.PI/2, 0, 0], part: PART.RUBBER });
   });
   // Dorsal rail — a raised strip along the top for the highlight to run down.
-  mergeMesh(m, box, { pos:[0, 0.36, 0], scale:[0.20, 0.10, 0.78] });
+  mergeMesh(m, box, { pos:[0, 0.36, 0], scale:[0.20, 0.10, 0.78], part: PART.CHROME });
   return m;
 }
 
 // ══════════════════════════════════════════════
 //  🎨 SHADERS
 // ══════════════════════════════════════════════
+// ✨ TWO PROFILES, ONE SOURCE. The mesh, sky, composite and resolve shaders are
+// compiled twice: as written (NORMAL) and with `#define ULTRA` injected under the
+// version line (ULTRA REALISTIC). Everything the Ultra profile adds sits inside
+// `#ifdef ULTRA` blocks, so the Normal programs are the exact shaders the arcade
+// already tuned — a device that never opts in pays nothing for any of it, not
+// even a branch.
 
 const VS_MESH = `#version 300 es
 precision highp float;
@@ -20801,6 +21155,8 @@ layout(location=6) in vec4 aM3;
 layout(location=7) in vec4 aColor;      // rgb albedo, a = opacity
 layout(location=8) in vec4 aEmis;       // rgb emissive tint, a = strength
 layout(location=9) in vec4 aMat;        // metallic, roughness, rim, uvScale
+// Per-vertex material part (see PART in the geometry section).
+layout(location=10) in float aPart;
 
 uniform mat4 uView;
 uniform mat4 uProj;
@@ -20821,6 +21177,12 @@ out vec4 vMat;
 // translation and rotation still leave the pattern welded to the model.
 out vec3 vObj;
 out vec3 vObjN;
+// A part id is a label, not a quantity: interpolating one across a triangle
+// that spans two parts would invent a third part along the seam.
+flat out float vPart;
+// The model's own Y axis in world space — a cylinder's axis, a ring's normal.
+// Brushed and turned metal is brushed AROUND it (see the Ultra anisotropy).
+out vec3 vAxisY;
 
 void main(){
   mat4 M = mat4(aM0, aM1, aM2, aM3);
@@ -20837,6 +21199,8 @@ void main(){
   vColor = aColor;
   vEmis = aEmis;
   vMat = aMat;
+  vPart = aPart;
+  vAxisY = mat3(M)[1];
   gl_Position = uProj * uView * wp;
 }`;
 
@@ -20851,6 +21215,7 @@ in vec4 vEmis;
 in vec4 vMat;
 in vec3 vObj;
 in vec3 vObjN;
+flat in float vPart;
 
 #define MAX_LIGHTS 10
 uniform vec3  uCam;
@@ -20872,6 +21237,12 @@ uniform float uTime;
 // surface in the frame, so a phone that starts dropping frames turns them down
 // (and, at the bottom of the range, off) before it gives up resolution.
 uniform float uDetailScale;
+#ifdef ULTRA
+// 1 when the world has an open sky (a city horizon to reflect), 0 for an
+// enclosed set, which reflects its own ceiling lights instead.
+uniform float uSkyOn;
+in vec3 vAxisY;
+#endif
 
 out vec4 fragColor;
 
@@ -20880,10 +21251,13 @@ const float PI = 3.14159265359;
 // ── The environment. Three bands blended through the horizon, plus a wide
 // magenta smear low in the sky where a city's light pollution sits. This is the
 // stand-in for an HDRI: cheap, seamless, and tunable per game.
+// (1.0 - smoothstep(-0.45, 0.0, t)) is the same curve the first version wrote
+// as smoothstep(0.0, -0.45, t) — reversed edges are undefined behaviour in the
+// GLSL spec, and a driver is entitled to return anything for them.
 vec3 envSample(vec3 d){
   float t = d.y;
   vec3 up   = mix(uHorizon, uZenith, smoothstep(0.0, 0.55, t));
-  vec3 down = mix(uHorizon, uGround, smoothstep(0.0, -0.45, t));
+  vec3 down = mix(uHorizon, uGround, 1.0 - smoothstep(-0.45, 0.0, t));
   vec3 c = t > 0.0 ? up : down;
   // Horizon glow band — the brightest part of a night skyline.
   c += uHorizon * 0.55 * exp(-abs(t) * 9.0);
@@ -20891,13 +21265,17 @@ vec3 envSample(vec3 d){
 }
 
 // Lazarov's analytic fit to the split-sum environment BRDF. Replaces the
-// precomputed BRDF LUT a full IBL pipeline would sample.
-vec3 envBRDFApprox(vec3 F0, float rough, float NoV){
+// precomputed BRDF LUT a full IBL pipeline would sample. Returns the scale (x)
+// and bias (y) on F0.
+vec2 envBRDF_AB(float rough, float NoV){
   const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
   const vec4 c1 = vec4( 1.0,  0.0425,  1.04,  -0.04);
   vec4 r = rough * c0 + c1;
   float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
-  vec2 AB = vec2(-1.04, 1.04) * a004 + r.zw;
+  return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+vec3 envBRDFApprox(vec3 F0, float rough, float NoV){
+  vec2 AB = envBRDF_AB(rough, NoV);
   return F0 * AB.x + AB.y;
 }
 
@@ -20921,6 +21299,78 @@ vec3 fresnelSchlick(float u, vec3 F0){
 }
 
 // ══════════════════════════════════════════════
+//  🧩 MATERIAL PARTS
+// ══════════════════════════════════════════════
+// Derives a part's finish from the instance material the mission drew with, so
+// PAINT stays exactly what the call site asked for and every other part is
+// layered relative to it. Values are physically plausible, not measured-exact:
+// glass is a dark F0-0.04 dielectric, rubber a rough black dielectric, the
+// metals are metals. See PART in the geometry section for why LAMP only lights
+// when the instance itself was drawn with an emissive.
+void applyPart(float part, inout vec3 albedo, inout float metallic, inout float rough,
+               inout vec3 emisTint, inout float emis, out float detailMul){
+  detailMul = 1.0;
+  if(part < 0.5) return;                                  // PAINT
+  float lit = step(0.001, vEmis.a);
+  if(part < 1.5){                                         // TRIM
+    albedo   = mix(albedo, vec3(0.13, 0.135, 0.15), 0.62);
+    metallic = 0.9;
+    rough    = clamp(rough + 0.14, 0.32, 0.75);
+    emis    *= 0.25;
+    detailMul = 0.45;
+  }else if(part < 2.5){                                   // GLASS
+    albedo   = vec3(0.015, 0.018, 0.022);
+    metallic = 0.0;
+    rough    = 0.045;
+    emisTint = vEmis.rgb;
+    emis     = 0.12 * lit;
+    detailMul = 0.0;
+  }else if(part < 3.5){                                   // CHROME
+    albedo   = mix(albedo, vec3(0.78, 0.79, 0.80), 0.75);
+    metallic = 1.0;
+    rough    = clamp(rough * 0.55, 0.10, 0.30);
+    emis    *= 0.15;
+    detailMul = 0.3;
+  }else if(part < 4.5){                                   // RUBBER
+    albedo   = vec3(0.028, 0.028, 0.030);
+    metallic = 0.0;
+    rough    = 0.86;
+    emis     = 0.0;
+    detailMul = 0.25;
+  }else if(part < 5.5){                                   // LAMP
+    albedo   = mix(vec3(0.05), vEmis.rgb, 0.35);
+    metallic = 0.0;
+    rough    = 0.25;
+    emisTint = vEmis.rgb;
+    emis     = lit * clamp(vEmis.a * 1.6, 1.1, 3.0);
+    detailMul = 0.0;
+  }else if(part < 8.5){                                   // NAV lights
+    vec3 c = part < 6.5 ? vec3(1.0, 0.05, 0.03)
+           : part < 7.5 ? vec3(0.08, 1.0, 0.28)
+                        : vec3(1.0, 0.96, 0.90);
+    albedo   = c * 0.3;
+    metallic = 0.0;
+    rough    = 0.3;
+    emisTint = c;
+    emis     = 2.2;
+    detailMul = 0.0;
+  }else if(part < 9.5){                                   // HEAT
+    albedo   = vec3(0.22, 0.17, 0.14);
+    metallic = 1.0;
+    rough    = 0.42;
+    emisTint = vEmis.rgb;
+    emis     = lit * clamp(vEmis.a * 0.9, 0.45, 2.0);
+    detailMul = 0.0;
+  }else{                                                  // GUNMETAL
+    albedo   = vec3(0.12, 0.125, 0.135);
+    metallic = 1.0;
+    rough    = clamp(rough + 0.08, 0.28, 0.5);
+    emis    *= 0.1;
+    detailMul = 0.35;
+  }
+}
+
+// ══════════════════════════════════════════════
 //  🔩 PROCEDURAL SURFACE DETAIL
 // ══════════════════════════════════════════════
 // The arcade ships no image assets at all — no textures, no normal maps, no
@@ -20932,15 +21382,26 @@ vec3 fresnelSchlick(float u, vec3 F0){
 // at different zooms.
 //
 // These patterns put the detail back analytically. They are evaluated in scaled
-// object space (see vObj in the vertex shader) and triplanar-projected, so they
-// need no UV layout — which matters because the hulls here are built by merging
-// primitives, and merged primitives have overlapping UVs by construction.
+// object space (see vObj in the vertex shader) and projected along the dominant
+// axis, so they need no UV layout — which matters because the hulls here are
+// built by merging primitives, and merged primitives have overlapping UVs by
+// construction.
 //
 // vMat.w carries "style + intensity": the integer part selects the pattern, the
 // fraction dials it in. That keeps the whole system inside a float that was
 // already in the instance stream and previously hardcoded to 1.0, so it costs
 // no extra bandwidth per instance. Style 0 (and any intensity of 0) early-outs
 // to exactly the old behaviour.
+//
+// 2026-09-16 · THE LINES ARE FILTERED NOW. Every seam, mullion, slot and trace
+// is an analytic BOX FILTER of its pattern over the pixel's footprint, rather
+// than a smoothstep of fixed width. That is the difference between the two
+// failures the old patterns had at once: close up a fixed-width smoothstep is a
+// blurry band, and far away it is a point sample that crawls. A box-filtered
+// line is exactly as sharp as the pixel grid allows at every distance and
+// converges to its own average instead of flickering. The HULL plating also
+// stopped being brickwork — long panels, hairline seams, low contrast — which
+// is what airframe skin actually looks like.
 
 float hash21(vec2 p){
   p = fract(p * vec2(127.31, 311.7));
@@ -20955,24 +21416,22 @@ float vnoise(vec2 p){
              mix(hash21(i + vec2(0.0,1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
 }
 
-// One rectangular plate lattice. Returns x = seam mask (1 inside the groove),
-// y = a stable per-plate random used to jitter that plate's finish.
-// The row offset and the merge test exist to stop it reading as graph paper:
-// real panelling is irregular, and a perfect grid is the giveaway that a
-// surface is procedural.
-vec2 plateGrid(vec2 p, float size, float seam){
-  vec2 g = p / size;
-  // Every row picks its own plate WIDTH and its own phase, so runs of plating
-  // never line up into one unbroken lattice. Doing it per row rather than per
-  // plate keeps the cell id well defined — an earlier version resized cells
-  // individually and tore along every row boundary, because two neighbouring
-  // rows disagreed about where the shared seam was.
-  float row = floor(g.y);
-  float rh  = hash21(vec2(row, 3.7));
-  g.x = g.x * mix(0.7, 1.5, rh) + rh * 7.0;
-  vec2 c = floor(g), f = fract(g);
-  vec2 d = min(f, 1.0 - f);
-  return vec2(1.0 - smoothstep(0.0, seam, min(d.x, d.y)), hash21(c + row * 0.137));
+// Coverage of a periodic line pattern — lines of width w (in cell units)
+// centred on every integer — averaged over a pixel footprint fw. Integral of
+// the pulse train is floor(t)*w + min(fract(t), w), so the box filter is a
+// difference of two of those.
+float lineCov(float x, float w, float fw){
+  fw = max(fw, 1e-4);
+  float t0 = x - 0.5 * fw + 0.5 * w, t1 = t0 + fw;
+  float i0 = floor(t0) * w + min(fract(t0), w);
+  float i1 = floor(t1) * w + min(fract(t1), w);
+  return clamp((i1 - i0) / fw, 0.0, 1.0);
+}
+
+// Coverage of a single band |d| < w by a pixel of width fw centred on d.
+float bandCov(float d, float w, float fw){
+  fw = max(fw, 1e-4);
+  return clamp((min(d + 0.5 * fw, w) - max(d - 0.5 * fw, -w)) / fw, 0.0, 1.0);
 }
 
 // Flat-top hex lattice. xy = offset inside the cell, zw = cell id.
@@ -20987,8 +21446,6 @@ float hexEdge(vec2 p){
   return max(dot(p, vec2(0.8660254, 0.5)), p.x);
 }
 
-// Perturbs albedo / roughness / metallic / emissive in place and reports a
-// height field for the normal bump applied by the caller.
 // ══ 🔬 DETAIL LOD ══
 // How much OBJECT SPACE one screen pixel covers here. Every pattern below is
 // analytic and defined in object units, so this is the only number needed to
@@ -21004,26 +21461,15 @@ float detailFootprint(){
 }
 
 // 1 while a feature of size 'feat' still spans a pixel or more, 0 once it is
-// comfortably sub-pixel, with a smooth band between. Multiply a pattern's
-// amplitude by this and the pattern FADES TO ITS OWN MEAN with distance instead
-// of sampling itself at random — which is what point-sampling an unfiltered
-// analytic pattern does, and it is why the distant towers boiled.
-//
-// This is what a mip chain does for a texture. Nothing here is a texture, so
-// nothing was doing it: the window grid, the plate seams and the rock grain
-// were all point-sampled at every distance, and a tower four blocks away had a
-// new random set of lit windows every frame the camera moved. FXAA cannot help
-// with that — the noise is temporal and sub-pixel, not an edge — and it is the
-// other half of "the graphics are terrible".
-// It also makes distance CHEAPER rather than more expensive: the fade is applied
-// before surfaceDetail's amt <= 0.004 early-out, so a surface whose pattern has
-// gone sub-pixel returns before evaluating any lattice at all.
+// comfortably sub-pixel, with a smooth band between. Used for the parts of a
+// pattern that CANNOT be box-filtered — a per-cell random choice — so they fade
+// to their own mean with distance instead of sampling themselves at random.
 float detailLOD(float fp, float feat){
   return 1.0 - smoothstep(feat * 0.6, feat * 1.6, fp);
 }
 
 void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
-                   inout vec3 emisTint, inout float emis, out float height){
+                   inout vec3 emisTint, inout float emis, out float height, float partMul){
   height = 0.0;
   float fp = detailFootprint();
   float style = floor(vMat.w);
@@ -21033,22 +21479,22 @@ void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
   // quality governor would appear to have had the art reverted. That one style
   // gets a floor under the governor's dial: it can be dimmed, never deleted.
   // Everything else here really is polish and may go all the way to nothing.
-  float ds  = (style > 1.5 && style < 2.5) ? max(uDetailScale, 0.7) : uDetailScale;
+  bool isWin = style > 1.5 && style < 2.5;
+  float ds  = isWin ? max(uDetailScale, 0.7) : uDetailScale;
   float amt = fract(vMat.w) * ds;
+  // A facade pattern belongs on the facade: roof plant, masts and lamps are
+  // other parts and stay plain. Every other style is scaled by its part.
+  amt *= isWin ? step(vPart, 0.5) : partMul;
 
   // The finest feature each style draws, in object units — the scale at which
-  // its pattern stops being a pattern and becomes noise. Applied HERE, above the
-  // early-out, and not inside the branches: a faded pixel has to be able to
-  // RETURN. Folded into the branches instead, a distant tower still evaluated
-  // its whole lattice and then multiplied the result by nothing, which fixes
-  // the shimmer and buys none of the time back.
-  // -1 is WINDOWS opting out. That one does not fade its amplitude at all; it
-  // converges to the mean facade inside its own branch, for the reason written
-  // there.
-  float feat = style < 1.5 ? 0.30       // HULL    plate cell
+  // its pattern stops being a pattern. Applied HERE, above the early-out, and
+  // not inside the branches: a faded pixel has to be able to RETURN.
+  // -1 is WINDOWS opting out: it converges to the mean facade instead, for the
+  // reason written in its branch.
+  float feat = style < 1.5 ? 0.23       // HULL    panel height
              : style < 2.5 ? -1.0       // WINDOWS see wLod
              : style < 3.5 ? 0.16       // TECH    plate cell
-             : style < 4.5 ? 0.011      // BRUSHED streak period
+             : style < 4.5 ? -1.0       // BRUSHED fades per octave inside
              : style < 5.5 ? 0.29       // HEX     lattice cell
              : style < 6.5 ? 0.53       // CIRCUIT trace cell
                            : 0.038;     // MINERAL grain
@@ -21059,60 +21505,100 @@ void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
   // DOMINANT-AXIS projection, not a three-tap triplanar blend. The weights were
   // already raised to the fourth power — all but one-hot everywhere except on a
   // bevel — so the two extra taps were buying a soft cross-fade across a seam
-  // that lands on a hard edge anyway. This runs per-pixel on every surface in
-  // the frame, and paying for three projections of it was the single most
-  // expensive thing in this shader: cutting to one takes the plate styles from
-  // six lattice evaluations to two.
+  // that lands on a hard edge anyway.
   vec3 an = abs(normalize(vObjN));
   an *= an; an *= an;
   vec3 bw = an / max(an.x + an.y + an.z, 1e-4);
   vec2 pp = (an.x >= an.y && an.x >= an.z) ? vObj.zy
           : (an.y >= an.z)                 ? vObj.xz
                                            : vObj.xy;
+  // How clearly one axis dominates. On a flat face (or a facet of a prism) it
+  // is ~1; across a 45° bevel, or around a curved part, the projection flips
+  // from one axis to the next pixel by pixel, and a plate seam drawn there
+  // comes out as a row of dots. Real panel lines do not run round a bevel
+  // anyway, so the plate styles fade out where the axis is ambiguous.
+  float axisConf = smoothstep(0.62, 0.9, max(bw.x, max(bw.y, bw.z)));
 
   // The albedo-modulating styles below fade out as an instance's emission
   // climbs. A neon sign, a holo readout or a block of glowing type is a LIGHT,
   // not a fabricated panel, and plate seams drawn across one read as dirt on
-  // the glass rather than as construction. This is a blanket safeguard: the
-  // arcade draws a great many things with the same workhorse geometry, and
-  // without it every emissive cube in eighteen missions would have to
-  // remember to opt out by hand. The emissive styles (windows, hex, circuit)
-  // deliberately do not use it — emission is their whole subject.
+  // the glass rather than as construction. The emissive styles (windows, hex,
+  // circuit) deliberately do not use it — emission is their whole subject.
   float matte = mix(1.0, 0.25, clamp(emis * 0.5, 0.0, 1.0));
 
   if(style < 1.5){
-    // ── 1 · HULL. Armour plating: staggered plates, seam grooves, and a
-    // per-plate finish jitter so the eye reads separate pieces of metal.
-    amt *= matte;
-    const float SZ = 0.30, SEAM = 0.06;
-    vec2 g0 = plateGrid(pp, SZ, SEAM);
-    float groove = g0.x, ph = g0.y;
-    // Finer rivet-scale sub-panelling, only on some plates.
-    float sub = plateGrid(pp, SZ * 0.34, 0.09).x * step(0.72, ph);
-    groove = max(groove, sub * 0.55);
-    float mottle = vnoise(pp * 1.7);
-    albedo *= 1.0 + ((ph - 0.5) * 0.20 + (mottle - 0.5) * 0.13) * amt;
-    albedo *= 1.0 - groove * 0.42 * amt;
-    rough  += ((ph - 0.5) * 0.16 + groove * 0.30) * amt;
-    height = -groove * 0.9 * amt;
+    // ── 1 · HULL. Airframe skin: a structural grid of panels — frames across,
+    // stringers along — whose joints mostly LINE UP, as they do on real
+    // aircraft, with about a third of the butt joints merged away and one row
+    // in five offset by half a panel. Hairline seams, a faint per-panel finish
+    // difference, low contrast.
+    //
+    // ⚠️ NOT BRICKWORK. The first two versions staggered every row (a 2:1 cell
+    // with a random offset per row), which is precisely running-bond brick, and
+    // on every tank, turret and mech in the model studio the armour read as a
+    // wall. What says "fabricated metal" is seams that CONTINUE across rows.
+    amt *= matte * axisConf;
+    const vec2 CELL = vec2(0.62, 0.38);
+    vec2 g = pp / CELL;
+    float row = floor(g.y);
+    float gx = g.x + step(0.8, hash21(vec2(row, 3.7))) * 0.5;
+    // A joint belongs to the boundary it sits on, not to the panel either side
+    // of it — rounding to the nearest boundary is what keeps both halves of a
+    // seam agreeing on whether it exists.
+    float keep = step(0.3, hash21(vec2(floor(gx + 0.5), row) + 1.3));
+    float seamY = lineCov(g.y, 0.030, fp / CELL.y);
+    float seamX = lineCov(gx, 0.018, fp / CELL.x) * keep;
+    float seam = 1.0 - (1.0 - seamX) * (1.0 - seamY);
+    float plod = detailLOD(fp, CELL.y * 0.5);
+    vec2 pid = vec2(floor(gx), row);
+    float ph = hash21(pid + 0.37);
+    float mottle = vnoise(pp * 1.3);
+    albedo *= 1.0 + ((ph - 0.5) * 0.09 * plod + (mottle - 0.5) * 0.08) * amt;
+    albedo *= 1.0 - seam * 0.34 * amt;
+    rough  += ((ph - 0.5) * 0.10 * plod + seam * 0.20) * amt;
+    // Bump only once a seam is several pixels wide. A derivative bump on a line
+    // one or two pixels across is quantised to the 2×2 quad and comes out as a
+    // DOTTED line; below that width the darkened albedo carries the seam alone.
+    float seamPx = 0.018 * CELL.x / max(fp, 1e-6);
+    height  = -seam * 0.9 * amt * smoothstep(2.0, 5.0, seamPx);
+#ifdef ULTRA
+    // Access hatches: about one panel in six carries an inset service-panel
+    // outline, which is the detail that makes a hull read as maintained
+    // hardware at close range. Faded with the panel LOD, like the finish.
+    float hatch = step(0.84, hash21(pid + 9.1)) * plod;
+    if(hatch > 0.0){
+      vec2 hc = abs(vec2(fract(gx), fract(g.y)) - 0.5);
+      float sideV = bandCov(abs(hc.x - 0.32), 0.012, fp / CELL.x) * step(hc.y, 0.312);
+      float sideH = bandCov(abs(hc.y - 0.30), 0.020, fp / CELL.y) * step(hc.x, 0.332);
+      float outline = max(sideV, sideH) * hatch;
+      albedo *= 1.0 - outline * 0.28 * amt;
+      height -= outline * 0.6 * amt * smoothstep(2.0, 5.0, 0.024 * CELL.x / max(fp, 1e-6));
+    }
+#endif
 
   }else if(style < 2.5){
-    // ── 2 · WINDOWS. A lit facade. The single reason the skyline used to read
-    // as grey blocks is that a building with no windows has no storeys, and
-    // without storeys it has no height. Cells are lit per-hash, so every tower
-    // instance shows a different occupancy pattern from the same geometry.
-    // Applied to the vertical faces only — bw.y is the roof, which gets plant.
+    // ── 2 · WINDOWS. A curtain-wall facade: a spandrel band at every storey,
+    // an aluminium mullion at every bay, and vision glass between them. The
+    // single reason the skyline used to read as grey blocks is that a building
+    // with no windows has no storeys, and without storeys it has no height.
+    // Cell size is in WORLD units because vObj carries the instance scale, so a
+    // forty-unit tower gets thirty-five storeys and a six-unit outbuilding five.
+    //
+    // ⚠️ Materials are separated now. Glass is a dark, smooth dielectric (it
+    // REFLECTS — at a grazing angle an unlit facade is the sky), mullions are
+    // metal, and only the spandrel carries the instance colour. The old facade
+    // was one metallic-0.55 surface with the pattern painted into its albedo,
+    // and in the studio that read as a dented chrome box. And the old mullion
+    // was a fixed-width smoothstep, which a few pixels from the camera turned
+    // every lit window into a small white cross.
     float side = 1.0 - bw.y;
     vec2 q = vec2(an.x >= an.z ? vObj.z : vObj.x, vObj.y);
-    // Cell size is in WORLD units because vObj carries the instance scale, so
-    // one setting gives a forty-unit tower thirty storeys and a six-unit
-    // outbuilding five — the windows stay the same physical size, which is the
-    // whole reason the skyline now reads as having depth and scale at all.
-    vec2 cell = vec2(0.92, 1.15);
-    vec2 g = q / cell;
-    vec2 c = floor(g), f = fract(g);
-    vec2 d = min(f, 1.0 - f);
-    float pane = smoothstep(0.0, 0.19, min(d.x, d.y));       // 1 inside the glass
+    const vec2 CELL = vec2(0.92, 1.15);
+    vec2 g = q / CELL;
+    float span = lineCov(g.y, 0.30, fp / CELL.y);
+    float mull = lineCov(g.x, 0.08, fp / CELL.x);
+    float glass = (1.0 - span) * (1.0 - mull);
+    vec2 c = floor(g);
     // Occupancy: most cells dark, whole floors dead, a few bright.
     float floorLit = step(0.30, hash21(vec2(7.3, c.y)));
     float lit = step(0.56, hash21(c)) * floorLit;
@@ -21120,65 +21606,78 @@ void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
     // A warm/cool split reads as different tenants on different floors.
     vec3 warm = vec3(1.0, 0.74, 0.40), cool = vec3(0.48, 0.86, 1.0);
     vec3 tint = mix(cool, warm, step(0.55, hash21(c.yx + 1.7)));
-    // ⚠️ Windows do NOT fade to nothing — they fade to their own AVERAGE.
+    // ⚠️ Occupancy does NOT fade to nothing — it fades to its own AVERAGE.
     // Dropping the amplitude like the other styles do would take a distant
-    // tower back to the featureless grey block this system exists to replace,
-    // and unlit it into the bargain. So the pattern is blended toward its
-    // expected value instead: half-open glass, and the mean of (occupancy x
-    // brightness) over the hash, which is what a facade too far away to resolve
-    // actually looks like — an even wash of light. Same total emission, no
-    // per-pixel lottery. The constants are the analytic means of the three
-    // terms above: E[pane] with a 0.19 mullion, E[step(0.56,h) * step(0.30,h)]
-    // and E[mix(0.30,1.0,h)].
+    // tower back to the featureless grey block this system exists to replace.
+    // The glass and mullion coverage need no such help: they are box-filtered
+    // and converge on their own. MEAN_LIT is E[step(0.56,h) * step(0.30,h')] *
+    // E[mix(0.30,1.0,h'')] = 0.308 * 0.65.
     float wLod = detailLOD(fp, 0.92);
-    pane = mix(0.50, pane, wLod);
-    float litB = mix(0.308 * 0.65, lit * bright, wLod);
+    float meanLit = 0.2;
+#ifdef ULTRA
+    // Interiors. Ceiling lights make the top of a lit window brighter than its
+    // sill, a third of the windows have their blinds part-way down, and one
+    // lit window in five is an office under cool fluorescent light.
+    float tw = clamp((fract(g.y) - 0.15) / 0.70, 0.0, 1.0);
+    float blind = step(0.66, hash21(c + 5.3)) * mix(0.35, 0.8, hash21(c + 8.9));
+    float interior = mix(0.72, 1.18, tw) * mix(1.0, 0.28, step(1.0 - blind, tw) * step(0.001, blind));
+    bright *= interior;
+    tint = mix(tint, vec3(0.86, 0.93, 1.0), step(0.8, hash21(c.yx + 4.4)) * 0.8);
+    meanLit = 0.16;
+#endif
+    float lb = mix(meanLit, lit * bright, wLod);
     tint = mix(mix(cool, warm, 0.5), tint, wLod);
-    float mask = pane * litB * side;
-    // Mullions darken; the glass itself goes dark and glossy where unlit, which
-    // is what stops an unoccupied facade reading as flat concrete.
-    albedo = mix(albedo, albedo * 0.45, side * (1.0 - pane) * amt);
-    albedo = mix(albedo, albedo * 0.7, side * pane * (1.0 - mix(0.308, lit, wLod)) * amt);
-    albedo = mix(albedo, tint, min(mask * amt * 0.55, 0.6));
+    float gS = glass * side * amt;
+    float mS = (1.0 - span) * mull * side * amt;
+    float mask = glass * lb * side;
+    albedo   = mix(albedo, vec3(0.012, 0.014, 0.018), gS);
+    albedo   = mix(albedo, vec3(0.20, 0.21, 0.23), mS);
+    albedo   = mix(albedo, tint, min(mask * amt * 0.55, 0.6));
+    metal    = mix(metal, 0.0, gS);
+    metal    = mix(metal, 0.9, mS);
+    rough    = mix(rough, 0.06, gS * (1.0 - clamp(lb, 0.0, 1.0)));
+    rough    = mix(rough, 0.45, mS);
     // A lit window emits its OWN colour. Without this the glow inherits the
     // instance's emissive tint, which for a tower drawn with no emissive at all
-    // defaults to the building's albedo — so every window in the city lit up
-    // the same dark blue as the concrete around it and read as nothing.
+    // defaults to the building's albedo.
     emisTint = mix(emisTint, tint, step(0.001, mask));
     emis    += mask * 1.9 * amt;
-    rough  = mix(rough, mix(0.18, 0.75, 1.0 - pane), side * amt * 0.8);
-    height = -(1.0 - pane) * side * 0.5 * amt;
+    height   = -glass * side * 0.5 * amt * smoothstep(2.0, 5.0, 0.074 / max(fp, 1e-6));
 
   }else if(style < 3.5){
     // ── 3 · TECH. Machinery: tight plates plus louvred vent slots, for the
     // parts of a model that should read as cooling and mechanism rather than
     // as armour — engine housings, boom shrouds, reactor casings.
-    amt *= matte;
+    amt *= matte * axisConf;
     const float SZ = 0.16;
-    vec2 g0 = plateGrid(pp, SZ, 0.10);
-    float groove = g0.x, ph = g0.y;
-    // Vent slots run along the model's long axis in bands.
-    float band = step(0.62, hash21(vec2(floor(vObj.y / 0.34), 3.0)));
-    float slot = smoothstep(0.35, 0.5, abs(fract(vObj.y / 0.075) - 0.5)) * band;
-    groove = max(groove, (1.0 - slot) * band * 0.8);
-    albedo *= 1.0 - groove * 0.5 * amt;
-    albedo *= 1.0 + (ph - 0.5) * 0.16 * amt;
-    metal   = clamp(metal + (ph - 0.5) * 0.22 * amt, 0.0, 1.0);
-    rough  += (groove * 0.26 + (ph - 0.5) * 0.14) * amt;
-    height  = -groove * 1.1 * amt;
+    vec2 g = pp / SZ;
+    float fw = fp / SZ;
+    float seam = 1.0 - (1.0 - lineCov(g.x, 0.05, fw)) * (1.0 - lineCov(g.y, 0.05, fw));
+    float plod = detailLOD(fp, SZ * 0.5);
+    float ph = hash21(floor(g) + 0.71);
+    // Vent slots run across the model in bands.
+    float band = step(0.62, hash21(vec2(floor(vObj.y / 0.34), 3.0))) * detailLOD(fp, 0.17);
+    float slot = lineCov(vObj.y / 0.075, 0.42, fp / 0.075) * band;
+    float groove = max(seam, slot * 0.85);
+    albedo *= 1.0 - groove * 0.45 * amt;
+    albedo *= 1.0 + (ph - 0.5) * 0.12 * plod * amt;
+    metal   = clamp(metal + (ph - 0.5) * 0.18 * plod * amt, 0.0, 1.0);
+    rough  += (groove * 0.24 + (ph - 0.5) * 0.12 * plod) * amt;
+    height  = -groove * amt * smoothstep(2.0, 5.0, 0.008 / max(fp, 1e-6));
 
   }else if(style < 4.5){
-    // ── 4 · BRUSHED. Directional micro-scratches. The renderer has no
-    // anisotropic BRDF, but streaking ROUGHNESS along one axis produces the
-    // same stretched highlight for a fraction of the cost, which is what makes
-    // a turned metal ring look machined instead of moulded.
+    // ── 4 · BRUSHED. Turned / brushed metal. Real machining marks are far below
+    // a pixel; what the eye sees is the HIGHLIGHT they shape, not stripes. The
+    // first version drew the marks themselves — albedo and roughness bands at a
+    // 1cm period — and every cylinder in the arcade read as a stack of coins.
+    // So this is now a whisper of low-frequency polishing variation along the
+    // part, and the brushing itself is an anisotropic highlight under ULTRA
+    // (see the brushed block in main()).
     amt *= matte;
-    float u = (an.y >= an.x && an.y >= an.z) ? vObj.x : vObj.y;
-    float streak = vnoise(vec2(u * 90.0, floor(u * 3.0))) * 0.6
-                 + vnoise(vec2(u * 310.0, 11.0)) * 0.4;
-    rough  += (streak - 0.5) * 0.30 * amt;
-    albedo *= 1.0 + (streak - 0.5) * 0.10 * amt;
-    height  = (streak - 0.5) * 0.10 * amt;
+    float u = (an.y >= an.x && an.y >= an.z) ? length(vObj.xz) : vObj.y;
+    float polish = vnoise(vec2(u * 7.0, 1.7)) * 0.6 + vnoise(vec2(u * 23.0, 5.3)) * 0.4;
+    polish = mix(0.5, polish, detailLOD(fp, 1.0 / 23.0));
+    rough  += (polish - 0.5) * 0.12 * amt;
 
   }else if(style < 5.5){
     // ── 5 · HEX. Energy-cell lattice for shields, holo panels and force
@@ -21186,9 +21685,10 @@ void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
     // slow travelling pulse so a barrier reads as powered rather than painted.
     vec4 hg = hexGrid(pp * 3.4);
     float e = hexEdge(hg.xy);
-    float edge = smoothstep(0.38, 0.5, e);
-    float pulse = 0.55 + 0.45 * sin(uTime * 2.2 - hg.z * 0.9 + hg.w * 0.7);
-    float cellDim = mix(0.25, 1.0, hash21(hg.zw) * 0.6 + 0.4);
+    float hl = detailLOD(fp, 1.0 / 3.4);
+    float edge = mix(0.22, smoothstep(0.38 - fp * 3.4, 0.5, e), hl);
+    float pulse = mix(0.55, 0.55 + 0.45 * sin(uTime * 2.2 - hg.z * 0.9 + hg.w * 0.7), hl);
+    float cellDim = mix(0.775, mix(0.25, 1.0, hash21(hg.zw) * 0.6 + 0.4), hl);
     emis *= 1.0 + (edge * 2.6 + 0.10) * cellDim * pulse * amt;
     albedo *= 1.0 - (1.0 - edge) * 0.25 * amt;
     height = edge * 0.35 * amt;
@@ -21198,15 +21698,18 @@ void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
     vec2 q = pp * 1.9;
     vec2 c = floor(q), f = fract(q) - 0.5;
     float h = hash21(c);
+    float fwc = fp * 1.9;
     // Each cell carries one trace: horizontal, vertical, or a corner elbow.
-    float w = 0.055;
-    float tr = h < 0.34 ? step(abs(f.y), w)
-             : h < 0.68 ? step(abs(f.x), w)
-             : max(step(abs(f.y), w) * step(f.x, 0.0), step(abs(f.x), w) * step(0.0, f.y));
+    const float w = 0.055;
+    float hor = bandCov(abs(f.y), w, fwc), ver = bandCov(abs(f.x), w, fwc);
+    float tr = h < 0.34 ? hor
+             : h < 0.68 ? ver
+             : max(hor * step(f.x, 0.0), ver * step(0.0, f.y));
     // Solder pads where traces terminate.
-    float pad = step(length(f), 0.13) * step(0.86, hash21(c + 5.5));
-    float trace = clamp(tr + pad, 0.0, 1.0);
-    float run = 0.5 + 0.5 * sin(uTime * 3.0 + (c.x + c.y) * 1.3);
+    float pad = (1.0 - smoothstep(0.13 - fwc, 0.13 + fwc, length(f))) * step(0.86, hash21(c + 5.5));
+    float cl = detailLOD(fp, 1.0 / 1.9);
+    float trace = mix(0.16, clamp(tr + pad, 0.0, 1.0), cl);
+    float run = mix(0.5, 0.5 + 0.5 * sin(uTime * 3.0 + (c.x + c.y) * 1.3), cl);
     emis   *= 1.0 + trace * (1.2 + run * 1.5) * amt;
     albedo  = mix(albedo, albedo * 0.6, (1.0 - trace) * 0.5 * amt);
     metal   = clamp(metal + trace * 0.5 * amt, 0.0, 1.0);
@@ -21215,26 +21718,126 @@ void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
 
   }else{
     // ── 7 · MINERAL. Strata and grain for rock: meteors and destructible
-    // cores. Flat-shaded facets alone make a rock look like cut crystal; the
-    // banding is what makes it read as stone.
+    // cores. The banding is what makes it read as stone; each octave fades with
+    // its own period so a distant rock does not boil.
     amt *= matte;
-    float band = vnoise(vec2(vObj.y * 5.5, vObj.x * 0.8)) * 0.6
-               + vnoise(vec2(vObj.y * 17.0, vObj.z * 2.0)) * 0.4;
-    float grain = vnoise(pp * 26.0);
+    float b1 = vnoise(vec2(vObj.y * 5.5, vObj.x * 0.8));
+    float b2 = vnoise(vec2(vObj.y * 17.0, vObj.z * 2.0));
+    float band = 0.5 + (b1 - 0.5) * 0.6 + (b2 - 0.5) * 0.4 * detailLOD(fp, 1.0 / 17.0);
+    float grain = mix(0.5, vnoise(pp * 26.0), detailLOD(fp, 1.0 / 26.0));
     albedo *= 1.0 + ((band - 0.5) * 0.45 + (grain - 0.5) * 0.18) * amt;
     rough  += ((grain - 0.5) * 0.22 + (band - 0.5) * 0.18) * amt;
     height  = (band - 0.5) * 0.7 * amt + (grain - 0.5) * 0.2 * amt;
   }
 }
 
+#ifdef ULTRA
+// ══════════════════════════════════════════════
+//  🌃 ULTRA · THE REFLECTED WORLD
+// ══════════════════════════════════════════════
+// A chrome hull under the Normal profile reflects a three-band gradient, which
+// is why metal there reads as tinted plastic: real metal is almost entirely
+// the picture of what surrounds it. Outdoors, what surrounds every mission is
+// a city at night — so the horizon band gets a hazed skyline of building
+// silhouettes cut out of the light pollution, with gaps between towers.
+// Enclosed sets reflect two overhead light panels instead.
+//
+// Filtered twice over: by the pixel (fwR, the screen-space spread of the
+// reflection vector, which is large on anything curved and small and distant)
+// and by the GGX lobe (blur, from roughness). A rough surface converges to the
+// plain gradient, so nothing here can sparkle.
+float hash11(float n){ return fract(sin(n * 12.9898) * 43758.5453); }
+
+// ── The distant skyline, as a coverage mask in [0,1] for direction d. ──
+// Buildings of varied width sit on an azimuth grid; roughly one in three has a
+// setback (a narrower upper stage), and the tallest carry a spire. Every edge
+// is filtered by the pixel's footprint plus the blur term, so nothing aliases at any
+// distance and a rough reflection converges to a soft band.
+//   fx, fy: angular footprint in azimuth (grid cells) and elevation (radians).
+float skylineMask(vec3 d, float fx, float fy){
+  float x = (atan(d.z, d.x) / 6.2831853 + 0.5) * 120.0;
+  float bi = floor(x), u = fract(x);
+  float h1 = hash11(bi + 17.0), h2 = hash11(bi + 61.0), h3 = hash11(bi + 5.0);
+  float top = 0.012 + h1 * h1 * 0.085 + step(0.93, h1) * 0.05;
+  // Building footprint inside its cell, with a gap either side.
+  float w0 = 0.06 + h2 * 0.10, w1 = 0.94 - h3 * 0.10;
+  float inX = smoothstep(w0 - fx, w0 + fx, u) * (1.0 - smoothstep(w1 - fx, w1 + fx, u));
+  // Setback: the upper stage is narrower and stands above the main body.
+  float sb = step(0.62, h2) * step(0.3, h1);
+  float c = mix(w0, w1, 0.5), hw = (w1 - w0) * 0.26;
+  float inUpper = smoothstep(c - hw - fx, c - hw + fx, u) * (1.0 - smoothstep(c + hw - fx, c + hw + fx, u));
+  float topUpper = top + sb * (0.012 + h3 * 0.025);
+  // Spire: a thin mast on the tallest towers.
+  float sp = step(0.86, h1);
+  float spW = 0.03;
+  float inSpire = smoothstep(c - spW - fx, c - spW + fx, u) * (1.0 - smoothstep(c + spW - fx, c + spW + fx, u));
+  float topSpire = top + 0.03 + h3 * 0.03;
+  float body  = inX * (1.0 - smoothstep(top - fy, top + fy, d.y));
+  float upper = sb * inUpper * (1.0 - smoothstep(topUpper - fy, topUpper + fy, d.y));
+  float spire = sp * inSpire * (1.0 - smoothstep(topSpire - fy, topSpire + fy, d.y));
+  float base = smoothstep(-0.05 - fy, -0.02 + fy, d.y);
+  return clamp(max(body, max(upper, spire)), 0.0, 1.0) * base;
+}
+// A tower kilometres away has no resolvable windows, but it is not unlit
+// either: its occupied floors add up to a faint wash of warm or cool light,
+// stronger on some buildings than others. That per-building difference is what
+// stops a distant skyline reading as a row of cardboard cut-outs.
+vec3 skylineColor(vec3 d){
+  float bi = floor((atan(d.z, d.x) / 6.2831853 + 0.5) * 120.0);
+  float occ = hash11(bi + 29.0);
+  vec3 wash = mix(vec3(0.055, 0.040, 0.024), vec3(0.026, 0.042, 0.060), step(0.6, hash11(bi + 41.0)));
+  vec3 base = uGround * 0.9 + uHorizon * 0.22 + vec3(0.03, 0.022, 0.014) * (0.5 + hash11(bi + 3.0));
+  return (base + wash * occ * occ) * uEnvInt;
+}
+
+vec3 envUltra(vec3 d, float blur, vec2 fwR){
+  vec3 c = envSample(d);
+  float sharp = 1.0 - smoothstep(0.10, 0.55, blur);
+  if(sharp <= 0.0) return c;
+  if(uSkyOn > 0.5){
+    if(abs(d.y) < 0.35){
+      // |d.xz| > 0.93 here, so atan is well defined. Hazed, not black: this
+      // skyline is kilometres away, and the light pollution sits between it
+      // and the lens.
+      float fx = fwR.x * 120.0 / 6.2831853 + blur * 4.0;
+      float fy = fwR.y + blur * 0.15 + 0.0015;
+      c = mix(c, skylineColor(d), skylineMask(d, fx, fy) * 0.62 * sharp);
+    }
+  }else if(d.y > 0.45){
+    // Two long ceiling light panels, running along the set.
+    vec2 pq = d.xz / d.y;
+    float fx = fwR.x / d.y + blur * 0.6, fz = fwR.y / d.y + blur * 0.6;
+    float strip = bandCov(abs(abs(pq.x) - 0.42), 0.09, fx + 0.004) * (1.0 - smoothstep(0.8 - fz, 0.8 + fz, abs(pq.y)));
+    c += (uZenith * 3.0 + uHorizon * 1.2 + vec3(0.06)) * strip * sharp * uEnvInt;
+  }
+  return c;
+}
+
+// Burley's diffuse: rough surfaces retro-reflect toward grazing, smooth ones
+// darken there. Lambert treats a sheet of paper and a painted hull the same.
+float pow5(float x){ float x2 = x * x; return x2 * x2 * x; }
+float burley(float NoL, float NoV, float LoH, float r){
+  float f90 = 0.5 + 2.0 * r * LoH * LoH;
+  float ls = 1.0 + (f90 - 1.0) * pow5(1.0 - NoL);
+  float vs = 1.0 + (f90 - 1.0) * pow5(1.0 - NoV);
+  return ls * vs;
+}
+
+// Every punctual light in the arcade stands in for something with a size —
+// a glowing orb, a lamp, an engine. A true point light has a highlight of zero
+// size, which on a smooth floor turns every light into the same pin-prick or a
+// shapeless smear. Karis's sphere-light normalisation widens the lobe by the
+// light's angular size and renormalises its energy.
+const float LIGHT_RADIUS = 0.25;
+const float RIM_ULTRA = 0.4;
+#endif
+
 // Height field to shading normal without tangents — Mikkelsen's derivative
-// trick. The pattern is defined per-pixel, so there is no tangent frame to
-// hand it; taking the screen-space gradient of the height and projecting it
-// back onto the surface gives the same result and works on every geometry in
-// the arcade, none of which carry tangents.
-vec3 bumpNormal(vec3 N, vec3 wp, float h, float scale){
-  vec3 dpx = dFdx(wp), dpy = dFdy(wp);
-  float dhx = dFdx(h), dhy = dFdy(h);
+// trick. The derivatives are taken by the CALLER, in main(), in uniform control
+// flow: the first version took them inside a function that was only called
+// when the height was non-zero, which is exactly the non-uniform flow that
+// makes dFdx undefined at every pattern boundary.
+vec3 bumpNormal(vec3 N, vec3 dpx, vec3 dpy, float dhx, float dhy, float scale){
   vec3 r1 = cross(dpy, N), r2 = cross(N, dpx);
   float det = dot(dpx, r1);
   if(abs(det) < 1e-12) return N;
@@ -21242,8 +21845,7 @@ vec3 bumpNormal(vec3 N, vec3 wp, float h, float scale){
   // Bound the tilt. An analytic pattern has genuinely vertical walls at a seam,
   // so the true gradient there is near-infinite; left unbounded it does not
   // shade a groove, it FLIPS the normal, and the seam comes back as a bright
-  // line of specular and rim instead of a dark one. Clamping is what turns the
-  // pattern from a glowing wireframe into panelling.
+  // line of specular and rim instead of a dark one.
   float g = length(grad);
   if(g > 6.0) grad *= 6.0 / g;
   return normalize(N - scale * grad);
@@ -21255,35 +21857,73 @@ void main(){
   // Two-sided: thin panels and holo sheets are drawn without culling, and a
   // back face lit by its front normal goes black.
   if(!gl_FrontFacing) N = -N;
-  float NoV = clamp(dot(N, V), 1e-4, 1.0);
 
   vec3  albedo    = vColor.rgb;
   float metallic  = clamp(vMat.x, 0.0, 1.0);
   float rough     = clamp(vMat.y, 0.035, 1.0);
+  float emisAmt   = vEmis.a;
+  vec3  emisTint  = vEmis.rgb;
 
-  // ── Procedural detail. Runs before the BRDF terms are derived so plate
-  // seams, vents and window mullions feed the real lighting rather than being
-  // painted over it, and bumps the shading normal so a groove catches the rim
-  // light and the specular the same way a modelled one would.
-  float emisAmt  = vEmis.a;
-  vec3  emisTint = vEmis.rgb;
+  // ── Material part, then procedural detail. Both run before the BRDF terms are
+  // derived, so a glass canopy, a rubber track and a plate seam all feed the
+  // real lighting rather than being painted over it.
+  float partMul;
+  applyPart(vPart, albedo, metallic, rough, emisTint, emisAmt, partMul);
   float bumpH;
   // The rim term below is a SILHOUETTE effect, so it keeps the geometric
   // normal. Feeding it the bumped one lit up every seam on the model as if the
   // hull were made of glowing wire.
   vec3 Ng = N;
-  surfaceDetail(albedo, rough, metallic, emisTint, emisAmt, bumpH);
-  if(bumpH != 0.0) N = bumpNormal(N, vWorld, bumpH, 0.05);
+  surfaceDetail(albedo, rough, metallic, emisTint, emisAmt, bumpH, partMul);
+  vec3 dpx = dFdx(vWorld), dpy = dFdy(vWorld);
+  float dhx = dFdx(bumpH), dhy = dFdy(bumpH);
+  if(bumpH != 0.0 || dhx != 0.0 || dhy != 0.0) N = bumpNormal(N, dpx, dpy, dhx, dhy, 0.05);
   albedo   = clamp(albedo, 0.0, 4.0);
   rough    = clamp(rough, 0.035, 1.0);
   metallic = clamp(metallic, 0.0, 1.0);
-  NoV      = clamp(dot(N, V), 1e-4, 1.0);
+  float NoV = clamp(dot(N, V), 1e-4, 1.0);
 
-  float a         = rough * rough;
+  // ── Specular anti-aliasing (Tokuyoshi & Kaplanyan). Where the normal turns
+  // faster than the pixel grid can sample it — a small curved part, a bevel, a
+  // seam, anything far away — the GGX lobe is widened by that variance. Without
+  // it a highlight on a distant hull is a single pixel that flickers on and off
+  // as the model moves, which is aliasing no resolution can fix.
+  vec3 dnx = dFdx(N), dny = dFdy(N);
+  float kernel = min(0.5 * (dot(dnx, dnx) + dot(dny, dny)), 0.18);
+  float a2 = clamp(rough * rough * rough * rough + kernel, 1e-6, 1.0);
+  float a  = sqrt(a2);
+  float roughS = sqrt(a);
+
   vec3  F0        = mix(vec3(0.04), albedo, metallic);
   vec3  diffCol   = albedo * (1.0 - metallic);
-
   vec3 direct = vec3(0.0);
+
+#ifdef ULTRA
+  // ── Brushed / turned metal. An anisotropic GGX lobe, stretched ALONG the
+  // model's axis because the machining grooves run AROUND it: exactly the long
+  // vertical streak of light down a turned barrel or a machined pillar. Only
+  // for the BRUSHED style, and faded out on caps, where the axis is parallel to
+  // the normal and "around the axis" has no direction.
+  float brushed = (floor(vMat.w) > 3.5 && floor(vMat.w) < 4.5) ? fract(vMat.w) * partMul : 0.0;
+  vec3  axisW   = normalize(vAxisY);
+  vec3  Tb      = cross(axisW, N);
+  float tbl     = length(Tb);
+  float aniso   = brushed * 0.9 * smoothstep(0.25, 0.6, tbl);
+  Tb = Tb / max(tbl, 1e-5);
+  vec3  Bb      = cross(N, Tb);
+  float aT = max(a * (1.0 - aniso), 0.002);
+  float aB = max(a * (1.0 + aniso), 0.002);
+
+  vec2  AB    = envBRDF_AB(roughS, NoV);
+  float Ess   = AB.x + AB.y;
+  // Multiple-scattering compensation (Fdez-Aguera): single-scattering GGX loses
+  // the energy that bounces between microfacets, so rough metal comes out too
+  // dark. This puts it back.
+  vec3  eComp = 1.0 + F0 * (1.0 / max(Ess, 1e-3) - 1.0);
+  vec3  R     = reflect(-V, N);
+  vec3  fwRv  = fwidth(R);
+  vec2  fwR   = vec2(length(fwRv.xz) / max(length(R.xz), 0.2), fwRv.y);
+#endif
 
   // -- Punctual lights. Inverse-square with a windowed cutoff at uLightRange, so a
   // light genuinely stops contributing instead of trailing off forever — which
@@ -21303,10 +21943,24 @@ void main(){
     float NoH = clamp(dot(N, H), 0.0, 1.0);
     float VoH = clamp(dot(V, H), 0.0, 1.0);
     vec3  F = fresnelSchlick(VoH, F0);
-    float D = distributionGGX(NoH, a);
     float Vis = visSmith(NoV, NoL, a);
+#ifdef ULTRA
+    float aL = clamp(a + LIGHT_RADIUS / (2.0 * dist), 0.0, 1.0);
+    float D = distributionGGX(NoH, aL) * (a2 / (aL * aL));
+    if(aniso > 0.0){
+      float ToH = dot(Tb, H), BoH = dot(Bb, H);
+      float grow = aL / a;
+      float at = aT * grow, ab = aB * grow;
+      float dd = ToH * ToH / (at * at) + BoH * BoH / (ab * ab) + NoH * NoH;
+      D = (1.0 / (PI * at * ab * dd * dd)) * (a2 / (aL * aL));
+    }
+    vec3 spec = F * (D * Vis) * eComp;
+    vec3 kd = (1.0 - F) * burley(NoL, NoV, VoH, roughS);
+#else
+    float D = distributionGGX(NoH, a);
     vec3 spec = F * (D * Vis);
     vec3 kd = (1.0 - F);
+#endif
     direct += (kd * diffCol / PI + spec) * uLightCol[i] * (NoL * atten);
   }
 
@@ -21321,7 +21975,16 @@ void main(){
       vec3  F = fresnelSchlick(VoH, F0);
       float D = distributionGGX(NoH, a);
       float Vis = visSmith(NoV, NoL, a);
+#ifdef ULTRA
+      if(aniso > 0.0){
+        float ToH = dot(Tb, H), BoH = dot(Bb, H);
+        float dd = ToH * ToH / (aT * aT) + BoH * BoH / (aB * aB) + NoH * NoH;
+        D = 1.0 / (PI * aT * aB * dd * dd);
+      }
+      direct += ((1.0 - F) * burley(NoL, NoV, VoH, roughS) * diffCol / PI + F * (D * Vis) * eComp) * uSunCol * NoL;
+#else
       direct += ((1.0 - F) * diffCol / PI + F * (D * Vis)) * uSunCol * NoL;
+#endif
     }
   }
 
@@ -21330,14 +21993,41 @@ void main(){
   // toward the normal as roughness climbs (a poor man's prefiltered mip chain,
   // but the environment is smooth enough that nobody can tell).
   vec3 irradiance = envSample(N) * 0.55 + envSample(vec3(0.0, 1.0, 0.0)) * 0.16;
+#ifdef ULTRA
+  // The brushed reflection is bent toward the plane of the grooves, so the
+  // reflected skyline smears along the part the way the highlight does.
+  vec3 Rn = R;
+  if(aniso > 0.0){
+    vec3 aTan = cross(Bb, V);
+    vec3 aNrm = cross(aTan, Bb);
+    Rn = reflect(-V, normalize(mix(N, aNrm, aniso * 0.6)));
+  }
+  vec3 Rr = normalize(mix(Rn, N, roughS * roughS * 0.85));
+  vec3 prefiltered = envUltra(Rr, roughS, fwR) * mix(1.35, 0.55, roughS);
+  vec3 FssEss = F0 * AB.x + AB.y;
+  float Ems = 1.0 - Ess;
+  vec3 Favg = F0 + (1.0 - F0) / 21.0;
+  vec3 Fms = FssEss * Favg / (1.0 - Ems * Favg);
+  // Horizon occlusion: a bumped normal can aim the reflection back INTO the
+  // surface it sits on, and that ray sees the hull, not the sky.
+  float hor = clamp(1.0 + dot(R, Ng), 0.0, 1.0);
+  vec3 ambient = diffCol * (1.0 - FssEss - Fms * Ems) * irradiance
+               + (FssEss * prefiltered + Fms * Ems * irradiance) * (hor * hor);
+#else
   vec3 R = reflect(-V, N);
-  vec3 Rr = normalize(mix(R, N, rough * rough * 0.85));
-  vec3 prefiltered = envSample(Rr) * mix(1.35, 0.55, rough);
-  vec3 ambient = diffCol * irradiance + prefiltered * envBRDFApprox(F0, rough, NoV);
+  vec3 Rr = normalize(mix(R, N, roughS * roughS * 0.85));
+  vec3 prefiltered = envSample(Rr) * mix(1.35, 0.55, roughS);
+  vec3 ambient = diffCol * irradiance + prefiltered * envBRDFApprox(F0, roughS, NoV);
+#endif
 
   // ── Fresnel rim. Not physical — a deliberate stylistic edge light, which in a
   // shadowless render is what stops two dark objects merging into one blob.
+  // ULTRA keeps a share of it for exactly that reason, and lets the reflected
+  // skyline do the rest of the edge work the way a real surface would.
   float rim = pow(1.0 - clamp(dot(Ng, V), 1e-4, 1.0), 3.5) * vMat.z;
+#ifdef ULTRA
+  rim *= RIM_ULTRA;
+#endif
   vec3 rimCol = mix(uHorizon, vEmis.rgb, 0.6) * rim * 2.4;
 
   // ── Emission. This is the neon, and it is allowed well past 1.0 — the HDR
@@ -21406,7 +22096,9 @@ void main(){
 // with no shadows to carry depth, a real gradient sky doing the far-field work
 // is not decoration, it is the horizon the fog dissolves into. This evaluates
 // exactly the same envSample() the surface shader uses for its ambient term, so
-// the reflection in a chrome hull and the sky behind it agree.
+// the reflection in a chrome hull and the sky behind it agree — and under ULTRA
+// it draws the same skyline the hulls reflect, plus night cloud and the moon
+// the key light stands in for.
 const FS_SKY = `#version 300 es
 precision highp float;
 in vec2 vUV;
@@ -21420,12 +22112,16 @@ uniform vec3  uHorizon;
 uniform vec3  uGround;
 uniform float uEnvInt;
 uniform float uTime;
+#ifdef ULTRA
+uniform vec3  uSunDir;
+uniform vec3  uSunCol;
+#endif
 out vec4 fragColor;
 
 vec3 envSample(vec3 d){
   float t = d.y;
   vec3 up   = mix(uHorizon, uZenith, smoothstep(0.0, 0.55, t));
-  vec3 down = mix(uHorizon, uGround, smoothstep(0.0, -0.45, t));
+  vec3 down = mix(uHorizon, uGround, 1.0 - smoothstep(-0.45, 0.0, t));
   vec3 c = t > 0.0 ? up : down;
   c += uHorizon * 0.55 * exp(-abs(t) * 9.0);
   return c * uEnvInt;
@@ -21437,9 +22133,64 @@ float hash21(vec2 p){
   return fract(p.x * p.y);
 }
 
+#ifdef ULTRA
+float hash11(float n){ return fract(sin(n * 12.9898) * 43758.5453); }
+// ── The distant skyline, as a coverage mask in [0,1] for direction d. ──
+// Buildings of varied width sit on an azimuth grid; roughly one in three has a
+// setback (a narrower upper stage), and the tallest carry a spire. Every edge
+// is filtered by the pixel's footprint plus the blur term, so nothing aliases at any
+// distance and a rough reflection converges to a soft band.
+//   fx, fy: angular footprint in azimuth (grid cells) and elevation (radians).
+float skylineMask(vec3 d, float fx, float fy){
+  float x = (atan(d.z, d.x) / 6.2831853 + 0.5) * 120.0;
+  float bi = floor(x), u = fract(x);
+  float h1 = hash11(bi + 17.0), h2 = hash11(bi + 61.0), h3 = hash11(bi + 5.0);
+  float top = 0.012 + h1 * h1 * 0.085 + step(0.93, h1) * 0.05;
+  // Building footprint inside its cell, with a gap either side.
+  float w0 = 0.06 + h2 * 0.10, w1 = 0.94 - h3 * 0.10;
+  float inX = smoothstep(w0 - fx, w0 + fx, u) * (1.0 - smoothstep(w1 - fx, w1 + fx, u));
+  // Setback: the upper stage is narrower and stands above the main body.
+  float sb = step(0.62, h2) * step(0.3, h1);
+  float c = mix(w0, w1, 0.5), hw = (w1 - w0) * 0.26;
+  float inUpper = smoothstep(c - hw - fx, c - hw + fx, u) * (1.0 - smoothstep(c + hw - fx, c + hw + fx, u));
+  float topUpper = top + sb * (0.012 + h3 * 0.025);
+  // Spire: a thin mast on the tallest towers.
+  float sp = step(0.86, h1);
+  float spW = 0.03;
+  float inSpire = smoothstep(c - spW - fx, c - spW + fx, u) * (1.0 - smoothstep(c + spW - fx, c + spW + fx, u));
+  float topSpire = top + 0.03 + h3 * 0.03;
+  float body  = inX * (1.0 - smoothstep(top - fy, top + fy, d.y));
+  float upper = sb * inUpper * (1.0 - smoothstep(topUpper - fy, topUpper + fy, d.y));
+  float spire = sp * inSpire * (1.0 - smoothstep(topSpire - fy, topSpire + fy, d.y));
+  float base = smoothstep(-0.05 - fy, -0.02 + fy, d.y);
+  return clamp(max(body, max(upper, spire)), 0.0, 1.0) * base;
+}
+// A tower kilometres away has no resolvable windows, but it is not unlit
+// either: its occupied floors add up to a faint wash of warm or cool light,
+// stronger on some buildings than others. That per-building difference is what
+// stops a distant skyline reading as a row of cardboard cut-outs.
+vec3 skylineColor(vec3 d){
+  float bi = floor((atan(d.z, d.x) / 6.2831853 + 0.5) * 120.0);
+  float occ = hash11(bi + 29.0);
+  vec3 wash = mix(vec3(0.055, 0.040, 0.024), vec3(0.026, 0.042, 0.060), step(0.6, hash11(bi + 41.0)));
+  vec3 base = uGround * 0.9 + uHorizon * 0.22 + vec3(0.03, 0.022, 0.014) * (0.5 + hash11(bi + 3.0));
+  return (base + wash * occ * occ) * uEnvInt;
+}
+float vnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash21(i),               hash21(i + vec2(1.0, 0.0)), f.x),
+             mix(hash21(i + vec2(0.0,1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+#endif
+
 void main(){
   vec2 ndc = vUV * 2.0 - 1.0;
   vec3 dir = normalize(uFwd + uRight * ndc.x * uTanHalf * uAspect + uUp * ndc.y * uTanHalf);
+  // The pixel's angular footprint, taken here in uniform flow for every
+  // filtered feature below.
+  vec3 fwd = fwidth(dir);
+  float pix = max(length(fwd), 1e-5);
   vec3 c = envSample(dir);
 
   // A wide, slow band of light pollution sitting just above the horizon —
@@ -21447,17 +22198,95 @@ void main(){
   float glow = exp(-abs(dir.y - 0.02) * 5.0);
   c += uHorizon * glow * 0.9 * (0.85 + 0.15 * sin(uTime * 0.35 + dir.x * 3.0));
 
-  // Sparse stars, only in the upper hemisphere, on a stable grid so they do not
-  // crawl when the camera moves. Cheap enough to be free and it stops the
-  // zenith from being a dead flat field.
-  if(dir.y > 0.06){
-    vec2 g = floor(dir.xz / max(dir.y, 0.25) * 90.0);
-    float h = hash21(g);
+  // ── Stars. ⚠️ Cells in (azimuth, elevation), each with ONE point star at a
+  // random place inside it, drawn as a pixel-sized disc. The first version
+  // hashed cells of dir.xz / dir.y — a PLANE above the camera — so toward the
+  // horizon each cell projected into a tall thin sliver and a star became a
+  // vertical dash: the sky looked like it was raining. Rows get their own
+  // azimuth count (shrinking with cos(elevation)) so cells stay square and
+  // nothing shears as the camera pitches.
+  if(dir.y > 0.05 && dir.y < 0.995){
+    float el = asin(dir.y);
+    float az = atan(dir.z, dir.x);
+    const float K = 70.0;
+    float row = floor(el * K);
+    float ka = max(1.0, floor(cos((row + 0.5) / K) * K));
+    float cx = floor((az / 6.2831853 + 0.5) * ka * 6.2831853);
+    vec2 cell = vec2(cx, row);
+    float h = hash21(cell);
     if(h > 0.9955){
+      vec2 jit = vec2(hash21(cell + 17.3), hash21(cell + 41.7)) * 0.7 + 0.15;
+      float sEl = (row + jit.y) / K;
+      float sAz = ((cx + jit.x) / (ka * 6.2831853) - 0.5) * 6.2831853;
+      vec3 sd = vec3(cos(sEl) * cos(sAz), sin(sEl), cos(sEl) * sin(sAz));
+      float ang = length(cross(dir, sd));
+      float core = 1.0 - smoothstep(0.35 * pix, 1.35 * pix, ang);
       float tw = 0.55 + 0.45 * sin(uTime * 2.0 + h * 60.0);
-      c += vec3(0.75, 0.85, 1.0) * (h - 0.9955) * 210.0 * tw * smoothstep(0.06, 0.35, dir.y);
+      c += vec3(0.75, 0.85, 1.0) * (h - 0.9955) * 520.0 * core * tw * smoothstep(0.05, 0.3, dir.y);
     }
   }
+
+#ifdef ULTRA
+  // ── The moon, where the key light says it is. Only when it is well above the
+  // horizon: a key light aimed from low down is a sign or a street light, not a
+  // moon, and a disc sitting on the skyline would say otherwise.
+  vec3 md = normalize(-uSunDir);
+  if(md.y > 0.12 && md.y < 0.97){
+    float cosA = dot(dir, md);
+    float ang = length(cross(dir, md));
+    const float MR = 0.0105;
+    if(cosA > 0.0 && ang < 0.25){
+      vec3 t1 = normalize(cross(md, vec3(0.0, 1.0, 0.0)));
+      vec3 t2 = cross(t1, md);
+      vec2 lp = vec2(dot(dir, t1), dot(dir, t2)) / MR;
+      float disc = 1.0 - smoothstep(MR - pix, MR + pix, ang);
+      float maria = 1.0 - 0.22 * smoothstep(0.45, 0.75, vnoise(lp * 2.2 + 3.1));
+      vec3 mc = mix(vec3(1.0, 0.95, 0.86), normalize(uSunCol + 1e-4), 0.2);
+      c += mc * (disc * 3.4 * maria + exp(-ang * 70.0) * 0.18 + exp(-ang * 10.0) * 0.035);
+    }
+  }
+
+  // ── Night cloud, lit from below by the city. Thin, slow, and gone before
+  // the zenith and the horizon so it never becomes an overcast lid.
+  if(dir.y > 0.02){
+    vec2 cp = dir.xz / (dir.y + 0.12) * 0.9 + vec2(uTime * 0.006, uTime * 0.002);
+    float n = vnoise(cp) * 0.5 + vnoise(cp * 2.03 + 7.1) * 0.25
+            + vnoise(cp * 4.1 + 3.3) * 0.125 + vnoise(cp * 8.3 + 1.7) * 0.0625;
+    n /= 0.9375;
+    float dens = smoothstep(0.52, 0.84, n) * smoothstep(0.02, 0.22, dir.y) * (1.0 - smoothstep(0.55, 0.95, dir.y));
+    vec3 cloud = (uHorizon * 1.35 + uZenith * 0.9) * uEnvInt;
+    c = mix(c, cloud, dens * 0.55);
+  }
+
+  // ── The distant skyline, hazed, in front of all of it.
+  if(abs(dir.y) < 0.35){
+    float fx = length(fwd.xz) / max(length(dir.xz), 0.2) * 120.0 / 6.2831853;
+    float fy = fwd.y + 0.0015;
+    c = mix(c, skylineColor(dir), skylineMask(dir, fx, fy) * 0.62);
+
+    // Aviation obstruction lights on every spire: a red point at the mast tip,
+    // flashing slowly, each tower on its own phase. The same geometry as the
+    // spire in skylineMask(). Drawn as a disc about one pixel across — real
+    // obstruction lights at this range ARE a single point — with its edge
+    // filtered by the pixel footprint so it cannot twinkle as the camera moves.
+    float x = (atan(dir.z, dir.x) / 6.2831853 + 0.5) * 120.0;
+    float bi = floor(x);
+    float h1 = hash11(bi + 17.0);
+    if(h1 > 0.86){
+      float h2 = hash11(bi + 61.0), h3 = hash11(bi + 5.0);
+      float w0 = 0.06 + h2 * 0.10, w1 = 0.94 - h3 * 0.10;
+      float cx = bi + mix(w0, w1, 0.5);
+      float top = 0.012 + h1 * h1 * 0.085 + step(0.93, h1) * 0.05;
+      float tip = top + 0.03 + h3 * 0.03;
+      float dAz = (x - cx) / 120.0 * 6.2831853 * length(dir.xz);
+      float dist = length(vec2(dAz, dir.y - tip));
+      float ph = fract(uTime * 0.5 + h3 * 7.0);
+      float flash = 0.2 + 0.8 * smoothstep(0.0, 0.06, ph) * (1.0 - smoothstep(0.42, 0.5, ph));
+      float dotc = 1.0 - smoothstep(0.55 * pix, 1.5 * pix, dist);
+      c += vec3(1.0, 0.07, 0.03) * dotc * flash * 1.9;
+    }
+  }
+#endif
   fragColor = vec4(c, 1.0);
 }`;
 
@@ -21469,6 +22298,18 @@ void main(){
   vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
   vUV = p;
   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+// The same triangle ON THE FAR PLANE (z = w), for the sky: drawn after the
+// opaque geometry with a LEQUAL test against the cleared depth of 1.0, it only
+// shades the pixels nothing else covered. See the SKY pass in render().
+const VS_SKY = `#version 300 es
+precision highp float;
+out vec2 vUV;
+void main(){
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  vUV = p;
+  gl_Position = vec4(p * 2.0 - 1.0, 1.0, 1.0);
 }`;
 
 // Bright pass with a soft knee, plus a firefly clamp. Without the clamp a
@@ -21560,6 +22401,9 @@ uniform vec3  uLift;
 uniform vec3  uGain;
 uniform float uSaturation;
 uniform vec2  uRes;
+#ifdef ULTRA
+uniform int   uTonemap;
+#endif
 out vec4 fragColor;
 
 // Narkowicz's fitted ACES curve. Cheap, and it rolls neon highlights off to
@@ -21569,6 +22413,55 @@ vec3 aces(vec3 x){
   const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
   return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
+
+#ifdef ULTRA
+// ── AgX, the view transform Blender has shipped as its default since 4.0, in
+// Benjamin Wrensch's polynomial fit, with Blender's "Punchy" look. The ACES fit
+// above pushes a bright saturated emitter straight to white — which is how a
+// glowing reactor core turned into a featureless white-cyan ball — while AgX
+// compresses highlight ENERGY and desaturates toward white gradually, the way
+// film and camera sensors do, so an emitter stays a shape with a colour.
+vec3 agxContrast(vec3 x){
+  vec3 x2 = x * x;
+  vec3 x4 = x2 * x2;
+  return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+vec3 agx(vec3 v){
+  const mat3 inset = mat3(
+    0.842479062253094, 0.0423282422610123, 0.0423756549057051,
+    0.0784335999999992, 0.878468636469772, 0.0784336,
+    0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+  const mat3 outset = mat3(
+    1.19687900512017, -0.0528968517574562, -0.0529716355144438,
+    -0.0980208811401368, 1.15190312990417, -0.0980434501171241,
+    -0.0990297440797205, -0.0989611768448433, 1.15107367264116);
+  const float minEv = -12.47393, maxEv = 4.026069;
+  v = inset * max(v, vec3(1e-10));
+  v = clamp(log2(v), minEv, maxEv);
+  v = (v - minEv) / (maxEv - minEv);
+  v = agxContrast(v);
+  float luma = dot(v, vec3(0.2126, 0.7152, 0.0722));
+  v = pow(max(v, vec3(0.0)), vec3(1.35));
+  v = luma + 1.4 * (v - luma);
+  v = outset * v;
+  return pow(clamp(v, 0.0, 1.0), vec3(2.2));
+}
+// Khronos PBR Neutral: hue- and saturation-preserving until close to white.
+vec3 pbrNeutral(vec3 color){
+  const float startCompression = 0.8 - 0.04;
+  const float desaturation = 0.15;
+  float x = min(color.r, min(color.g, color.b));
+  float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+  color -= offset;
+  float peak = max(color.r, max(color.g, color.b));
+  if(peak < startCompression) return max(color, 0.0);
+  const float dd = 1.0 - startCompression;
+  float newPeak = 1.0 - dd * dd / (peak + dd - startCompression);
+  color *= newPeak / peak;
+  float g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+  return mix(color, vec3(newPeak), g);
+}
+#endif
 
 void main(){
   vec2 uv = vUV;
@@ -21590,7 +22483,13 @@ void main(){
 
   vec3 color = scene + bloom * uBloomAmt;
   color *= uExposure;
+#ifdef ULTRA
+  if(uTonemap == 1)      color = agx(color);
+  else if(uTonemap == 2) color = pbrNeutral(color);
+  else                   color = aces(color);
+#else
   color = aces(color);
+#endif
 
   // Grade in display space: lift the blacks toward cyan-indigo, push the
   // highlights toward magenta. This is the "cyberpunk" in the look.
@@ -21598,22 +22497,18 @@ void main(){
   float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
   color = mix(vec3(luma), color, uSaturation);
 
-  // ⚠️ GRAIN AND SCANLINES USED TO BE HERE. They are in the FXAA pass now, and
-  // the order matters in both directions. Anti-aliasing has to run on a CLEAN
-  // image: grain is per-pixel noise and a scanline is a one-pixel-period sine,
-  // so to an edge detector they are edges everywhere — they would have burned
-  // the whole filter's budget on film grain and left the real geometry aliased.
-  // And running them BEFORE the blend would have averaged them away again,
-  // which is a slow way to render a slightly blurrier version of no grain at
-  // all. Clean image → resolve → then dirty it on purpose.
+  // ⚠️ GRAIN AND SCANLINES USED TO BE HERE. They are in the resolve pass now,
+  // and the order matters in both directions. Anti-aliasing has to run on a
+  // CLEAN image: grain is per-pixel noise and a scanline is a one-pixel-period
+  // sine, so to an edge detector they are edges everywhere. Clean image →
+  // resolve → then dirty it on purpose.
 
   color *= 1.0 - uVignette * r2 * 1.9;
 
   // Linear → sRGB. Not the final framebuffer any more — this lands in an LDR
-  // target that the FXAA pass resolves to the screen — but the encoding belongs
+  // target that the resolve pass puts on the screen — but the encoding belongs
   // here regardless: FXAA measures contrast with a luma weighting that assumes
-  // perceptual, gamma-encoded values, and run on linear light it under-filters
-  // the darks and over-filters the highlights.
+  // perceptual, gamma-encoded values.
   color = pow(max(color, 0.0), vec3(1.0 / 2.2));
   fragColor = vec4(color, 1.0);
 }`;
@@ -21622,32 +22517,28 @@ void main(){
 //  ✨ FXAA — THE RESOLVE
 // ══════════════════════════════════════════════
 // ⚠️ THE ARCADE SHIPPED WITH NO ANTI-ALIASING OF ANY KIND. The GL context is
-// created with `antialias: false` and a comment saying "we resolve with the
-// post chain instead" — and the post chain never did. There was no MSAA on the
-// scene framebuffer either (plain `renderbufferStorage`, not the multisample
-// call), so every edge in the frame was a hard staircase: the tower silhouettes
-// against the sky, the grid lines running to the horizon, the ship's own hull.
+// created with `antialias: false`, and for a long time there was no MSAA on the
+// scene framebuffer either, so every edge in the frame was a hard staircase.
 // Measured on the shipped build: `gl.getParameter(gl.SAMPLES)` returned 0 while
 // `MAX_SAMPLES` reported 16. The hardware was willing; nothing had asked.
 //
-// That explains "the graphics are terrible" far better than the resolution
-// governor does, because it does not depend on the governor having spent
-// anything: it was equally true at the TOP of the ladder, on a fast desktop,
-// with the board rendering at the panel's own pixel count.
+// WHY FXAA FOR NORMAL. MSAA only knows about geometry edges, and a good half
+// of the aliasing here used to be SHADED. MSAA also costs bandwidth in
+// proportion to its sample count, on a renderer that already carries an HDR
+// target and a five-level bloom pyramid. FXAA is one pass over the finished
+// image, costs the same on every device, and still fits the weak hardware
+// Normal has to look good on.
 //
-// WHY FXAA AND NOT MSAA. MSAA only knows about geometry edges, and a good half
-// of the aliasing here is SHADED — the procedural window grids on the towers,
-// the plate seams, the specular glints. MSAA also costs bandwidth in proportion
-// to its sample count, on a renderer that already carries an HDR target and a
-// five-level bloom pyramid. FXAA is one pass over the finished image: it
-// catches shaded and geometric aliasing alike, it costs the same on every
-// device, and it is the one that still fits on the weak hardware this has to
-// look good on.
+// ✨ WHY MSAA FOR ULTRA. Once the shading aliasing is dealt with at its source —
+// the surface patterns are box-filtered and the highlights are specular-AA'd —
+// what is left is geometric, which is MSAA's whole job, and FXAA's blur along
+// edges is the last softness in the picture. So Ultra resolves 4× MSAA and this
+// pass does not filter at all: it applies a light contrast-adaptive sharpen and
+// the grain. If the device cannot build a multisampled float target, Ultra
+// falls back to FXAA here (uMsaa is 0) rather than to no anti-aliasing.
 //
 // This is the FXAA 3.11 console variant — five taps in the flat case, nine on
-// an edge. The full PC preset's search loop buys a little more on
-// near-horizontal edges and costs several times as much; on neon-on-black
-// content at this resolution the difference is not visible and the cost is.
+// an edge.
 const FS_FXAA = `#version 300 es
 precision highp float;
 in vec2 vUV;
@@ -21657,6 +22548,10 @@ uniform vec2  uRes;
 uniform float uTime;
 uniform float uGrain;
 uniform float uScanline;
+#ifdef ULTRA
+uniform float uMsaa;
+uniform float uSharpen;
+#endif
 out vec4 fragColor;
 
 // Gamma-space luma, with the classic FXAA weights rather than the Rec.709 ones
@@ -21667,24 +22562,15 @@ float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123
 // Local contrast below EITHER of these is left alone: an absolute floor, so a
 // flat area costs five taps and nothing else, and a relative one, so a bright
 // region is not filtered on contrast invisible against its own brightness.
-//
-// ⚠️ These were 0.0312 / 0.125, which are the MOST aggressive values in the
-// FXAA 3.11 preset table (NVIDIA ships 0.0833/0.166 as the default, 0.0625/0.125
-// as "high quality", and calls 0.0312 the "visible limit — slowest"). On an
-// RGBA8 gamma-encoded target 0.0312 is about 8 code values of luma across a 3x3
-// neighbourhood, so the filter fired on gradients nobody would call an edge —
-// and with SPAN_MAX 8 every one of those blends across +/-4 texels. On content
-// that is mostly long shallow neon lines that is most of the frame. Raised to
-// the high-quality preset: every real edge still resolves, the near-flat ones
-// stop being smeared.
+// The high-quality preset from the FXAA 3.11 table — the aggressive one this
+// used to use fired on gradients nobody would call an edge.
 const float EDGE_MIN   = 0.0625;
 const float EDGE_MUL   = 0.166;
 const float SPAN_MAX   = 8.0;
 const float REDUCE_MUL = 0.125;
 const float REDUCE_MIN = 0.0078125;
 
-void main(){
-  vec2 uv = vUV;
+vec3 fxaa(vec2 uv){
   vec3 rgbM  = texture(uTex, uv).rgb;
   vec3 rgbNW = texture(uTex, uv + vec2(-1.0, -1.0) * uTexel).rgb;
   vec3 rgbNE = texture(uTex, uv + vec2( 1.0, -1.0) * uTexel).rgb;
@@ -21702,9 +22588,6 @@ void main(){
     // 90 degrees — we want to blur ALONG the edge, never across it.
     vec2 dir = vec2(-((lNW + lNE) - (lSW + lSE)),
                      ((lNW + lSW) - (lNE + lSE)));
-    // Normalising by the SMALLER component is what makes a near-horizontal edge
-    // reach far sideways while a diagonal one barely moves. The reduce term
-    // stops a near-zero component sending the span to infinity in flat noise.
     float reduce = max((lNW + lNE + lSW + lSE) * 0.25 * REDUCE_MUL, REDUCE_MIN);
     float rcpMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
     dir = clamp(dir * rcpMin, vec2(-SPAN_MAX), vec2(SPAN_MAX)) * uTexel;
@@ -21713,12 +22596,44 @@ void main(){
                        texture(uTex, uv + dir * (2.0 / 3.0 - 0.5)).rgb);
     vec3 rgbB = rgbA * 0.5 + 0.25 * (texture(uTex, uv + dir * -0.5).rgb +
                                      texture(uTex, uv + dir *  0.5).rgb);
-    // The wider tap pair is better along a long edge and wrong at a corner,
-    // where it reaches past the feature entirely. Leaving the local luma range
-    // is the tell, and the narrow pair is the fallback.
     float lB = luma(rgbB);
     color = (lB < lMin || lB > lMax) ? rgbA : rgbB;
   }
+  return color;
+}
+
+#ifdef ULTRA
+// AMD FidelityFX CAS (contrast-adaptive sharpening), on the gamma-encoded
+// frame. Adaptive is the point: the amount backs off wherever the local
+// contrast is already high, so a neon edge does not grow a halo while a hull's
+// panel lines and the skyline's windows come up crisp.
+vec3 cas(vec2 uv, float sharpness){
+  vec3 a = texture(uTex, uv + vec2(-1.0, -1.0) * uTexel).rgb;
+  vec3 b = texture(uTex, uv + vec2( 0.0, -1.0) * uTexel).rgb;
+  vec3 c = texture(uTex, uv + vec2( 1.0, -1.0) * uTexel).rgb;
+  vec3 d = texture(uTex, uv + vec2(-1.0,  0.0) * uTexel).rgb;
+  vec3 e = texture(uTex, uv).rgb;
+  vec3 f = texture(uTex, uv + vec2( 1.0,  0.0) * uTexel).rgb;
+  vec3 g = texture(uTex, uv + vec2(-1.0,  1.0) * uTexel).rgb;
+  vec3 h = texture(uTex, uv + vec2( 0.0,  1.0) * uTexel).rgb;
+  vec3 i = texture(uTex, uv + vec2( 1.0,  1.0) * uTexel).rgb;
+  vec3 mn = min(min(min(d, e), min(f, b)), h);
+  mn += min(mn, min(min(a, c), min(g, i)));
+  vec3 mx = max(max(max(d, e), max(f, b)), h);
+  mx += max(mx, max(max(a, c), max(g, i)));
+  vec3 amp = sqrt(clamp(min(mn, 2.0 - mx) / max(mx, vec3(1e-5)), 0.0, 1.0));
+  vec3 w = amp * (-1.0 / mix(8.0, 5.0, sharpness));
+  return clamp(((b + d + f + h) * w + e) / (1.0 + 4.0 * w), 0.0, 1.0);
+}
+#endif
+
+void main(){
+  vec2 uv = vUV;
+#ifdef ULTRA
+  vec3 color = uMsaa > 0.5 ? cas(uv, uSharpen) : fxaa(uv);
+#else
+  vec3 color = fxaa(uv);
+#endif
 
   // ── THE DIRT, APPLIED AFTER THE RESOLVE ──
   // Fine scanlines, tied to physical pixels so they don't crawl on resize.
@@ -21743,8 +22658,8 @@ void main(){
 // branch and shades exactly as it did before this system existed.
 const SURF = {
   NONE:    0,   // flat colour — neon strips, holo sheets, energy orbs
-  HULL:    1,   // armour plating: staggered plates, seam grooves, finish jitter
-  WINDOWS: 2,   // lit building facade: window cells, dead floors, warm/cool mix
+  HULL:    1,   // airframe skin: long panels, hairline seams, finish jitter
+  WINDOWS: 2,   // curtain-wall facade: glass, mullions, spandrels, lit interiors
   TECH:    3,   // machinery: tight plates, louvred vents
   BRUSHED: 4,   // turned/machined metal: directional roughness streaks
   HEX:     5,   // energy lattice: shields, holo panels, force fields
@@ -21755,6 +22670,13 @@ const SURF = {
 const MAX_LIGHTS = 10;
 const FLOATS_PER_INSTANCE = 16 + 4 + 4 + 4;   // model, colour, emissive, material
 const FLOATS_PER_GLOW = 8;                    // centre+size, tint+intensity
+
+// ✨ What the Ultra profile does to the finishing chain, on top of whatever each
+// mission grades. Aberration and scanlines are CAMERA and CRT artefacts — they
+// are part of the arcade's stylised look, and exactly the things that make an
+// image read as less real and less clear — so Ultra caps them hard. Exposure
+// compensates AgX, which puts middle grey about a fifth lower than the ACES fit.
+const ULTRA_POST = { exposure: 1.2, bloom: 0.85, aberration: 0.18, grain: 0.02, scanline: 0, sharpen: 0.28, tonemap: 1 };
 
 function compile(gl, type, src){
   const sh = gl.createShader(type);
@@ -21768,20 +22690,9 @@ function compile(gl, type, src){
   return sh;
 }
 
-function program(gl, vsSrc, fsSrc){
-  const p = gl.createProgram();
-  const vs = compile(gl, gl.VERTEX_SHADER, vsSrc);
-  const fs = compile(gl, gl.FRAGMENT_SHADER, fsSrc);
-  gl.attachShader(p, vs); gl.attachShader(p, fs);
-  gl.linkProgram(p);
-  gl.deleteShader(vs); gl.deleteShader(fs);
-  if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
-    const log = gl.getProgramInfoLog(p);
-    gl.deleteProgram(p);
-    throw new Error('3D program link failed: ' + log);
-  }
-  // Uniform locations are looked up once and cached on the program object; a
-  // getUniformLocation per frame per uniform is a real cost at this call rate.
+// Uniform locations are looked up once and cached on the program object; a
+// getUniformLocation per frame per uniform is a real cost at this call rate.
+function cacheUniforms(gl, p){
   p._u = Object.create(null);
   const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
   for(let i=0;i<n;i++){
@@ -21792,10 +22703,45 @@ function program(gl, vsSrc, fsSrc){
   return p;
 }
 
-function createRenderer(canvas){
+function program(gl, vsSrc, fsSrc){
+  const p = gl.createProgram();
+  let vs = null, fs = null;
+  try{
+    vs = compile(gl, gl.VERTEX_SHADER, vsSrc);
+    fs = compile(gl, gl.FRAGMENT_SHADER, fsSrc);
+  }catch(err){
+    if(vs) gl.deleteShader(vs);
+    gl.deleteProgram(p);
+    throw err;
+  }
+  gl.attachShader(p, vs); gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  gl.deleteShader(vs); gl.deleteShader(fs);
+  if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
+    const log = gl.getProgramInfoLog(p);
+    gl.deleteProgram(p);
+    throw new Error('3D program link failed: ' + log);
+  }
+  return cacheUniforms(gl, p);
+}
+
+// Injects defines directly under the version line, which must stay the very
+// first line of a GLSL ES 3.00 source.
+function withDefines(src, defs){
+  const head = '#version 300 es\n';
+  if(!defs || src.indexOf(head) !== 0) return src;
+  return head + defs + src.slice(head.length);
+}
+
+const PROFILES = ['normal', 'ultra'];
+
+// `opts.profile` picks the profile the renderer is BUILT in, so a session that
+// opens in Ultra compiles Ultra once at creation instead of compiling Normal
+// and then switching straight away.
+function createRenderer(canvas, opts){
   const gl = canvas.getContext('webgl2', {
     alpha: false,
-    antialias: false,          // we resolve with the post chain instead
+    antialias: false,          // Normal resolves with FXAA; Ultra with its own MSAA target
     depth: true,
     stencil: false,
     powerPreference: 'high-performance',
@@ -21811,21 +22757,93 @@ function createRenderer(canvas){
                 || gl.getExtension('EXT_color_buffer_half_float');
   gl.getExtension('OES_texture_float_linear');   // linear filtering on the mips
   const HDR = !!floatBuf;
+  const MAX_SAMPLES = (gl.getParameter(gl.MAX_SAMPLES) | 0);
 
-  let progMesh, progGlow, progBright, progDown, progUp, progComp, progSky, progAA;
+  // Profile-independent programs.
+  let progGlow, progBright, progDown, progUp;
   try{
-    progMesh   = program(gl, VS_MESH, FS_MESH);
     progGlow   = program(gl, VS_GLOW, FS_GLOW);
     progBright = program(gl, VS_FULL, FS_BRIGHT);
     progDown   = program(gl, VS_FULL, FS_DOWN);
     progUp     = program(gl, VS_FULL, FS_UP);
-    progComp   = program(gl, VS_FULL, FS_COMPOSITE);
-    progSky    = program(gl, VS_FULL, FS_SKY);
-    progAA     = program(gl, VS_FULL, FS_FXAA);
   }catch(err){
     console.warn('[3D] shader build failed, 3D mode unavailable:', err.message);
     return null;
   }
+
+  // ── ✨ PROFILE PROGRAMS ──
+  // Compiled the first time a profile is wanted and kept for the session, so a
+  // player flipping between Normal and Ultra pays each compile once.
+  //
+  // ⚠️ NOT A PLAIN COMPILE CALL. A cold compile of the Ultra shaders measured
+  // 1.8s on an HD 520 — a freeze in the middle of a round for anyone who flips
+  // the switch mid-mission. With KHR_parallel_shader_compile (every current
+  // desktop browser has it) the driver compiles on its own threads: setProfile()
+  // only STARTS the build, frames keep drawing in the old profile, and the swap
+  // lands on the first frame after the driver reports the programs done.
+  // Without the extension the very same calls simply complete synchronously.
+  const PARALLEL = gl.getExtension('KHR_parallel_shader_compile');
+  const PROGS  = Object.create(null);   // profile -> { mesh, sky, comp, aa }
+  const BUILDS = Object.create(null);   // profile -> in-flight compile
+  const FAILED = Object.create(null);   // profile -> true once it has failed here
+  const STAGES = [['mesh', VS_MESH, FS_MESH], ['sky', VS_SKY, FS_SKY],
+                  ['comp', VS_FULL, FS_COMPOSITE], ['aa', VS_FULL, FS_FXAA]];
+  function startBuild(profile){
+    if(PROGS[profile] || BUILDS[profile] || FAILED[profile]) return;
+    const defs = profile === 'ultra' ? '#define ULTRA 1\n' : '';
+    BUILDS[profile] = STAGES.map(([key, vsSrc, fsSrc]) => {
+      const vs = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(vs, vsSrc); gl.compileShader(vs);
+      const fs = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fs, withDefines(fsSrc, defs)); gl.compileShader(fs);
+      const p = gl.createProgram();
+      gl.attachShader(p, vs); gl.attachShader(p, fs);
+      gl.linkProgram(p);
+      return { key, vs, fs, p };
+    });
+  }
+  // 'ready' | 'pending' | 'failed'. Never waits on the driver unless `block`.
+  function pollBuild(profile, block){
+    if(PROGS[profile]) return 'ready';
+    if(FAILED[profile]) return 'failed';
+    const b = BUILDS[profile];
+    if(!b) return 'failed';
+    if(PARALLEL && !block){
+      for(const st of b) if(!gl.getProgramParameter(st.p, PARALLEL.COMPLETION_STATUS_KHR)) return 'pending';
+    }
+    delete BUILDS[profile];
+    let err = '';
+    for(const st of b){
+      if(!err && !gl.getProgramParameter(st.p, gl.LINK_STATUS)){
+        err = st.key + ': ' + (gl.getShaderInfoLog(st.fs) || '') + (gl.getShaderInfoLog(st.vs) || '') + (gl.getProgramInfoLog(st.p) || '');
+      }
+    }
+    for(const st of b){ gl.deleteShader(st.vs); gl.deleteShader(st.fs); }
+    if(err){
+      b.forEach(st => gl.deleteProgram(st.p));
+      FAILED[profile] = true;
+      console.warn('[3D] ' + profile + ' graphics profile unavailable:', err);
+      return 'failed';
+    }
+    const set = {};
+    for(const st of b){ cacheUniforms(gl, st.p); set[st.key] = st.p; }
+    PROGS[profile] = set;
+    return 'ready';
+  }
+  let PROFILE = (opts && opts.profile === 'ultra') ? 'ultra' : 'normal';
+  startBuild(PROFILE);
+  if(pollBuild(PROFILE, true) !== 'ready' && PROFILE !== 'normal'){
+    PROFILE = 'normal';
+    startBuild('normal');
+    pollBuild('normal', true);
+  }
+  if(!PROGS[PROFILE]){
+    console.warn('[3D] shader build failed, 3D mode unavailable.');
+    [progGlow, progBright, progDown, progUp].forEach(p => gl.deleteProgram(p));
+    return null;
+  }
+  let WANT = PROFILE;
+  let P = PROGS[PROFILE];
 
   // ── GEOMETRY REGISTRY ──
   const geos = Object.create(null);
@@ -21841,28 +22859,35 @@ function createRenderer(canvas){
     gl.bindVertexArray(vao);
 
     const vbo = gl.createBuffer();
-    // Interleaved pos/nrm/uv — one buffer, one bind, 8 floats a vertex.
+    // Interleaved pos/nrm/uv/part — one buffer, one bind, 9 floats a vertex.
     const count = mesh.pos.length / 3;
-    const inter = new Float32Array(count * 8);
+    const parts = mesh.part || [];
+    const inter = new Float32Array(count * 9);
     for(let i=0;i<count;i++){
-      inter[i*8  ] = mesh.pos[i*3];
-      inter[i*8+1] = mesh.pos[i*3+1];
-      inter[i*8+2] = mesh.pos[i*3+2];
-      inter[i*8+3] = mesh.nrm[i*3];
-      inter[i*8+4] = mesh.nrm[i*3+1];
-      inter[i*8+5] = mesh.nrm[i*3+2];
-      inter[i*8+6] = mesh.uv[i*2]     || 0;
-      inter[i*8+7] = mesh.uv[i*2 + 1] || 0;
+      inter[i*9  ] = mesh.pos[i*3];
+      inter[i*9+1] = mesh.pos[i*3+1];
+      inter[i*9+2] = mesh.pos[i*3+2];
+      inter[i*9+3] = mesh.nrm[i*3];
+      inter[i*9+4] = mesh.nrm[i*3+1];
+      inter[i*9+5] = mesh.nrm[i*3+2];
+      inter[i*9+6] = mesh.uv[i*2]     || 0;
+      inter[i*9+7] = mesh.uv[i*2 + 1] || 0;
+      inter[i*9+8] = parts[i] || 0;
     }
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
     gl.bufferData(gl.ARRAY_BUFFER, inter, gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
-    gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
-    gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+    gl.enableVertexAttribArray(0);  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 36, 0);
+    gl.enableVertexAttribArray(1);  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 36, 12);
+    gl.enableVertexAttribArray(2);  gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 36, 24);
+    gl.enableVertexAttribArray(10); gl.vertexAttribPointer(10, 1, gl.FLOAT, false, 36, 32);
 
+    // 16-bit indices whenever they fit (every built-in does at both
+    // tessellations); a geometry past 65535 vertices gets 32-bit ones rather
+    // than silently wrapping its indices into garbage.
+    const big = count > 65535;
     const ibo = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(mesh.idx), gl.STATIC_DRAW);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, big ? new Uint32Array(mesh.idx) : new Uint16Array(mesh.idx), gl.STATIC_DRAW);
 
     // Per-instance stream. Shared buffer object, re-uploaded per bucket per
     // frame; the VAO records only the pointer layout, not the contents.
@@ -21879,8 +22904,18 @@ function createRenderer(canvas){
     gl.enableVertexAttribArray(9); gl.vertexAttribPointer(9, 4, gl.FLOAT, false, stride, 96); gl.vertexAttribDivisor(9, 1);
 
     gl.bindVertexArray(null);
-    geos[name] = { vao, ibo, inst, count: mesh.idx.length, cap: 0, surf: surf || 0 };
+    geos[name] = { vao, vbo, ibo, inst, count: mesh.idx.length, itype: big ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, cap: 0, surf: surf || 0 };
     return geos[name];
+  }
+
+  function dropGeo(name){
+    const g = geos[name];
+    if(!g) return;
+    gl.deleteVertexArray(g.vao);
+    gl.deleteBuffer(g.vbo);
+    gl.deleteBuffer(g.ibo);
+    gl.deleteBuffer(g.inst);
+    delete geos[name];
   }
 
   // ── THE PALETTE ──
@@ -21890,46 +22925,61 @@ function createRenderer(canvas){
   // plate-seaming a light bar would be wrong, so the workhorse primitives that
   // usually carry emissive stay perfectly clean. Detail goes on the things that
   // are meant to read as fabricated hardware.
-  registerGeo('box',       buildBox());                        // neon strips, sheets — clean
-  registerGeo('cube',      buildRoundedBox(0.10, 4), SURF.HULL    + 0.45);
-  registerGeo('slab',      buildRoundedBox(0.055, 3), SURF.HULL   + 0.35);
-  registerGeo('pill',      buildRoundedBox(0.42, 5), SURF.TECH    + 0.28);
-  registerGeo('sphere',    buildSphere(30, 20));                // energy orbs — clean
-  registerGeo('lowsphere', buildSphere(14, 10));
-  registerGeo('cylinder',  buildCylinder(26), SURF.BRUSHED      + 0.55);
-  registerGeo('cone',      buildCylinder(20, 0.001, 0.5), SURF.BRUSHED + 0.4);
-  registerGeo('torus',     buildTorus(0.4, 0.09, 44, 16), SURF.BRUSHED + 0.45);
-  registerGeo('thintorus', buildTorus(0.45, 0.035, 48, 10));    // neon rings — clean
-  registerGeo('quad',      buildQuad());
-  registerGeo('ground',    buildGround(28));
-  registerGeo('ship',      buildShip(),   SURF.HULL    + 0.7);
-  registerGeo('raider',    buildRaider(), SURF.HULL    + 0.6);
-  registerGeo('drone',     buildDrone(),  SURF.TECH    + 0.55);
-  registerGeo('turret',    buildTurret(), SURF.TECH    + 0.6);
-  registerGeo('techblock', buildTechBlock(), SURF.HULL + 0.35);
-  registerGeo('rack',      buildServerRack(), SURF.TECH + 0.55);
-  registerGeo('paddle',    buildPaddle(),     SURF.HULL + 0.5);
-  registerGeo('mech',      buildMech(),   SURF.HULL    + 0.65);
-  registerGeo('tank',      buildTank(),   SURF.HULL    + 0.7);
-  registerGeo('barrier',   buildBarrier(),SURF.TECH    + 0.55);
-  registerGeo('core',      buildCore(),   SURF.TECH    + 0.5);
-  registerGeo('wing',      buildWing({ span:1, rootC:1, tipC:0.3, sweep:0.55 }), SURF.HULL + 0.5);
-  // Four skyline silhouettes, all window-plated. drawCity() picks per building.
-  registerGeo('tower',     buildTower(),        SURF.WINDOWS + 0.9);
-  registerGeo('tower2',    buildTowerSlab(),    SURF.WINDOWS + 0.9);
-  registerGeo('tower3',    buildTowerStepped(), SURF.WINDOWS + 0.9);
-  registerGeo('tower4',    buildTowerSpire(),   SURF.WINDOWS + 0.85);
-  registerGeo('rock',      buildRock(7),    SURF.MINERAL + 0.75);
-  registerGeo('rock2',     buildRock(1337), SURF.MINERAL + 0.75);
+  //
+  // ⚠️ ONE tessellation for both profiles, on purpose. Ultra first rebuilt every
+  // geometry at twice the segments, and on an HD 520 that alone cost 5ms a frame
+  // for no visible gain: the extra triangles are sub-pixel at gameplay distance,
+  // and a GPU shades a 2x2 quad per triangle, so a mesh of tiny triangles pays
+  // for its heavy fragment shader several times over along every edge.
+  const BUILTIN = [
+    ['box',       () => buildBox(),                          0],   // neon strips, sheets — clean
+    ['cube',      () => buildRoundedBox(0.10, 4),            SURF.HULL    + 0.45],
+    ['slab',      () => buildRoundedBox(0.055, 3),           SURF.HULL    + 0.35],
+    ['pill',      () => buildRoundedBox(0.42, 5),            SURF.TECH    + 0.28],
+    ['sphere',    () => buildSphere(30, 20),                 0],   // energy orbs — clean
+    ['lowsphere', () => buildSphere(14, 10),                 0],
+    ['cylinder',  () => buildCylinder(26, 0.5, 0.5, 0.035),  SURF.BRUSHED + 0.55],
+    ['cone',      () => buildCylinder(20, 0.001, 0.5),       SURF.BRUSHED + 0.4],
+    ['torus',     () => buildTorus(0.4, 0.09, 44, 16),       SURF.BRUSHED + 0.45],
+    ['thintorus', () => buildTorus(0.45, 0.035, 48, 10),     0],   // neon rings — clean
+    ['quad',      () => buildQuad(),                         0],
+    ['ground',    () => buildGround(28),                     0],
+    ['ship',      () => buildShip(),                         SURF.HULL    + 0.7],
+    ['raider',    () => buildRaider(),                       SURF.HULL    + 0.6],
+    ['drone',     () => buildDrone(),                        SURF.TECH    + 0.55],
+    ['turret',    () => buildTurret(),                       SURF.TECH    + 0.6],
+    ['techblock', () => buildTechBlock(),                    SURF.HULL    + 0.35],
+    ['rack',      () => buildServerRack(),                   SURF.TECH    + 0.55],
+    ['paddle',    () => buildPaddle(),                       SURF.HULL    + 0.5],
+    ['mech',      () => buildMech(),                         SURF.HULL    + 0.65],
+    ['tank',      () => buildTank(),                         SURF.HULL    + 0.7],
+    ['barrier',   () => buildBarrier(),                      SURF.TECH    + 0.55],
+    ['core',      () => buildCore(),                         SURF.TECH    + 0.5],
+    ['wing',      () => buildWing({ span:1, rootC:1, tipC:0.3, sweep:0.55 }), SURF.HULL + 0.5],
+    // Four skyline silhouettes, all window-plated. drawCity() picks per building.
+    ['tower',     () => buildTower(),                        SURF.WINDOWS + 0.9],
+    ['tower2',    () => buildTowerSlab(),                    SURF.WINDOWS + 0.9],
+    ['tower3',    () => buildTowerStepped(),                 SURF.WINDOWS + 0.9],
+    ['tower4',    () => buildTowerSpire(),                   SURF.WINDOWS + 0.85],
+    ['rock',      () => buildRock(7),                        SURF.MINERAL + 0.75],
+    ['rock2',     () => buildRock(1337),                     SURF.MINERAL + 0.75]
+  ];
+  function registerBuiltins(){
+    for(const [name, make, surf] of BUILTIN){
+      dropGeo(name);
+      registerGeo(name, make(), surf);
+    }
+  }
+  registerBuiltins();
 
   // ── GLOW BILLBOARD VAO ──
   const glowVAO = gl.createVertexArray();
+  const glowVBO = gl.createBuffer(), glowIBO = gl.createBuffer();
   const glowInst = gl.createBuffer();
   let glowCap = 0;
   {
     gl.bindVertexArray(glowVAO);
     const q = buildQuad();
-    const vbo = gl.createBuffer();
     const inter = new Float32Array(4 * 5);
     for(let i=0;i<4;i++){
       inter[i*5  ] = q.pos[i*3];
@@ -21938,12 +22988,11 @@ function createRenderer(canvas){
       inter[i*5+3] = q.uv[i*2];
       inter[i*5+4] = q.uv[i*2+1];
     }
-    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bindBuffer(gl.ARRAY_BUFFER, glowVBO);
     gl.bufferData(gl.ARRAY_BUFFER, inter, gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
     gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 20, 12);
-    const ibo = gl.createBuffer();
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glowIBO);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(q.idx), gl.STATIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, glowInst);
     gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 4, gl.FLOAT, false, 32, 0);  gl.vertexAttribDivisor(3, 1);
@@ -21990,22 +23039,70 @@ function createRenderer(canvas){
     if(t.depth) gl.deleteRenderbuffer(t.depth);
   }
 
+  // ✨ The Ultra profile's multisampled scene target: colour and depth
+  // renderbuffers that are resolved into `scene` with one blit after the
+  // glows. Returns null when the device will not build a COMPLETE multisampled
+  // float framebuffer — a real case on some mobile drivers, and one that has to
+  // degrade to FXAA rather than to a black board.
+  function makeMsaa(w, h, samples){
+    const fbo = gl.createFramebuffer();
+    const color = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, color);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, fmt, w, h);
+    const depth = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.DEPTH_COMPONENT24, w, h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, color);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+    const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+    if(!ok){
+      gl.deleteFramebuffer(fbo); gl.deleteRenderbuffer(color); gl.deleteRenderbuffer(depth);
+      return null;
+    }
+    return { fbo, color, depth, samples, w, h };
+  }
+  function destroyMsaa(t){
+    if(!t) return;
+    gl.deleteFramebuffer(t.fbo);
+    gl.deleteRenderbuffer(t.color);
+    gl.deleteRenderbuffer(t.depth);
+  }
+  // Four samples, or two on a very large target — where a dense display has
+  // already made the aliasing small and the sample memory is what hurts — and
+  // never more than the quality governor currently allows (`msaaCap`): MSAA is
+  // the FIRST thing an Ultra device that cannot hold its frame gives up, 4× to
+  // 2× to the FXAA resolve, before it loses a single step of surface detail.
+  let msaaCap = 4;
+  function samplesFor(w, h){
+    let s = Math.min(4, MAX_SAMPLES, msaaCap);
+    if(w * h > 2400000) s = Math.min(s, 2);
+    return s;
+  }
+
   // Depth of the bloom pyramid. Every level is a down pass and an up pass over
   // a full target, so on a phone — where the whole chain is bandwidth, not
   // arithmetic — the last two levels cost real milliseconds and blur detail
   // that is already sub-pixel at a phone's render size. setQuality() lowers it.
   let BLOOM_MIPS = 5;
-  let scene = null, mips = [], ldr = null;
+  let scene = null, mips = [], ldr = null, msaa = null;
   let vpW = 0, vpH = 0;
 
   function buildTargets(){
     destroyTarget(scene);
     destroyTarget(ldr);
+    destroyMsaa(msaa); msaa = null;
     mips.forEach(destroyTarget);
-    scene = makeTarget(vpW, vpH, true);
+    const samples = samplesFor(vpW, vpH);
+    if(PROFILE === 'ultra' && samples >= 2) msaa = makeMsaa(vpW, vpH, samples);
+    // With MSAA the scene texture is only the resolve destination and needs no
+    // depth of its own; without it, everything is drawn straight into it.
+    scene = makeTarget(vpW, vpH, !msaa);
     // The graded, tone-mapped frame, waiting to be resolved. Full render size:
-    // FXAA reasons about single pixels, so a half-size input would be filtering
-    // the wrong image.
+    // the resolve reasons about single pixels, so a half-size input would be
+    // filtering the wrong image.
     ldr = makeTarget(vpW, vpH, false, gl.RGBA8, gl.UNSIGNED_BYTE);
     mips = [];
     let mw = vpW, mh = vpH;
@@ -22028,6 +23125,21 @@ function createRenderer(canvas){
     vpW = w; vpH = h;
     canvas.width = w; canvas.height = h;
     buildTargets();
+  }
+
+  // Lands a wanted profile once its programs are ready (or gives up on it if
+  // they failed). Cheap when nothing is pending: one string comparison.
+  function settleProfile(){
+    if(WANT === PROFILE) return;
+    const st = pollBuild(WANT, false);
+    if(st === 'pending') return;
+    if(st === 'failed'){ WANT = PROFILE; return; }
+    applyProfile(WANT);
+  }
+  function applyProfile(p){
+    PROFILE = p;
+    P = PROGS[p];
+    if(vpW) buildTargets();
   }
 
   // Caps the renderer applies AFTER a game has had its say. `grade()` is called
@@ -22062,6 +23174,7 @@ function createRenderer(canvas){
   };
   let time = 0;
   let fovY = 55 * Math.PI/180, near = 0.1, far = 400;
+  let ultraTonemap = ULTRA_POST.tonemap;
 
   function bucketFor(name){
     let b = buckets[name];
@@ -22080,7 +23193,7 @@ function createRenderer(canvas){
     return next;
   }
 
-  const DEF_POS = [0,0,0], DEF_ROT = [0,0,0], DEF_SCALE1 = [1,1,1];
+  const DEF_POS = [0,0,0], DEF_ROT = [0,0,0];
   const _s = [1,1,1];
 
   // ── CONTEXT LOSS ──
@@ -22088,8 +23201,7 @@ function createRenderer(canvas){
   // page: the tab going to the background, memory pressure, a driver reset, the
   // screen locking. Every GPU object above dies with it, and because the
   // renderer is built ONCE per session and cached, a lost context left the
-  // board black for the rest of that session — including every later round,
-  // which is exactly the shape of "3D just stops working on my phone".
+  // board black for the rest of that session.
   //
   // preventDefault() is the part that actually matters: without it the browser
   // will not even attempt a restore. The renderer then goes inert rather than
@@ -22109,7 +23221,40 @@ function createRenderer(canvas){
     get width(){ return vpW; },
     get height(){ return vpH; },
 
+    // ✨ The active graphics profile, and how many MSAA samples it is actually
+    // getting (0 means Normal, or an Ultra that fell back to FXAA).
+    get profile(){ return PROFILE; },
+    get msaaSamples(){ return msaa ? msaa.samples : 0; },
+
     resize,
+
+    // ✨ Switches between 'normal' and 'ultra'. Starts the profile's shader build
+    // (non-blocking where the driver can compile in parallel) and applies the
+    // switch — the programs swapped, the targets rebuilt with or without MSAA —
+    // as soon as it is ready: here if it already is, otherwise on a later frame. `{ block: true }` waits instead,
+    // for callers that are not mid-round. Returns the profile IN FORCE, which
+    // stays Normal on a device whose driver cannot build the Ultra shaders.
+    setProfile(p, o){
+      p = p === 'ultra' ? 'ultra' : 'normal';
+      if(lost) return PROFILE;
+      WANT = p;
+      if(p === PROFILE) return PROFILE;
+      startBuild(p);
+      if(o && o.block){
+        if(pollBuild(p, true) === 'ready') applyProfile(p);
+        else WANT = PROFILE;
+        return PROFILE;
+      }
+      settleProfile();
+      return PROFILE;
+    },
+    // The profile that has been asked for, which leads `profile` while its
+    // shaders compile; and whether Ultra has been found not to build here.
+    get wantedProfile(){ return WANT; },
+    get ultraFailed(){ return !!FAILED.ultra; },
+    // Lets an idle caller (the hub, with no frames being drawn) land a pending
+    // switch without waiting for the next round's first frame.
+    pollProfile(){ settleProfile(); return PROFILE; },
 
     // Adds a geometry at runtime — a game can build its own hull and hand it
     // over once at startup, then draw it by name like any built-in.
@@ -22177,11 +23322,19 @@ function createRenderer(canvas){
         const n = Math.max(1, Math.min(5, q.bloomMips | 0));
         if(n !== BLOOM_MIPS){ BLOOM_MIPS = n; if(vpW) buildTargets(); }
       }
+      if(q.msaa != null){
+        const m = Math.max(0, q.msaa | 0);
+        if(m !== msaaCap){ msaaCap = m; if(vpW && PROFILE === 'ultra') buildTargets(); }
+      }
       if(q.detail     != null) caps.detail     = Math.max(0, q.detail);
-    if(q.grain      != null) caps.grain      = q.grain;
+      if(q.grain      != null) caps.grain      = q.grain;
       if(q.scanline   != null) caps.scanline   = q.scanline;
       if(q.aberration != null) caps.aberration = q.aberration;
     },
+
+    // Developer hook for comparing Ultra's tone curves side by side:
+    // 0 = the Normal ACES fit, 1 = AgX (default), 2 = Khronos PBR Neutral.
+    setUltraTonemap(n){ ultraTonemap = (n | 0); },
 
     // Silently ignored past MAX_LIGHTS rather than throwing: a game spraying
     // one light per explosion should degrade, not crash.
@@ -22295,8 +23448,12 @@ function createRenderer(canvas){
     // ── SUBMIT ──
     render(){
       if(lost || !scene) return;
+      if(WANT !== PROFILE) settleProfile();
+      const ultra = PROFILE === 'ultra';
 
-      gl.bindFramebuffer(gl.FRAMEBUFFER, scene.fbo);
+      // Every scene pass draws into the multisampled target when Ultra has one,
+      // and straight into the scene texture otherwise.
+      gl.bindFramebuffer(gl.FRAMEBUFFER, msaa ? msaa.fbo : scene.fbo);
       gl.viewport(0, 0, vpW, vpH);
       gl.enable(gl.DEPTH_TEST);
       gl.depthMask(true);
@@ -22310,33 +23467,8 @@ function createRenderer(canvas){
       gl.clearDepth(1);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-      // ── SKY ──
-      // One fullscreen triangle with depth test and depth write both off, so it
-      // paints the whole frame and every mesh below simply draws over it
-      // against a still-cleared depth buffer. Cheaper than a cube and it never
-      // needs the near/far planes to be right.
-      if(sky){
-        gl.disable(gl.DEPTH_TEST);
-        gl.depthMask(false);
-        gl.useProgram(progSky);
-        const S = progSky._u;
-        gl.uniform3fv(S.uRight, camRight);
-        gl.uniform3fv(S.uUp, camUp);
-        gl.uniform3fv(S.uFwd, camFwd);
-        gl.uniform1f(S.uTanHalf, Math.tan(fovY / 2));
-        gl.uniform1f(S.uAspect, vpW / Math.max(1, vpH));
-        gl.uniform3fv(S.uZenith, env.zenith);
-        gl.uniform3fv(S.uHorizon, env.horizon);
-        gl.uniform3fv(S.uGround, env.ground);
-        gl.uniform1f(S.uEnvInt, env.intensity * skyGain);
-        gl.uniform1f(S.uTime, time);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
-        gl.enable(gl.DEPTH_TEST);
-        gl.depthMask(true);
-      }
-
-      gl.useProgram(progMesh);
-      const U = progMesh._u;
+      gl.useProgram(P.mesh);
+      const U = P.mesh._u;
       gl.uniformMatrix4fv(U.uView, false, view);
       gl.uniformMatrix4fv(U.uProj, false, proj);
       gl.uniform3fv(U.uCam, camPos);
@@ -22356,12 +23488,14 @@ function createRenderer(canvas){
       gl.uniform1f(U.uFogDensity, fog.density);
       gl.uniform1f(U.uTime, time);
       gl.uniform1f(U.uDetailScale, caps.detail);
+      if(U.uSkyOn) gl.uniform1f(U.uSkyOn, sky ? 1 : 0);
 
       // Opaque, one instanced call per geometry.
       for(const name in buckets){
         const b = buckets[name];
         if(!b.n) continue;
         const g = geos[name];
+        if(!g) continue;
         gl.bindVertexArray(g.vao);
         gl.bindBuffer(gl.ARRAY_BUFFER, g.inst);
         const bytes = b.n * FLOATS_PER_INSTANCE * 4;
@@ -22371,7 +23505,43 @@ function createRenderer(canvas){
         }else{
           gl.bufferSubData(gl.ARRAY_BUFFER, 0, b.data.subarray(0, b.n * FLOATS_PER_INSTANCE));
         }
-        gl.drawElementsInstanced(gl.TRIANGLES, g.count, gl.UNSIGNED_SHORT, 0, b.n);
+        gl.drawElementsInstanced(gl.TRIANGLES, g.count, g.itype, 0, b.n);
+      }
+
+      // ── SKY ──
+      // One fullscreen triangle on the far plane, drawn AFTER the opaque pass
+      // with a LEQUAL test and no depth write. It used to go first with the depth
+      // test off and paint every pixel of the frame, only for the floor, the
+      // walls and the hulls to paint most of them again: the GPU was shading the
+      // whole sky behind the whole scene. Early-z now rejects every pixel that
+      // geometry already covers, which on a mission with a floor and a skyline is
+      // most of the frame — and under Ultra, whose sky carries clouds, a moon and
+      // a skyline, that is milliseconds. Cheaper than a cube, and it still never
+      // needs the near/far planes to be right.
+      if(sky){
+        gl.depthFunc(gl.LEQUAL);
+        gl.depthMask(false);
+        gl.useProgram(P.sky);
+        const S = P.sky._u;
+        gl.uniform3fv(S.uRight, camRight);
+        gl.uniform3fv(S.uUp, camUp);
+        gl.uniform3fv(S.uFwd, camFwd);
+        gl.uniform1f(S.uTanHalf, Math.tan(fovY / 2));
+        gl.uniform1f(S.uAspect, vpW / Math.max(1, vpH));
+        gl.uniform3fv(S.uZenith, env.zenith);
+        gl.uniform3fv(S.uHorizon, env.horizon);
+        gl.uniform3fv(S.uGround, env.ground);
+        gl.uniform1f(S.uEnvInt, env.intensity * skyGain);
+        gl.uniform1f(S.uTime, time);
+        if(S.uSunDir) gl.uniform3fv(S.uSunDir, sunDir);
+        if(S.uSunCol) gl.uniform3fv(S.uSunCol, sunCol);
+        gl.bindVertexArray(null);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.depthMask(true);
+        gl.depthFunc(gl.LESS);
+        // The transparent pass below draws with the mesh program again; its
+        // uniforms were set above and persist with the program.
+        gl.useProgram(P.mesh);
       }
 
       // Transparent, back-to-front, depth-tested but not depth-written.
@@ -22396,6 +23566,8 @@ function createRenderer(canvas){
           let n = 0;
           const start = i;
           while(i < blendList.length && blendList[i].geo === name){ i++; n++; }
+          const g = geos[name];
+          if(!g) continue;
           const need = n * FLOATS_PER_INSTANCE;
           // Grown once and kept, so a steady-state frame allocates nothing.
           if(need > buf.length) buf = blendBuf = growFloat(buf, need);
@@ -22407,12 +23579,11 @@ function createRenderer(canvas){
             buf[off+20]=it.emisCol[0]; buf[off+21]=it.emisCol[1]; buf[off+22]=it.emisCol[2]; buf[off+23]=it.emisStr;
             buf[off+24]=it.metallic; buf[off+25]=it.roughness; buf[off+26]=it.rim; buf[off+27]=it.detail;
           }
-          const g = geos[name];
           gl.bindVertexArray(g.vao);
           gl.bindBuffer(gl.ARRAY_BUFFER, g.inst);
           gl.bufferData(gl.ARRAY_BUFFER, buf.subarray(0, need), gl.DYNAMIC_DRAW);
           g.cap = need * 4;
-          gl.drawElementsInstanced(gl.TRIANGLES, g.count, gl.UNSIGNED_SHORT, 0, n);
+          gl.drawElementsInstanced(gl.TRIANGLES, g.count, g.itype, 0, n);
         }
         gl.enable(gl.CULL_FACE);
       }
@@ -22446,6 +23617,16 @@ function createRenderer(canvas){
       gl.depthMask(true);
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.BLEND);
+
+      // ✨ MSAA RESOLVE. One blit from the multisampled target into the scene
+      // texture; everything after this point reads `scene` exactly as the
+      // Normal path does.
+      if(msaa){
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, msaa.fbo);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, scene.fbo);
+        gl.blitFramebuffer(0, 0, vpW, vpH, 0, 0, vpW, vpH, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
 
       // ── BLOOM PYRAMID ──
       // Bright pass into mip 0, progressive downsample, then progressive
@@ -22491,41 +23672,42 @@ function createRenderer(canvas){
       // Into the LDR target, not the screen. The screen belongs to the resolve.
       gl.bindFramebuffer(gl.FRAMEBUFFER, ldr.fbo);
       gl.viewport(0, 0, vpW, vpH);
-      gl.useProgram(progComp);
-      const C = progComp._u;
+      gl.useProgram(P.comp);
+      const C = P.comp._u;
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, scene.tex);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, mips[0].tex);
       gl.uniform1i(C.uScene, 0);
       gl.uniform1i(C.uBloom, 1);
-      gl.uniform1f(C.uBloomAmt, post.bloom);
-      gl.uniform1f(C.uExposure, post.exposure);
-      gl.uniform1f(C.uAberration, Math.min(post.aberration, caps.aberration) * 0.01);
+      gl.uniform1f(C.uBloomAmt, post.bloom * (ultra ? ULTRA_POST.bloom : 1));
+      gl.uniform1f(C.uExposure, post.exposure * (ultra && ultraTonemap === 1 ? ULTRA_POST.exposure : 1));
+      gl.uniform1f(C.uAberration, Math.min(post.aberration, caps.aberration, ultra ? ULTRA_POST.aberration : Infinity) * 0.01);
       gl.uniform1f(C.uVignette, post.vignette);
       gl.uniform3fv(C.uLift, post.lift);
       gl.uniform3fv(C.uGain, post.gain);
       gl.uniform1f(C.uSaturation, post.saturation);
       gl.uniform2f(C.uRes, vpW, vpH);
+      if(C.uTonemap) gl.uniform1i(C.uTonemap, ultraTonemap);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
 
       // ── RESOLVE ──
-      // FXAA to the default framebuffer, and the grain and scanlines with it.
-      // This pass is NOT optional and is not on the governor's dial: it is what
-      // stops every edge in the frame being a staircase, it is the cheapest
-      // thing in the post chain, and a device slow enough to feel it is a
-      // device that needs the smoothing most. What the governor gives up when
-      // it has to give something up is resolution and surface detail, both of
-      // which this makes look better, not worse.
+      // To the default framebuffer, with the grain and scanlines. FXAA under
+      // Normal (and under an Ultra that could not get its MSAA target); a light
+      // CAS sharpen under Ultra with MSAA. This pass is NOT on the governor's
+      // dial: it is the cheapest thing in the post chain, and a device slow
+      // enough to feel it is a device that needs the smoothing most.
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, vpW, vpH);
-      gl.useProgram(progAA);
-      const A = progAA._u;
+      gl.useProgram(P.aa);
+      const A = P.aa._u;
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ldr.tex);
       gl.uniform1i(A.uTex, 0);
       gl.uniform2f(A.uTexel, 1 / vpW, 1 / vpH);
       gl.uniform2f(A.uRes, vpW, vpH);
       gl.uniform1f(A.uTime, time);
-      gl.uniform1f(A.uGrain, Math.min(post.grain, caps.grain));
-      gl.uniform1f(A.uScanline, Math.min(post.scanline, caps.scanline));
+      gl.uniform1f(A.uGrain, Math.min(post.grain, caps.grain, ultra ? ULTRA_POST.grain : Infinity));
+      gl.uniform1f(A.uScanline, Math.min(post.scanline, caps.scanline, ultra ? ULTRA_POST.scanline : Infinity));
+      if(A.uMsaa) gl.uniform1f(A.uMsaa, msaa ? 1 : 0);
+      if(A.uSharpen) gl.uniform1f(A.uSharpen, ULTRA_POST.sharpen);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.activeTexture(gl.TEXTURE0);
     },
@@ -22535,14 +23717,14 @@ function createRenderer(canvas){
     dispose(){
       destroyTarget(scene); scene = null;
       destroyTarget(ldr); ldr = null;
+      destroyMsaa(msaa); msaa = null;
       mips.forEach(destroyTarget); mips = [];
-      for(const k in geos){
-        gl.deleteVertexArray(geos[k].vao);
-        gl.deleteBuffer(geos[k].ibo);
-        gl.deleteBuffer(geos[k].inst);
-        delete geos[k];
-      }
-      [progMesh, progGlow, progBright, progDown, progUp, progComp, progSky, progAA].forEach(p => gl.deleteProgram(p));
+      for(const k in geos) dropGeo(k);
+      gl.deleteVertexArray(glowVAO);
+      [glowVBO, glowIBO, glowInst].forEach(b => gl.deleteBuffer(b));
+      for(const k in PROGS){ const set = PROGS[k]; [set.mesh, set.sky, set.comp, set.aa].forEach(p => gl.deleteProgram(p)); }
+      for(const k in BUILDS){ BUILDS[k].forEach(st => { gl.deleteProgram(st.p); gl.deleteShader(st.vs); gl.deleteShader(st.fs); }); }
+      [progGlow, progBright, progDown, progUp].forEach(p => gl.deleteProgram(p));
       const lose = gl.getExtension('WEBGL_lose_context');
       if(lose) lose.loseContext();
     }
@@ -22566,11 +23748,11 @@ function supported(){
 
 return {
   createRenderer, supported,
-  M4, V3, hexToLinear, SURF,
+  M4, V3, hexToLinear, SURF, PART, PROFILES,
   mesh: {
     empty: emptyMesh, merge: mergeMesh,
     box: buildBox, roundedBox: buildRoundedBox, sphere: buildSphere,
-    cylinder: buildCylinder, torus: buildTorus, quad: buildQuad,
+    cylinder: buildCylinder, prism: buildPrism, torus: buildTorus, quad: buildQuad,
     ground: buildGround, rock: buildRock, wing: buildWing,
     faceQuad, faceTri, loftRings, capRing,
     ship: buildShip, raider: buildRaider, tower: buildTower, drone: buildDrone,
@@ -22647,6 +23829,17 @@ function setMode(m){
   paintPicker();
   document.body.classList.toggle('mode-3d', is3D());
 }
+
+// ── ✨ GRAPHICS PROFILE: NORMAL or ULTRA REALISTIC ──
+// A per-DEVICE preference, like the render mode above and for the same reason:
+// what a GPU can afford is a fact about this machine, not about the player's
+// account. Declared up here, ahead of the quality section, because the
+// governor's budget and resolution floor both read it (see budget() and
+// resDrop()); setGfx() and the watcher that lands a switch live with the GL
+// surface further down.
+const LS_GFX = 'pi_gfx';
+let gfxWant = 'normal';
+try{ if(localStorage.getItem(LS_GFX) === 'ultra') gfxWant = 'ultra'; }catch(e){}
 
 // ══════════════════════════════════════════════
 //  📱 QUALITY — what the device can actually afford
@@ -22856,7 +24049,16 @@ const MAX_RES_DROP = 1;
 //   baseIdx - MAX_RES_DROP — never more than one rung below the panel itself.
 // On a dpr-1 display the first is already the panel's own rung, so the second
 // changes nothing and no resolution is spendable at all — which is correct.
-const floorIdx = () => Math.max(Math.min(baseIdx, FLOOR_RUNG), baseIdx - MAX_RES_DROP);
+//
+// ✨ ULTRA REALISTIC MAY NOT DROP A RUNG AT ALL. A player who picked the profile
+// that exists for image quality has said which way to trade, and a softer
+// board is the one cut that contradicts that choice outright. Ultra's governor
+// spends TIERS only — and it judges against a 40fps budget rather than 60 (see
+// budget()), so it spends those far later. The profile is read off the WANTED
+// setting, not the renderer's, so the floor moves the moment the player picks,
+// not a shader compile later.
+const resDrop = () => (gfxWant === 'ultra' ? 0 : MAX_RES_DROP);
+const floorIdx = () => Math.max(Math.min(baseIdx, FLOOR_RUNG), baseIdx - resDrop());
 
 // Detail is shed BEFORE resolution and restored after it. It is fragment ALU
 // with no effect on silhouette or legibility, and the player sees a soft board
@@ -22916,9 +24118,20 @@ const TLAST = TIERS.length - 1;
 // it never earned. That distinction is the whole reason this is a bid and not
 // a cap.
 const LS_QSTEP = 'pi_render_qstep';
-let qStep = (() => {
+// ✨ ULTRA WALKS ITS OWN LADDER. Its first steps are MSAA — 4× to 2× to the FXAA
+// resolve — and only then the tiers, and never a rung of resolution (resDrop).
+// On an HD 520, 4× MSAA alone costs as much as the rest of Ultra put together;
+// on a discrete GPU it costs nothing. So it is the governor's to spend, first,
+// on evidence: the sharpest edges a device can hold, without giving up a single
+// step of the surface detail that makes the models read as real. The two
+// profiles' steps mean different things, so each remembers its own opening bid.
+const AA_STEPS = [4, 2, 0];
+const LS_QSTEP_ULTRA = 'pi_render_qstep_ultra';
+const aaSteps  = () => (gfxWant === 'ultra' ? AA_STEPS.length - 1 : 0);
+const qstepKey = () => (gfxWant === 'ultra' ? LS_QSTEP_ULTRA : LS_QSTEP);
+function openingBid(){
   try{
-    const v = parseInt(localStorage.getItem(LS_QSTEP), 10);
+    const v = parseInt(localStorage.getItem(qstepKey()), 10);
     // ⚠️ CLAMPED TO TLAST, NOT TO maxStep() — the opening bid may carry TIER
     // steps across sessions but never a RESOLUTION step.
     //
@@ -22930,17 +24143,22 @@ let qStep = (() => {
     // board on arrival, before a single frame had been measured. Every session
     // now OPENS at the panel's own resolution and has to be shown evidence
     // before it gives any of it up.
-    if(v > 0) return Math.min(Math.max(0, v - 1), TLAST);
+    if(v > 0) return Math.min(Math.max(0, v - 1), aaSteps() + TLAST);
   }catch(e){}
   return 0;
-})();
+}
+let qStep = openingBid();
 // The ladder stops where the floor is. Steps past it would be banked with no
 // effect on the picture and would then have to be climbed back through one
 // good window at a time, so the governor would sit on an invisible penalty —
 // which is how a floor added at qIdx() alone turns into a different bug.
-const maxStep   = () => TLAST + Math.max(0, baseIdx - floorIdx());
-const tierIdx   = () => Math.min(TLAST, qStep);
-const penalty   = () => Math.max(0, qStep - TLAST);
+const maxStep   = () => aaSteps() + TLAST + Math.max(0, baseIdx - floorIdx());
+const tierIdx   = () => Math.min(TLAST, Math.max(0, qStep - aaSteps()));
+const penalty   = () => Math.max(0, qStep - aaSteps() - TLAST);
+// The last step that costs no resolution; the next one down spends a rung.
+const lastTierStep = () => aaSteps() + TLAST;
+// Ultra's MSAA sample allowance at the current step (Normal draws no MSAA).
+const aaIdx     = () => (gfxWant === 'ultra' ? AA_STEPS[Math.min(qStep, AA_STEPS.length - 1)] : 0);
 const qIdx      = () => Math.max(floorIdx(), Math.min(MAX_RUNG, baseIdx - penalty()));
 
 const Q = {
@@ -22980,7 +24198,9 @@ function pushQuality(){
     // TIERS above is the governor's own handle on exactly this, and it is the
     // FIRST thing it spends, so a phone that cannot afford full detail still
     // loses it within a window — on evidence rather than on assumption.
-    detail:     TIERS[tierIdx()].detail
+    detail:     TIERS[tierIdx()].detail,
+    // ✨ Ultra's MSAA allowance — see AA_STEPS.
+    msaa:       aaIdx()
   });
 }
 
@@ -23048,7 +24268,16 @@ function probeRefresh(){
 // there for the taking. Quality is the thing being spent, so the budget is the
 // display's period or a 60Hz frame, whichever is LONGER.
 const TARGET_MS = 1000 / 60;
-const budget = () => Math.max(REFRESH_MS, TARGET_MS);
+// ✨ Ultra Realistic judges against 40fps. The profile costs real fragment time
+// by design (4× MSAA, the reflected skyline, AgX), and against a 60fps budget
+// the governor would spend its tiers — the surface detail, the bloom — within a
+// second of the round starting on exactly the hardware most likely to have
+// picked Ultra to look at: a laptop iGPU. The player chose image quality over
+// frame rate; 30fps steady at full quality is what that choice asks for, and a
+// device that cannot hold even that still gets its tiers cut (and a nudge
+// toward Normal, see qualitySample).
+const ULTRA_TARGET_MS = 1000 / 40;
+const budget = () => Math.max(REFRESH_MS, gfxWant === 'ultra' ? ULTRA_TARGET_MS : TARGET_MS);
 
 // Missing at least every other frame of that budget for three quarters of a
 // second is the signal to shed something; landing inside it nearly every frame
@@ -23113,7 +24342,7 @@ let slideMed = 0, slideSteps = 0;
 function qualityReset(){
   // Runs at the START of a round, so `qStep` here is still the level the LAST
   // round ended on — which is exactly the settled value worth remembering.
-  try{ localStorage.setItem(LS_QSTEP, String(qStep)); }catch(e){}
+  try{ localStorage.setItem(qstepKey(), String(qStep)); }catch(e){}
   costs = []; lastT = 0; warmup = 30; coolDown = 0; badRun = 0; winMs = 0; warmMs = 0;
   goodRun = 0; lastClimbTo = -1; sinceClimb = 99; slideSteps = 0;
   // Hand back what the governor took, every round. What it learned in the last
@@ -23216,10 +24445,11 @@ function qualitySample(){
       slideSteps = 0; badRun = 0; fails = []; applyQuality();
       return;
     }
-    // Resolution needs SUSTAINED evidence; detail does not. `qStep >= TLAST`
-    // is exactly the test for "the next step down spends a rung" — penalty()
-    // is max(0, qStep - TLAST) — so below that line this falls straight
-    // through and sheds detail on the first bad window as before.
+    // Resolution needs SUSTAINED evidence; detail does not. `qStep >=
+    // lastTierStep()` is exactly the test for "the next step down spends a rung"
+    // — penalty() is max(0, qStep - lastTierStep()) — so below that line this
+    // falls straight through and sheds MSAA or detail on the first bad window.
+    // (Under Ultra there is no rung to spend: maxStep() stops at lastTierStep.)
     //
     // Two exceptions take the cut immediately. A severe miss (PANIC_X) has
     // nothing to wait for. And a rung the governor climbed into a moment ago
@@ -23228,7 +24458,7 @@ function qualitySample(){
     // to keep doing. Without that second case a device sitting on the boundary
     // between two rungs pays four windows of stutter for every probe.
     const probeFailed = (lastClimbTo === qStep && sinceClimb <= 2);
-    if(qStep >= TLAST && badRun < CUT_RES_WINDOWS &&
+    if(qStep >= lastTierStep() && badRun < CUT_RES_WINDOWS &&
        med < budget() * PANIC_X && !probeFailed) return;
     // A level we climbed into and immediately lost is a level that needs more
     // proof next time. A level that held for a while and then met a genuinely
@@ -23241,11 +24471,16 @@ function qualitySample(){
       // those are evidence for the slide detector above. `slideMed` is taken
       // from the window that triggered the FIRST rung of the run, which is the
       // last median measured before any pixels were given up.
-      const spendsRung = (qStep >= TLAST);
+      const spendsRung = (qStep >= lastTierStep());
       qStep++;
       if(spendsRung){ if(slideSteps === 0) slideMed = med; slideSteps++; }
       applyQuality();
     }
+    // ✨ An Ultra session that has spent all its MSAA and then had to shed real
+    // detail, even against its 40fps budget, is one the player would enjoy more
+    // on Normal. Said once per session and never as a silent downgrade: the
+    // choice stays theirs.
+    if(gfxWant === 'ultra' && tierIdx() >= 1) ultraAdvisory();
     badRun = 0;
     return;
   }
@@ -23272,7 +24507,10 @@ function qualitySample(){
     // Cap the doubling at 3 (8×, ~36s) rather than 5 (32×, ~9.6 MINUTES). At
     // the old ceiling a rung that failed five times was gone for the session,
     // which is a ratchet however fast the base climb is.
-    const need = (tgt >= TLAST ? CLIMB_RES : CLIMB_DETAIL) << Math.min(fails[tgt] || 0, 3);
+    // An MSAA step climbs as slowly as a rung does: each one reallocates the
+    // multisampled target, and edges visibly sharpening and softening every few
+    // seconds is exactly the pumping a slow climb exists to prevent.
+    const need = (tgt >= lastTierStep() || tgt < aaSteps() ? CLIMB_RES : CLIMB_DETAIL) << Math.min(fails[tgt] || 0, 3);
     if(++goodRun < need) return;
     qStep--; goodRun = 0; lastClimbTo = qStep; sinceClimb = 0; applyQuality();
   }
@@ -23345,11 +24583,75 @@ function ensureSurface(){
   return true;
 }
 
+// ── ✨ SWITCHING THE GRAPHICS PROFILE ──
+// setGfx() stores the choice and hands it to the renderer if one exists. The
+// renderer compiles the other profile's shaders in the background and swaps on
+// a later frame, so a round keeps drawing through the switch; with no round
+// running there are no frames to land it on, which is what the watcher below is
+// for. A driver that cannot build the Ultra shaders at all leaves the renderer
+// on Normal, and settleGfx() puts the stored choice back to match and says so,
+// rather than leaving a button that claims Ultra over a Normal picture.
+let gfxTimer = 0, ultraAdvised = false;
+const gfx = () => gfxWant;
+// The two profiles walk different ladders, so what the governor learned under
+// one means nothing under the other: bank this profile's level as its opening
+// bid, open the other one at its own, and forget the per-level failure memory.
+function switchLadder(next){
+  if(next === gfxWant) return;
+  try{ localStorage.setItem(qstepKey(), String(qStep)); }catch(e){}
+  gfxWant = next;
+  qStep = Math.min(openingBid(), maxStep());
+  fails = []; goodRun = 0; badRun = 0; slideSteps = 0; lastClimbTo = -1; sinceClimb = 99;
+  costs = []; winMs = 0; coolDown = 2; warmup = 12;
+}
+function setGfx(p){
+  switchLadder(p === 'ultra' ? 'ultra' : 'normal');
+  try{ localStorage.setItem(LS_GFX, gfxWant); }catch(e){}
+  qStep = Math.min(qStep, maxStep());
+  // Before the renderer is told: the MSAA allowance has to be in place by the
+  // time the new profile's targets are built.
+  pushQuality();
+  if(R){
+    R.setProfile(gfxWant);
+    watchGfx();
+  }
+  syncSize();
+  return gfxWant;
+}
+function watchGfx(){
+  clearInterval(gfxTimer);
+  if(!R) return;
+  if(R.profile === R.wantedProfile){ settleGfx(); return; }
+  gfxTimer = setInterval(() => {
+    if(!R){ clearInterval(gfxTimer); return; }
+    if(!mounted) R.pollProfile();
+    if(R.profile === R.wantedProfile){ clearInterval(gfxTimer); settleGfx(); }
+  }, 120);
+}
+function settleGfx(){
+  if(R && gfxWant === 'ultra' && R.ultraFailed){
+    switchLadder('normal');
+    try{ localStorage.setItem(LS_GFX, 'normal'); }catch(e){}
+    pushQuality();
+    toast("✨ This graphics driver can't run Ultra Realistic — using Normal", 3400);
+    if(typeof paintGfxToggles === 'function') paintGfxToggles();
+  }
+  syncSize();
+}
+function ultraAdvisory(){
+  if(ultraAdvised) return;
+  ultraAdvised = true;
+  toast('✨ Ultra is running heavy here — Normal will play smoother', 3200);
+}
+
 function ensureRenderer(){
   if(R && R.lost) dropSurface();     // dead context — build a clean one below
   if(R) return R;
   if(!ensureSurface()) return null;
-  R = E.createRenderer(glCanvas);
+  // Built directly in the saved profile, so an Ultra session compiles Ultra
+  // once here rather than compiling Normal and switching a frame later.
+  R = E.createRenderer(glCanvas, { profile: gfxWant });
+  if(R && gfxWant === 'ultra' && R.ultraFailed) setTimeout(settleGfx, 0);
   if(!R){
     // Context creation can fail even where the probe passed (a blocklisted
     // driver, too many live contexts). Fall back for the rest of the session.
@@ -23469,7 +24771,16 @@ function syncSize(){
   // tablet at dpr 3 on a full board lands on 1.61, which is 29%.
   // Flooring it at the governor's OWN floor rung means the cap can cost at most
   // the same single step the governor can, and never more.
-  s = Math.max(s, native * Math.max(0.85, LADDER[floorIdx()] / LADDER[baseIdx]));
+  //
+  // ✨ The ONE-rung floor, not floorIdx(), because the governor's floor is the
+  // panel itself under Ultra (resDrop) and that would switch this guard off
+  // entirely: a full-screen board on a dpr-3 panel is ten megapixels, and with
+  // 4× MSAA that is gigabytes of framebuffer. Ultra's promise is that the FRAME
+  // CLOCK never trades sharpness; this is not the frame clock, it is the guard
+  // against a target nothing should allocate, and it still costs at most one
+  // step on a display dense enough to trigger it.
+  const capFloor = Math.max(Math.min(baseIdx, FLOOR_RUNG), baseIdx - MAX_RES_DROP);
+  s = Math.max(s, native * Math.max(0.85, LADDER[capFloor] / LADDER[baseIdx]));
 
   pushQuality();
   R.resize(Math.max(2, Math.round(cw * s)), Math.max(2, Math.round(ch * s)));
@@ -23539,7 +24850,13 @@ function createWorld(cfg){
     city: null, stars: null
   };
 
-  const env   = Object.assign({ zenith:'#050716', horizon:'#2a0838', ground:'#04060c', intensity: 1.0 }, cfg.env);
+  // ⚠️ `sky` and `skyGain` MUST have defaults here. The renderer is one object
+  // for the whole session and environment() only changes a field the world
+  // actually passes — so without them, the one mission that turns its sky off
+  // (COOLANT's enclosed shaft) turned it off for every 3D mission played after
+  // it, until the page was reloaded: a flat fog-coloured void where the night
+  // sky should be.
+  const env   = Object.assign({ zenith:'#050716', horizon:'#2a0838', ground:'#04060c', intensity: 1.0, sky: true, skyGain: 1 }, cfg.env);
   const fog   = Object.assign({ color:'#0a0418', density: 0.011 }, cfg.fog);
   const sun   = Object.assign({ dir:[-0.45, -1, -0.4], color:'#5a6cff', intensity: 0.55 }, cfg.sun);
   const grade = Object.assign({}, cfg.grade);
@@ -23972,6 +25289,8 @@ function wirePicker(){
 const API = {
   // — mode —
   supported, wanted, active, is3D, setMode,
+  // — graphics profile: 'normal' | 'ultra' —
+  gfx, setGfx,
   // — surface —
   syncSize, unmount,
   get renderer(){ return R; },
@@ -23987,7 +25306,13 @@ const API = {
              // panel. Both were invisible while the ratchet bug was live.
              steps: qStep, tier: tierIdx(), detail: TIERS[tierIdx()].detail,
              refreshMs: +REFRESH_MS.toFixed(1),
-             dpr: dpr() };
+             dpr: dpr(),
+             // ✨ The profile asked for, the one actually drawing (they differ
+             // for the few frames a switch compiles), and the MSAA sample count
+             // the drawing one got — 0 under Normal, or an Ultra that had to
+             // fall back to FXAA.
+             gfx: gfxWant, profile: R ? R.profile : gfxWant, msaa: R ? R.msaaSamples : 0,
+             aa: aaIdx() };
   },
 
   // Shared scaffolding, consumed by games3d.js.
@@ -35409,8 +36734,49 @@ document.getElementById('btn-pad')?.addEventListener('click', () => {
   toast(padEnabled ? '🎮 Gamepad on — left stick aims, A acts, START quits.' : '🎮 Gamepad off.', 2600);
 });
 
+// ── SETTINGS: ✨ graphics profile ──
+// Two buttons, one setting: the hub rail's labelled switch and the in-game ✨ in
+// the action cluster. PI3D owns the state (localStorage 'pi_gfx') and the
+// switch itself; this only paints and forwards. PI3D can also flip the setting
+// back on its own — a driver that cannot build the Ultra shaders — which is why
+// painting is a named function it can call rather than code inside the click.
+function paintGfxToggles(){
+  const ultra = !!(window.PI3D && PI3D.gfx() === 'ultra');
+  const label = ultra ? 'Graphics: Ultra Realistic — click for Normal'
+                      : 'Graphics: Normal — click for Ultra Realistic';
+  const hub = document.getElementById('btn-gfx');
+  if(hub){
+    hub.classList.toggle('on', ultra);
+    hub.textContent = ultra ? '✨ GRAPHICS: ULTRA' : '✨ GRAPHICS: NORMAL';
+    hub.setAttribute('aria-pressed', String(ultra));
+    hub.title = label;
+  }
+  const game = document.getElementById('btn-gfx-game');
+  if(game){
+    game.classList.toggle('on', ultra);
+    game.setAttribute('aria-pressed', String(ultra));
+    game.title = label;
+    game.setAttribute('aria-label', label);
+  }
+}
+function toggleGfx(){
+  if(!window.PI3D || typeof PI3D.setGfx !== 'function') return;
+  const next = PI3D.setGfx(PI3D.gfx() === 'ultra' ? 'normal' : 'ultra');
+  paintGfxToggles();
+  snd('toggle');
+  // In 2D the setting is still stored — it is a per-device preference — but it
+  // has nothing to draw, so the confirmation says where it will show.
+  const where = PI3D.is3D() ? '' : ' (applies in 3D mode)';
+  toast(next === 'ultra'
+    ? '✨ Ultra Realistic on — sharpest image, heavier on the GPU' + where
+    : '✨ Normal graphics — lighter, smoother frame rate' + where, 2800);
+}
+document.getElementById('btn-gfx')?.addEventListener('click', toggleGfx);
+document.getElementById('btn-gfx-game')?.addEventListener('click', toggleGfx);
+
 // The HOW faces are built once the grid exists, and re-guarded whenever the
 // grid is repainted.
 buildHowFaces();
 guardHowClicks();
 paintInputToggles();
+paintGfxToggles();

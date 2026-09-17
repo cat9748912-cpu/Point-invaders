@@ -22,7 +22,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=36">
+<link rel="stylesheet" href="style.css?v=37">
 </head>
 <body>
 
@@ -158,6 +158,12 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <button class="btn btn-secondary btn-sm" id="btn-tutorial">🎓 TUTORIAL</button>
     <button class="btn btn-secondary btn-sm inp-toggle" id="btn-haptics" aria-pressed="false">📳 HAPTICS</button>
     <button class="btn btn-secondary btn-sm inp-toggle" id="btn-pad" aria-pressed="true">🎮 PAD</button>
+    <!-- ✨ GRAPHICS PROFILE — Normal or Ultra Realistic. A per-device setting
+         like the two above: what a GPU can afford is a fact about this machine.
+         The same switch sits in the in-game action cluster, because this rail
+         is hidden on a landscape phone and because the difference is easiest
+         to judge while looking at a board. Painted by paintGfxToggles(). -->
+    <button class="btn btn-secondary btn-sm gfx-toggle" id="btn-gfx" aria-pressed="false" title="Graphics: Normal — click for Ultra Realistic">✨ GRAPHICS: NORMAL</button>
   </div>
   <!-- 🎒 LOADOUT RAIL — the one-tap swap. Chips rather than a dropdown, because
        a loadout is a thing you switch BETWEEN and a select would make every
@@ -700,6 +706,9 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <!-- 📸 PHOTO MODE. 3D only, and it says so rather than doing nothing when
            the player is in 2D. -->
       <button class="btn btn-secondary btn-sm" id="btn-photo" title="Photo mode">📸</button>
+      <!-- ✨ GRAPHICS PROFILE. Switches live: the renderer keeps drawing while
+           the other profile's shaders compile, then swaps on a later frame. -->
+      <button class="btn btn-secondary btn-sm btn-gfx-game" id="btn-gfx-game" aria-pressed="false" title="Graphics: Normal — click for Ultra Realistic" aria-label="Graphics: Normal — click for Ultra Realistic">✨</button>
       <button class="btn btn-secondary btn-sm" id="btn-fs-game" title="Toggle Fullscreen">⛶</button>
     </div>
   </div>
@@ -1126,7 +1135,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=36"></script>
+<script src="app.js?v=37"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker

@@ -2438,6 +2438,14 @@ body.photo-mode #board-frame:active{cursor:grabbing}
 #pad-cursor.down{background:rgba(0,245,255,.55);box-shadow:0 0 22px rgba(0,245,255,.9)}
 .ctrl-btn.pad-lit{filter:brightness(1.45)}
 .inp-toggle.on{border-color:var(--lime);color:var(--lime)}
+/* ✨ GRAPHICS PROFILE — Normal / Ultra Realistic. Gold when Ultra is on: it is
+   the premium, heavier setting, and gold is the arcade's colour for that. The
+   in-game ✨ is an emoji, which ignores `color`, so its state is carried by the
+   border, the glow and the opacity instead. */
+.gfx-toggle.on{border-color:var(--gold);color:var(--gold);box-shadow:0 0 14px rgba(255,215,0,.18)}
+.g-actions .btn-gfx-game{opacity:.78}
+.g-actions .btn-gfx-game.on{opacity:1;border-color:rgba(255,215,0,.55);box-shadow:0 0 14px rgba(255,215,0,.22)}
+body.mode-3d .gfx-toggle.on,body.mode-3d .g-actions .btn-gfx-game.on{--wall:#8a6b00;--wallb:#453600}
 
 /* ── 📁 THE MISSION DOSSIER PAGE ── */
 .dos-mission[data-dos]{cursor:pointer;transition:border-color .16s,transform .16s}
