@@ -880,6 +880,13 @@ textarea::-webkit-scrollbar-thumb,select::-webkit-scrollbar-thumb,.input::-webki
 /* Toast */
 #toast{position:fixed;bottom:-60px;left:50%;transform:translateX(-50%);background:rgba(4,4,14,.9);border:1px solid var(--cyan);padding:12px 24px;border-radius:30px;font-family:var(--fd);font-size:.75rem;color:var(--cyan);z-index:9999;transition:bottom .3s ease, border-color .3s ease, color .3s ease, box-shadow .3s ease;box-shadow:0 10px 30px rgba(0,245,255,.2)}
 #toast.show{bottom:30px}
+/* A toast is a message, never a control, so it never takes a click. At the
+   bottom of a desktop screen it lands squarely on #photo-bar (z 9999 over
+   120): for the 3.6 seconds the "📸 PHOTO MODE" toast was up, RESUME,
+   CAPTURE, HIDE HUD and RESET VIEW were all dead to the mouse. The phone
+   layout below moves toasts to the top for the same reason; this covers every
+   size at once. */
+#toast{pointer-events:none}
 /* Tier-tinted variants used for SYSTEM STABILITY change messages */
 #toast.toast-stable{border-color:#00ff66;color:#00ff66;box-shadow:0 10px 30px rgba(0,255,102,.25)}
 #toast.toast-overclocked{border-color:#ffcc00;color:#ffcc00;box-shadow:0 10px 30px rgba(255,204,0,.25)}
@@ -2424,6 +2431,17 @@ body.photo-nohud #arcade-controls,
 body.photo-nohud #gl-fx{opacity:0;pointer-events:none;transition:opacity .2s}
 body.photo-mode #board-frame{cursor:grab}
 body.photo-mode #board-frame:active{cursor:grabbing}
+/* The round is frozen, so every control that feeds it is too. The board stays
+   live because the orbit drags on it (bindCanvasDrag() is what keeps those
+   drags out of the game); the pad, the power-up dock and every panel a mission
+   mounts under the board — Battle Bots' deploy deck, the Frequency sliders,
+   Math Blitz's answer box — stop taking clicks until RESUME. Before this a
+   SLAM on the pad dropped a Tetris piece, and Math Blitz's Submit scored, on
+   a round whose clock was held. (Keys are photoBindOrbit()'s job.) By class,
+   like the HUD, so RESUME cannot leave a control switched off. */
+body.photo-mode #arcade-controls,
+body.photo-mode #pu-dock,
+body.photo-mode .g-area > :not(#g-canvas-holder){pointer-events:none}
 .photo-modal{max-width:820px}
 .photo-body{display:flex;flex-direction:column;gap:12px;align-items:center}
 .ph-img{max-width:100%;border-radius:var(--r);border:1px solid var(--border)}

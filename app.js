@@ -1123,16 +1123,72 @@ let onQuitGame=null; // optional per-game quit handler
 // have to come down whichever way the round ends (quit, timeout, dropped link).
 let onStopGame=null;
 
+// ══════════════════════════════════════════════
+//  ⏸️ ROUND TIME — the clock a held round stops
+// ══════════════════════════════════════════════
+// performance.now() with every pause taken out of it. 📸 Photo mode freezes the
+// frame loop by handing it dt = 0, and that is enough for any mission that
+// steps its world by dt — but a mission that reads the WALL clock never sees
+// the freeze. Battle Bots kept landing waves and firing turrets, Pulse Sync's
+// chart kept scrolling notes past the gate as misses, the Frequency Modulator's
+// target kept drifting, and the pace ghost kept running while the player could
+// not. Anything that means "how long has this round been PLAYED" reads gNow():
+// identical to performance.now() minus a constant until the round is held, and
+// standing still while it is.
+const gPause = { on: false, at: 0, total: 0 };
+function gNow(){ return (gPause.on ? gPause.at : performance.now()) - gPause.total; }
+
 // Deferred callbacks belonging to the running game. Every game paints into the
 // same shared DOM, so a timeout that outlives its round lands on the round you
 // started next — Reaction Time's re-arm would repaint #g-reaction green under a
 // fresh round that hadn't armed its own timer. Anything a game schedules goes
 // through gLater() and dies with the game in stopGame().
-const gTimeouts = new Set();
+//
+// It HOLDS with the game, too. A timeout knows nothing about frames, so a
+// frozen round's timers used to carry on without it: Node Hacker broadcast its
+// whole key into a paused room, a mismatched Memory Match pair used up its
+// reveal, and Reaction Time turned green behind the camera. Each entry keeps
+// its due time in ROUND time; gHold() lifts every pending timer, gRelease()
+// re-arms each with exactly what it had left, and one that is set or comes due
+// while the round is held simply waits for the release.
+//
+// ⚠️ A held timer comes back under a NEW native id, so cancel with gCancel(),
+// never clearTimeout(). The id gLater() returns stays valid for gCancel()
+// however many times the round has been paused.
+const gTimeouts = new Map();          // first native id → { fn, due, tid }
 function gLater(fn, ms){
-  const id = setTimeout(() => { gTimeouts.delete(id); fn(); }, ms);
-  gTimeouts.add(id);
+  const e = { fn, due: gNow() + ms, tid: 0 };
+  const id = e.tid = setTimeout(() => gFire(id), ms);
+  gTimeouts.set(id, e);
   return id;
+}
+function gFire(id){
+  const e = gTimeouts.get(id);
+  if(!e) return;
+  if(gPause.on){ e.tid = 0; return; }        // parked — gRelease() re-arms it
+  gTimeouts.delete(id);
+  e.fn();
+}
+function gCancel(id){
+  const e = gTimeouts.get(id);
+  if(e){ clearTimeout(e.tid); gTimeouts.delete(id); }
+  else clearTimeout(id);
+}
+function gHold(){
+  if(gPause.on) return;
+  gPause.on = true;
+  gPause.at = performance.now();
+  gTimeouts.forEach(e => { clearTimeout(e.tid); e.tid = 0; });
+}
+function gRelease(){
+  if(!gPause.on) return;
+  gPause.total += performance.now() - gPause.at;
+  gPause.on = false;
+  const now = gNow();
+  gTimeouts.forEach((e, id) => {
+    clearTimeout(e.tid);
+    e.tid = setTimeout(() => gFire(id), Math.max(0, e.due - now));
+  });
 }
 
 // ══════════════════════════════════════════════
@@ -1206,7 +1262,7 @@ function stopGame(){
   }
   clearInterval(gTimer); gTimer=null;
   cancelAnimationFrame(gameLoopId); gameLoopId=null;
-  gTimeouts.forEach(clearTimeout); gTimeouts.clear();
+  gTimeouts.forEach(e => clearTimeout(e.tid)); gTimeouts.clear();
   window.onkeydown=window.onkeyup=null;
   // The round's chaos modifier, its tension lift and its power-up dock are all
   // round-scoped. They come down HERE rather than in each ending, for the same
@@ -2769,8 +2825,14 @@ const Ghost = (function(){
 
   // Values are rounded to a tenth — a ghost is a visual pace car, and full
   // float precision would multiply the stored size for no visible gain.
+  //
+  // 📸 A frame drawn while photo mode holds the round is not a frame of the
+  // run. Recording it padded the trail with copies of one position — a new
+  // best saved that way stalls on the spot, in every later race, for as long
+  // as the camera was up — and spent the ~80s recording budget on nothing.
   function sample(a, b){
     if(!rec || rec.frames.length >= MAX_FRAMES) return;
+    if(gPause.on) return;
     rec.frames.push(b == null ? Math.round(a * 10) / 10
                               : [Math.round(a * 10) / 10, Math.round(b * 10) / 10]);
   }
@@ -2838,7 +2900,12 @@ const Ghost = (function(){
       if(p && Array.isArray(p.pts) && p.pts.length) mine = p;
     }catch(e){ mine = null; }
     const best = (rival && Array.isArray(rival.pts) && rival.pts.length) ? rival : mine;
-    pace = { gid, t0: performance.now(), pts: [[0, 0]], best, mine,
+    // ⏸️ ROUND time, not wall time. The curve is score against time PLAYED:
+    // on performance.now() the ghost kept running while photo mode held the
+    // round, so a player came back from a photo behind a ghost that had raced
+    // on without them — and a best run recorded that way stretched the pause
+    // into its curve for every race after it.
+    pace = { gid, t0: gNow(), pts: [[0, 0]], best, mine,
              rival: best === rival ? rival : null, last: 0, beat: false };
     paintPace();
     // The widest readout in the row, and it only shows up once a mission has a
@@ -2864,7 +2931,7 @@ const Ghost = (function(){
     const n = +score;
     if(!Number.isFinite(n) || n === pace.last) return;
     pace.last = n;
-    const ms = Math.round(performance.now() - pace.t0);
+    const ms = Math.round(gNow() - pace.t0);
     // Thinning keeps a long round's curve inside the storage budget without
     // losing its shape: once the list is full, every second sample is dropped
     // and the sampling interval doubles. The curve stays the same curve.
@@ -2898,7 +2965,7 @@ const Ghost = (function(){
     const el = document.getElementById('ghost-pace');
     if(!el) return;
     if(!pace || !pace.best){ el.style.display = 'none'; return; }
-    const ms = performance.now() - pace.t0;
+    const ms = gNow() - pace.t0;
     const ghost = Math.round(paceAt(ms) || 0);
     const diff = pace.last - ghost;
     el.style.display = 'flex';
@@ -2917,7 +2984,7 @@ const Ghost = (function(){
   // is what 🌳 Echo Trace pays for.
   function finishPace(score){
     if(!pace) return false;
-    const ms = Math.round(performance.now() - pace.t0);
+    const ms = Math.round(gNow() - pace.t0);
     const curve = pace.pts.concat([[score === pace.last ? ms : ms, score]]);
     // Saved against YOUR record, whoever you were racing.
     if((!pace.mine || score > pace.mine.score) && pace.pts.length > 1){
@@ -6418,7 +6485,7 @@ function startReaction(){
   // reading — this game's whole score is that number.
   box.onpointerdown=e=>{
     e.preventDefault();
-    if(state==='wait'){clearTimeout(trigger);snd('wrong');txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--rx-early)';state='hold';later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=performance.now()},Math.random()*2000+1000)}},1200)}
+    if(state==='wait'){gCancel(trigger);snd('wrong');txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--rx-early)';state='hold';later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=performance.now()},Math.random()*2000+1000)}},1200)}
     else if(state==='go'){
       let diff=Math.round(performance.now()-startT);
       let earned=Math.max(10,400-diff);score+=earned;setLive(score);
@@ -6428,7 +6495,7 @@ function startReaction(){
       later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=performance.now()},Math.random()*2000+1000)}},1500);
     }
   };
-  function end(){if(reactionEnded)return;reactionEnded=true;clearTimeout(trigger);box.onpointerdown=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
+  function end(){if(reactionEnded)return;reactionEnded=true;gCancel(trigger);box.onpointerdown=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
 }
 
 // ════════════════════════════════════════════
@@ -13790,12 +13857,12 @@ function startDefrag(){
       if(holdCell < 0) return;
       // Hold-to-mark. gLater so it dies with the round rather than landing on
       // whatever mounts next.
-      clearTimeout(holdT);
+      gCancel(holdT);
       holdT = gLater(() => { if(holdCell >= 0){ tap(holdCell, true); holdCell = -1; } }, 420);
     },
-    onMove(p){ if(holdCell >= 0 && cellAt(p) !== holdCell){ clearTimeout(holdT); holdCell = -1; } },
+    onMove(p){ if(holdCell >= 0 && cellAt(p) !== holdCell){ gCancel(holdT); holdCell = -1; } },
     onUp(p){
-      clearTimeout(holdT);
+      gCancel(holdT);
       if(holdCell < 0) return;
       const i = cellAt(p);
       if(i === holdCell) tap(i, false);
@@ -13934,7 +14001,7 @@ function startDefrag(){
   function end(reason){
     if(scored) return; scored = true; over = true;
     clearInterval(gTimer); gTimer = null;
-    clearTimeout(holdT);
+    gCancel(holdT);
     clearCanvasDrag();
     aCanvas.oncontextmenu = null;
     if(markBtn) markBtn.onclick = null;
@@ -14554,6 +14621,10 @@ function chaosArm(mod){
     const area = document.querySelector('.g-area');
     chaos.blindTimer = setInterval(() => {
       if(!area) return;
+      // 📸 Neither interval here runs on the round's frames, so neither saw
+      // photo mode's freeze: the board went on blacking out and tilting under
+      // a round that was meant to be standing still. Both skip while it is held.
+      if(gPause.on) return;
       area.classList.add('blind-out');
       setTimeout(() => area.classList.remove('blind-out'), CHAOS_BLIND_FOR);
     }, CHAOS_BLIND_EVERY);
@@ -14581,6 +14652,7 @@ function chaosArm(mod){
     const area  = document.querySelector('.g-area');
     let phase = Math.random() * Math.PI * 2;
     chaosDriftTimer = setInterval(() => {
+      if(gPause.on) return;
       phase += 0.065;
       chaosDrift = Math.sin(phase) * 0.20 + Math.sin(phase * 0.37) * 0.09;   // about 17 degrees
       const deg = (chaosDrift * 180 / Math.PI).toFixed(2);
@@ -14669,6 +14741,10 @@ function installPacketLoss(){
   if(_packetBound) return;
   const drop = e => {
     if(!chaosDropOdds) return;
+    // 📸 A held round takes no input for this to lose — every press on a
+    // frozen board is the CAMERA's (Esc, H, the orbit drag), and dropping one
+    // in seven of those is a broken photo mode, not a modifier.
+    if(gPause.on) return;
     if(Math.random() >= chaosDropOdds) return;
     // A keystroke is always fair game. A pointer input only counts when it
     // lands on the play surface — dropping a press on Quit or on the power-up
@@ -23326,7 +23402,11 @@ function createRenderer(canvas, opts){
     // ── FRAME ──
     begin(dt){
       if(lost) return;
-      time += (dt || 0.016);
+      // A real 0 is a real 0. `dt || 0.016` read the frozen frame photo mode
+      // hands down as "no dt given", so the sky's cloud drift, every pulsing
+      // trim and running light, and the film grain all kept animating on a
+      // round that was supposed to be standing still.
+      time += Number.isFinite(dt) ? dt : 0.016;
       for(const k in buckets) buckets[k].n = 0;
       blendList.length = 0;
       glowCount = 0;
@@ -24931,7 +25011,14 @@ function createWorld(cfg){
   // a ceiling snapshotted at world build would mean tier 2 did nothing at all
   // until the player started the NEXT round.
   const MAX_PARTS = () => Q.parts;
+  // 📸 Nothing is emitted into a held world. Every burst the GAME fires is
+  // frozen along with it, so the only callers left while photo mode is up are
+  // per-frame exhausts and trails — and at dt = 0 those never move and never
+  // die, so they stacked up on the spot, a layer a frame, into a glowing blob
+  // in the middle of the shot.
+  const held = () => (typeof photoActive === 'function') && photoActive();
   w.burst = function(p, color, n, o){
+    if(held()) return;
     o = o || {};
     const spd = o.speed != null ? o.speed : 9;
     const life = o.life != null ? o.life : 0.75;
@@ -24957,7 +25044,7 @@ function createWorld(cfg){
   // A single travelling spark — used for engine trails and bullet wakes, where
   // a whole burst would be overkill.
   w.spark = function(p, color, size, life, vel){
-    if(w.parts.length >= MAX_PARTS()) return;
+    if(held() || w.parts.length >= MAX_PARTS()) return;
     w.parts.push({
       x:p[0], y:p[1], z:p[2],
       vx:(vel && vel[0]) || 0, vy:(vel && vel[1]) || 0, vz:(vel && vel[2]) || 0,
@@ -25182,7 +25269,11 @@ function createWorld(cfg){
   // pushes the environment settings.
   w.begin = function(){
     r.begin(w.dt);
-    const s = w.shake;
+    // 📸 The shake is kept (it goes on decaying the moment the round resumes)
+    // but its jitter is not drawn while the round is held: re-rolled every
+    // frame, it made a round paused just after an explosion tremble for as long
+    // as the camera was up, and the orbit could never be framed.
+    const s = held() ? 0 : w.shake;
     const jx = s ? (Math.random() - 0.5) * s * 0.5 : 0;
     const jy = s ? (Math.random() - 0.5) * s * 0.5 : 0;
     // 📸 The ONE place a camera is installed, in every 3D mission in the
@@ -25266,9 +25357,17 @@ let keepOwnerHook = false;
 
 // Drives a game's frame callback off requestAnimationFrame with a clamped dt,
 // assigning through the shared `gameLoopId` so stopGame() can cancel it.
+//
+// `loopRaf` / `loopLive` answer "is a runLoop() the thing driving this round,
+// right now" — see API.looping. Photo mode can only freeze a round whose frames
+// come through here: a live duel runs its own loop, a mission that fell back
+// to its 2D build runs the canvas engine's, and a round whose last frame has
+// already returned false draws nothing more to orbit or capture.
+let loopRaf = 0, loopLive = false;
 function runLoop(fn){
   let last = performance.now();
   qualityReset();                 // every round judges the device afresh
+  loopLive = true;
   const tick = now => {
     let dt = (now - last) / 1000;
     last = now;
@@ -25280,14 +25379,15 @@ function runLoop(fn){
     // camera be RESTORED rather than eased back on resume. The frame is still
     // drawn every tick, so the orbit is live.
     const frozen = (typeof photoActive === 'function') && photoActive();
-    if(fn(frozen ? 0 : dt) === false) return;  // a game returns false on its last frame
+    // A game returns false on its last frame.
+    if(fn(frozen ? 0 : dt) === false){ loopLive = false; return; }
     // The capture has to happen in the SAME javascript turn as the render that
     // just produced the frame: this canvas has no preserveDrawingBuffer, so a
     // toDataURL() split into its own callback returns a blank image.
     if(frozen && typeof photo === 'object' && photo.shot) photoCapture(glCanvas);
-    gameLoopId = requestAnimationFrame(tick);
+    gameLoopId = loopRaf = requestAnimationFrame(tick);
   };
-  gameLoopId = requestAnimationFrame(tick);
+  gameLoopId = loopRaf = requestAnimationFrame(tick);
 }
 
 // Colour the player owns from the shop, used for every "this is you" element.
@@ -25363,6 +25463,11 @@ const API = {
   // — surface —
   syncSize, unmount,
   get renderer(){ return R; },
+  // True while a runLoop() is what is driving the current round — the only
+  // kind of round 📸 photo mode can freeze. Compared against gameLoopId rather
+  // than trusted on its own, because stopGame() cancels the frame without
+  // telling the loop, and a 2D round reuses the same id slot for its own.
+  get looping(){ return loopLive && gameLoopId != null && gameLoopId === loopRaf; },
   // Read-only view of the tier the governor has settled on, so a support
   // report (or a test) can say what the device is actually rendering at.
   get quality(){
@@ -25750,8 +25855,13 @@ P.games.nebula = function(){
     ship.y += (ship.ty - ship.y) * (1 - Math.pow(0.0009, dt));
     ship.vx = (ship.x - px) / Math.max(dt, 1e-4);
     ship.vy = (ship.y - py) / Math.max(dt, 1e-4);
-    ship.roll += (clamp(-ship.vx * 0.045, -0.75, 0.75) - ship.roll) * 0.18;
-    ship.pitch += (clamp(ship.vy * 0.02, -0.3, 0.3) - ship.pitch) * 0.18;
+    // 📸 Eased per FRAME, not per second, so a frozen frame (dt = 0) has to
+    // skip it — otherwise the hull levels itself out while photo mode holds
+    // the round, and the banked pose the player paused on is gone.
+    if(dt > 0){
+      ship.roll += (clamp(-ship.vx * 0.045, -0.75, 0.75) - ship.roll) * 0.18;
+      ship.pitch += (clamp(ship.vy * 0.02, -0.3, 0.3) - ship.pitch) * 0.18;
+    }
 
     if(firing || keys.Space) shoot();
 
@@ -26032,7 +26142,11 @@ P.games.dodge = function(){
 
   runLoop(dt => {
     if(over) return false;
-    frame++;
+    // 📸 dt = 0 is photo mode holding the round. The ghost's playback index is
+    // a frame COUNT, so it has to stand still with everything else — counting
+    // frozen frames sent the hollow ring off down its old path while the
+    // player's own core was paused.
+    if(dt > 0) frame++;
     scroll += 26 * dt * diff;
     me.bob += dt * 3;
     // Ghost records in BOARD space, so a 3D ghost and a 2D ghost of the same
@@ -27024,7 +27138,9 @@ P.games.flappy = function(){
     dist += SPEED * dt;
     vy += GRAV * dt;
     y -= vy * dt;                      // vy is screen-down positive, as in 2D
-    tilt += (clamp(-vy * 0.035, -0.55, 0.7) - tilt) * 0.2;
+    // Per FRAME, so a frozen one skips it: the drone kept pitching toward its
+    // last climb or dive for the first half-second of every photo.
+    if(dt > 0) tilt += (clamp(-vy * 0.035, -0.55, 0.7) - tilt) * 0.2;
     Ghost.sample((y / YL * 0.5 + 0.5) * BOARD_H);
 
     if(y > YL || y < -YL){ die(); return false; }
@@ -28224,7 +28340,9 @@ P.games.reaction = function(){
     trigger = later(() => {
       if(state !== 'wait') return;
       state = 'go';
-      startT = performance.now();
+      // ⏸️ Round time, both ends: a read that spans a photo-mode pause is
+      // timed on the milliseconds actually played, not the pause.
+      startT = gNow();
       flash = 1;
       snd('go');
     }, Math.random() * spread + minMs);
@@ -28234,14 +28352,14 @@ P.games.reaction = function(){
   function strike(){
     if(over) return;
     if(state === 'wait'){
-      clearTimeout(trigger);
+      gCancel(trigger);
       state = 'hold';
       snd('wrong');
       w.kick(1.2);
       w.pop([0, 4.2, 0], 'TOO FAST — RESETTING', EARLY_COL, { size: 18, life: 1.2 });
       later(() => { if(time > 0){ state = 'wait'; arm(1000, 2000); } }, 1200);
     }else if(state === 'go'){
-      const ms = Math.round(performance.now() - startT);
+      const ms = Math.round(gNow() - startT);
       const earned = Math.max(10, 400 - ms);
       score += earned; reads++;
       best = best ? Math.min(best, ms) : ms;
@@ -28314,7 +28432,7 @@ P.games.reaction = function(){
   function end(){
     if(over) return;
     over = true;
-    clearTimeout(trigger);
+    gCancel(trigger);
     clearCanvasDrag();
     const pts = Math.min(400, score);
     showResults('reaction', pts, {
@@ -29882,10 +30000,13 @@ P.games.freq = function(){
     }
   }
 
-  let lastT = performance.now();
+  // ⏸️ ROUND time. On performance.now() this clock never saw photo mode's
+  // frozen frame: the target ribbon kept drifting, and a lock the player was
+  // holding kept filling its meter — a stage could clear itself mid-photo.
+  let lastT = gNow();
   runLoop(dtRaw => {
     if(scored) return false;
-    const now = performance.now();
+    const now = gNow();
     const dt = Math.min(50, now - lastT); lastT = now;
     phase += dt / 1000 * 1.6;
     flash = Math.max(0, flash - dtRaw * 1.6);
@@ -31148,10 +31269,14 @@ P.games.battlebots = function(){
     ramPill.style.display = 'none';
   });
 
-  let lastMs = performance.now();
+  // ⏸️ ROUND time. The wave timer, the landing queue, every card cooldown and
+  // every unit's rate of fire run on dtMs, and on performance.now() none of
+  // them saw photo mode's frozen frame — hostiles kept landing and turrets kept
+  // firing on a siege that was supposed to be paused, and it could end there.
+  let lastMs = gNow();
   runLoop(dt => {
     if(scored) return false;
-    const nowMs = performance.now();
+    const nowMs = gNow();
     const dtMs = Math.min(60, nowMs - lastMs); lastMs = nowMs;
 
     hurtFlash = Math.max(0, hurtFlash - dt * 2.4);
@@ -32089,7 +32214,7 @@ P.games.rhythm = function(){
 
   let time = Math.round(50 * getTimeModifier());
   let score = 0, combo = 0, bestCombo = 0, hits = 0, perfects = 0, misses = 0;
-  let over = false, t0 = performance.now(), shake = 0;
+  let over = false, t0 = gNow(), shake = 0;
   const flash = [0, 0, 0];
   const notes = [];
 
@@ -32120,7 +32245,12 @@ P.games.rhythm = function(){
   }
   chartAhead(FALL + beat * 8);
 
-  const now = () => (performance.now() - t0) / 1000;
+  // ⏸️ The chart runs on ROUND time. On performance.now() it kept scrolling
+  // through photo mode, and every pulse that crossed the gate while the camera
+  // was up came back as a miss that broke the combo. (It was never phase-locked
+  // to the soundtrack — t0 is the round's start, not a beat — so holding it
+  // loses no sync.)
+  const now = () => (gNow() - t0) / 1000;
 
   function strike(lane){
     if(over) return;
@@ -34113,12 +34243,12 @@ P.games.defrag = function(){
       hideTouchHint();
       holdCell = pickNear(w, p, cellPts, 46);
       if(holdCell < 0) return;
-      clearTimeout(holdT);
+      gCancel(holdT);
       holdT = gLater(() => { if(holdCell >= 0){ tap(holdCell, true); holdCell = -1; } }, 420);
     },
-    onMove(p){ if(holdCell >= 0 && pickNear(w, p, cellPts, 46) !== holdCell){ clearTimeout(holdT); holdCell = -1; } },
+    onMove(p){ if(holdCell >= 0 && pickNear(w, p, cellPts, 46) !== holdCell){ gCancel(holdT); holdCell = -1; } },
     onUp(p){
-      clearTimeout(holdT);
+      gCancel(holdT);
       if(holdCell < 0) return;
       const i = pickNear(w, p, cellPts, 46);
       if(i === holdCell) tap(i, false);
@@ -34249,7 +34379,7 @@ P.games.defrag = function(){
   function end(reason){
     if(scored) return; scored = true; over = true;
     clearInterval(gTimer); gTimer = null;
-    clearTimeout(holdT);
+    gCancel(holdT);
     clearCanvasDrag();
     board.oncontextmenu = null;
     if(markBtn) markBtn.onclick = null;
@@ -34402,6 +34532,7 @@ P.games.coolant = function(){
   // boxes, and a rib every 14 board units is dense enough to read as a wall
   // while staying well inside the instance budget.
   const RIB = 14, AHEAD = 520, BEHIND = 120;
+  let flick = 1;
 
   runLoop(dt => {
     if(scored) return false;
@@ -34553,7 +34684,9 @@ P.games.coolant = function(){
       // The plume sits BEHIND the craft, which is +Z here — the ship noses -Z.
       // Rx(+90 deg) lays the cone's +Y axis along +Z, so the flame points away
       // from the viewer's side of the hull and not off its flank.
-      const flick = 0.8 + Math.random() * 0.5;
+      // Re-rolled only on a frame that advances: a burn held when photo mode
+      // came up would otherwise go on flickering through the pause.
+      if(dt > 0) flick = 0.8 + Math.random() * 0.5;
       r.draw('cone', { pos:[0, cy, 1.15], rot:[-Math.PI / 2, 0, 0], scale:[0.55, 1.4 * flick, 0.55],
                        color:'#ffd700', emissive:'#ffd700', emissiveStrength: 2.6 });
       r.glow([0, cy, 1.6], 1.5 * flick, '#ff9d00', 1.5);
@@ -36325,6 +36458,14 @@ function onboardCoach(){
 //     open a frame — asks photoCam() for the camera to install. Off, it hands
 //     back w.cam untouched; on, it returns an orbit around w.cam's own target.
 //   · The round's 1s clock is held by the same shim the Time Dilator uses.
+//   · gHold() stops ROUND time: every gLater() the round has pending is lifted
+//     and re-armed on resume with what it had left, and gNow() — the clock the
+//     wall-time missions, the pace ghost and the chaos intervals read — stands
+//     still. dt = 0 alone froze only the missions that step by dt; Battle Bots,
+//     Pulse Sync, the Frequency Modulator and the pace ghost ran on regardless.
+//   · body.photo-mode switches off every control the round mounted in the DOM
+//     (the pad, the power-up dock, the deploy deck, the sliders, the answer
+//     box), which a frozen canvas binding never covered.
 const photo = {
   on: false, yaw: 0, pitch: 0, dist: 1, shot: false,
   hud: false, base: null, drag: null
@@ -36361,20 +36502,45 @@ function photoToggle(){
     toast('📸 Photo mode needs the 3D renderer — pick 3D CYBERPUNK on the sign-in screen and the camera comes with it.', 4600);
     return;
   }
-  if(!gameLoopId){
+  // 🌐 A Network Arena round cannot be held. A live duel's simulation is shared
+  // with the other client and runs on its own loop, and a score race's rival
+  // plays on whatever this board does — so "pausing" only ever switched this
+  // player's controls off in the middle of a round the other side was still
+  // playing.
+  if(mp){
+    snd('deny');
+    toast('📸 A Network Arena round cannot be paused — your rival keeps playing.', 3200);
+    return;
+  }
+  // Only a round whose frames come through runLoop() can be frozen — see
+  // PI3D.looping. That also turns away a mission running its 2D fallback,
+  // which photo mode could enter and then neither freeze nor orbit.
+  if(!gameLoopId || !PI3D.looping){
     snd('deny');
     toast('📸 Nothing to photograph — start a round first.', 2600);
     return;
   }
   photo.on = true;
   photo.yaw = 0; photo.pitch = 0; photo.dist = 1; photo.base = null; photo.hud = false;
+  gHold();
   document.body.classList.add('photo-mode');
   photoBar(true);
-  // Input to the GAME is suspended: the drag binding comes off, the key
-  // handlers come off, and the pads stop reporting. This is the half of the
-  // never-yaw rule that makes the other half safe.
-  photo.savedKeys = { down: window.onkeydown, up: window.onkeyup };
-  window.onkeydown = null; window.onkeyup = null;
+  // Input to the GAME is suspended: the drag binding is frozen, key PRESSES
+  // come off, the pads stop reporting, and body.photo-mode switches off the
+  // round's DOM controls. This is the half of the never-yaw rule that makes
+  // the other half safe.
+  //
+  // Key RELEASES stay bound. A key still held when the camera came up used to
+  // lose its keyup to the null handler, so the ship flew on by itself after
+  // RESUME until that key was pressed again — and letting go can never steer.
+  photo.savedKeys = { down: window.onkeydown };
+  window.onkeydown = null;
+  // A focused answer box would keep taking keystrokes — its own Enter handler
+  // included — straight through the pause. Focus leaves the round's controls
+  // and goes back on RESUME, so Math Blitz is still ready to type into.
+  const fe = document.activeElement;
+  photo.refocus = (fe && fe.closest && fe.closest('.g-area, #pu-dock')) ? fe : null;
+  if(photo.refocus) photo.refocus.blur();
   // The board's drag binding is left in place and frozen by the guard inside
   // bindCanvasDrag() — tearing it down would be unrecoverable, because the
   // handlers are closures inside the round's own start().
@@ -36389,10 +36555,15 @@ function photoResume(){
   document.body.classList.remove('photo-mode', 'photo-nohud');
   photoBar(false);
   photoUnbindOrbit();
-  if(photo.savedKeys){ window.onkeydown = photo.savedKeys.down; window.onkeyup = photo.savedKeys.up; }
+  if(photo.savedKeys){ window.onkeydown = photo.savedKeys.down; }
   photo.savedKeys = null;
+  gRelease();
+  // preventScroll: on a phone, focusing the answer box would otherwise jump
+  // the page to it.
+  if(photo.refocus && photo.refocus.isConnected) photo.refocus.focus({ preventScroll: true });
+  photo.refocus = null;
   // Nothing to rebuild: the drag binding was never removed, only ignored, and
-  // the key handlers were saved as properties and have just been put back.
+  // the key handler was saved as a property and has just been put back.
   snd('uiBack');
 }
 
@@ -36404,6 +36575,10 @@ function photoAbort(){
   photoBar(false);
   photoUnbindOrbit();
   photo.savedKeys = null;
+  photo.refocus = null;
+  // stopGame() clears the round's timers straight after this, but the pause
+  // itself has to end here — or the next round would start held.
+  gRelease();
 }
 
 function photoBar(show){
@@ -36450,7 +36625,17 @@ function photoBindOrbit(){
     photo.dist = Math.max(0.35, Math.min(3.2, photo.dist * (1 + Math.sign(e.deltaY) * 0.08)));
     if(e.cancelable) e.preventDefault();
   };
+  // Bound in the CAPTURE phase, so it runs ahead of everything the round left
+  // on the page. A keystroke aimed at one of the round's own controls (Tab
+  // into Math Blitz's answer box and type) is the camera's or nobody's: it
+  // goes no further and types nothing. Tab itself is let through, so focus
+  // can always be walked back out.
   const key = e => {
+    const t = e.target;
+    if(t && t.closest && t.closest('.g-area, #pu-dock') && e.key !== 'Tab'){
+      e.stopPropagation();
+      e.preventDefault();
+    }
     if(e.key === 'Escape'){ photoResume(); return; }
     if(e.key === 'h' || e.key === 'H'){ document.getElementById('pb-hud')?.click(); return; }
     if(e.key === ' ' || e.key === 'Enter'){ e.preventDefault(); photo.shot = true; return; }
@@ -36462,12 +36647,12 @@ function photoBindOrbit(){
   };
   photo.binds = [[surf, 'mousedown', down], [window, 'mousemove', move], [window, 'mouseup', up],
                  [surf, 'touchstart', down], [surf, 'touchmove', move], [surf, 'touchend', up],
-                 [surf, 'wheel', wheel], [window, 'keydown', key]];
-  photo.binds.forEach(([t, ev, fn]) => t.addEventListener(ev, fn, { passive: false }));
+                 [surf, 'wheel', wheel], [window, 'keydown', key, true]];
+  photo.binds.forEach(([t, ev, fn, cap]) => t.addEventListener(ev, fn, { passive: false, capture: !!cap }));
   if(gl) gl.style.pointerEvents = 'none';
 }
 function photoUnbindOrbit(){
-  (photo.binds || []).forEach(([t, ev, fn]) => t.removeEventListener(ev, fn));
+  (photo.binds || []).forEach(([t, ev, fn, cap]) => t.removeEventListener(ev, fn, { capture: !!cap }));
   photo.binds = null;
   photo.drag = null;
 }
