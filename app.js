@@ -787,7 +787,7 @@ document.addEventListener('click', e => {
 // every write under it, and going "online" is claimLocalAccount()'s job — so
 // for local sessions these only repaint the Save button.
 addEventListener('online',  () => {
-  if(isLocalSession()){ refreshClaimUi(); toast('📡 Back online — press 💾 Save to keep your progress.', 5000); return; }
+  if(isLocalSession()){ refreshClaimUi(); toast('📡 Back online — open ⚙️ Settings and press 💾 Save to keep your progress.', 5000); return; }
   if(db && user) setOfflineMode(false);
 });
 addEventListener('offline', () => {
@@ -887,7 +887,7 @@ function startLocalPlay(){
   snd('login');
   enterHub();
   refreshClaimUi();
-  toast('🎮 Playing locally. Connect to wifi later to save your progress.', 5000);
+  toast('🎮 Playing locally. Back on wifi, save your progress from ⚙️ Settings.', 5000);
   return true;
 }
 
@@ -939,7 +939,11 @@ async function claimLocalAccount(){
                            : '⚠️ Could not claim the account.');
     return false;
   }finally{
-    if(btn){ btn.disabled = false; if(label) btn.textContent = label; }
+    // Only a claim that FAILED gets its old label back. A successful one has
+    // already been repainted by refreshClaimUi() as the ordinary guest upgrade,
+    // and restoring "Save Progress Online" over that would label the button
+    // with a claim it no longer runs.
+    if(btn){ btn.disabled = false; if(label && isLocalSession()) btn.textContent = label; }
   }
 }
 
@@ -954,16 +958,23 @@ function refreshClaimUi(){
   if(!isLocalSession()){
     if(btn._upgradeHandler){ btn.onclick = btn._upgradeHandler; btn._upgradeHandler = null; }
     btn.textContent = '💾 Save Account';
-    return;
+    btn.classList.remove('claim-ready');
+  }else{
+    const online = navigator.onLine && !!auth && !!db;
+    if(!btn._upgradeHandler) btn._upgradeHandler = btn.onclick;
+    btn.style.display = '';
+    btn.textContent = online ? '💾 Save Progress Online' : '💾 Save (needs wifi)';
+    // Lifts the offline greying while the claim can actually run — see style.css.
+    btn.classList.toggle('claim-ready', online);
+    btn.onclick = () => {
+      if(navigator.onLine && auth && db) claimLocalAccount();
+      else toast('📴 Connect to wifi, then press this to save your progress.');
+    };
   }
-  const online = navigator.onLine && !!auth && !!db;
-  if(!btn._upgradeHandler) btn._upgradeHandler = btn.onclick;
-  btn.style.display = '';
-  btn.textContent = online ? '💾 Save Progress Online' : '💾 Save (needs wifi)';
-  btn.onclick = () => {
-    if(navigator.onLine && auth && db) claimLocalAccount();
-    else toast('📴 Connect to wifi, then press this to save your progress.');
-  };
+  // ⚙️ The button lives in the Settings panel now. The panel describes the same
+  // state in words, and the gear on the hub bar carries the "not saved yet"
+  // dot, so both repaint whenever the button does.
+  if(typeof paintSettings === 'function') paintSettings();
 }
 
 // Offered whenever there is no connection and no saved profile — the case that
@@ -2456,7 +2467,7 @@ document.getElementById('btn-logout').onclick=async()=>{
   if(user && user.isGuest){
     const pts = (user.totalPoints||0).toLocaleString();
     const warn = (user.totalPoints>0)
-      ? `Exiting deletes this guest profile and its ${pts} PTS permanently.\n\nWant to keep them? Cancel, then use “💾 Save Account”.\n\nExit and delete anyway?`
+      ? `Exiting deletes this guest profile and its ${pts} PTS permanently.\n\nWant to keep them? Cancel, then open ⚙️ Settings → “💾 Save Account”.\n\nExit and delete anyway?`
       : 'Exiting deletes this guest profile permanently. Exit anyway?';
     if(!confirm(warn)) return;
     if(isLocalSession()){
@@ -16156,11 +16167,49 @@ function openOverlay(id, render){
   ov.setAttribute('aria-hidden', 'false');
   snd('tab');
 }
+// Some modals are more than a CSS class. The feedback terminal and the save-
+// account panel each keep their own open flag, timers and a CAPTURE-phase key
+// listener inside an IIFE; the onboarding tour owes a "seen it" flag; the
+// briefing owes the card id it was opened for. Flipping the class from out here
+// — which is exactly what the gamepad's B button did — left the DOM closed and
+// the module open: the button that opens it went dead, and the capture listener
+// kept swallowing every keydown before the mission could see it.
+//
+// So the generic closer is a dispatcher. A modal with its own teardown
+// registers it here and closeOverlay() runs THAT; everything else falls through
+// to the plain class flip it always did.
+const OVERLAY_CLOSERS = Object.create(null);
+let overlayClosing = null, overlayBlipped = false;
+
+// ownsSound: true for a closer that already plays its own back blip without
+// going through here — closeBriefing() does — so the dispatcher stays quiet.
+function registerOverlayCloser(id, fn, ownsSound){
+  OVERLAY_CLOSERS[id] = { fn, ownsSound: !!ownsSound };
+}
+
 function closeOverlay(id){
   const ov = document.getElementById(id);
   if(!ov) return;
+  const own = OVERLAY_CLOSERS[id];
+  // overlayClosing is the loop-back guard: finishOnboard() closes through here,
+  // so its own registration must not call it straight back into itself.
+  if(own && overlayClosing !== id){
+    const wasOpen = ov.classList.contains('show');
+    const prev = overlayClosing;
+    overlayClosing = id; overlayBlipped = false;
+    try{ own.fn(); }
+    catch(e){ console.error('[OVERLAY] closer for ' + id + ' failed:', e); }
+    finally{ overlayClosing = prev; }
+    // The back blip is for a close that actually happened: a modal mid-send
+    // refuses to go, and one that already made the sound must not make it twice.
+    if(wasOpen && !ov.classList.contains('show') && !overlayBlipped && !own.ownsSound){
+      snd('uiBack');
+    }
+    return;
+  }
   ov.classList.remove('show');
   ov.setAttribute('aria-hidden', 'true');
+  overlayBlipped = true;
   snd('uiBack');
 }
 
@@ -16318,7 +16367,9 @@ async function sendFeedback(payload){
   const RATING_LABELS = ['','☠️ Critical Failure','⚠️ Unstable','➖ Functional','⚡ Overclocked','🏆 Legendary'];
 
   let rating = 0;
-  let isOpen = false;
+  // Derived, never stored: a second copy of "am I open" is a second thing that
+  // can be wrong, and this was the one that got out of step.
+  const isOpen = () => overlay.classList.contains('show');
   let sending = false;
   let lastFocus = null;
   let termTimers = [];
@@ -16362,28 +16413,26 @@ async function sendFeedback(payload){
   // Purely additive: never calls showScreen(), so the hub stays mounted
   // and the player's PTS/CR state is untouched.
   function openFeedback(){
-    if(isOpen) return;
+    if(isOpen()) return;
     lastFocus = document.activeElement;
     // Prefill the handle from the live session (read-only — never writes back)
     if(!nameEl.value && typeof user !== 'undefined' && user && user.username){
       nameEl.value = user.username;
     }
     errEl.textContent='';
-    isOpen = true;
     overlay.classList.add('show');
     overlay.setAttribute('aria-hidden','false');
     setTimeout(()=>msgEl.focus(), 260);
   }
 
   function closeFeedback(){
-    if(!isOpen || sending) return;
-    isOpen = false;
+    if(!isOpen() || sending) return;
     overlay.classList.remove('show');
     overlay.setAttribute('aria-hidden','true');
     termTimers.forEach(clearTimeout); termTimers=[];
     // Reset back to the form state for next time
     setTimeout(()=>{
-      if(isOpen) return;
+      if(isOpen()) return;
       success.classList.remove('show');
       body.style.display='';
       term.innerHTML='';
@@ -16393,12 +16442,16 @@ async function sendFeedback(payload){
 
   document.getElementById('btn-feedback').onclick = openFeedback;
   document.getElementById('fb-close').onclick = closeFeedback;
+  // The generic close path (gamepad B, Escape sweeps) must come through the
+  // real teardown, or the capture listener below outlives the modal.
+  registerOverlayCloser('fb-overlay', closeFeedback);
+  window.closeFeedbackTerminal = closeFeedback;
   overlay.addEventListener('mousedown', e=>{ if(e.target === overlay) closeFeedback(); });
 
   // Capture phase: while the modal is open, swallow keys before they can
   // reach any window.onkeydown handler a mini-game may still have bound.
   document.addEventListener('keydown', e=>{
-    if(!isOpen) return;
+    if(!isOpen()) return;
     if(e.key === 'Escape'){ closeFeedback(); return; }
     if((e.ctrlKey || e.metaKey) && e.key === 'Enter'){ e.preventDefault(); transmit(); }
     e.stopPropagation();
@@ -16473,7 +16526,14 @@ async function sendFeedback(payload){
     }catch(err){
       console.error('[FEEDBACK] transmission failed:', err);
       snd('error');
-      errEl.textContent = 'Uplink failed — mainframe unreachable. Try again.';
+      // PERMISSION_DENIED is not an outage. It means the Realtime Database
+      // rules do not name the `feedback` node, so the server refuses every
+      // report no matter how many times the player retries — and "mainframe
+      // unreachable" sends whoever reads it hunting a network fault for what
+      // is a one-line console setting. Say which of the two it is.
+      errEl.textContent = (err && err.code === 'PERMISSION_DENIED')
+        ? 'Uplink refused — the mainframe is rejecting reports. That is a server setting, not your connection.'
+        : 'Uplink failed — mainframe unreachable. Try again.';
       sending = false;
     }finally{
       submitEl.disabled = false;
@@ -16505,30 +16565,30 @@ async function sendFeedback(payload){
   const errEl   = document.getElementById('up-err');
   const submitEl= document.getElementById('up-submit');
 
-  let isOpen = false, saving = false, timers = [];
+  // Derived, never stored — see the feedback terminal above.
+  const isOpen = () => overlay.classList.contains('show');
+  let saving = false, timers = [];
 
   function openUpgrade(){
-    if(isOpen || !user || !user.isGuest) return;
+    if(isOpen() || !user || !user.isGuest) return;
     // Show exactly what's being carried across, so the value is obvious
     carryEl.innerHTML =
       `CARRYING OVER<br><b>${(user.totalPoints||0).toLocaleString()}</b> PTS · ` +
       `<b>${(user.credits||0).toLocaleString()}</b> CR · ` +
       `<b>${(user.gamesPlayed||0).toLocaleString()}</b> MISSIONS`;
     errEl.textContent='';
-    isOpen = true;
     overlay.classList.add('show');
     overlay.setAttribute('aria-hidden','false');
     setTimeout(()=>nameEl.focus(), 260);
   }
 
   function closeUpgrade(){
-    if(!isOpen || saving) return;
-    isOpen = false;
+    if(!isOpen() || saving) return;
     overlay.classList.remove('show');
     overlay.setAttribute('aria-hidden','true');
     timers.forEach(clearTimeout); timers=[];
     setTimeout(()=>{
-      if(isOpen) return;
+      if(isOpen()) return;
       success.classList.remove('show');
       body.style.display='';
       term.innerHTML='';
@@ -16537,9 +16597,11 @@ async function sendFeedback(payload){
 
   document.getElementById('btn-save-acct').onclick = openUpgrade;
   document.getElementById('up-close').onclick = closeUpgrade;
+  registerOverlayCloser('up-overlay', closeUpgrade);
+  window.closeSaveAccount = closeUpgrade;
   overlay.addEventListener('mousedown', e=>{ if(e.target === overlay) closeUpgrade(); });
   document.addEventListener('keydown', e=>{
-    if(!isOpen) return;
+    if(!isOpen()) return;
     if(e.key === 'Escape'){ closeUpgrade(); return; }
     if(e.key === 'Enter'){ e.preventDefault(); upgrade(); }
     e.stopPropagation();
@@ -25244,42 +25306,49 @@ const ny = p => 1 - (p.y / BOARD_H) * 2;
 // before any account exists, which is why it lives in localStorage rather than
 // on the player profile — a guest and a signed-in player get the same setting
 // on the same device, and it survives a logout.
+//
+// ⚙️ The same two cards also sit in the hub's Settings panel. That picker is
+// the only one a signed-in player can reach — this one needs a sign-out, which
+// for a guest DELETES the profile — so every .mode-picker on the page is wired
+// and painted here, as views of one setting that can never disagree. Switching
+// mid-session is safe: the interface is a class on <body>, and PI3D.has() is
+// asked afresh at the start of every round.
+const pickers = () => document.querySelectorAll('.mode-picker');
 
 function paintPicker(){
-  const wrap = document.getElementById('mode-picker');
-  if(!wrap) return;
   const on = wanted();
-  wrap.querySelectorAll('.mode-card').forEach(c => {
+  pickers().forEach(wrap => wrap.querySelectorAll('.mode-card').forEach(c => {
     c.classList.toggle('on', c.dataset.mode === on);
     c.setAttribute('aria-pressed', String(c.dataset.mode === on));
-  });
+  }));
 }
 
 function wirePicker(){
-  const wrap = document.getElementById('mode-picker');
-  if(!wrap) return;
-  const card3d = wrap.querySelector('.mode-card[data-mode="3d"]');
-  if(card3d && !supported()){
-    // Say so on the card instead of letting the player pick a mode that cannot
-    // run. The setting is still remembered — a different browser may support it.
-    card3d.classList.add('unsupported');
-    const note = card3d.querySelector('.mode-note');
-    if(note) note.textContent = 'Needs WebGL2 — not available in this browser';
-  }
-  wrap.querySelectorAll('.mode-card').forEach(c => {
-    c.addEventListener('click', () => {
-      if(c.dataset.mode === '3d' && !supported()){
-        toast("This browser has no WebGL2 — 3D mode cannot run here", 3200);
-        return;
-      }
-      if(c.dataset.mode === wanted()) return;
-      setMode(c.dataset.mode);
-      snd('tab');
-      // The mode is a choice about the WHOLE arcade — the board AND the
-      // interface around it — so the confirmation says so.
-      toast(c.dataset.mode === '3d'
-        ? '🧊 3D MODE ARMED — realtime renderer, solid controls'
-        : '🕹️ 2D MODE ARMED — classic flat arcade', 2200);
+  pickers().forEach(wrap => {
+    const card3d = wrap.querySelector('.mode-card[data-mode="3d"]');
+    if(card3d && !supported()){
+      // Say so on the card instead of letting the player pick a mode that
+      // cannot run. The setting is still remembered — a different browser may
+      // support it.
+      card3d.classList.add('unsupported');
+      const note = card3d.querySelector('.mode-note');
+      if(note) note.textContent = 'Needs WebGL2 — not available in this browser';
+    }
+    wrap.querySelectorAll('.mode-card').forEach(c => {
+      c.addEventListener('click', () => {
+        if(c.dataset.mode === '3d' && !supported()){
+          toast("This browser has no WebGL2 — 3D mode cannot run here", 3200);
+          return;
+        }
+        if(c.dataset.mode === wanted()) return;
+        setMode(c.dataset.mode);
+        snd('tab');
+        // The mode is a choice about the WHOLE arcade — the board AND the
+        // interface around it — so the confirmation says so.
+        toast(c.dataset.mode === '3d'
+          ? '🧊 3D MODE ARMED — realtime renderer, solid controls'
+          : '🕹️ 2D MODE ARMED — classic flat arcade', 2200);
+      });
     });
   });
   paintPicker();
@@ -36141,6 +36210,7 @@ function closeBriefing(){
 }
 
 document.getElementById('brief-close')?.addEventListener('click', () => closeBriefing());
+registerOverlayCloser('brief-overlay', () => closeBriefing(), true);
 document.getElementById('brief-overlay')?.addEventListener('click', e => {
   if(e.target.id === 'brief-overlay') closeBriefing();
 });
@@ -36688,6 +36758,9 @@ document.getElementById('loadout-overlay')?.addEventListener('click', e => {
 });
 
 document.getElementById('onboard-close')?.addEventListener('click', () => finishOnboard(false));
+// Dismissing the tour any other way — gamepad B, a backdrop tap — is the same
+// as pressing SKIP: it must clear onboardRunning and mark the tour as seen.
+registerOverlayCloser('onboard-overlay', () => finishOnboard(false));
 document.getElementById('btn-tutorial')?.addEventListener('click', () => startOnboard());
 
 document.getElementById('photo-close')?.addEventListener('click', () => {
@@ -36780,3 +36853,98 @@ buildHowFaces();
 guardHowClicks();
 paintInputToggles();
 paintGfxToggles();
+
+// ══════════════════════════════════════════════
+//  ⚙️ § 11 SETTINGS — the gear on the hub bar
+// ══════════════════════════════════════════════
+// One panel for the render mode, Save Account and Feedback — see the comment on
+// its markup for why those three. Almost nothing in it is owned here: PI3D
+// wires the render cards (they are a second .mode-picker), refreshClaimUi()
+// owns the Save button's label and handler, and the feedback terminal owns its
+// own button. This section paints the words around them, and steps aside when
+// one of them opens a modal of its own. Optional-chained, like § 10.
+function settingsOpen(){
+  return !!document.getElementById('settings-overlay')?.classList.contains('show');
+}
+
+// Quiet when handing the screen to another modal: the back blip is for a
+// player dismissing the panel, not for the panel making way.
+function closeSettings(quiet){
+  if(!settingsOpen()) return;
+  if(!quiet){ closeOverlay('settings-overlay'); return; }
+  const ov = document.getElementById('settings-overlay');
+  ov.classList.remove('show');
+  ov.setAttribute('aria-hidden', 'true');
+}
+
+// Everything that depends on WHO is playing. Runs on open, and from
+// refreshClaimUi() — which every hub entry, connection change and account
+// claim already passes through — so the gear's dot is never stale.
+function paintSettings(){
+  const guest = !!(user && user.isGuest);
+  const gear = document.getElementById('btn-settings');
+  if(gear){
+    gear.classList.toggle('needs-save', guest);
+    const label = guest ? 'Settings — your progress is not saved to an account yet' : 'Settings';
+    gear.title = label;
+    gear.setAttribute('aria-label', label);
+  }
+
+  const note  = document.getElementById('set-acct-note');
+  const badge = document.getElementById('set-acct-state');
+  const steps = document.getElementById('set-acct-steps');
+  if(!note || !badge || !steps || !user) return;
+
+  // Text nodes only: the username is player-chosen and never reaches innerHTML.
+  const bold = s => { const b = document.createElement('b'); b.textContent = s; return b; };
+  note.textContent = '';
+  let tone, list;
+  if(user.isLocal){
+    tone = ['local', 'LOCAL ONLY'];
+    note.append('This profile was started with no connection, so it lives ', bold('on this device only'),
+      ' and is not on the leaderboard yet. Finished runs are banked here until you save.');
+    list = ['Connect to wifi',
+            'Press 💾 Save Progress Online — banked runs replay into a real profile',
+            'Then lock it to an email from here, so you can sign in on any device'];
+  }else if(guest){
+    tone = ['warn', 'GUEST · NOT SAVED'];
+    note.append('Guest progress is tied to this browser. Clearing site data — or pressing Exit — deletes this profile and its ',
+      bold((user.totalPoints || 0).toLocaleString() + ' PTS'), ' for good.');
+    if(offlineMode) note.append(' Saving needs a connection, so reconnect first.');
+    list = ['Pick a username — 2–20 letters, numbers, _ or -',
+            'Add an email and a password of 6+ characters',
+            'Lock it in — same profile, so every PTS, CR and cosmetic carries over'];
+  }else{
+    tone = ['ok', 'SECURED'];
+    note.append('Signed in as ', bold(user.username || 'Player'),
+      '. Your progress is saved to your account and follows you to any device you sign in on.');
+    list = [];
+  }
+  badge.className = 'set-state ' + tone[0];
+  badge.textContent = tone[1];
+  steps.textContent = '';
+  list.forEach(t => { const li = document.createElement('li'); li.textContent = t; steps.appendChild(li); });
+}
+
+document.getElementById('btn-settings')?.addEventListener('click', () => openOverlay('settings-overlay', paintSettings));
+document.getElementById('settings-close')?.addEventListener('click', () => closeSettings());
+document.getElementById('settings-overlay')?.addEventListener('click', e => {
+  if(e.target.id === 'settings-overlay') closeSettings();
+});
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape' && settingsOpen()) closeSettings();
+});
+
+// Save Account and Feedback open modals of their own. Stacked over this panel
+// they would double the backdrop's dim and blur and leave two dialogs answering
+// Escape, so the panel steps aside. What decides it is whether a modal actually
+// OPENED, not which button was pressed: the Save button can also run the local
+// claim in place (its progress shows on the button, so the panel stays) or be
+// refused by the offline guard with a toast. A zero timeout, because those
+// handlers are bound elsewhere and this must see the outcome of all of them,
+// whatever order they were registered in.
+['btn-save-acct', 'btn-feedback'].forEach(id => {
+  document.getElementById(id)?.addEventListener('click', () => setTimeout(() => {
+    if(settingsOpen() && document.querySelector('#up-overlay.show, #fb-overlay.show')) closeSettings(true);
+  }, 0));
+});

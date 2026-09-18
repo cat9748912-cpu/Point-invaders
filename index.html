@@ -22,7 +22,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=37">
+<link rel="stylesheet" href="style.css?v=38">
 </head>
 <body>
 
@@ -67,6 +67,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <span class="mode-note">Every mission and every control in real 3D. Depth, bloom, chrome.</span>
       </button>
     </div>
+    <div class="mode-hint">Not final — switch any time from ⚙️ Settings in the hub, no sign-out needed.</div>
 
     <div class="card">
       <div class="auth-tabs">
@@ -88,7 +89,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
 
       <div class="auth-divider">or</div>
       <button class="btn btn-guest btn-full btn-lg" id="btn-guest">🎮 Play as Guest</button>
-      <div class="guest-note">No signup — progress is tied to this browser only.</div>
+      <div class="guest-note">No signup — progress is tied to this browser only. Save it to an account any time from ⚙️ Settings.</div>
     </div>
   </div>
 </div>
@@ -100,11 +101,18 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <div class="hub-uname" id="h-uname">PLAYER</div>
       <div class="hub-pts" id="h-pts">🏆 0 PTS</div>
       <div class="hub-credits" id="h-credits">💎 0 CR</div>
-      <button class="btn btn-save-acct btn-sm" id="btn-save-acct" style="display:none">💾 Save Account</button>
       <button class="btn btn-secondary btn-sm" id="btn-market">🛒 Black Market</button>
-      <button class="btn btn-secondary btn-sm btn-feedback" id="btn-feedback">💬 Feedback</button>
       <button class="btn btn-secondary btn-sm btn-sound" id="btn-sound-hub" title="Audio">🔊</button>
       <button class="btn btn-secondary btn-sm" id="btn-fs-hub" title="Toggle Fullscreen">⛶</button>
+      <!-- ⚙️ SETTINGS — the render mode, Save Account and Feedback, behind one
+           gear. The dot is the "not saved yet" nudge the pulsing Save Account
+           button used to give from this bar; paintSettings() lights it for a
+           guest. An SVG rather than the ⚙️ emoji, because an emoji ignores
+           `color` and so could neither glow nor follow the colourblind palette. -->
+      <button class="btn btn-secondary btn-sm btn-settings" id="btn-settings" type="button" title="Settings" aria-label="Settings" aria-haspopup="dialog">
+        <svg class="gear-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill-rule="evenodd" d="M9.55 4.07L10.25 0.94A11.2 11.2 0 0 1 13.75 0.94L14.45 4.07A8.3 8.3 0 0 1 15.88 4.66L18.58 2.94A11.2 11.2 0 0 1 21.06 5.42L19.34 8.12A8.3 8.3 0 0 1 19.93 9.55L23.06 10.25A11.2 11.2 0 0 1 23.06 13.75L19.93 14.45A8.3 8.3 0 0 1 19.34 15.88L21.06 18.58A11.2 11.2 0 0 1 18.58 21.06L15.88 19.34A8.3 8.3 0 0 1 14.45 19.93L13.75 23.06A11.2 11.2 0 0 1 10.25 23.06L9.55 19.93A8.3 8.3 0 0 1 8.12 19.34L5.42 21.06A11.2 11.2 0 0 1 2.94 18.58L4.66 15.88A8.3 8.3 0 0 1 4.07 14.45L0.94 13.75A11.2 11.2 0 0 1 0.94 10.25L4.07 9.55A8.3 8.3 0 0 1 4.66 8.12L2.94 5.42A11.2 11.2 0 0 1 5.42 2.94L8.12 4.66A8.3 8.3 0 0 1 9.55 4.07ZM15.5 12A3.5 3.5 0 1 0 8.5 12A3.5 3.5 0 1 0 15.5 12Z"/></svg>
+        <span class="gear-dot" aria-hidden="true"></span>
+      </button>
       <button class="btn btn-secondary btn-sm" id="btn-logout">Exit</button>
     </div>
   </div>
@@ -1029,6 +1037,70 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
 <div id="exit-fx" aria-hidden="true"><div id="exit-fx-body"></div></div>
 
 <!-- ══════════════════════════════════════════════════════════════
+     ⚙️ SETTINGS — what the gear on the hub bar opens.
+     Three things that used to be scattered. The render mode was only on the
+     LOGIN screen, so changing it meant signing out — and for a guest, signing
+     out deletes the profile. Save Account and Feedback were two more buttons
+     on a hub bar already within pixels of wrapping.
+
+     Those two buttons were MOVED here, not rebuilt: they keep their ids, so
+     everything bound to them follows them in untouched — the upgrade modal,
+     refreshClaimUi()'s local-profile claim, the offline capture guard and the
+     feedback terminal. The render cards are a second .mode-picker, and PI3D
+     paints and wires every .mode-picker on the page, so this one and the login
+     screen's can never disagree. Painted by paintSettings().
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay set-tint" id="settings-overlay" aria-hidden="true">
+  <div class="fb-modal set-modal" role="dialog" aria-modal="true" aria-labelledby="settings-heading">
+    <button class="fb-close" id="settings-close" aria-label="Close settings">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="settings-heading">⚙️ SYSTEM SETTINGS</div>
+      <div class="fb-sub">Renderer · account · feedback</div>
+    </div>
+
+    <!-- ── 🎛️ RENDER MODE ── -->
+    <section class="set-sec" aria-labelledby="set-mode-h">
+      <div class="set-sec-h"><span id="set-mode-h">🎛️ RENDER MODE</span></div>
+      <p class="set-note">Flip the whole arcade between flat neon and real 3D — <b>instantly, no sign-out</b>. Your next mission renders in the new mode; points and leaderboards are shared.</p>
+      <div class="mode-picker set-picker" role="group" aria-label="Render mode">
+        <button class="mode-card" data-mode="2d" type="button" aria-pressed="false">
+          <span class="mode-ico">🕹️</span>
+          <span class="mode-name">2D CLASSIC</span>
+          <span class="mode-note">Flat neon arcade. Runs anywhere.</span>
+        </button>
+        <button class="mode-card" data-mode="3d" type="button" aria-pressed="false">
+          <span class="mode-ico">🧊</span>
+          <span class="mode-name">3D CYBERPUNK</span>
+          <span class="mode-note">Real 3D missions and controls.</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- ── 💾 ACCOUNT ── the note, the badge and the steps depend on what kind
+         of profile this is (local, guest or signed in), so paintSettings()
+         writes them; the button's label and handler belong to refreshClaimUi(). -->
+    <section class="set-sec" aria-labelledby="set-acct-h">
+      <div class="set-sec-h"><span id="set-acct-h">💾 ACCOUNT</span><em class="set-state" id="set-acct-state"></em></div>
+      <p class="set-note" id="set-acct-note"></p>
+      <ol class="set-steps" id="set-acct-steps"></ol>
+      <button class="btn btn-save-acct btn-full" id="btn-save-acct" style="display:none">💾 Save Account</button>
+    </section>
+
+    <!-- ── 💬 FEEDBACK ── -->
+    <section class="set-sec" aria-labelledby="set-fb-h">
+      <div class="set-sec-h"><span id="set-fb-h">💬 FEEDBACK</span></div>
+      <p class="set-note">Hit a bug, found a balance problem, or have an idea? Tell the mainframe.</p>
+      <ol class="set-steps">
+        <li>Pick a signal type — bug, feature, balancing or praise</li>
+        <li>Rate the build and describe what happened</li>
+        <li>Transmit — it goes straight to the developer</li>
+      </ol>
+      <button class="btn btn-secondary btn-full btn-feedback" id="btn-feedback">💬 Open Feedback Terminal</button>
+    </section>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
      💬 FEEDBACK TERMINAL — overlay modal.
      Lives OUTSIDE every .screen so opening it never unmounts the hub,
      a running game, or the player's live PTS/CR state.
@@ -1135,7 +1207,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=37"></script>
+<script src="app.js?v=38"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker

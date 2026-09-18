@@ -911,7 +911,9 @@ textarea::-webkit-scrollbar-thumb,select::-webkit-scrollbar-thumb,.input::-webki
    overflow get absorbed by shrinking instead, and the shrink factors below
    decide what gives — the username first (it is the only part whose width is
    unbounded by its own label, and it stays legible as an ellipsis), the
-   wordmark only once the username has hit its floor, and the controls never. */
+   wordmark only once the username has hit its floor, and the controls never.
+   (Save Account and Feedback have since moved behind the ⚙️ Settings gear, so
+   the bar is two buttons lighter; the order of sacrifice still holds.) */
 .hub-bar{padding-left:16px;padding-right:16px}
 .hub-right{flex-wrap:nowrap;justify-content:flex-end;gap:8px;min-width:0}
 .hub-right>*{flex:0 0 auto}
@@ -965,7 +967,12 @@ html.is-offline .fb-overlay{padding-bottom:calc(20px + 3.4rem + env(safe-area-in
 /* Neon scan-line across the top edge */
 .fb-modal::before{content:'';position:absolute;top:0;left:12%;right:12%;height:1px;background:linear-gradient(90deg,transparent,var(--lime),transparent);box-shadow:0 0 12px var(--lime)}
 
-.fb-close{position:absolute;top:14px;right:14px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--dim);font-size:.8rem;cursor:pointer;transition:all .2s}
+/* z-index is load-bearing. The ✕ comes BEFORE .fb-head in every modal, and the
+   title is a full-width block under it. In the 3D interface the title carries a
+   filter, which makes it a stacking context painted in DOM order with the
+   positioned ✕ — later, so on top, and hit-testing on top: the ✕ could not be
+   clicked in any modal until it was lifted explicitly. */
+.fb-close{position:absolute;z-index:2;top:14px;right:14px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;background:var(--s2);border:1px solid var(--border);border-radius:8px;color:var(--dim);font-size:.8rem;cursor:pointer;transition:all .2s}
 .fb-close:hover{color:var(--pink);border-color:var(--pink);background:rgba(255,0,144,.1)}
 
 .fb-head{text-align:center;margin-bottom:28px}
@@ -3130,18 +3137,31 @@ body.mode-3d #toast{
    Extruded type: a stack of solid offsets under the glyphs is the same body the
    controls have, applied to letterforms. It is the one place a text-shadow is
    doing geometry rather than decoration. */
+/* ⚠️ The gradient titles take their body from filter:drop-shadow, NOT
+   text-shadow. Their face is a background clipped to the glyphs under a
+   transparent text fill, and Chrome paints text-shadow ABOVE a
+   background-clip:text background — so the extrusion was drawn over the face
+   and buried it: the logo came out a flat dull teal, and every modal title a
+   near-black word with a thin lit edge. drop-shadow works on the element's
+   finished rendering and puts the body behind it. Chained 1px shadows
+   accumulate, the first nearest the face, so the stack reads exactly like the
+   text-shadow list it replaced. Plain white type (.g-title) keeps text-shadow,
+   which is correct there. */
 body.mode-3d .logo{
-  text-shadow:
-    0 1px 0 rgba(0,90,110,.9),0 2px 0 rgba(0,70,90,.85),0 3px 0 rgba(0,52,70,.8),
-    0 4px 0 rgba(0,36,52,.75),0 5px 0 rgba(0,22,36,.7),
-    0 14px 22px rgba(0,0,0,.8);
+  filter:
+    drop-shadow(0 1px 0 rgba(0,90,110,.9)) drop-shadow(0 1px 0 rgba(0,70,90,.85))
+    drop-shadow(0 1px 0 rgba(0,52,70,.8)) drop-shadow(0 1px 0 rgba(0,36,52,.75))
+    drop-shadow(0 1px 0 rgba(0,22,36,.7)) drop-shadow(0 9px 11px rgba(0,0,0,.8));
 }
-body.mode-3d .g-title,
+body.mode-3d .g-title{
+  text-shadow:0 1px 0 rgba(0,0,0,.9),0 2px 0 rgba(0,0,0,.7),0 3px 0 rgba(0,0,0,.5),
+              0 8px 14px rgba(0,0,0,.85);
+}
 body.mode-3d .market-title,
 body.mode-3d .mp-title,
 body.mode-3d .fb-title{
-  text-shadow:0 1px 0 rgba(0,0,0,.9),0 2px 0 rgba(0,0,0,.7),0 3px 0 rgba(0,0,0,.5),
-              0 8px 14px rgba(0,0,0,.85);
+  filter:drop-shadow(0 1px 0 rgba(0,0,0,.9)) drop-shadow(0 1px 0 rgba(0,0,0,.7))
+         drop-shadow(0 1px 0 rgba(0,0,0,.5)) drop-shadow(0 5px 7px rgba(0,0,0,.85));
 }
 body.mode-3d #cd-num{
   text-shadow:
@@ -3866,4 +3886,141 @@ body.mode-3d .ob-coach{
   box-shadow:0 6px 24px rgba(0,245,255,.35),
              0 2px 0 rgba(0,0,0,.5),
              inset 0 1px 0 rgba(255,255,255,.4);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   ⚙️ SETTINGS — the gear on the hub bar, and the panel it opens
+   ══════════════════════════════════════════════════════════════
+   Purple, because the bar's other doors already own cyan (audio) and gold
+   (points), and purple is the other half of the arcade's primary gradient —
+   so the gear reads as part of the cabinet, not as a browser widget. */
+.btn-settings{
+  position:relative;display:inline-flex;align-items:center;justify-content:center;
+  padding:7px 11px;line-height:1;
+  color:var(--purple);border-color:rgba(168,85,247,.42)
+}
+.btn-settings:hover{background:rgba(168,85,247,.14);border-color:var(--purple);box-shadow:0 0 18px rgba(168,85,247,.28)}
+.btn-settings:focus-visible{outline:2px solid var(--purple);outline-offset:2px}
+.gear-ico{
+  display:block;width:14px;height:14px;fill:currentColor;
+  filter:drop-shadow(0 0 3px rgba(168,85,247,.8));
+  transition:transform .6s cubic-bezier(.2,.9,.3,1)
+}
+/* Eight teeth look identical every 45°, so a quarter turn lands on the same
+   silhouette: the gear spins and settles, with no pose to snap back from when
+   the pointer leaves. */
+.btn-settings:hover .gear-ico,
+.btn-settings:focus-visible .gear-ico{transform:rotate(90deg)}
+/* The nudge the pulsing Save Account button used to give from the bar itself:
+   a guest's whole profile is one Exit away from deletion. */
+.gear-dot{
+  display:none;position:absolute;top:-4px;right:-4px;width:10px;height:10px;border-radius:50%;
+  background:var(--lime);box-shadow:0 0 0 2px var(--bg),0 0 10px var(--lime);
+  pointer-events:none;animation:gearPing 2.4s ease-in-out infinite
+}
+.btn-settings.needs-save .gear-dot{display:block}
+@keyframes gearPing{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(.7);opacity:.6}}
+html.reduced-motion .gear-dot{animation:none}
+html.reduced-motion .gear-ico{transition:none}
+@media (prefers-reduced-motion:reduce){
+  .gear-dot{animation:none}
+  .gear-ico{transition:none}
+}
+@media (pointer:coarse){ .btn-settings{min-width:44px} }
+
+/* Under the login screen's picker: the choice is not final. */
+.mode-hint{margin:-6px 0 16px;font-size:.72rem;line-height:1.4;color:var(--dimmer);text-align:center}
+
+/* ── The panel: the .fb-overlay shell, tinted purple like the gear ── */
+.set-tint .fb-modal{max-width:560px;border-color:rgba(168,85,247,.45);box-shadow:0 0 70px rgba(168,85,247,.14),inset 0 0 0 1px rgba(255,255,255,.03)}
+.set-tint .fb-modal::before{background:linear-gradient(90deg,transparent,var(--purple),transparent);box-shadow:0 0 12px var(--purple)}
+.set-tint .fb-title{background:linear-gradient(90deg,var(--purple),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.set-tint .fb-head{margin-bottom:20px}
+
+.set-sec{padding:14px 16px 16px;border:1px solid var(--border);border-radius:var(--r);background:var(--s1)}
+.set-sec + .set-sec{margin-top:12px}
+.set-sec-h{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;
+  font-family:var(--fd);font-size:.58rem;font-weight:700;letter-spacing:.22em;color:var(--cyan)
+}
+.set-state{flex:none;font-style:normal;font-size:.46rem;letter-spacing:.14em;padding:3px 9px;border-radius:20px;border:1px solid currentColor;color:var(--dim)}
+.set-state:empty{display:none}
+.set-state.ok{color:var(--lime);background:rgba(57,255,20,.08)}
+.set-state.warn{color:var(--gold);background:rgba(255,215,0,.08)}
+.set-state.local{color:var(--orange);background:rgba(255,102,0,.08)}
+.set-note{font-size:.84rem;line-height:1.45;color:var(--dim);margin-bottom:12px}
+.set-note b{color:var(--text);font-weight:700}
+.set-picker{margin:0}
+/* The INSTRUCTIONS half of each door: what the button will ask of the player,
+   read before pressing it rather than discovered after. */
+.set-steps{list-style:none;counter-reset:set-step;display:grid;gap:7px;margin:0 0 14px}
+.set-steps:empty{display:none}
+.set-steps li{counter-increment:set-step;display:flex;align-items:flex-start;gap:9px;font-size:.8rem;line-height:1.35;color:var(--text)}
+.set-steps li::before{
+  content:counter(set-step);flex:none;display:flex;align-items:center;justify-content:center;
+  width:17px;height:17px;border-radius:50%;
+  font-family:var(--fd);font-size:.48rem;font-weight:700;
+  color:var(--cyan);border:1px solid rgba(0,245,255,.45);background:rgba(0,245,255,.08)
+}
+.set-sec .btn-full{padding-left:16px;padding-right:16px}
+/* A LOCAL profile always runs in offline mode — that is what local means — so
+   the offline rule greys its Save button permanently, including the moment it
+   reads "Save Progress Online" and would work. The steps above tell the player
+   to press it, so when it can actually claim, it must look like it can.
+   refreshClaimUi() sets the class off the same check that picks the label. */
+html.is-offline #btn-save-acct.claim-ready{opacity:1;filter:none;cursor:pointer}
+@media (max-width:520px){
+  .set-sec{padding:12px 12px 14px}
+  .set-note{font-size:.8rem}
+}
+
+/* ⚠️ The solids below are scoped to body.mode-3d, like everything above. */
+body.mode-3d .btn-settings{--wall:#5b21a8;--wallb:#2a0e52}
+/* The walls every modal slab gets in this mode. The tint's glow above is more
+   specific than that shared rule, so without restating them here this one
+   panel would be the only flat modal in the 3D interface. */
+body.mode-3d .set-tint .fb-modal{
+  box-shadow:
+    0 2px 0 #131a2e,0 4px 0 #131a2e,0 6px 0 #080c18,0 8px 0 #080c18,0 10px 0 #05070f,
+    0 44px 70px -22px rgba(0,0,0,.95),0 0 60px -10px rgba(168,85,247,.32),
+    inset 0 1px 0 rgba(255,255,255,.16),inset 0 -1px 0 rgba(0,0,0,.6);
+}
+body.mode-3d .set-sec{
+  background-image:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,0) 70%);
+  box-shadow:
+    0 1px 0 #10162a,0 2px 0 #10162a,0 3px 0 #070a14,0 4px 0 #070a14,
+    0 14px 22px -12px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.11),inset 0 -1px 0 rgba(0,0,0,.5);
+}
+body.mode-3d .set-sec + .set-sec{margin-top:16px}
+body.mode-3d .set-state{
+  background-image:var(--spec);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,.05),0 2px 0 #0b0f1c,0 3px 0 #070a14,
+    0 6px 8px -4px rgba(0,0,0,.75),
+    inset 0 1px 0 rgba(255,255,255,.18),inset 0 -1px 0 rgba(0,0,0,.45);
+}
+body.mode-3d .set-steps li::before{
+  box-shadow:0 1px 0 #0a4a52,0 2px 0 #05272c,inset 0 1px 0 rgba(255,255,255,.22);
+}
+/* The Save button's attention pulse animates box-shadow, and an animation beats
+   every ordinary rule — so in this mode it replaced the button's whole wall
+   stack, and the one control the panel most wants pressed was the one flat
+   button in it. The pulse is re-keyed WITH the walls, and handed back to the
+   keycap rules on hover and press so the lift and the travel still happen. */
+body.mode-3d .btn-save-acct{animation:saveGlow3d 2.4s ease-in-out infinite}
+body.mode-3d .btn-save-acct:hover,
+body.mode-3d .btn-save-acct:active,
+body.mode-3d .btn-save-acct:disabled{animation:none}
+@keyframes saveGlow3d{
+  0%,100%{box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),
+    0 4px 0 var(--wallb),0 5px 0 var(--wallb),0 6px 0 var(--wallb),0 7px 0 var(--wallb),
+    0 12px 18px -8px rgba(0,0,0,.8),0 0 0 rgba(57,255,20,0),
+    inset 0 1px 0 var(--lip-hi),inset 0 -1px 0 var(--lip-lo)}
+  50%{box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),
+    0 4px 0 var(--wallb),0 5px 0 var(--wallb),0 6px 0 var(--wallb),0 7px 0 var(--wallb),
+    0 12px 18px -8px rgba(0,0,0,.8),0 0 18px rgba(57,255,20,.32),
+    inset 0 1px 0 var(--lip-hi),inset 0 -1px 0 var(--lip-lo)}
 }
