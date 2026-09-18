@@ -36777,9 +36777,9 @@ document.getElementById('photo-overlay')?.addEventListener('click', e => {
 document.getElementById('btn-photo')?.addEventListener('click', () => photoToggle());
 
 // ── SETTINGS: haptics + gamepad ──
-// They live on the audio popover's shelf conceptually but on the hub rail
-// physically, because both are INPUT/OUTPUT preferences about this device and
-// the rail is where the other per-device switches already are.
+// Both are INPUT/OUTPUT preferences about this device, so they live in the
+// ⚙️ SETTINGS panel with the other per-device switches. They sat on the hub's
+// XP rail until 2026-09-18, which hid them entirely on a landscape phone.
 function paintInputToggles(){
   const h = document.getElementById('btn-haptics');
   if(h){
@@ -36808,8 +36808,8 @@ document.getElementById('btn-pad')?.addEventListener('click', () => {
 });
 
 // ── SETTINGS: ✨ graphics profile ──
-// Two buttons, one setting: the hub rail's labelled switch and the in-game ✨ in
-// the action cluster. PI3D owns the state (localStorage 'pi_gfx') and the
+// Two buttons, one setting: the ⚙️ SETTINGS panel's labelled switch and the
+// in-game ✨ in the action cluster. PI3D owns the state (localStorage 'pi_gfx') and the
 // switch itself; this only paints and forwards. PI3D can also flip the setting
 // back on its own — a driver that cannot build the Ultra shaders — which is why
 // painting is a named function it can call rather than code inside the click.
@@ -36943,8 +36943,15 @@ document.addEventListener('keydown', e => {
 // refused by the offline guard with a toast. A zero timeout, because those
 // handlers are bound elsewhere and this must see the outcome of all of them,
 // whatever order they were registered in.
-['btn-save-acct', 'btn-feedback'].forEach(id => {
+// Each button is paired with the modal IT opens rather than sharing one union
+// selector, so a click that opens nothing cannot be credited with a dialog that
+// happened to be open already.
+[
+  ['btn-save-acct', '#up-overlay.show'],
+  ['btn-feedback',  '#fb-overlay.show'],
+  ['btn-tutorial',  '#onboard-overlay.show']
+].forEach(([id, sel]) => {
   document.getElementById(id)?.addEventListener('click', () => setTimeout(() => {
-    if(settingsOpen() && document.querySelector('#up-overlay.show, #fb-overlay.show')) closeSettings(true);
+    if(settingsOpen() && document.querySelector(sel)) closeSettings(true);
   }, 0));
 });

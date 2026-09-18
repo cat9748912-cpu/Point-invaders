@@ -3963,6 +3963,12 @@ html.reduced-motion .gear-ico{transition:none}
   color:var(--cyan);border:1px solid rgba(0,245,255,.45);background:rgba(0,245,255,.08)
 }
 .set-sec .btn-full{padding-left:16px;padding-right:16px}
+/* Two switches that belong together read as a pair rather than a stack. The
+   .btn default is padding:11px 26px + nowrap, which overflows a half-width
+   column once paintInputToggles() appends ON/OFF — so the row trims the side
+   padding and the tracking instead of letting the label clip. */
+.set-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.set-row .btn{width:100%;padding:11px 10px;font-size:.62rem;letter-spacing:.05em}
 /* A LOCAL profile always runs in offline mode — that is what local means — so
    the offline rule greys its Save button permanently, including the moment it
    reads "Save Progress Online" and would work. The steps above tell the player

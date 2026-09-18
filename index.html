@@ -159,19 +159,12 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
          is already within a few pixels of wrapping onto a second row. -->
     <button class="btn btn-secondary btn-sm" id="btn-season">🎖️ SEASON</button>
     <button class="btn btn-secondary btn-sm" id="btn-dossier">📁 DOSSIER</button>
-    <!-- 🎓 The tutorial is REPLAYABLE, which is most of why it is worth having:
-         a guided run you can only see once is a thing you skipped. 📳 and 🎮
-         are per-device input switches and belong with the other per-device
-         settings, which is this rail rather than the hub bar. -->
-    <button class="btn btn-secondary btn-sm" id="btn-tutorial">🎓 TUTORIAL</button>
-    <button class="btn btn-secondary btn-sm inp-toggle" id="btn-haptics" aria-pressed="false">📳 HAPTICS</button>
-    <button class="btn btn-secondary btn-sm inp-toggle" id="btn-pad" aria-pressed="true">🎮 PAD</button>
-    <!-- ✨ GRAPHICS PROFILE — Normal or Ultra Realistic. A per-device setting
-         like the two above: what a GPU can afford is a fact about this machine.
-         The same switch sits in the in-game action cluster, because this rail
-         is hidden on a landscape phone and because the difference is easiest
-         to judge while looking at a board. Painted by paintGfxToggles(). -->
-    <button class="btn btn-secondary btn-sm gfx-toggle" id="btn-gfx" aria-pressed="false" title="Graphics: Normal — click for Ultra Realistic">✨ GRAPHICS: NORMAL</button>
+    <!-- 🎓 TUTORIAL, 📳 HAPTICS, 🎮 PAD and ✨ GRAPHICS used to sit here. They
+         are per-device PREFERENCES rather than profile state, and this rail is
+         display:none on a landscape phone — which left all four unreachable on
+         exactly the devices whose owner most wants to switch haptics off. They
+         moved into ⚙️ SETTINGS carrying their ids, so every handler and both
+         painters (paintInputToggles / paintGfxToggles) still find them. -->
   </div>
   <!-- 🎒 LOADOUT RAIL — the one-tap swap. Chips rather than a dropdown, because
        a loadout is a thing you switch BETWEEN and a select would make every
@@ -1055,7 +1048,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <button class="fb-close" id="settings-close" aria-label="Close settings">✕</button>
     <div class="fb-head">
       <div class="fb-title" id="settings-heading">⚙️ SYSTEM SETTINGS</div>
-      <div class="fb-sub">Renderer · account · feedback</div>
+      <div class="fb-sub">Renderer · graphics · input · account · feedback</div>
     </div>
 
     <!-- ── 🎛️ RENDER MODE ── -->
@@ -1074,6 +1067,37 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
           <span class="mode-note">Real 3D missions and controls.</span>
         </button>
       </div>
+    </section>
+
+    <!-- ── ✨ GRAPHICS ── Painted by paintGfxToggles(), which PI3D also calls
+         on its own when a driver cannot build the Ultra shaders and it has to
+         hand the setting back. The same switch sits in the in-game action
+         cluster (#btn-gfx-game), because the difference is easiest to judge
+         while looking at a board. -->
+    <section class="set-sec" aria-labelledby="set-gfx-h">
+      <div class="set-sec-h"><span id="set-gfx-h">✨ GRAPHICS</span></div>
+      <p class="set-note">How much detail the 3D renderer draws. <b>Ultra Realistic</b> is the sharpest image and the heaviest on the GPU; <b>Normal</b> keeps the frame rate smooth. Stored per device, and it applies in 3D mode.</p>
+      <button class="btn btn-secondary btn-full gfx-toggle" id="btn-gfx" aria-pressed="false" title="Graphics: Normal — click for Ultra Realistic">✨ GRAPHICS: NORMAL</button>
+    </section>
+
+    <!-- ── 🎮 INPUT ── Both are per-device I/O preferences, painted together by
+         paintInputToggles(). Side by side because they are a pair, not a list. -->
+    <section class="set-sec" aria-labelledby="set-input-h">
+      <div class="set-sec-h"><span id="set-input-h">🎮 INPUT</span></div>
+      <p class="set-note">Haptics buzz on hits, absorbs, scores and fails. With the gamepad on, the left stick aims, <b>A</b> acts, <b>B</b> closes, and <b>START</b> quits.</p>
+      <div class="set-row">
+        <button class="btn btn-secondary inp-toggle" id="btn-haptics" aria-pressed="false">📳 HAPTICS</button>
+        <button class="btn btn-secondary inp-toggle" id="btn-pad" aria-pressed="true">🎮 PAD</button>
+      </div>
+    </section>
+
+    <!-- ── 🎓 TUTORIAL ── Replayable on purpose: a guided run you can only see
+         once is a thing you skipped. It opens a modal, so it is in the hand-off
+         list at the bottom of § 11 and this panel steps aside for it. -->
+    <section class="set-sec" aria-labelledby="set-tut-h">
+      <div class="set-sec-h"><span id="set-tut-h">🎓 TUTORIAL</span></div>
+      <p class="set-note">Replay the guided run — four cards and one real round on CLICK FRENZY, about thirty seconds.</p>
+      <button class="btn btn-secondary btn-full" id="btn-tutorial">🎓 Replay Guided Run</button>
     </section>
 
     <!-- ── 💾 ACCOUNT ── the note, the badge and the steps depend on what kind
