@@ -344,7 +344,13 @@ const BANK = {
                                    tone(t,{type:'sine',f0:mtof(m+12),dur:0.2,vol:0.06}); } },
   alarm:     { gap: 500, fn:(t)=>{ tone(t,{type:'square',f0:880,dur:0.16,vol:0.13,hold:0.06});
                                    tone(t+0.2,{type:'square',f0:660,dur:0.2,vol:0.13,hold:0.06}); } },
-  tick:      { gap: 200, fn:(t)=>{ tone(t,{type:'square',f0:1200,dur:0.04,vol:0.08}); } }
+  tick:      { gap: 200, fn:(t)=>{ tone(t,{type:'square',f0:1200,dur:0.04,vol:0.08}); } },
+  // 🎃 NEON HAUNT (v42). A theremin is a sine that slides, so this is two
+  // sines a few cents apart gliding down an octave — the beating between them
+  // is the wobble — over a breath of band-passed noise.
+  haunt:     { gap: 400, fn:(t)=>{ tone(t,{type:'sine',f0:880,f1:440,dur:1.35,vol:0.09,attack:0.09});
+                                  tone(t+0.02,{type:'sine',f0:887,f1:436,dur:1.3,vol:0.05,attack:0.12});
+                                  noise(t,{dur:0.95,vol:0.035,filter:'bandpass',fc:700,fc1:180,q:3}); } }
 };
 
 // ── PLAYBACK ──────────────────────────────────────────────────────────
@@ -393,6 +399,15 @@ const CHORD_SETS = {
     { root: 43, notes: [43, 47, 50, 55, 59, 62] },  // G
     { root: 45, notes: [45, 48, 52, 57, 60, 64] },  // Am
     { root: 41, notes: [41, 45, 48, 53, 57, 60] }   // F
+  ],
+  // 🎃 NEON HAUNT (v42): Am–Bb–Dm–E7. The half-step up to Bb is the Phrygian
+  // shudder, and E7 is a dominant that pulls home and is never allowed to
+  // arrive — the loop turns back to Am on the wrong foot every four bars.
+  haunt: [
+    { root: 45, notes: [45, 48, 52, 57, 60, 64] },  // Am
+    { root: 46, notes: [46, 50, 53, 58, 62, 65] },  // Bb
+    { root: 38, notes: [38, 41, 45, 50, 53, 57] },  // Dm
+    { root: 40, notes: [40, 44, 47, 50, 56, 59] }   // E7
   ],
   vapor: [                                          // Fmaj7–Em7–Dm7–Cmaj7 · drift
     { root: 41, notes: [41, 45, 48, 52, 57, 60] },
@@ -1233,16 +1248,21 @@ function runMissionStart(fn){
     }
     let id;
     const shim = function(){
-      // 📸 A paused round's clock must not tick. Same shim, same test, and the
-      // same reason it only ever touches gTimer: a spawn timer on a similar
-      // period is not the round's countdown.
-      if(gTimer === id && typeof photoActive === 'function' && photoActive()) return;
+      // 📸 ⏸️ A held round's clocks must not tick — photo mode and the pause
+      // menu both hold it through gHold(). EVERY interval the mission created
+      // in the clock band is skipped, not just gTimer: a one-second spawn
+      // timer that kept firing under a paused board is a round that moved on
+      // without its player.
+      if(gPause.on) return;
       if(_clockSkip > 0 && gTimer === id){ _clockSkip--; return; }
       return f.apply(this, arguments);
     };
     id = real.call(window, shim, ms, ...rest);
     return id;
   };
+  // ⏸️ The round's frames go through the pause wrapper from its first
+  // requestAnimationFrame to stopGame() — see § 13.
+  try{ if(typeof pauseWrapFrames === 'function') pauseWrapFrames(); }catch(e){ console.warn('Pause wrapper failed:', e); }
   try{ fn(); }
   finally{ window.setInterval = real; }
 }
@@ -1250,9 +1270,13 @@ function runMissionStart(fn){
 function stopGame(){
   roundClockAdd = null;
   _clockSkip = 0;
+  // ⏱️ A countdown still running belongs to the round being torn down — see countdown().
+  cancelCountdown();
   // 📸 A paused camera belongs to the round that was paused. Left armed it
   // would swallow the next round's input and hold its HUD hidden.
   if(typeof photoAbort === 'function') photoAbort();
+  // ⏸️ Same for the pause menu — see § 13.
+  try{ if(typeof pauseAbort === 'function') pauseAbort(); }catch(e){}
   // Cleared BEFORE the handler runs, so a teardown that ends up calling
 
   // stopGame() again (a network round finishing as it's quit) can't recurse.
@@ -1262,6 +1286,7 @@ function stopGame(){
   }
   clearInterval(gTimer); gTimer=null;
   cancelAnimationFrame(gameLoopId); gameLoopId=null;
+  try{ if(typeof pauseUnwrapFrames === 'function') pauseUnwrapFrames(); }catch(e){}
   gTimeouts.forEach(e => clearTimeout(e.tid)); gTimeouts.clear();
   window.onkeydown=window.onkeyup=null;
   // The round's chaos modifier, its tension lift and its power-up dock are all
@@ -1334,6 +1359,10 @@ const META = {
   trace:  { name: 'SIGNAL TRACE',  emoji: '📡', maxPts: 900 },
   defrag: { name: 'DEFRAG',        emoji: '🧹', maxPts: 1050 },
   coolant:{ name: 'COOLANT',       emoji: '🌡️', maxPts: 1350 },
+  // ── § 16+ · THE CLASSICS WING (added 2026-09-19) ──────────────────────
+  lightcycle:{ name: 'LIGHT CYCLE', emoji: '🏍️', maxPts: 1200 },
+  stack:  { name: 'SERVER STACK',  emoji: '🗄️', maxPts: 1000 },
+  muncher:{ name: 'DATA MUNCHER',  emoji: '👾', maxPts: 1300 },
   // Not a mission — the chained run. maxPts is the ceiling of the five biggest
   // caps, which is what clamps the combined award. DERIVED, not written down:
   // it was left at 6200 when Pulse Sync and Core Merge widened the cap table,
@@ -1344,6 +1373,9 @@ const META = {
   // the same reason Cyber Arena is: there is no finish line to measure against.
   endless: { name:'ENDLESS PROTOCOL', emoji:'♾️', maxPts: 99999 }
 };
+// The ISO week a mission added after launch joins the SHARED weekly rotations
+// (the Weekly Anomaly). Anything not named here has always been in them.
+const MISSION_WEEK = { lightcycle: '2026-W40', stack: '2026-W40', muncher: '2026-W40' };
 
 // One place that knows how to start each mission. prepGame() runs them behind a
 // countdown; a Network Arena score race runs the very same function behind a
@@ -1357,16 +1389,30 @@ const SOLO_START = {
   path: startOverclockPath, freq: startFrequencyModulator,
   rhythm: startPulseSync, merge: startCoreMerge, uplink: startOrbitalUplink,
   cutter: startIceCutter, sorter: startPacketSort, trace: startSignalTrace,
-  defrag: startDefrag,    coolant: startCoolant
+  defrag: startDefrag,    coolant: startCoolant,
+  lightcycle: startLightCycle, stack: startServerStack, muncher: startDataMuncher
 };
 
 // ══════════════════════════════════════════════
 //  ⚙️ SYSTEM STABILITY — GLOBAL DIFFICULTY ENGINE
 // ══════════════════════════════════════════════
-// Three operational tiers. `pointMult` scales final awarded score.
+// Four operational tiers. `pointMult` scales final awarded score.
 // `speedMult` scales hazard/spawn/object velocities (>1 = more intense).
 // `timeMult` scales countdown clocks (<1 = less time on the clock).
+//
+// 🔵 SAFE MODE (v40) is the first tier BELOW Stable: the same missions with the
+// hazards slowed and the clock stretched, paying half. It exists for younger
+// and newer players — the arcade had three ways to make a round harder and none
+// to make one gentler. Its runs bank XP and points as normal but never earn a
+// mission medal or set a grid record (see settleMedal), so it lowers the floor
+// without touching the ceiling anyone else is climbing toward.
+//
+// ⚠️ Any formula written as `(diff - 1) * k` goes NEGATIVE here for the first
+// time. Most of those read as "a little easier" and are correct as they are;
+// the ones that did something odd below 1 (Overclock Path's dead-cell count,
+// the Frequency Modulator's drift) are clamped at their Stable value.
 const DIFFICULTY_TIERS = {
+  safe:        { key:'safe',        label:'SAFE MODE',        icon:'🔵', pointMult:0.5, speedMult:0.7, timeMult:1.4 },
   stable:      { key:'stable',      label:'STABLE CORE',      icon:'🟢', pointMult:1.0, speedMult:1.0, timeMult:1.0 },
   overclocked: { key:'overclocked', label:'OVERCLOCKED',      icon:'🟡', pointMult:1.5, speedMult:1.5, timeMult:0.75 },
   meltdown:    { key:'meltdown',    label:'CRITICAL MELTDOWN',icon:'🔴', pointMult:2.0, speedMult:2.0, timeMult:0.5 }
@@ -1397,6 +1443,13 @@ function getTimeModifier(){
   // this gets a generous stage; one that runs on infinity is unaffected.
   return DIFFICULTY_TIERS[currentDifficultyTier].timeMult * endlessTimeMul();
 }
+// 🔵 SAFE MODE, for the handful of missions written before the tier dial
+// existed that never read it (Memory Match, Math Blitz, Cyber Pong, 2D Dodge
+// Cores and 2D Cyber Arena). They get Safe Mode's ease and NOTHING else —
+// Stable, Overclock and Meltdown keep playing there exactly as they always
+// have, because changing those would quietly rebalance every existing record.
+const safeEase = () => currentDifficultyTier === 'safe' ? DIFFICULTY_TIERS.safe.speedMult : 1;
+const safeTime = () => currentDifficultyTier === 'safe' ? DIFFICULTY_TIERS.safe.timeMult : 1;
 
 // There is more than one of these panels on screen now — the hub's and the
 // Network Arena's — so painting one by id would leave the other lying about the
@@ -1410,7 +1463,7 @@ function paintDiffPanels(tierKey){
   // Recolor the ambient glow behind the panel to match the newly active tier,
   // and give it a brief brighter flash so the change reads as an event, not just a state.
   document.querySelectorAll('.diff-selector').forEach(sel=>{
-    sel.classList.remove('tier-stable','tier-overclocked','tier-meltdown');
+    sel.classList.remove('tier-safe','tier-stable','tier-overclocked','tier-meltdown');
     sel.classList.add(`tier-${tierKey}`);
     sel.classList.remove('flash');
     void sel.offsetWidth; // restart the animation/transition even if the same tier is clicked again
@@ -1465,8 +1518,9 @@ document.addEventListener('click', e=>{
   // panel — and the round they are both about to play — follows the dial rather
   // than whatever happened to be set when the room was opened.
   if(typeof mpSyncTier === 'function') mpSyncTier();
-  // The tier's own pitch: Stable settles, Overclock lifts, Meltdown alarms.
-  snd(tierKey==='meltdown' ? 'alarm' : 'score', { semi: tierKey==='stable' ? -5 : 2 });
+  // The tier's own pitch: Safe Mode sinks, Stable settles, Overclock lifts,
+  // Meltdown alarms.
+  snd(tierKey==='meltdown' ? 'alarm' : 'score', { semi: tierKey==='safe' ? -9 : tierKey==='stable' ? -5 : 2 });
   toast(`${tier.icon} SYSTEM STABILITY: ${tier.label} (×${tier.pointMult.toFixed(1)} PTS)`, 2500, `toast-${tierKey}`);
 });
 
@@ -1550,7 +1604,7 @@ const showScreen=id=>{
 };
 
 let _tt;
-const toast=(msg,ms=2500,tintClass=null)=>{const el=document.getElementById('toast');el.textContent=msg;el.classList.remove('toast-stable','toast-overclocked','toast-meltdown');if(tintClass)el.classList.add(tintClass);el.classList.add('show');clearTimeout(_tt);_tt=setTimeout(()=>el.classList.remove('show'),ms)};
+const toast=(msg,ms=2500,tintClass=null)=>{const el=document.getElementById('toast');el.textContent=msg;el.classList.remove('toast-safe','toast-stable','toast-overclocked','toast-meltdown','toast-medal');if(tintClass)el.classList.add(tintClass);el.classList.add('show');clearTimeout(_tt);_tt=setTimeout(()=>el.classList.remove('show'),ms)};
 
 // ══════════════════════════════════════════════════════════════════════
 //  🔊 AUDIO — hookup to the synth engine at the top of this file
@@ -1899,7 +1953,8 @@ function bindCanvasDrag(handlers){
   //
   // This is also the half of the never-yaw rule that makes the other half safe:
   // the camera may orbit only while nothing can steer.
-  const frozen = () => (typeof photoActive === 'function') && photoActive();
+  const frozen = () => ((typeof photoActive === 'function') && photoActive()) ||
+                       ((typeof pauseActive === 'function') && pauseActive());
   const on = (target, type, fn, bucket) => {
     target.addEventListener(type, fn, { passive: false });
     _drag[bucket].push([target, type, fn]);
@@ -2197,12 +2252,25 @@ function setControlHint(touchText, keyText){
   scheduleHudFit();
 }
 
+// A countdown belongs to the round it was started for, so stopGame() cancels it (cancelCountdown, below) — every
+// quit and every new round's resetGameStage() pass through there. Left running, a round quit during "3 · 2 · 1"
+// (Tab onto ← Quit and Enter, or a controller's stick and A: the overlay only stops the mouse) kept its overlay over
+// the hub, then started the mission behind it a few seconds later, and that round's results card took the screen.
+// `var`, not `let`, because stopGame() is further up the file.
+var cdTimer=null,cdGen=0;
 const countdown=cb=>{
   const ov=document.getElementById('cd-ov'),nm=document.getElementById('cd-num');
+  clearTimeout(cdTimer);
+  const gen=++cdGen;
   ov.classList.add('show');let n=3;
-  const tick=()=>{nm.className='';nm.textContent=n>0?n:'GO!';void nm.offsetWidth;nm.className='cd-pop';snd(n>0?'countdown':'go');if(n<=0)setTimeout(()=>{ov.classList.remove('show');cb()},700);else{n--;setTimeout(tick,1000)}};
+  const tick=()=>{if(gen!==cdGen)return;nm.className='';nm.textContent=n>0?n:'GO!';void nm.offsetWidth;nm.className='cd-pop';snd(n>0?'countdown':'go');if(n<=0)cdTimer=setTimeout(()=>{if(gen!==cdGen)return;cdTimer=null;ov.classList.remove('show');cb()},700);else{n--;cdTimer=setTimeout(tick,1000)}};
   tick();
 };
+function cancelCountdown(){
+  if(!cdTimer) return;       // nothing pending — and the Network Arena's own countdown (mpCountdown) is not ours
+  clearTimeout(cdTimer); cdTimer=null; cdGen++;
+  document.getElementById('cd-ov')?.classList.remove('show');
+}
 
 // ════════════════════════════════════════════
 //  🔐 GATEWAY VALIDATION INTERFACE KEYS
@@ -2376,10 +2444,10 @@ function ensureUserDefaults(raw){
     // paid out are DERIVED from it by xpLevel(), and stored only so a level-up
     // can be detected between two rounds rather than recomputed from scratch.
     xp: 0, level: 1, perkSpent: 0,
-    owned: { colors: [], cursors: [], skins: [], drives: [], exits: [] },
+    owned: { colors: [], cursors: [], skins: [], drives: [], exits: [], worlds: [] },
     equipped: {
       colors: 'col-cyan', cursors: 'cur-default', skins: 'skin-default',
-      drives: 'drv-synthwave', exits: 'exit-default'
+      drives: 'drv-synthwave', exits: 'exit-default', worlds: 'wld-rain'
     }
   };
   return {
@@ -2389,7 +2457,8 @@ function ensureUserDefaults(raw){
       cursors: [...(raw.owned && raw.owned.cursors || [])],
       skins: [...(raw.owned && raw.owned.skins || [])],
       drives: [...(raw.owned && raw.owned.drives || [])],
-      exits: [...(raw.owned && raw.owned.exits || [])]
+      exits: [...(raw.owned && raw.owned.exits || [])],
+      worlds: [...(raw.owned && raw.owned.worlds || [])]
     },
     equipped: { ...defaults.equipped, ...(raw.equipped || {}) },
     // Progression state. Firebase drops empty objects, so an established player
@@ -2411,6 +2480,9 @@ function ensureUserDefaults(raw){
     // so the lifetime best and the lifetime count are both lost the moment a
     // thirteenth round is played.
     best:         { ...(raw.best || {}) },      // gid → best single run, lifetime
+    // 🏅 gid → best RAW mission score (before any multiplier) — what medals and
+    // grid records are measured on. See § 12.
+    mbest:        { ...(raw.mbest || {}) },
     runs:         { ...(raw.runs || {}) },      // gid → rounds finished, lifetime
     days:         { ...(raw.days || {}) },      // UTC day → rounds finished that day
     // ⚔️ The player's STANDING CHALLENGE — one per profile, posted from a results
@@ -2460,7 +2532,13 @@ async function loadUser(uid){
   if(user.isGuest && live && !existed) user.username = guestTag(uid);
 
   setOfflineMode(!live);
-  if(live) cacheProfile(user);
+  if(live){
+    // Stars earned offline (or under rules that do not name `campaign` yet) exist only in the mirror — carry them
+    // over BEFORE cacheProfile() overwrites it with the server's copy. See campaignReconcile, § 21.
+    try{ if(typeof campaignReconcile === 'function') campaignReconcile(readCachedProfile(uid)); }
+    catch(e){ console.warn('Campaign reconcile skipped:', e); }
+    cacheProfile(user);
+  }
   applyEquippedCosmetics();
   snd('login');
   enterHub();
@@ -2568,6 +2646,11 @@ function enterHub(){
   if(typeof abortEndless === 'function') abortEndless();
   if(typeof abortAnomaly === 'function') abortAnomaly();
   if(typeof abortChallenge === 'function') abortChallenge();
+  // 🎉 Reaching the hub ends a party, the same way it ends a rush (§ 19).
+  if(typeof abortParty === 'function') abortParty();
+  // 📖 And for a campaign chapter: walking away hands the borrowed stability
+  // tier back (§ 21). Wrapped because § 21 loads long after this function.
+  try{ if(typeof abortCampaign === 'function') abortCampaign(); }catch(e){ console.warn(e); }
   if(typeof mpStopSpectating === 'function') mpStopSpectating();
   // 📈 The pace ghost deliberately OUTLIVES stopGame() — the results card is
   // written after the round is torn down and it is the thing that reads the
@@ -2715,7 +2798,7 @@ function resetGameStage(gid){
   // build is pure DOM — so the landscape layout that parks the pad beside the
   // board has to know about them too.
   const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','breaker','arena','runner','meteor','battlebots','freq',
-                      'rhythm','merge','uplink','cutter','sorter','trace','defrag','coolant'].includes(gid)
+                      'rhythm','merge','uplink','cutter','sorter','trace','defrag','coolant','lightcycle','stack','muncher'].includes(gid)
                   || !!(window.PI3D && PI3D.has(gid));
   document.getElementById('game-screen').classList.toggle('canvas-game', canvasGame);
   // Whatever the last round left up comes down here, before the next one
@@ -2813,8 +2896,9 @@ const Ghost = (function(){
 
   function begin(gid){
     rec = null; play = null;
-    // A duel or a Boss Rush stage is not a solo run — no ghost either way.
-    if(mp || bossRush) return;
+    // A duel, a Boss Rush stage or a party turn is not the owner's solo run —
+    // no ghost either way (a party guest must never overwrite the owner's best).
+    if(mp || bossRush || (typeof partyRunActive === 'function' && partyRunActive())) return;
     rec = { gid, frames: [] };
     try{
       const raw = localStorage.getItem(key(gid));
@@ -3070,18 +3154,28 @@ META.bossrush.maxPts = Object.keys(SOLO_START)
 const BR_INTEGRITY = 100, BR_SAFE = 0.6, BR_MAX_DMG = 34;
 let bossRush = null;
 
-function startBossRush(){
-  // Cyber Arena never ends on its own, so it can't be a stage in a fixed chain.
-  // 🔒 And a chain must not deal a mission the player has never been allowed to
-  // see: a rush is a test of missions you know, not an ambush. Falls back to the
-  // full pool if the ladder ever leaves too few to fill a chain.
-  let pool = Object.keys(SOLO_START).filter(g => g !== 'arena' && missionUnlocked(g));
-  if(pool.length < BOSS_RUSH_LEN) pool = Object.keys(SOLO_START).filter(g => g !== 'arena');
-  const queue = pool
-    .map(g => ({ g, k: Math.random() }))
-    .sort((a, b) => a.k - b.k)
-    .slice(0, BOSS_RUSH_LEN)
-    .map(x => x.g);
+// 📖 `fixedQueue` is the campaign's finale (§ 21): a chain the STORY chose, in
+// its own order, not one dealt at random. Array.isArray and not a truthy test,
+// so a click event handed straight to this function can never pass for a queue.
+// BOSS_RUSH_LEN sizes the random pool only — every stage count below reads the
+// queue's own length.
+function startBossRush(fixedQueue){
+  let queue;
+  if(Array.isArray(fixedQueue)){
+    queue = fixedQueue.filter(g => SOLO_START[g]);
+  }else{
+    // Cyber Arena never ends on its own, so it can't be a stage in a fixed chain.
+    // 🔒 And a chain must not deal a mission the player has never been allowed to
+    // see: a rush is a test of missions you know, not an ambush. Falls back to the
+    // full pool if the ladder ever leaves too few to fill a chain.
+    let pool = Object.keys(SOLO_START).filter(g => g !== 'arena' && missionUnlocked(g));
+    if(pool.length < BOSS_RUSH_LEN) pool = Object.keys(SOLO_START).filter(g => g !== 'arena');
+    queue = pool
+      .map(g => ({ g, k: Math.random() }))
+      .sort((a, b) => a.k - b.k)
+      .slice(0, BOSS_RUSH_LEN)
+      .map(x => x.g);
+  }
   bossRush = { queue, idx: 0, total: 0, bd: {}, mods: [], integrity: BR_INTEGRITY, worst: null };
   vsResultTap = bossRushTap;
   snd('success');
@@ -3330,8 +3424,9 @@ function showResultsCard(gid,pts,bd,opts){
     gnameEl.parentNode.insertBefore(bonusEl, gnameEl.nextSibling);
   }
   bonusEl.className = `res-bonus ${opts.badge ? opts.badge.cls : 'res-bonus-'+tier.key}`;
+  // A multiplier under one is not a bonus — Safe Mode's badge says PAY.
   bonusEl.textContent = opts.badge ? opts.badge.text
-                                   : `${tier.icon} ${tier.label} · ×${tier.pointMult.toFixed(1)} BONUS`;
+                                   : `${tier.icon} ${tier.label} · ×${tier.pointMult.toFixed(1)} ${tier.pointMult < 1 ? 'PAY' : 'BONUS'}`;
 
   document.getElementById('res-pts').textContent=finalPts;
   // 📳 One buzz for a run worth having, a different one for a washout. Here
@@ -3373,6 +3468,20 @@ function showResultsCard(gid,pts,bd,opts){
     const won = grantRandomConsumable();
     if(won) bd['📦 Supply Drop'] = `${won.emoji} ${won.name}`;
   }
+  // 🏅 The medal is settled on the RAW score (`pts`), never on finalPts — a
+  // multiplier must not be able to buy one. See § 12.
+  let medalOk = false;
+  try{ medalOk = settleMedal(gid, pts, tier.key, opts); }catch(e){ console.warn('Medal settle failed:', e); }
+  // 📋 The day's contracts, on the same raw score (§ 15).
+  try{
+    if(typeof settleContracts === 'function'){
+      Object.assign(bd, settleContracts({ gid, raw: Math.max(0, Math.round(+pts || 0)), tier: tier.key,
+                                          internal: !!opts.internal, daily: !!dailyRun, chaos: chaos.last || null }));
+    }
+  }catch(e){ console.warn('Contract settle failed:', e); }
+  // 📖 A campaign chapter's stars, on the same raw score (§ 21). Settled before
+  // saveScore() below, so recordRun() already counts the stars this round earned.
+  try{ if(typeof settleCampaign === 'function') Object.assign(bd, settleCampaign(gid, pts, opts)); }catch(e){ console.warn('Campaign settle failed:', e); }
   if(dailyActive)  bd['📅 Daily Seed'] = dailySeedLabel() + (dailyRun ? '' : ' · PRACTICE');
   if(anomalyActive) bd['🌒 Weekly Anomaly'] = anomalyOf().icon + ' ' + anomalyOf().name +
                                               ' · ' + seasonKey() + (anomalyRun ? '' : ' · PRACTICE');
@@ -3392,7 +3501,14 @@ function showResultsCard(gid,pts,bd,opts){
     maxed: !!opts.maxed,
     chaos: chaos.last ? chaos.last.id : null,
     daily: dailyRun,
-    teamSize: (mp && mp.teamSize) || 1
+    teamSize: (mp && mp.teamSize) || 1,
+    // 🏅 The raw score travels with the run, so a round banked offline still
+    // reaches the medal record when the queue replays it through recordRun().
+    raw: Math.max(0, Math.round(+pts || 0)),
+    medal: medalOk,
+    // 🎃 The seasonal event running when the round was PLAYED (§ 14).
+    ev: (typeof activeEventKey === 'function' && !(typeof partyRunActive === 'function' && partyRunActive()))
+        ? activeEventKey() : null
   });
   // 📅 A Daily Hack round posts to its own board and then stands down — which
   // also hands the player's stability dial back. It runs on `dailyActive`, not
@@ -3440,6 +3556,11 @@ function showResultsCard(gid,pts,bd,opts){
     document.getElementById('h-credits').textContent=`💎 ${(user?.credits||0).toLocaleString()} CR`;
     enterHub();
   };
+  // 📖 LAST, after both buttons are wired: a chapter's card swaps them for
+  // "Next Chapter" / "Campaign" and hands the borrowed stability tier back. This
+  // function must not return early above this line, or a chapter would never
+  // end and the tier would stay locked (§ 21).
+  try{ if(typeof campaignRunActive === 'function' && campaignRunActive()) campaignAfterCard(); }catch(e){ console.warn(e); }
 }
 
 // The highest single award a mission can legitimately pay: its cap times the
@@ -3564,10 +3685,16 @@ async function flushPendingRuns(){
       // totals get replaced rather than added to.
       try{
         const snap = await withTimeout(db.ref('players/' + user.uid).once('value'), NET_WAIT);
+        const held = user;   // what this device knew, before the server's copy replaces it
         user = { uid: user.uid, ...ensureUserDefaults(snap.val() || {}) };
         user.isGuest = !!(auth && auth.currentUser && auth.currentUser.isAnonymous);
+        try{ if(typeof campaignReconcile === 'function') campaignReconcile(held); }
+        catch(e){ console.warn('Campaign reconcile skipped:', e); }
         cacheProfile(user);
-        enterHub();
+        // Repaint only a hub the player is standing in. The flush waits 2.6s a run, so by now they have often
+        // started a round, and enterHub() would pull them out of it: the round ran on behind the hub, and a
+        // chapter, a rush or a Daily Hack was aborted. Anywhere else, the next enterHub() paints the new totals.
+        if(document.getElementById('hub-screen')?.classList.contains('active')) enterHub();
       }catch(e){ console.warn('Post-sync refresh failed:', e); }
       toast('✅ Banked runs synced.');
     }
@@ -3617,7 +3744,24 @@ const ACHIEVEMENTS = [
   { id:'chaos-rider',  icon:'🌀', name:'Chaos Rider',      desc:'Finish a run under a chaos modifier.',       cr:5,  test:(c)=>!!c.chaos },
   { id:'daily-hacker', icon:'📅', name:'Daily Hacker',     desc:'Post a score on the Daily Hack.',            cr:4,  test:(c)=>!!c.daily },
   { id:'squad',        icon:'👥', name:'Squad Tactics',    desc:'Win a 2v2 co-op grid round.',                cr:8,  test:(c)=>c.duelWin && c.teamSize === 2 },
-  { id:'level-10',     icon:'🌳', name:'Tenth Tier',       desc:'Reach profile level 10.',                    cr:10, test:(c)=>c.level >= 10 }
+  { id:'level-10',     icon:'🌳', name:'Tenth Tier',       desc:'Reach profile level 10.',                    cr:10, test:(c)=>c.level >= 10 },
+  // ── 🏅 MEDALS (v40) — raw-score medals, so no multiplier can buy these.
+  { id:'medal-first',  icon:'🥉', name:'On The Podium',    desc:'Earn your first mission medal.',             cr:2,  test:(c)=>!!c.medals && c.medals.any >= 1 },
+  { id:'medal-gold5',  icon:'🥇', name:'Gold Standard',    desc:'Hold a gold medal on 5 missions.',           cr:10, test:(c)=>!!c.medals && c.medals.gold >= 5 },
+  { id:'medal-diamond',icon:'💎', name:'Flawless Signal',  desc:'Earn a diamond medal — the full cap of a mission, unmultiplied.', cr:15,
+    test:(c)=>!!c.medals && c.medals.diamond >= 1 },
+  { id:'medal-sweep',  icon:'🏅', name:'Podium Sweep',     desc:'Hold at least bronze on every mission.',     cr:25,
+    test:(c)=>!!c.medals && c.medals.bronze >= Object.keys(SOLO_START).length },
+  // ── 🎃 SEASONAL (v42). Earnable only inside its event's window; the id is
+  // the event's id, which is how the hub banner knows it has been earned.
+  { id:'haunt',        icon:'🎃', name:'Haunted Operative',desc:'Finish 5 missions during NEON HAUNT (Oct 1 – Nov 1).', cr:6,
+    test:(c)=>!!c.event && /^haunt-/.test(c.event.key || '') && (+c.event.runs || 0) >= 5 },
+  // ── 📋 CONTRACTS (v43)
+  { id:'contracts-all',icon:'📋', name:'Full Contract',    desc:'Clear all three daily contracts in one day.', cr:5,
+    test:(c)=>!!c.contractsAll },
+  // ── 📖 CAMPAIGN (v49) — read off the profile's star ledger, see recordRun().
+  { id:'campaign-root',  icon:'👑', name:'Root Access',    desc:'Finish the campaign: beat THE GLITCH in chapter 20.', cr:30, test:(c)=>!!c.campaignRoot },
+  { id:'campaign-stars', icon:'⭐', name:'Star Operative', desc:'Earn all 60 campaign stars.', cr:50, test:(c)=>(c.campaignStars||0) >= 60 }
 ];
 
 const achById = id => ACHIEVEMENTS.find(a => a.id === id);
@@ -3856,6 +4000,7 @@ function loadChallenges(){
     return;
   }
   db.ref('players').orderByChild('totalPoints').limitToLast(60).once('value', snap => {
+    if(typeof cacheSnapshotRecords === 'function') cacheSnapshotRecords(snap);
     const list = [];
     snap.forEach(c => {
       const d = c.val() || {};
@@ -4085,6 +4230,9 @@ function renderDossier(){
     tile('📈', 'Best single run', bestRun ? bestRun.toLocaleString() : '—') +
     tile('🔥', 'Streak', `${user.streak.count || 0}`, `best ${user.streak.best || 0} days`) +
     tile('🏅', 'Achievements', `${achGot}/${ACHIEVEMENTS.length}`) +
+    (() => { const mc = medalCounts();
+             return tile('🥇', 'Medals', `${mc.any}/${gids.length}`,
+                         `🥉${mc.bronze} 🥈${mc.silver} 🥇${mc.gold} 💎${mc.diamond}`); })() +
     tile('🎖️', 'Season points', seasonPts().toLocaleString(), `tier ${seasonClaimed()}/${SEASON_TIERS.length}`) +
     tile('🌳', 'Perks owned', `${PERKS.filter(p => hasPerk(p.id)).length}/${PERKS.length}`) +
     `</div>`;
@@ -4143,7 +4291,7 @@ function renderDossier(){
         `<span style="height:${Math.max(6, (v / top) * 100)}%"></span>`).join('');
       html += `<div class="dos-mission" data-dos="${r.g}" tabindex="0" role="button" aria-label="Open the ${esc(r.m.name)} dossier">` +
         `<span class="dm-ico">${r.m.emoji}</span>` +
-        `<div class="dm-name">${esc(r.m.name)}</div>` +
+        `<div class="dm-name">${esc(r.m.name)}${medalOf(r.g) >= 0 ? ' ' + MEDALS[medalOf(r.g)].icon : ''}</div>` +
         `<div class="dm-stats">` +
           `<span class="dm-best">${r.best.toLocaleString()}</span>` +
           `<span class="dm-cap">${r.capped ? `${Math.round(r.pct * 100)}% of cap` : 'uncapped'}</span>` +
@@ -4245,7 +4393,13 @@ function recordRun(gid, pts, ctx){
   // the dossier derives them from `history` instead (see dosBest/dosRuns) and
   // is fully readable either way; once they are named it gains a lifetime run
   // count and a best that survives a thirteenth round.
-  if(pts > (user.best[gid] || 0)) user.best[gid] = pts;
+  // ⚠️ Always a NUMBER. This used to be `if(pts > best) best = pts`, which left
+  // the key undefined for a mission's first-ever run when that run scored 0 —
+  // and Firebase's update() THROWS synchronously on an undefined value, before
+  // the .catch() below can see it. Online that aborted the rest of the save;
+  // offline it failed the queue flush, so the zero run sat at the head of the
+  // queue and blocked every banked run behind it on each reconnect.
+  user.best[gid] = Math.max(+pts || 0, +user.best[gid] || 0);
   user.runs[gid] = (user.runs[gid] || 0) + 1;
   const ledger = { ['best/' + gid]: user.best[gid], ['runs/' + gid]: user.runs[gid] };
   // 📅 The activity log is LOCAL on purpose, not just for want of a rule. It is
@@ -4270,6 +4424,22 @@ function recordRun(gid, pts, ctx){
     streakBonus = streakReward(roll.count);
   }
 
+  // ── 🏅 medal record (raw score). Its OWN write, after the one that matters
+  // and failure-tolerant, like every key added since the rules lesson.
+  if(ctx.medal){
+    const raw = Math.max(0, Math.round(+ctx.raw || 0));
+    user.mbest = user.mbest || {};
+    if(raw > (+user.mbest[gid] || 0)) user.mbest[gid] = raw;
+    if(raw > 0 && raw >= (+user.mbest[gid] || 0)){
+      db.ref('players/' + user.uid + '/mbest/' + gid).set(raw)
+        .catch(e => console.warn('Medal record not stored (rules?):', e && e.code));
+    }
+  }
+
+  // ── 🎃 seasonal event progress — keyed by the event the run was PLAYED in
+  // (ctx.ev), so a round banked offline in October still counts in November.
+  if(ctx.ev && typeof eventCredit === 'function') eventCredit(ctx.ev, pts);
+
   // ── achievements
   const cond = {
     gid, pts,
@@ -4290,7 +4460,17 @@ function recordRun(gid, pts, ctx){
     // Boss Rush banks under its own key but isn't a mission — counting it
     // would let Full Sweep unlock one mission short.
     missionsPlayed: Object.keys(user.history)
-      .filter(k => SOLO_START[k] && (user.history[k] || []).length).length
+      .filter(k => SOLO_START[k] && (user.history[k] || []).length).length,
+    // 🏅 Cumulative medal counts (a gold also counts as silver and bronze).
+    medals: (typeof medalCounts === 'function') ? medalCounts() : { any: 0, bronze: 0, silver: 0, gold: 0, diamond: 0 },
+    // 🎃 This player's progress in the event the run was played in, if any.
+    event: ctx.ev && user.event && user.event.key === ctx.ev ? user.event : null,
+    // 📋 Today's three contracts all cleared (§ 15).
+    contractsAll: !!(user.contracts && user.contracts.day === dayKey() && user.contracts.bonus),
+    // 📖 Straight off the profile, so nothing here depends on § 21 having loaded.
+    // settleCampaign() has already written this round's stars into user.campaign.
+    campaignRoot: !!(user.campaign && user.campaign.c20 >= 1),
+    campaignStars: Object.values(user.campaign || {}).reduce((a, v) => a + Math.max(0, Math.min(3, +v || 0)), 0)
   };
   // 🎖️ The season track pays for whatever tiers this round's points crossed,
   // folded into the same payout the streak and the achievements use. It stores
@@ -4378,11 +4558,11 @@ function announceStreak(count, bonus){
 // not for them.
 const MISSION_CLEARANCE = {
   // 1 — one rule each, readable in a single sentence.
-  click: 1, reaction: 1, memory: 1, math: 1, dodge: 1, nebula: 1,
+  click: 1, reaction: 1, memory: 1, math: 1, dodge: 1, nebula: 1, stack: 1,
   // 2 — one rule plus a control scheme to learn.
-  pong: 2, snake: 2, flappy: 2, coolant: 2,
+  pong: 2, snake: 2, flappy: 2, coolant: 2, muncher: 2,
   // 3 — a board that has state you have to plan against.
-  tetris: 3, breaker: 3, merge: 3, trace: 3,
+  tetris: 3, breaker: 3, merge: 3, trace: 3, lightcycle: 3,
   // 4 — a puzzle with a rule you have to be told.
   hacker: 4, path: 4, rhythm: 4, defrag: 4,
   // 5 — sustained runs with a resource to manage.
@@ -4457,6 +4637,8 @@ function refreshHubProgression(){
     bar.parentNode.insertBefore(chip, bar.nextSibling);
   }
   paintMissionLocks();
+  // 📖 The campaign banner's progress line (§ 21).
+  try{ if(typeof paintCampaignBanner === 'function') paintCampaignBanner(); }catch(e){}
   if(typeof loadChallenges === 'function') loadChallenges();
   if(chip){
     chip.style.display = n > 0 ? '' : 'none';
@@ -4465,6 +4647,13 @@ function refreshHubProgression(){
   }
   renderBadgeShelf();
   renderCardSparklines();
+  // 🏅 ⭐ The medal strip and the grid's filter/order, after the sparkline so
+  // the strip can slot in above it.
+  try{ paintGridTools(); paintCardMedals(); }catch(e){ console.warn('Medal strip failed:', e); }
+  // 🎃 The seasonal event's look, banner, countdown and board (§ 14).
+  if(typeof paintEvent === 'function') paintEvent();
+  // 📋 Today's contracts (§ 15).
+  try{ if(typeof paintContracts === 'function') paintContracts(); }catch(e){ console.warn('Contracts failed:', e); }
 }
 
 function renderBadgeShelf(){
@@ -4564,7 +4753,10 @@ const SHOP_ITEMS = {
     { id:'col-purple', name:'Violet Static', price:8,  color:'#a855f7' },
     { id:'col-orange', name:'Amber Overload',price:10, color:'#ff6600' },
     { id:'col-red',    name:'Crimson Alert', price:10, color:'#ff2442' },
-    { id:'col-matrix', name:'Matrix Cascade',price:14, color:'#00ff41' }
+    { id:'col-matrix', name:'Matrix Cascade',price:14, color:'#00ff41' },
+    // 🎃 NEON HAUNT stock — on sale only while the event runs (see § 14),
+    // kept forever once bought.
+    { id:'col-pumpkin',name:'Pumpkin Glow',  price:10, color:'#ff7a1a', event:'haunt' }
   ],
   cursors: [
     { id:'cur-default', name:'Standard Pointer', price:0,  emoji:'➤', default:true },
@@ -4573,7 +4765,8 @@ const SHOP_ITEMS = {
     { id:'cur-claw',    name:'Cyber Claw',        price:10, emoji:'🦾' },
     { id:'cur-skull',   name:'Ghost Skull',       price:10, emoji:'💀' },
     { id:'cur-star',    name:'Nova Star',         price:12, emoji:'✨' },
-    { id:'cur-wraith',  name:'Data Wraith',       price:16, emoji:'👁️' }
+    { id:'cur-wraith',  name:'Data Wraith',       price:16, emoji:'👁️' },
+    { id:'cur-jack',    name:"Jack-o'-Lantern",  price:12, emoji:'🎃', event:'haunt' }
   ],
   skins: [
     { id:'skin-default', name:'Recruit',      price:0,  emoji:'🤖', default:true },
@@ -4584,7 +4777,8 @@ const SHOP_ITEMS = {
     { id:'skin-alien',   name:'Void Alien',   price:25, emoji:'👽' },
     { id:'skin-quantum', name:'Quantum Dragon',price:30, emoji:'🐉' },
     // Not for sale — granted by grantSeasonCrown() for topping a weekly season.
-    { id:'skin-crown',   name:'Season Crown', price:0,  emoji:'👑', earned:true }
+    { id:'skin-crown',   name:'Season Crown', price:0,  emoji:'👑', earned:true },
+    { id:'skin-vamp',    name:'Night Stalker',price:20, emoji:'🧛', event:'haunt' }
   ],
 
   // ── ⚡ CONSUMABLES ──
@@ -4618,7 +4812,10 @@ const SHOP_ITEMS = {
       bpm:{hub:104,game:152}, chords:'bright', voice:'saw' },
     { id:'drv-vapor',     name:'Vapor Cathedral',   price:16, emoji:'🌫️',
       desc:'Half-speed drift, wide triangles, long tails. Calm before a Meltdown.',
-      bpm:{hub:68,game:108}, chords:'vapor',   voice:'triangle' }
+      bpm:{hub:68,game:108}, chords:'vapor',   voice:'triangle' },
+    { id:'drv-haunt',     name:'Theremin Terror',   price:14, emoji:'🕸️', event:'haunt',
+      desc:'Minor and wrong-footed — a Phrygian shudder and a dominant that never resolves. Best after dark.',
+      bpm:{hub:76,game:128}, chords:'haunt',   voice:'triangle' }
   ],
 
   // ── 💀 EXIT STATES ──
@@ -4638,7 +4835,9 @@ const SHOP_ITEMS = {
     { id:'exit-purge',   name:'Core Purge',      price:18, emoji:'⬜',
       desc:'The board collapses to a single white line, holds, and blows out to nothing.', fx:'purge' },
     { id:'exit-rewind',  name:'Tape Rewind',     price:20, emoji:'📼',
-      desc:'The round spools backwards through tracking noise, the way a tape does.', fx:'rewind' }
+      desc:'The round spools backwards through tracking noise, the way a tape does.', fx:'rewind' },
+    { id:'exit-grave',   name:'Graveyard Shift', price:16, emoji:'🪦', event:'haunt',
+      desc:'The board sinks into a moonlit graveyard — bats scatter, the stones rise, and your score gets a headstone.', fx:'grave' }
   ]
 };
 
@@ -4664,7 +4863,8 @@ function featuredIds(cat, day = dayKey()){
   // behaves differently under it: the discount stops being a nudge and becomes
   // the correct day to stock up, and the advertised 5 CR / 10 CR stop being
   // what a Time Dilator costs.
-  const pool = (SHOP_ITEMS[cat] || []).filter(i => !i.default && !i.earned && !i.consumable);
+  // 🎃 Event stock is excluded too: it has its own shelf and its own clock.
+  const pool = (SHOP_ITEMS[cat] || []).filter(i => !i.default && !i.earned && !i.consumable && !i.event);
   if(pool.length <= FEATURE_PER_CAT) return pool.map(i => i.id);
   // Deterministic shuffle: sort by a per-item hash of the day, take the top N.
   return pool
@@ -4702,7 +4902,9 @@ function getRarity(cat, item){
   if(item.default || item.earned || !item.price) return null;
   // Earned items carry price 0 and would drag `min` down, re-banding every
   // paid item in the category.
-  const prices = (SHOP_ITEMS[cat]||[]).filter(i=>!i.default && !i.earned).map(i=>i.price);
+  // 🎃 Event stock is banded AGAINST the regular shelf but never moves the
+  // bands — a limited item must not re-rarity the items beside it.
+  const prices = (SHOP_ITEMS[cat]||[]).filter(i=>!i.default && !i.earned && !i.event).map(i=>i.price);
   const max = Math.max(...prices), min = Math.min(...prices);
   if(item.price===max) return 'legendary';
   if(item.price >= min + (max-min)*0.5) return 'epic';
@@ -4837,7 +5039,8 @@ function applyEquippedCosmetics(){
 function openMarket(){
   showScreen('market-screen');
   refreshMarketBalances();
-  ['powerups','colors','cursors','skins','drives','exits'].forEach(renderShop);
+  ['powerups','colors','cursors','skins','drives','exits','worlds'].forEach(renderShop);
+  if(typeof renderEventShelf === 'function') renderEventShelf();
   paintPowerKit();
   switchMarketTab('convert');
   startRotationTicker();
@@ -4944,60 +5147,89 @@ document.getElementById('btn-conv-to-points').onclick = async ()=>{
 };
 
 // ── SHOP RENDERING ──
+// One card builder, two shelves: the category tab and (during a seasonal
+// event) the 🎃 LIMITED tab, which shows the event's stock from every
+// category side by side. An event item is on sale only while its event runs;
+// once bought it is yours for good and stays on its category shelf.
+function shopItemListed(cat, item){
+  if(!item.event) return true;
+  const owned = (user?.owned?.[cat] || []).includes(item.id);
+  return owned || (typeof eventLive === 'function' && eventLive(item.event));
+}
+
+function shopCardEl(cat, item){
+  const owned = item.default || (user?.owned?.[cat]||[]).includes(item.id);
+  const equipped = user?.equipped?.[cat]===item.id;
+  const rarity = getRarity(cat, item);
+  const card = document.createElement('div');
+  card.className = 'shop-card' + (rarity ? ` rarity-${rarity}` : '') + (equipped ? ' equipped' : '');
+  const preview = cat==='colors'
+    ? (item.id==='col-matrix'
+        ? `<div class="shop-swatch matrix-swatch"></div>`
+        : `<div class="shop-swatch" style="background:${item.color};box-shadow:0 0 20px ${item.color}"></div>`)
+    : cat==='worlds'
+      // 🌍 A world is judged by its sky, so its card is one.
+      ? `<div class="shop-sky" style="background:linear-gradient(180deg,${item.sky[0]},${item.sky[1]} 70%,${item.sky[2] || '#05060f'})"><span>${item.emoji}</span></div>`
+      : `<div class="shop-emoji">${item.emoji}</div>`;
+  const badge = rarity ? `<div class="rarity-badge ${rarity}">${rarity}</div>` : '';
+  const p = priceOf(cat, item);
+  const cut = p < item.price ? `<s class="shop-was">💎${item.price}</s> ` : '';
+  let btnHtml;
+  if(item.consumable){
+    // Consumables are never "owned" or "equipped" — they are stocked. The card
+    // keeps offering the buy until the stack is full, and says how many are in
+    // the kit right now.
+    const held = powerHeld(item.id);
+    card.classList.add('consumable');
+    btnHtml = held >= (item.stack || 9)
+      ? `<button class="btn btn-secondary btn-sm shop-btn" disabled>KIT FULL · ${held}</button>`
+      : `<button class="btn btn-primary btn-sm shop-btn" data-act="buy" data-cat="${cat}" data-id="${item.id}">Buy · ${cut}💎${p}</button>`;
+  } else if(equipped){
+    btnHtml = `<button class="btn btn-secondary btn-sm shop-btn" data-act="unequip" data-cat="${cat}" data-id="${item.id}">Unequip</button>`;
+  } else if(owned){
+    btnHtml = `<button class="btn btn-primary btn-sm shop-btn" data-act="equip" data-cat="${cat}" data-id="${item.id}">Equip</button>`;
+  } else if(item.earned){
+    // No price — the only way in is the achievement that grants it.
+    btnHtml = `<button class="btn btn-secondary btn-sm shop-btn" disabled>🔒 Earned Only</button>`;
+  } else {
+    btnHtml = `<button class="btn btn-primary btn-sm shop-btn" data-act="buy" data-cat="${cat}" data-id="${item.id}">Buy · ${cut}💎${p}</button>`;
+  }
+  const feat = (!owned && !item.earned && isFeatured(cat, item.id))
+    ? `<div class="shop-feat">⏳ ${Math.round(FEATURE_DISCOUNT*100)}% OFF</div>` : '';
+  if(feat) card.classList.add('featured');
+  // 🎃 A seasonal item says so, and says when it leaves.
+  let evTag = '';
+  if(item.event && typeof eventById === 'function'){
+    const ev = eventById(item.event);
+    card.classList.add('shop-event', 'ev-item-' + item.event);
+    if(ev) evTag = `<div class="shop-evtag">${ev.icon} ${owned ? 'EVENT ITEM' : 'LIMITED · ' + esc(eventLeavesLabel(ev))}</div>`;
+  }
+  // A drive, an exit state and a consumable all need a sentence to be worth
+  // anything — a colour swatch explains itself, "Darksynth Terminal" does not.
+  const desc = item.desc ? `<div class="shop-desc">${esc(item.desc)}</div>` : '';
+  const held = item.consumable ? `<div class="shop-held">IN KIT · <em>${powerHeld(item.id)}</em></div>` : '';
+  card.innerHTML = `${preview}${badge}${feat}${evTag}<div class="shop-name">${esc(item.name)}</div>${desc}${held}` +
+                   `${equipped?'<div class="shop-tag">EQUIPPED</div>':''}${btnHtml}`;
+  return card;
+}
+
+function bindShopButtons(grid){
+  grid.querySelectorAll('.shop-btn').forEach(btn=>{
+    btn.onclick = () => handleShopAction(btn.dataset.act, btn.dataset.cat, btn.dataset.id);
+  });
+}
+
 function renderShop(cat){
   const grid = document.getElementById('shop-'+cat);
   if(!grid) return;
   grid.innerHTML = '';
   SHOP_ITEMS[cat].forEach(item=>{
-    const owned = item.default || (user?.owned?.[cat]||[]).includes(item.id);
-    const equipped = user?.equipped?.[cat]===item.id;
-    const rarity = getRarity(cat, item);
-    const card = document.createElement('div');
-    card.className = 'shop-card' + (rarity ? ` rarity-${rarity}` : '') + (equipped ? ' equipped' : '');
-    const preview = cat==='colors'
-      ? (item.id==='col-matrix'
-          ? `<div class="shop-swatch matrix-swatch"></div>`
-          : `<div class="shop-swatch" style="background:${item.color};box-shadow:0 0 20px ${item.color}"></div>`)
-      : `<div class="shop-emoji">${item.emoji}</div>`;
-    const badge = rarity ? `<div class="rarity-badge ${rarity}">${rarity}</div>` : '';
-    const p = priceOf(cat, item);
-    const cut = p < item.price ? `<s class="shop-was">💎${item.price}</s> ` : '';
-    let btnHtml;
-    if(item.consumable){
-      // Consumables are never "owned" or "equipped" — they are stocked. The card
-      // keeps offering the buy until the stack is full, and says how many are in
-      // the kit right now.
-      const held = powerHeld(item.id);
-      card.classList.add('consumable');
-      btnHtml = held >= (item.stack || 9)
-        ? `<button class="btn btn-secondary btn-sm shop-btn" disabled>KIT FULL · ${held}</button>`
-        : `<button class="btn btn-primary btn-sm shop-btn" data-act="buy" data-cat="${cat}" data-id="${item.id}">Buy · ${cut}💎${p}</button>`;
-    } else if(equipped){
-      btnHtml = `<button class="btn btn-secondary btn-sm shop-btn" data-act="unequip" data-cat="${cat}" data-id="${item.id}">Unequip</button>`;
-    } else if(owned){
-      btnHtml = `<button class="btn btn-primary btn-sm shop-btn" data-act="equip" data-cat="${cat}" data-id="${item.id}">Equip</button>`;
-    } else if(item.earned){
-      // No price — the only way in is the achievement that grants it.
-      btnHtml = `<button class="btn btn-secondary btn-sm shop-btn" disabled>🔒 Earned Only</button>`;
-    } else {
-      btnHtml = `<button class="btn btn-primary btn-sm shop-btn" data-act="buy" data-cat="${cat}" data-id="${item.id}">Buy · ${cut}💎${p}</button>`;
-    }
-    const feat = (!owned && !item.earned && isFeatured(cat, item.id))
-      ? `<div class="shop-feat">⏳ ${Math.round(FEATURE_DISCOUNT*100)}% OFF</div>` : '';
-    if(feat) card.classList.add('featured');
-    // A drive, an exit state and a consumable all need a sentence to be worth
-    // anything — a colour swatch explains itself, "Darksynth Terminal" does not.
-    const desc = item.desc ? `<div class="shop-desc">${esc(item.desc)}</div>` : '';
-    const held = item.consumable ? `<div class="shop-held">IN KIT · <em>${powerHeld(item.id)}</em></div>` : '';
-    card.innerHTML = `${preview}${badge}${feat}<div class="shop-name">${esc(item.name)}</div>${desc}${held}` +
-                     `${equipped?'<div class="shop-tag">EQUIPPED</div>':''}${btnHtml}`;
+    if(!shopItemListed(cat, item)) return;
     // A drive is only judgeable by ear, so equipping one auditions it: the hub
     // loop restarts on the new voicing the moment the button lands.
-    grid.appendChild(card);
+    grid.appendChild(shopCardEl(cat, item));
   });
-  grid.querySelectorAll('.shop-btn').forEach(btn=>{
-    btn.onclick = () => handleShopAction(btn.dataset.act, btn.dataset.cat, btn.dataset.id);
-  });
+  bindShopButtons(grid);
 }
 
 async function handleShopAction(act, cat, id){
@@ -5048,6 +5280,7 @@ async function handleShopAction(act, cat, id){
   }
   refreshMarketBalances();
   renderShop(cat);
+  if(typeof renderEventShelf === 'function') renderEventShelf();
 }
 
 // ════════════════════════════════════════════
@@ -5687,6 +5920,9 @@ function startNebula(){
   function pipeline(now) {
     if (isOver) return;
     let dt = now - lastTime; lastTime = now;
+    // ⏸️ The engine's 50ms stall clamp, which this loop never had: a frame
+    // that follows a pause or a throttled tab is one step, not the whole gap.
+    if(!(dt > 0)) dt = 16; else if(dt > 50) dt = 50;
     frame++;
     aCtx.clearRect(0, 0, BOARD_W, BOARD_H);
 
@@ -5969,7 +6205,11 @@ function startTetris(){
   let score=0, level=1, linesCleared=0, time=startTime;
   const TET_COLS = Math.floor(BOARD_W / 40);   // 40 = cell width, so cells keep their shape
   let arena=createMatrix(TET_COLS,20), player={pos:{x:0,y:0}, matrix:null}, nextPiece=null;
-  let dropCounter=0, dropInterval=600 * diffMod, lastTime=performance.now(), screenShake=0;
+  // ⚠️ DIVIDED by the tier, like the level-up formula below. This was `600 *
+  // diffMod`, which opened Meltdown at HALF speed (1200ms) until the first
+  // level-up re-derived it the right way round — and would have opened Safe
+  // Mode faster than Stable.
+  let dropCounter=0, dropInterval=600 / diffMod, lastTime=performance.now(), screenShake=0;
   let particles = [];
   
   document.getElementById('g-time').textContent=time;
@@ -6174,7 +6414,8 @@ function startTetris(){
 
   function loop(now){
     if(tetrisOver)return;
-    const dt = now - lastTime; lastTime = now;
+    // ⏸️ Clamped like every other loop — a resume must not drop a piece.
+    const dt = Math.max(0, Math.min(50, now - lastTime)); lastTime = now;
     aCtx.clearRect(0,0,BOARD_W,BOARD_H); nCtx.clearRect(0,0,80,80);
     
     dropCounter += dt; if(dropCounter > dropInterval) playerDrop();
@@ -6329,7 +6570,9 @@ function startDodge(){
       const col = obstacleColors[Math.floor(Math.random()*obstacleColors.length)];
       obstacles.push({
         x: Math.random()*(BOARD_W-20)+10, y: -10,
-        vx: (Math.random()-0.5)*4, vy: Math.random()*3+3,
+        // 🔵 Safe Mode slows the cores. The 3D build reads the full tier dial;
+        // this one never did, and keeps its old speed on every other tier.
+        vx: (Math.random()-0.5)*4*safeEase(), vy: (Math.random()*3+3)*safeEase(),
         r: Math.random()*6+8,
         color: col
       });
@@ -6385,13 +6628,14 @@ function startDodge(){
 // ════════════════════════════════════════════
 function startMemory(){
   const wrap = document.getElementById('g-memory');wrap.style.display='grid';wrap.innerHTML='';
-  let icons=['🚀','🚀','🧱','🧱','🖱️','🖱️','💥','💥','🧠','🧠','🔢','🔢','⚡','⚡','🏆','🏆'], flipped=[], matched=0, score=0, time=25;
+  let icons=['🚀','🚀','🧱','🧱','🖱️','🖱️','💥','💥','🧠','🧠','🔢','🔢','⚡','⚡','🏆','🏆'], flipped=[], matched=0, score=0, time=Math.round(25*safeTime());
+  const time0=time;   // 🔵 Safe Mode stretches the clock
   document.getElementById('g-time').textContent=time;
   icons.sort(()=>Math.random()-.5);
 
   gTimer=setInterval(()=>{
     time--;document.getElementById('g-time').textContent=time;
-    document.getElementById('prog-fill').style.width=`${time/25*100}%`;
+    document.getElementById('prog-fill').style.width=`${time/time0*100}%`;
     if(time<=5&&time>0) snd('tick');
     if(time<=0) end();
   },1000);
@@ -6420,7 +6664,8 @@ function startMemory(){
 // ════════════════════════════════════════════
 function startMath(){
   document.getElementById('g-math').style.display='block';
-  let score=0, time=20, curAns=0;
+  let score=0, time=Math.round(20*safeTime()), curAns=0;
+  const time0=time;   // 🔵 Safe Mode stretches the clock
   document.getElementById('g-time').textContent=time;
 
   function gen(){
@@ -6444,7 +6689,7 @@ function startMath(){
   let mathEnded=false;
   gTimer=setInterval(()=>{
     time--;document.getElementById('g-time').textContent=time;
-    document.getElementById('prog-fill').style.width=`${time/20*100}%`;
+    document.getElementById('prog-fill').style.width=`${time/time0*100}%`;
     if(time<=5&&time>0) snd('tick');
     if(time<=0&&!mathEnded){mathEnded=true;document.getElementById('math-answer').onkeydown=null;document.getElementById('math-submit').onclick=null;showResults('math',Math.min(750,score),{'🔢 Nodes Resolved':score/50,'🏆 Score Accumulation':`${score} PTS`})}
   },1000);
@@ -6478,21 +6723,21 @@ function startReaction(){
   setControlHint('TAP THE INSTANT IT TURNS GREEN','CLICK THE INSTANT IT TURNS GREEN');
   const goLabel = isTouchDevice ? 'TAP NOW!' : 'CLICK NOW!';
 
-  let trigger=later(()=>{if(state==='wait'){state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=performance.now()}},Math.random()*2500+1500);
+  let trigger=later(()=>{if(state==='wait'){state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=gNow()}},Math.random()*2500+1500);
 
   // Timed on pointerdown, not click. A synthesised click doesn't land until
   // the finger lifts, which was quietly adding its own latency to every
   // reading — this game's whole score is that number.
   box.onpointerdown=e=>{
     e.preventDefault();
-    if(state==='wait'){gCancel(trigger);snd('wrong');txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--rx-early)';state='hold';later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=performance.now()},Math.random()*2000+1000)}},1200)}
+    if(state==='wait'){gCancel(trigger);snd('wrong');txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--rx-early)';state='hold';later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=gNow()},Math.random()*2000+1000)}},1200)}
     else if(state==='go'){
-      let diff=Math.round(performance.now()-startT);
+      let diff=Math.round(gNow()-startT);   // ⏸️ round time
       let earned=Math.max(10,400-diff);score+=earned;setLive(score);
       // Faster reflex, higher chime — a 150ms tap is audibly better than 320ms.
       snd('score',{semi:Math.max(0,Math.round((400-diff)/40))});
       txt.textContent=`${diff}ms! REBOOTING...`;box.style.background='var(--rx-hit)';state='hold';
-      later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=performance.now()},Math.random()*2000+1000)}},1500);
+      later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=gNow()},Math.random()*2000+1000)}},1500);
     }
   };
   function end(){if(reactionEnded)return;reactionEnded=true;gCancel(trigger);box.onpointerdown=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
@@ -6543,11 +6788,14 @@ function lbRows(panel, players, scoreOf){
     const cls = [i < 3 ? `r${i+1}` : '', isMe ? 'me' : ''].filter(Boolean).join(' ');
     const row = document.createElement('div');
     row.className = `lb-row ${cls}`.trim();
+    // 🪪 The row opens the player's card (§ 15), from the record already here.
+    row.dataset.uid = d.uid;
+    if(typeof cachePlayerRecord === 'function') cachePlayerRecord(d.uid, d);
     const isFriend = !!(user && user.friends && user.friends[d.uid]);
     const canAdd = user && !isMe && !d.isGuest;
     row.innerHTML =
       `<div class="lb-rank">${medals[i] || '#' + (i+1)}</div>` +
-      `<div class="lb-name">${esc(d.username)}${isMe ? ' ← You' : ''}</div>` +
+      `<div class="lb-name">${esc(d.username)}${isMe ? ' ← You' : ''}${typeof titleChip === 'function' ? titleChip(d) : ''}</div>` +
       (canAdd ? `<button class="lb-fr${isFriend ? ' on' : ''}" data-uid="${esc(d.uid)}" data-name="${esc(d.username)}"
                    title="${isFriend ? 'Remove rival' : 'Add as rival'}">${isFriend ? '★' : '☆'}</button>` : '') +
       `<div class="lb-score">${(parseInt(scoreOf(d)) || 0).toLocaleString()} PTS</div>`;
@@ -6654,7 +6902,7 @@ function startPong(){
   let userScore=0, cpuScore=0, time=45, isOver=false;
   let playerY=H/2-PAD_H/2, aiY=H/2-PAD_H/2;
   let ballX=W/2, ballY=H/2, ballVX=4*X_SCALE*(Math.random()<0.5?1:-1), ballVY=3*(Math.random()<0.5?1:-1);
-  let aiSpeed=2.8;
+  let aiSpeed=2.8*safeEase();   // 🔵 Safe Mode slows the opposing paddle
   let rallyCount = 0; // Track current rally length
   const updateScore = () => {
     const raw = (userScore - cpuScore) * 50;
@@ -7303,7 +7551,7 @@ function startBreaker(){
   let moveL=false, moveR=false, keys={};
   let stuck=true, ball={x:0,y:0,vx:0,vy:0};
   let trail=[], chips=[], particles=[], floats=[];
-  let wideUntil=0, slowUntil=0, nowMs=performance.now();
+  let wideUntil=0, slowUntil=0, nowMs=gNow();   // ⏸️ round time: chips must not run out under a pause
 
   document.getElementById('g-time').textContent=time;
   document.getElementById('prog-fill').style.width='100%';
@@ -7589,11 +7837,11 @@ function startBreaker(){
   function loop(now){
     if(isOver)return;
     gameLoopId=requestAnimationFrame(loop);
-    nowMs=now;
+    nowMs=gNow();   // ⏸️ round time, not the frame's wall clock
 
-    padW=Math.round(BASE_PAD_W*(now<wideUntil?1.45:1));
+    padW=Math.round(BASE_PAD_W*(nowMs<wideUntil?1.45:1));
     // The wall creeps faster the emptier it gets, so a long run doesn't coast.
-    speed=BASE_SPEED*(now<slowUntil?0.72:1)*(1+Math.min(0.25,broken*0.006));
+    speed=BASE_SPEED*(nowMs<slowUntil?0.72:1)*(1+Math.min(0.25,broken*0.006));
     slide(padX);   // re-clamp: a WIDE chip can push the deflector past the edge
 
     const PAD_SPEED=7;
@@ -7875,7 +8123,9 @@ function startArena() {
       this.wobble += 0.05;
       if (this.id === 'SHIELDER') this.shieldAngle += 0.018; // shield slowly rotates — flank it to land full damage
 
-      const warpMult = 1.0; // future: can tie into time warp
+      // 🔵 Safe Mode caps every bot at 70% of its top speed. The 3D build
+      // reads the full tier dial; this one only ever took Safe Mode's ease.
+      const warpMult = safeEase();
       const inRange = true; // bots always actively chase/attack the player, regardless of distance
 
       if (inRange) {
@@ -11115,7 +11365,9 @@ function startOverclockPath(){
   // More dead code at the hotter tiers. It reads as a nastier board, but it is
   // also the only thing keeping one winnable once the clock is cut in half — a
   // shorter route is the compensation for having a third less time to find it.
-  const DEAD_COUNT=Math.min(9, 4+Math.round((diffMod-1)*2));   // 4 / 5 / 6
+  // Floored at Stable's 4: below 1 (🔵 Safe Mode) the formula gave 3, and
+  // FEWER dead cells is a LONGER route to trace exactly once — harder.
+  const DEAD_COUNT=Math.min(9, 4+Math.max(0, Math.round((diffMod-1)*2)));   // 4 / 4 / 5 / 6
   const OPEN=CELLS-DEAD_COUNT;
   // 15s is the brief's clock; the tier dial scales it like every other mission.
   // Floored, because 15 × 0.5 is a different game rather than a harder one.
@@ -11463,7 +11715,7 @@ function startFrequencyModulator(){
   let amp=52, len=110;                        // your output
   let tAmp=0, tLen=0, form=FORMS[0], drift={a:0,l:0};
   let held=0, stageT=0, bestMatch=0, phase=0;
-  let banner='', bannerT=0, lastT=performance.now();
+  let banner='', bannerT=0, lastT=gNow();   // ⏸️ round time
   // 🎯 True until a lock on stage one is reached and then lost. Cleared by the
   // loop, read once by stageClear() — see the PERFECT SYNC achievement.
   let firstTryClean=true, perfectSync=false;
@@ -11499,7 +11751,9 @@ function startFrequencyModulator(){
     // be TRACKED for its 1.5 seconds rather than dialled in once and released,
     // which is a fairer way to charge for the ×1.5 and ×2.0 than shaving the
     // 95% margin the brief fixed.
-    const wander=(diffMod-1)*0.6;
+    // Clamped at zero: 🔵 Safe Mode's 0.7 made this NEGATIVE, which is still
+    // a drift — Stable has none, and Safe Mode must not add one.
+    const wander=Math.max(0, (diffMod-1)*0.6);
     drift={ a:(Math.random()<.5?-1:1)*wander*3.2, l:(Math.random()<.5?-1:1)*wander*3.6 };
     held=0; stageT=0;
   }
@@ -11591,7 +11845,7 @@ function startFrequencyModulator(){
 
   function loop(){
     if(ended) return;
-    const now=performance.now();
+    const now=gNow();   // ⏸️ round time
     const dt=Math.min(50, now-lastT); lastT=now;
     phase += dt/1000*1.6;
     if(bannerT>0) bannerT-=dt;
@@ -11775,7 +12029,7 @@ function startPulseSync(){
 
   let time = Math.round(50 * getTimeModifier());
   let score = 0, combo = 0, bestCombo = 0, hits = 0, perfects = 0, misses = 0;
-  let over = false, t0 = performance.now(), flash = [0, 0, 0], shake = 0;
+  let over = false, t0 = gNow(), flash = [0, 0, 0], shake = 0;   // ⏸️ the chart runs on ROUND time
   const notes = [];
   const pops = [];
 
@@ -11810,7 +12064,7 @@ function startPulseSync(){
   }
   chartAhead(FALL + beat * 8);
 
-  const now = () => (performance.now() - t0) / 1000;
+  const now = () => (gNow() - t0) / 1000;
 
   function strike(lane){
     if(over) return;
@@ -14685,6 +14939,9 @@ function chaosAbsorb(){
 // stand between the player and this crash?" Free absorb first, then the paid
 // consumable — and the caller does not need to know which one answered.
 function survivedFatal(){
+  // 🎉 A party turn is someone else playing on the owner's device: it must
+  // never spend a Shield Overlay out of the owner's kit (§ 19).
+  if(typeof partyRunActive === 'function' && partyRunActive()) return false;
   return chaosAbsorb() || powerConsume('pu-shield', 'SHIELD ABSORBED');
 }
 
@@ -15781,7 +16038,7 @@ function dailyRow(r, rank, isMe){
   // Same row furniture as the live leaderboard — .lb-row already owns the
   // podium tints and the "that's you" rail, so a second board built out of it
   // is one board the eye has to learn instead of two.
-  return `<div class="lb-row dh-row${isMe ? ' me' : ''}${rank <= 3 ? ' r' + rank : ''}">` +
+  return `<div class="lb-row dh-row${isMe ? ' me' : ''}${rank <= 3 ? ' r' + rank : ''}"${r.uid ? ` data-uid="${esc(r.uid)}"` : ''}>` +
          `<span class="lb-rank">${medal}</span>` +
          `<span class="lb-name">${esc(r.name || 'Operative')}${isMe ? ' · YOU' : ''}</span>` +
          `<span class="lb-score">${(+r.pts || 0).toLocaleString()} PTS</span>` +
@@ -15868,6 +16125,7 @@ function renderAchievementMatrix(){
                 <span class="ach-cr">💎 ${a.cr} CR</span>
                 <span class="ach-state">${has ? (when || 'UNLOCKED') : 'LOCKED'}</span>
               </div>
+              ${has ? `<button class="ach-wear${user.title === a.id ? ' on' : ''}" data-ach="${a.id}" type="button">🏷️ ${user.title === a.id ? 'WORN AS TITLE' : 'WEAR AS TITLE'}</button>` : ''}
             </div>`;
   }).join('');
 }
@@ -15879,7 +16137,7 @@ function renderAchievementMatrix(){
 // hard timeout calls it too — a cosmetic that failed to finish must never be
 // the reason a player never sees their score.
 const EXIT_MS = { bsod: 2200, matrix: 1500, static: 900,
-                  glitch: 1200, purge: 1300, rewind: 1500 };
+                  glitch: 1200, purge: 1300, rewind: 1500, grave: 1800 };
 
 function playExitFx(gid, pts, opts, done){
   const stage = document.getElementById('exit-fx');
@@ -15983,6 +16241,26 @@ function playExitFx(gid, pts, opts, done){
                      `<div class="rw-lbl">◀◀ REWIND</div>`;
     snd('glitch');
     setTimeout(finish, EXIT_MS.rewind);
+  }
+  else if(fx === 'grave'){
+    // 🎃 NEON HAUNT's exit. A night comes down over the board, the moon comes
+    // up, a flight of bats crosses it and the headstones rise — the middle one
+    // carrying the run's score. Pure CSS on stacked elements, like the others.
+    let bats = '';
+    for(let i = 0; i < 7; i++){
+      bats += `<span class="gv-bat" style="top:${(12 + Math.random() * 30).toFixed(1)}%;` +
+              `animation-delay:${(0.15 + i * 0.09 + Math.random() * 0.1).toFixed(2)}s;` +
+              `animation-duration:${(0.9 + Math.random() * 0.5).toFixed(2)}s;` +
+              `font-size:${(1.1 + Math.random() * 1.1).toFixed(2)}rem">🦇</span>`;
+    }
+    const stones = [0.7, 0.85, 1.25, 0.9, 0.75].map((s, i) =>
+      `<div class="gv-stone${i === 2 ? ' gv-main' : ''}" style="--s:${s};animation-delay:${(0.35 + Math.abs(i - 2) * 0.12).toFixed(2)}s">` +
+      (i === 2 ? `<b>R.I.P.</b><em>${Math.max(0, Math.round(+pts || 0)).toLocaleString()}</em><i>PTS</i>` : '') +
+      `</div>`).join('');
+    body.innerHTML = `<div class="gv-sky"></div><div class="gv-moon"></div>${bats}` +
+                     `<div class="gv-hill"></div><div class="gv-stones">${stones}</div>`;
+    snd('haunt');
+    setTimeout(finish, EXIT_MS.grave);
   }
   else finish();
 
@@ -16974,6 +17252,21 @@ const MP_MODES = {
     gid:'coolant', icon:'🌡️', name:'SHAFT RACE', seconds:150, kind:'race',
     desc:'One shaft each, one thruster each, and real mass under both of you. Fly it further than they do.',
     meta:'UP TO 1350 PTS · HIGH SCORE WINS'
+  },
+  cyclerace: {
+    gid:'lightcycle', icon:'🏍️', name:'GRID RACE', seconds:90, kind:'race',
+    desc:'Two grids, two packs of droid riders. Derez more of them than your rival does — and stay on your cycle longer.',
+    meta:'UP TO 1200 PTS · HIGH SCORE WINS'
+  },
+  stackrace: {
+    gid:'stack', icon:'🗄️', name:'TOWER RACE', seconds:120, kind:'race',
+    desc:'One tower each, one tap each. Stack higher and cleaner than your rival before one of you misses.',
+    meta:'UP TO 1000 PTS · HIGH SCORE WINS'
+  },
+  muncherrace: {
+    gid:'muncher', icon:'👾', name:'MAZE RACE', seconds:120, kind:'race',
+    desc:'Two mazes, two sets of daemons. Eat more of the grid than your rival does before the clock — or the daemons — stop you.',
+    meta:'UP TO 1300 PTS · HIGH SCORE WINS'
   }
 };
 // Every race row runs the same engine, so it is filled in here rather than
@@ -17587,7 +17880,7 @@ function mpPaintDiff(){
     b.disabled = locked;
     b.classList.toggle('active', b.dataset.tier === showTier);
   });
-  sel.classList.remove('tier-stable','tier-overclocked','tier-meltdown');
+  sel.classList.remove('tier-safe','tier-stable','tier-overclocked','tier-meltdown');
   sel.classList.add(`tier-${showTier}`);
 
   const multEl = document.getElementById('mp-diff-mult');
@@ -17608,7 +17901,7 @@ function mpPaintDiff(){
     const prev = mp._seenTier;
     mp._seenTier = showTier;
     if(isGuest && prev && prev !== showTier){
-      snd(showTier === 'meltdown' ? 'alarm' : 'score', { semi: showTier === 'stable' ? -5 : 2 });
+      snd(showTier === 'meltdown' ? 'alarm' : 'score', { semi: showTier === 'safe' ? -9 : showTier === 'stable' ? -5 : 2 });
       toast(`⚙️ HOST SET ${tier.icon} ${tier.label} (×${tier.pointMult.toFixed(1)} PTS)`, 2600, `toast-${showTier}`);
     }
   }
@@ -19531,6 +19824,9 @@ const MP_BOT_LEVELS = {
 //         the live feed so it lands as a jump on the results card, exactly
 //         like a human's does.
 const VS_BOT_PROFILE = {
+  lightcycle: { q:10,  dur:[35,62],  step:10, band:[260, 1050] },   // 10 a second, 100 a rider
+  stack:      { q:20,  dur:[25,75],  step:20, band:[200, 900]  },   // 20 a floor, perfects on top
+  muncher:    { q:5,   dur:[45,92],  step:5,  band:[300, 1150] },   // 5 a bit, daemons on top
   nebula:     { q:20,  dur:[55,110], step:20, band:[140, 940]  },   // 20 an alien
   tetris:     { q:30,  dur:[60,140], step:10, band:[70, 1120]  },   // 10/30/70/150 a clear
   memory:     { q:75,  dur:[16,24],  step:75, band:[300, 600]  },   // 75 a pair, 8 pairs, 25s
@@ -25002,6 +25298,9 @@ function createWorld(cfg){
   const fog   = Object.assign({ color:'#0a0418', density: 0.011 }, cfg.fog);
   const sun   = Object.assign({ dir:[-0.45, -1, -0.4], color:'#5a6cff', intensity: 0.55 }, cfg.sun);
   const grade = Object.assign({}, cfg.grade);
+  // 🎃 A running seasonal event tints every world toward its colours — a MIX
+  // of the mission's own sky, fog and key light, never a swap. See § 14.
+  try{ if(typeof worldTintNow === 'function') applyWorldTint(env, fog, sun, grade, worldTintNow()); }catch(e){}
 
   // ── PARTICLES ──
   // Drawn as additive billboards, so a burst is one instanced draw no matter
@@ -25330,6 +25629,10 @@ function begin3d(cfg){
   // on the very next one.
   const tier = (typeof currentDifficultyTier === 'string') ? currentDifficultyTier : 'stable';
   const TIER_GRADE = {
+    // 🔵 Safe Mode is the one tier that COOLS the picture: a touch less
+    // exposure and saturation and a softer vignette, so a gentler round looks
+    // like one before anything moves.
+    safe:        { exposure: 0.97, aberration: 0.55, saturation: 0.90, vignette: 0.34 },
     overclocked: { exposure: 1.06, aberration: 0.95, saturation: 1.20, vignette: 0.50 },
     meltdown:    { exposure: 1.16, aberration: 1.70, saturation: 1.32, vignette: 0.60, grain: 0.05 }
   };
@@ -26299,7 +26602,10 @@ P.games.tetris = function(){
   const COLS = Math.floor(BOARD_W / 40), ROWS = 20;   // same well the 2D build uses
   const startTime = 60 / diff;
   let score = 0, level = 1, lines = 0, time = startTime, over = false;
-  let dropAcc = 0, dropInterval = 0.6 * diff, sway = 0;
+  // ⚠️ DIVIDED by the tier. It was `0.6 * diff`, so 3D Meltdown dropped at
+  // HALF Stable's speed for the whole round (the per-level 0.88 only ever
+  // scaled that inverted opening), and Safe Mode would have been the fastest.
+  let dropAcc = 0, dropInterval = 0.6 / diff, sway = 0;
 
   // Tetromino colours, chosen so no two adjacent-in-bag pieces read the same
   // under bloom — the 2D palette washes out once everything is emissive.
@@ -26711,7 +27017,7 @@ P.games.pong = function(){
 
     // The droid tracks with a deliberate lag that eases off as the rally grows,
     // so a long rally is genuinely winnable rather than a war of attrition.
-    const aiSpeed = 9.5 + Math.min(rally, 10) * 0.5;
+    const aiSpeed = (9.5 + Math.min(rally, 10) * 0.5) * safeEase();   // 🔵 Safe Mode
     ai += clamp(ballX - ai, -aiSpeed * dt, aiSpeed * dt);
     ai = clamp(ai, -XL + PAD_W / 2, XL - PAD_W / 2);
 
@@ -28805,7 +29111,8 @@ P.games.memory = function(){
   });
   const centres = cards.map(c => c.pos);
 
-  let flipped = [], matched = 0, score = 0, time = 25, ended = false, busy = false;
+  let flipped = [], matched = 0, score = 0, time = Math.round(25 * safeTime()), ended = false, busy = false;
+  const time0 = time;   // 🔵 Safe Mode stretches the clock
   document.getElementById('g-time').textContent = time;
 
   const colour = mine();
@@ -28858,7 +29165,7 @@ P.games.memory = function(){
     if(ended) return;
     time--;
     document.getElementById('g-time').textContent = time;
-    document.getElementById('prog-fill').style.width = `${time / 25 * 100}%`;
+    document.getElementById('prog-fill').style.width = `${time / time0 * 100}%`;
     if(time <= 5 && time > 0) snd('tick');
     if(time <= 0) end();
   }, 1000);
@@ -29025,7 +29332,8 @@ P.games.math = function(){
                  'TYPE THE ANSWER · ENTER TO SUBMIT');
 
   const colour = mine();
-  let score = 0, time = 20, curAns = 0, solved = 0, streak = 0, best = 0;
+  let score = 0, time = Math.round(20 * safeTime()), curAns = 0, solved = 0, streak = 0, best = 0;
+  const time0 = time;   // 🔵 Safe Mode stretches the clock
   let qStr = '', shatter = 0, assemble = 1, pulse = 0, ended = false;
   document.getElementById('g-time').textContent = time;
 
@@ -29069,7 +29377,7 @@ P.games.math = function(){
     if(ended) return;
     time--;
     document.getElementById('g-time').textContent = time;
-    document.getElementById('prog-fill').style.width = `${time / 20 * 100}%`;
+    document.getElementById('prog-fill').style.width = `${time / time0 * 100}%`;
     if(time <= 5 && time > 0) snd('tick');
     if(time <= 0) end();
   }, 1000);
@@ -29497,7 +29805,8 @@ P.games.path = function(){
   const NEONC = getEquippedColorHex();
   const diffMod = getDifficultyModifier();
   const N = 5, CELLS = N * N;
-  const DEAD_COUNT = Math.min(9, 4 + Math.round((diffMod - 1) * 2));
+  // Floored at 4 for 🔵 Safe Mode — see the 2D build.
+  const DEAD_COUNT = Math.min(9, 4 + Math.max(0, Math.round((diffMod - 1) * 2)));
   const OPEN = CELLS - DEAD_COUNT;
   const time0 = Math.max(10, Math.round(15 * getTimeModifier()));
   const ROUTE_PTS = 700, CLEAR_BONUS = 250, SPEED_PTS = 15;
@@ -29899,7 +30208,7 @@ P.games.freq = function(){
     form = FORMS[(stage - 1) % FORMS.length];
     do{ tAmp = A_MIN + Math.random() * A_SPAN; } while(Math.abs(tAmp - amp) < A_SPAN * 0.2);
     do{ tLen = L_MIN + Math.random() * L_SPAN; } while(Math.abs(tLen - len) < L_SPAN * 0.2);
-    const wander = (diffMod - 1) * 0.6;
+    const wander = Math.max(0, (diffMod - 1) * 0.6);   // 🔵 see the 2D build
     drift = { a:(Math.random() < .5 ? -1 : 1) * wander * 3.2, l:(Math.random() < .5 ? -1 : 1) * wander * 3.6 };
     held = 0; stageT = 0;
   }
@@ -35055,7 +35364,11 @@ const anomalyOf    = (wk = seasonKey()) => ANOMALIES[anomalySeed(wk) % ANOMALIES
 // stable and everyone on the grid gets the same one. Cyber Arena is excluded
 // for the reason it always is: a mission that never ends cannot be compared.
 const anomalyGid = (wk = seasonKey()) => {
-  const pool = Object.keys(SOLO_START).filter(g => g !== 'arena').sort();
+  // A mission added later joins the pool from a FIXED week (MISSION_WEEK), so
+  // shipping one mid-week can never swap this week's anomaly mission out from
+  // under the players already running it.
+  const pool = Object.keys(SOLO_START)
+    .filter(g => g !== 'arena' && !(MISSION_WEEK[g] && MISSION_WEEK[g] > wk)).sort();
   return pool[hashStr('anomaly-mission:' + wk) % pool.length];
 };
 const anomalyMods = (wk = seasonKey()) =>
@@ -35187,10 +35500,18 @@ function loadLaneBoards(){
     }
   };
 
-  if(!db || offlineMode || !user){ localOnly(); return; }
+  if(!db || offlineMode || !user){
+    localOnly();
+    try{ if(typeof paintEventBoardLocal === 'function') paintEventBoardLocal(); }catch(e){}
+    return;
+  }
 
   withTimeout(db.ref('players').orderByChild('totalPoints').limitToLast(60).once('value'), NET_WAIT)
     .then(snap => {
+      // 🏆 The grid records ride this read too — same sixty players, no new query.
+      try{ ingestGridRecords(snap); }catch(e){ console.warn('Grid records failed:', e); }
+      // 🎃 …and so does a running event's board.
+      try{ if(typeof ingestEventBoard === 'function') ingestEventBoard(snap); }catch(e){ console.warn('Event board failed:', e); }
       const en = [], an = [];
       snap.forEach(c => {
         const v = c.val() || {};
@@ -35220,14 +35541,18 @@ function loadLaneBoards(){
         ? an.slice(0, 8).map((r, i) => laneRow(r, i + 1, r.uid === user.uid)).join('')
         : '<div class="lb-empty">No anomaly runs logged this week yet.</div>';
     })
-    .catch(e => { console.warn('Lane board read failed:', e); localOnly(); });
+    .catch(e => {
+      console.warn('Lane board read failed:', e); localOnly();
+      try{ if(typeof paintEventBoardLocal === 'function') paintEventBoardLocal(); }catch(err){}
+    });
 }
 
 // Same row furniture as the live leaderboard and the daily board — one row the
 // eye has to learn rather than three.
 function laneRow(r, rank, isMe){
   const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '#' + rank;
-  return '<div class="lb-row dh-row' + (isMe ? ' me' : '') + (rank <= 3 ? ' r' + rank : '') + '">' +
+  return '<div class="lb-row dh-row' + (isMe ? ' me' : '') + (rank <= 3 ? ' r' + rank : '') + '"' +
+         (r.uid ? ' data-uid="' + esc(r.uid) + '"' : '') + '>' +
          '<span class="lb-rank">' + medal + '</span>' +
          '<span class="lb-name">' + esc(r.name || 'Operative') + (isMe ? ' · YOU' : '') +
          (r.tag ? ' <em class="lb-tag">' + esc(String(r.tag)) + '</em>' : '') + '</span>' +
@@ -35734,7 +36059,11 @@ function padPoll(now){
     if(edge(3, y3)){ const e = new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true, cancelable:true });
                      window.dispatchEvent(e); if(typeof window.onkeydown === 'function'){ try{ window.onkeydown(e); }catch(err){} } }
     if(edge(2, x2) && typeof photoToggle === 'function') photoToggle();
-    if(edge(9, start)) document.getElementById('btn-quit')?.click();
+    // ⏸️ START pauses whenever the round can be held; a Network Arena round
+    // cannot, and there START still quits as it always did.
+    if(edge(9, start)){
+      if(!(typeof pauseRound === 'function' && pauseRound('pad'))) document.getElementById('btn-quit')?.click();
+    }
   }else{
     padHideCursor();
     PAD.seeded = false;
@@ -35742,6 +36071,7 @@ function padPoll(now){
     padRelease();
     padNavigate(Math.abs(mx) > 0.55 ? Math.sign(mx) : 0, Math.abs(my) > 0.55 ? Math.sign(my) : 0, false);
     if(edge(0, a0)) padNavigate(0, 0, true);
+    if(edge(9, start) && typeof pauseActive === 'function' && pauseActive()) resumeRound();
     if(edge(1, b1)){
       const ov = document.querySelector('.fb-overlay.show');
       if(ov) closeOverlay(ov.id);
@@ -35755,7 +36085,7 @@ function padRelease(){
 }
 window.addEventListener('gamepadconnected', () => {
   if(!padEnabled) return;
-  toast('🎮 Controller detected — left stick aims, A acts, START quits', 3200);
+  toast('🎮 Controller detected — left stick aims, A acts, START pauses', 3200);
 });
 window.addEventListener('gamepaddisconnected', () => { PAD.live = false; padHideCursor(); padRelease(); });
 PAD.raf = requestAnimationFrame(padPoll);
@@ -35805,7 +36135,10 @@ const MISSION_HOW = {
   sorter:  'Drag each packet into the right port. The rule flips every twenty seconds — colour, shape, mirrored, or shifted one right — and the rule strip under the board always says which.',
   trace:   'Build a four-symbol probe and send it. A filled peg means right symbol, right slot; a ring means right symbol, wrong slot. Deduce the cipher before the probes run out.',
   defrag:  'Clear sectors. A number is how many of its eight neighbours are corrupt. Hold (or right-click) to mark one you are sure of. Hitting corruption costs a drive, not the round.',
-  coolant: 'Hold to burn, let go to fall — and nothing stops when you let go. Burning heats the core, coasting cools it, and the blue cells vent heat. Fly the shaft without touching it.'
+  coolant: 'Hold to burn, let go to fall — and nothing stops when you let go. Burning heats the core, coasting cools it, and the blue cells vent heat. Fly the shaft without touching it.',
+  lightcycle: 'Your cycle lays a wall of light behind it, and so do theirs. Touch any wall and you are derezzed — box the droid riders in before they box you in.',
+  stack:   'Tap to drop the sliding slab onto the tower. Whatever hangs over the edge is cut off; a perfect drop cuts nothing, and three in a row grows it back. Miss the tower and it is over.',
+  muncher: 'Eat every data bit in the maze while four security daemons hunt you. Eat a power core and, for a few seconds, they run from you — and you can eat them.',
 };
 
 // ══════════════════════════════════════════════
@@ -35875,6 +36208,12 @@ const MISSION_KEYS = {
                 keys:  "Click to clear · right-click or F to mark · SPACE toggles mark mode" },
   coolant:    { touch: "Hold anywhere on the board to burn · let go to fall and cool",
                 keys:  "Hold SPACE / ▲ / the BURN pad · let go to fall and cool" },
+  lightcycle: { touch: "Swipe the way you want to turn · or tap the arrow pad",
+                keys:  "ARROW KEYS or WASD to turn · a quick double tap makes a U-turn" },
+  stack:      { touch: "Tap anywhere on the board (or DROP) to drop the slab",
+                keys:  "SPACE, ENTER or ↓ to drop the slab" },
+  muncher:    { touch: "Swipe the way you want to go · or tap the arrow pad",
+                keys:  "ARROW KEYS or WASD · press a turn early and it happens at the next corner" },
 };
 
 // `steps` is the tutorial: the order you actually do things in, first round.
@@ -36166,6 +36505,42 @@ const MISSION_BRIEF = {
     tips: [
       "Tap the thrust in short bursts instead of holding it. You get the same lift for much less heat.",
       "Start slowing before you think you need to. Momentum is what puts you into a wall, not thrust.",
+    ] },
+  lightcycle: {
+    steps: [
+      "You ride from the left of the grid. Your cycle never stops, and it leaves a solid wall of light behind it.",
+      "Turn with the arrows, WASD or a swipe. You cannot turn straight back into your own wall.",
+      "The droid riders lay walls too. A rider that hits ANY wall — yours, its own, the arena's — is derezzed: +100.",
+      "Clear a wave and every wall comes down. The next wave is bigger, faster and smarter. Survive the clock for +10 a second.",
+    ],
+    tips: [
+      "Ride parallel to a droid a couple of lanes over, then cut across in front of it — that is how you trap one.",
+      "Open space is life. Never follow your own wall into a corner you cannot turn out of.",
+      "Two quick taps make a tight U-turn. It is the fastest way to seal a pocket shut behind a droid.",
+    ] },
+  stack: {
+    steps: [
+      "A server slab slides back and forth over the top of the tower.",
+      "Tap to drop it. The part that lands on the slab below stays; anything hanging over the edge is sliced off.",
+      "Each slab you place is 20 points, and the next one is only as big as what you kept.",
+      "Miss the tower completely and the run ends. There is no clock — only the tower.",
+    ],
+    tips: [
+      "Watch the EDGE of the slab below, not the middle of the moving one. Drop when the edges line up.",
+      "A perfect drop cuts nothing and pays a bonus. Three perfects in a row grow the slab back a little.",
+      "It speeds up as you climb. Slow is fine — a clean drop beats a fast one every time.",
+    ] },
+  muncher: {
+    steps: [
+      "You are the muncher at the bottom of the maze. Every data bit you pass over is eaten: 5 points each.",
+      "Four daemons leave the house in the middle one by one. If one touches you, you lose a life — you have three.",
+      "Eat a pulsing gold power core and the daemons turn blue and run. Catch them for 60, 120, 180, 240.",
+      "Clear every bit and core for a 150 bonus and a new, faster maze. The clock ends the run.",
+    ],
+    tips: [
+      "Each daemon thinks differently. The red one chases you; the pink one heads for where you are GOING; the green one flanks; the orange one loses its nerve up close.",
+      "Every few seconds they all turn around and scatter to their corners — that is your window to clear a busy corridor.",
+      "Press your next turn before you reach the corner. The muncher takes it the moment the corner opens.",
     ] },
 };
 
@@ -36497,6 +36872,13 @@ function photoCam(cam){
 
 function photoToggle(){
   if(photo.on) return photoResume();
+  // ⏸️ The pause menu is already holding the round, behind an opaque
+  // backdrop. Two holds on one round would each release the other's.
+  if(typeof pauseActive === 'function' && pauseActive()){
+    snd('deny');
+    toast('⏸ Resume the round first — photo mode works on a live board.', 2600);
+    return;
+  }
   if(!(window.PI3D && PI3D.is3D())){
     snd('deny');
     toast('📸 Photo mode needs the 3D renderer — pick 3D CYBERPUNK on the sign-in screen and the camera comes with it.', 4600);
@@ -36763,8 +37145,8 @@ function photoShow(url, code){
 // ledger exists: showResultsCard appends one row per finished round, so the
 // distribution builds itself across all twenty-six missions and both renderers
 // with no per-mission code.
-const DOS_TIERS = ['stable', 'overclocked', 'meltdown'];
-const DOS_TIER_COL = { stable: '#39ff88', overclocked: '#ffd700', meltdown: '#ff2442' };
+const DOS_TIERS = ['safe', 'stable', 'overclocked', 'meltdown'];
+const DOS_TIER_COL = { safe: '#4da3ff', stable: '#39ff88', overclocked: '#ffd700', meltdown: '#ff2442' };
 
 function paceCurveFor(gid, tier){
   try{
@@ -36989,7 +37371,7 @@ document.getElementById('btn-pad')?.addEventListener('click', () => {
   setGamepad(!padEnabled);
   paintInputToggles();
   snd('toggle');
-  toast(padEnabled ? '🎮 Gamepad on — left stick aims, A acts, START quits.' : '🎮 Gamepad off.', 2600);
+  toast(padEnabled ? '🎮 Gamepad on — left stick aims, A acts, START pauses.' : '🎮 Gamepad off.', 2600);
 });
 
 // ── SETTINGS: ✨ graphics profile ──
@@ -37139,4 +37521,3654 @@ document.addEventListener('keydown', e => {
   document.getElementById(id)?.addEventListener('click', () => setTimeout(() => {
     if(settingsOpen() && document.querySelector(sel)) closeSettings(true);
   }, 0));
+});
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 12 · v40 — MEDALS & GRID RECORDS · FAVOURITES & FILTERS
+// ══════════════════════════════════════════════════════════════════════
+// Twenty-six cards each said "UP TO n PTS" and nothing about the player
+// looking at them. The dossier knew how close every best run came to its cap,
+// but it was a modal away — so a mission you had played fifty times and one
+// you had never touched looked identical on the grid. A MEDAL puts the goal
+// on the card you are about to press, and a GRID RECORD puts a name on it.
+//
+// ⚠️ MEDALS COUNT THE RAW SCORE — the number the mission itself produced,
+// before the tier, the perks, the chaos payout, the chip or a challenge bonus.
+// Every score the profile already stored (`best`, `history`, `highScores`) is
+// the AWARDED figure, and a Meltdown run pays double, so a medal measured on
+// those could be bought with a multiplier: half a cap on Meltdown is "100%".
+// Hence a record of its own, `mbest/<gid>`, set locally by showResultsCard
+// (which holds the raw score) and written to the server by recordRun() — which
+// also replays runs that were banked offline, because the raw score rides the
+// queued run's ctx.
+//
+// Which rounds can earn one: a solo mission (not Boss Rush, Endless, a duel or
+// a race), on any tier except 🔵 Safe Mode. The Daily Hack, the Weekly Anomaly
+// and a Rival Challenge all count — each is a real run of a real mission.
+
+// ── 🏅 THE MEDALS ──────────────────────────────────────────────────────
+const MEDALS = [
+  { key:'bronze',  icon:'🥉', name:'BRONZE',  at:0.40 },
+  { key:'silver',  icon:'🥈', name:'SILVER',  at:0.60 },
+  { key:'gold',    icon:'🥇', name:'GOLD',    at:0.80 },
+  { key:'diamond', icon:'💎', name:'DIAMOND', at:1.00 }
+];
+// Cyber Arena is uncapped (its 99999 means "no ceiling"), so a fraction of
+// its cap is meaningless — it gets fixed thresholds instead. A kill is worth
+// 15–100, so these are very roughly 15, 30, 60 and 120 kills' worth of a run.
+const MEDAL_FIXED = { arena: [750, 1500, 3000, 6000] };
+
+function medalThresholds(gid){
+  if(MEDAL_FIXED[gid]) return MEDAL_FIXED[gid];
+  const cap = META[gid] ? META[gid].maxPts : 0;
+  return MEDALS.map(md => Math.ceil(cap * md.at));
+}
+// -1 for none, then 0 bronze … 3 diamond.
+function medalIdx(gid, raw){
+  const t = medalThresholds(gid);
+  let i = -1;
+  for(let k = 0; k < t.length; k++) if(t[k] > 0 && raw >= t[k]) i = k;
+  return i;
+}
+const rawBest = gid => (user && user.mbest && Math.max(0, +user.mbest[gid] || 0)) || 0;
+const medalOf = gid => medalIdx(gid, rawBest(gid));
+// Where a raw score sits between the medal it holds and the next one.
+function medalProgress(gid, raw){
+  const t = medalThresholds(gid);
+  const idx = medalIdx(gid, raw);
+  if(idx >= t.length - 1) return { idx, next: null, frac: 1, need: 0 };
+  const lo = idx < 0 ? 0 : t[idx], hi = t[idx + 1];
+  return { idx, next: idx + 1, need: Math.max(0, hi - raw),
+           frac: Math.max(0, Math.min(1, (raw - lo) / Math.max(1, hi - lo))) };
+}
+// CUMULATIVE counts — a gold is also a silver and a bronze, so "gold on five
+// missions" and "bronze on every mission" are each one comparison.
+function medalCounts(){
+  const c = { bronze: 0, silver: 0, gold: 0, diamond: 0, any: 0 };
+  Object.keys(SOLO_START).forEach(g => {
+    const i = medalOf(g);
+    if(i < 0) return;
+    c.any++;
+    for(let k = 0; k <= i; k++) c[MEDALS[k].key]++;
+  });
+  return c;
+}
+// The one question every medal path asks. A party round is somebody passing
+// the device around, so it never touches the owner's records.
+const medalEligible = (gid, opts, tierKey) =>
+  !!user && !!opts && !opts.internal && !!SOLO_START[gid] && tierKey !== 'safe' &&
+  !(typeof partyRunActive === 'function' && partyRunActive());
+
+// The results card's medal panel. Built on first use and slotted under the
+// POINTS EARNED label, the same way res-bonus is slotted under the title.
+function medalBox(){
+  let box = document.getElementById('res-medal');
+  if(box) return box;
+  const lbl = document.querySelector('#results-screen .res-pts-lbl');
+  if(!lbl) return null;
+  box = document.createElement('div');
+  box.id = 'res-medal';
+  box.setAttribute('aria-live', 'polite');
+  lbl.parentNode.insertBefore(box, lbl.nextSibling);
+  return box;
+}
+
+// Called by showResultsCard with the RAW score. Updates the local record at
+// once (the hub repaints from it); the SERVER write is recordRun()'s, because
+// recordRun() is also what replays a run that was banked offline.
+function settleMedal(gid, raw, tierKey, opts){
+  const box = medalBox();
+  if(!box) return false;
+  box.className = 'res-medal';
+  const partyOn = typeof partyRunActive === 'function' && partyRunActive();
+  if(!user || !opts || opts.internal || !SOLO_START[gid] || partyOn){
+    box.style.display = 'none'; box.innerHTML = ''; return false;
+  }
+  if(tierKey === 'safe'){
+    box.style.display = '';
+    box.classList.add('m-safe');
+    box.innerHTML = '<div class="rm-top"><span class="rm-ico">🔵</span>' +
+      '<span class="rm-txt">SAFE MODE RUN<em>medals and grid records start at Stable Core</em></span></div>';
+    return false;
+  }
+  raw = Math.max(0, Math.round(+raw || 0));
+  const before = medalOf(gid);
+  if(raw > rawBest(gid)){
+    user.mbest = user.mbest || {};
+    user.mbest[gid] = raw;
+    cacheProfile(user);
+  }
+  const best = rawBest(gid);
+  const pr = medalProgress(gid, best);
+  const after = pr.idx;
+  const isNew = after > before;
+  const t = medalThresholds(gid);
+
+  // A grid record is only claimed against a board that was actually READ —
+  // offline there is nothing to beat, and claiming one would be a lie.
+  let recLine = '';
+  if(gridRecordsLoaded && raw > 0){
+    const rec = gridRecords[gid];
+    if(!rec || raw > rec.pts){
+      const mine = rec && rec.uid === user.uid;
+      recLine = `<div class="rm-rec">🏆 ${mine ? 'GRID RECORD EXTENDED' : 'NEW GRID RECORD'} · ${raw.toLocaleString()}</div>`;
+      gridRecords[gid] = { pts: raw, name: String(user.username || 'You').slice(0, 20), uid: user.uid };
+    }
+  }
+
+  const cur = after >= 0 ? MEDALS[after] : null;
+  const nxt = pr.next != null ? MEDALS[pr.next] : null;
+  box.style.display = '';
+  box.classList.add(cur ? 'm-' + cur.key : 'm-none');
+  if(isNew) box.classList.add('is-new');
+  box.innerHTML =
+    `<div class="rm-top"><span class="rm-ico">${cur ? cur.icon : '◌'}</span>` +
+    `<span class="rm-txt"><span class="rm-title">${cur ? (isNew ? '<b>NEW MEDAL</b> ' : '') + cur.name : 'NO MEDAL YET'}</span>` +
+    `<em>this run ${raw.toLocaleString()} · your best ${best.toLocaleString()}</em></span></div>` +
+    (nxt
+      ? `<div class="rm-bar"><i style="width:${Math.round(pr.frac * 100)}%"></i></div>` +
+        `<div class="rm-next">${pr.need.toLocaleString()} more for ${nxt.icon} ${nxt.name} (${t[pr.next].toLocaleString()})</div>`
+      : `<div class="rm-bar full"><i style="width:100%"></i></div>` +
+        `<div class="rm-next">💎 The mission's ceiling. Nothing left to take.</div>`) +
+    recLine;
+  if(isNew) setTimeout(() => snd('levelUp'), 700);
+  return true;
+}
+
+// ── 🏆 GRID RECORDS ────────────────────────────────────────────────────
+// Derived from the broad `players` read the lane boards already make (the top
+// sixty by lifetime points), so it costs no query and no new database node.
+// A record set outside that sixty is invisible until its owner climbs into it,
+// which on a grid this size is everybody who plays.
+let gridRecords = {};
+let gridRecordsLoaded = false;
+
+function ingestGridRecords(snap){
+  if(typeof cacheSnapshotRecords === 'function') cacheSnapshotRecords(snap);
+  const rec = {};
+  const take = (g, p, name, uid) => {
+    if(!SOLO_START[g]) return;
+    p = Math.round(+p || 0);
+    // A raw score cannot exceed its own mission's cap. A record that claims
+    // to is clipped rather than trusted — the one guard a client-written
+    // number can be given without a server of its own.
+    if(!MEDAL_FIXED[g] && META[g]) p = Math.min(p, META[g].maxPts);
+    if(p > 0 && (!rec[g] || p > rec[g].pts)) rec[g] = { pts: p, name: String(name || 'Operative').slice(0, 20), uid };
+  };
+  try{
+    snap.forEach(c => {
+      const v = c.val() || {};
+      if(v.mbest && typeof v.mbest === 'object'){
+        for(const g in v.mbest) take(g, v.mbest[g], v.username, c.key);
+      }
+    });
+  }catch(e){ console.warn('Grid records unreadable:', e); }
+  // Mine too, whether or not I am in the sixty.
+  if(user && user.mbest) for(const g in user.mbest) take(g, user.mbest[g], user.username, user.uid);
+  gridRecords = rec;
+  gridRecordsLoaded = true;
+  paintCardMedals();
+}
+
+// ── THE CARD STRIP ─────────────────────────────────────────────────────
+// Medal, a bar to the next one, the next threshold, and the record holder.
+// Decorative — the card handles every click — so pointer-events stay off.
+function paintCardMedals(){
+  if(!user) return;
+  document.querySelectorAll('.games-grid .game-card[data-game]').forEach(card => {
+    const gid = card.dataset.game;
+    if(!SOLO_START[gid]) return;
+    let el = card.querySelector('.gc-medal');
+    if(!el){
+      el = document.createElement('div');
+      el.className = 'gc-medal';
+      card.insertBefore(el, card.querySelector('.gc-spark') || card.querySelector('.gc-howbtn') || null);
+    }
+    const best = rawBest(gid);
+    const pr = medalProgress(gid, best);
+    const t = medalThresholds(gid);
+    const cur = pr.idx >= 0 ? MEDALS[pr.idx] : null;
+    const nxt = pr.next != null ? MEDALS[pr.next] : null;
+    const rec = gridRecordsLoaded ? gridRecords[gid] : null;
+    el.className = 'gc-medal ' + (cur ? 'm-' + cur.key : 'm-none');
+    el.title = cur ? `${cur.name} medal · your best ${best.toLocaleString()}` +
+                     (nxt ? ` · ${nxt.name} at ${t[pr.next].toLocaleString()}` : '')
+                   : `No medal yet · ${MEDALS[0].name} at ${t[0].toLocaleString()}`;
+    el.innerHTML =
+      `<div class="gm-row"><span class="gm-ico">${cur ? cur.icon : '◌'}</span>` +
+      `<span class="gm-bar"><i style="width:${Math.round(pr.frac * 100)}%"></i></span>` +
+      `<span class="gm-next">${nxt ? nxt.icon + ' ' + t[pr.next].toLocaleString() : 'MAXED'}</span></div>` +
+      (rec ? `<div class="gm-rec">🏆 ${rec.pts.toLocaleString()} · ${rec.uid === user.uid ? 'YOU' : esc(rec.name)}</div>` : '');
+    card.dataset.medal = cur ? cur.key : 'none';
+  });
+  applyGridView();
+}
+
+// ── ⭐ FAVOURITES & FILTERS ────────────────────────────────────────────
+// Twenty-six cards is a long scroll on a phone, and the Network Arena had
+// filter chips for its sixteen duels long before the hub had any for its own
+// grid. Per DEVICE on purpose (localStorage): a favourite is a shortcut on the
+// screen you are holding, not a fact about the profile.
+//
+// Nothing is moved in the DOM. Filtering is a class and ordering is CSS
+// `order` on the grid items, so every handler bound to a card — the launcher,
+// the long press, the briefing badge — is untouched by any of it.
+const MISSION_KINDS = {
+  click:['reflex'], nebula:['reflex'], tetris:['puzzle'], dodge:['reflex'], memory:['puzzle'],
+  math:['puzzle'], reaction:['reflex'], pong:['reflex'], snake:['reflex'], flappy:['reflex'],
+  breaker:['reflex'], arena:['strategy', 'reflex'], runner:['reflex'], hacker:['puzzle'],
+  meteor:['strategy', 'reflex'], battlebots:['strategy'], path:['puzzle'], freq:['puzzle'],
+  rhythm:['reflex'], merge:['puzzle', 'strategy'], uplink:['strategy'],
+  cutter:['patience'], sorter:['patience'], trace:['patience', 'puzzle'],
+  defrag:['patience', 'puzzle'], coolant:['patience'],
+  lightcycle:['reflex', 'strategy'], stack:['reflex'], muncher:['reflex', 'strategy']
+};
+const GRID_FILTERS = [
+  { id:'all',      label:'ALL' },
+  { id:'fav',      label:'★ FAVOURITES' },
+  { id:'reflex',   label:'⚡ REFLEX' },
+  { id:'puzzle',   label:'🧩 PUZZLE' },
+  { id:'patience', label:'🧘 PATIENCE' },
+  { id:'strategy', label:'♟️ STRATEGY' }
+];
+const GRID_SORTS = [
+  { id:'grid',  label:'GRID ORDER' },
+  { id:'medal', label:'BEST MEDAL FIRST' },
+  { id:'work',  label:'NEEDS WORK FIRST' },
+  { id:'fresh', label:'LEAST PLAYED FIRST' }
+];
+const LS_FAVS = 'pi_favs', LS_GFILTER = 'pi_grid_filter', LS_GSORT = 'pi_grid_sort';
+const gridFavs = new Set((() => { const a = lsGet(LS_FAVS, []); return Array.isArray(a) ? a : []; })());
+let gridFilter = (() => { const v = lsGet(LS_GFILTER, 'all'); return GRID_FILTERS.some(f => f.id === v) ? v : 'all'; })();
+let gridSort   = (() => { const v = lsGet(LS_GSORT, 'grid');  return GRID_SORTS.some(f => f.id === v) ? v : 'grid'; })();
+
+const missionRuns = gid => (user && ((user.runs && +user.runs[gid]) ||
+                                     (user.history && (user.history[gid] || []).length))) || 0;
+
+function paintGridTools(){
+  const host = document.getElementById('grid-tools');
+  if(!host) return;
+  const cards = [...document.querySelectorAll('.games-grid .game-card[data-game]')];
+  const count = id => id === 'all' ? cards.length
+    : id === 'fav' ? cards.filter(c => gridFavs.has(c.dataset.game)).length
+    : cards.filter(c => (MISSION_KINDS[c.dataset.game] || []).includes(id)).length;
+  host.innerHTML = '';
+  const chips = document.createElement('div');
+  chips.className = 'mp-filters gt-chips';
+  chips.setAttribute('role', 'group');
+  chips.setAttribute('aria-label', 'Filter missions');
+  GRID_FILTERS.forEach(f => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mp-filter' + (gridFilter === f.id ? ' on' : '');
+    b.setAttribute('aria-pressed', String(gridFilter === f.id));
+    b.innerHTML = `${f.label}<em>${count(f.id)}</em>`;
+    b.onclick = () => {
+      gridFilter = f.id; lsSet(LS_GFILTER, gridFilter);
+      snd('tab'); paintGridTools(); applyGridView();
+    };
+    chips.appendChild(b);
+  });
+  const sort = document.createElement('button');
+  sort.type = 'button';
+  sort.className = 'mp-filter gt-sort' + (gridSort !== 'grid' ? ' on' : '');
+  const cur = GRID_SORTS.find(s => s.id === gridSort) || GRID_SORTS[0];
+  sort.textContent = '⇅ ' + cur.label;
+  sort.title = 'Change the order of the mission grid';
+  sort.onclick = () => {
+    const i = GRID_SORTS.findIndex(s => s.id === gridSort);
+    gridSort = GRID_SORTS[(i + 1) % GRID_SORTS.length].id;
+    lsSet(LS_GSORT, gridSort);
+    snd('tab'); paintGridTools(); applyGridView();
+  };
+  chips.appendChild(sort);
+  host.appendChild(chips);
+  const empty = document.createElement('div');
+  empty.className = 'gt-empty';
+  empty.id = 'gt-empty';
+  host.appendChild(empty);
+}
+
+function applyGridView(){
+  const cards = [...document.querySelectorAll('.games-grid .game-card[data-game]')];
+  if(!cards.length) return;
+  let shown = 0;
+  cards.forEach((card, i) => {
+    const gid = card.dataset.game;
+    const fav = gridFavs.has(gid);
+    const kinds = MISSION_KINDS[gid] || [];
+    const show = gridFilter === 'all' || (gridFilter === 'fav' ? fav : kinds.includes(gridFilter));
+    card.classList.toggle('gf-hide', !show);
+    card.classList.toggle('is-fav', fav);
+    if(show) shown++;
+    const star = card.querySelector('.gc-fav');
+    if(star){
+      star.textContent = fav ? '★' : '☆';
+      star.classList.toggle('on', fav);
+      star.setAttribute('aria-pressed', String(fav));
+    }
+    const m = medalOf(gid);
+    let rank = i;
+    if(gridSort === 'medal') rank = (3 - m) * 100 + i;          // 💎 first, unmedalled last
+    else if(gridSort === 'work') rank = (m + 1) * 100 + i;      // unmedalled first
+    else if(gridSort === 'fresh') rank = Math.min(999, missionRuns(gid)) * 40 + i;
+    // A locked card cannot be played, so a SORTED view puts it last; the
+    // shipped grid order is the clearance ladder and stays exactly as it was.
+    const locked = card.classList.contains('locked') && gridSort !== 'grid';
+    card.style.order = String((fav ? 0 : 100000) + (locked ? 50000 : 0) + rank);
+  });
+  const empty = document.getElementById('gt-empty');
+  if(empty){
+    empty.textContent = shown ? '' : gridFilter === 'fav'
+      ? '☆ No favourites yet — tap the star in the corner of any mission card to pin it here.'
+      : 'Nothing in this category yet.';
+    empty.style.display = shown ? 'none' : '';
+  }
+}
+
+function buildFavStars(){
+  document.querySelectorAll('.games-grid .game-card[data-game]').forEach(card => {
+    if(card.querySelector('.gc-fav')) return;
+    const gid = card.dataset.game;
+    const star = document.createElement('button');
+    star.type = 'button';
+    star.className = 'gc-fav';
+    star.textContent = '☆';
+    star.setAttribute('aria-label', 'Favourite ' + (META[gid] ? META[gid].name : gid));
+    star.setAttribute('aria-pressed', 'false');
+    // The card's long press (the briefing) starts on mousedown/touchstart, so
+    // a star held a moment too long would otherwise open the briefing as well.
+    const hush = e => e.stopPropagation();
+    star.addEventListener('mousedown', hush);
+    star.addEventListener('touchstart', hush, { passive: true });
+    star.addEventListener('click', e => {
+      e.stopPropagation(); e.preventDefault();
+      if(gridFavs.has(gid)) gridFavs.delete(gid); else gridFavs.add(gid);
+      lsSet(LS_FAVS, [...gridFavs]);
+      snd('toggle');
+      toast(gridFavs.has(gid) ? `★ ${META[gid].name} pinned to the front`
+                              : `☆ ${META[gid].name} unpinned`, 1600);
+      paintGridTools(); applyGridView();
+    });
+    card.appendChild(star);
+  });
+}
+
+// Built once at load; painted again on every hub entry through the funnel
+// every other card decoration already uses (refreshHubProgression).
+try{
+  buildFavStars();
+  paintGridTools();
+  applyGridView();
+}catch(e){ console.warn('Grid tools failed to build:', e); }
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 13 · v41 — ⏸️ PAUSE MENU + AUTO-PAUSE
+// ══════════════════════════════════════════════════════════════════════
+// The arcade had no pause. Photo mode proved a round CAN be held — but only a
+// 3D round, only through runLoop(), and only as a camera. A phone notification
+// mid-round, a doorbell, a tab switch: every one of them cost the run, and on a
+// phone the 1s countdown kept ticking in the background while the frames
+// stopped, so a player came back to a round that had moved on without them.
+//
+// A hold is three layers, and two of them already existed:
+//   1. ROUND TIME — gHold()/gRelease(). Every gLater() timer is lifted and
+//      re-armed with what it had left; gNow() stands still, so the pace ghost,
+//      the chaos intervals and every wall-clock mission freeze with it.
+//   2. CLOCKS — the setInterval shim runMissionStart() installs skips every
+//      interval the mission created while the round is held.
+//   3. FRAMES — the new part. The 3D missions share runLoop(), but the 2D ones
+//      run ~20 private requestAnimationFrame loops, and "edit twenty loops" is
+//      exactly the per-mission work this codebase refuses to do. So while a
+//      round is live, requestAnimationFrame itself is wrapped (installed by
+//      runMissionStart, removed by stopGame): a callback that comes due while
+//      the round is paused is PARKED instead of run, and re-queued on resume.
+//      Nothing advances because nothing is called. Every 2D loop clamps its
+//      step to 50ms (the two that did not now do), so the frame after a
+//      resume is one ordinary step, not the length of the pause.
+//
+// The board is HIDDEN while paused. A pause that left a Signal Trace cipher or
+// a Defrag volume readable would be free thinking time against a clock.
+//
+// Refused: a Network Arena round (the rival's side keeps playing — the same
+// rule photo mode follows), photo mode itself (it IS a hold, with its own
+// controls), and anything that is not a live round (countdown, results).
+const PauseCtl = {
+  on: false, reason: '', wrapped: null,
+  live: new Map(), parked: new Map(), seq: 1e9,   // ids far above native rAF ids
+  savedKeys: null, refocus: null
+};
+const pauseActive = () => PauseCtl.on;
+
+// ── THE FRAME WRAPPER ──────────────────────────────────────────────────
+function pauseWrapFrames(){
+  if(PauseCtl.wrapped) return;
+  const realRAF = window.requestAnimationFrame, realCAF = window.cancelAnimationFrame;
+  const wrap = { realRAF, realCAF, raf: null, caf: null };
+  wrap.raf = function(cb){
+    const id = ++PauseCtl.seq;
+    const rec = { cb, real: 0, fire: null };
+    rec.fire = ts => {
+      PauseCtl.live.delete(id);
+      if(PauseCtl.on){ PauseCtl.parked.set(id, rec); return; }
+      cb(ts);
+    };
+    rec.real = realRAF.call(window, rec.fire);
+    PauseCtl.live.set(id, rec);
+    return id;
+  };
+  wrap.caf = function(id){
+    const rec = PauseCtl.live.get(id);
+    if(rec){ realCAF.call(window, rec.real); PauseCtl.live.delete(id); return; }
+    if(PauseCtl.parked.delete(id)) return;
+    return realCAF.call(window, id);            // an id from before the wrapper
+  };
+  window.requestAnimationFrame = wrap.raf;
+  window.cancelAnimationFrame = wrap.caf;
+  PauseCtl.wrapped = wrap;
+}
+function pauseUnwrapFrames(){
+  const w = PauseCtl.wrapped;
+  if(!w) return;
+  // Only put back what is still OURS — a test harness that patched rAF after
+  // the round began keeps its patch.
+  if(window.requestAnimationFrame === w.raf) window.requestAnimationFrame = w.realRAF;
+  if(window.cancelAnimationFrame === w.caf) window.cancelAnimationFrame = w.realCAF;
+  // Anything still parked belongs to a round that is over.
+  PauseCtl.parked.clear();
+  PauseCtl.wrapped = null;
+}
+
+// ── IS THERE A ROUND TO HOLD? ──────────────────────────────────────────
+function pauseRefusal(){
+  if(!user) return 'none';
+  if(!document.getElementById('game-screen')?.classList.contains('active')) return 'none';
+  if(mp) return 'mp';
+  if(typeof photoActive === 'function' && photoActive()) return 'photo';
+  // A live round has a frame loop, a clock, or both. The countdown and the
+  // beat between a round's last frame and its results card have neither.
+  if(!gameLoopId && !gTimer) return 'none';
+  if(document.getElementById('cd-ov')?.classList.contains('show')) return 'none';
+  return '';
+}
+
+function pauseRound(reason){
+  if(PauseCtl.on) return true;
+  const why = pauseRefusal();
+  if(why){
+    if(reason === 'manual' || reason === 'pad'){
+      snd('deny');
+      if(why === 'mp') toast('⏸ A Network Arena round cannot be paused — your rival keeps playing.', 3000);
+      else if(why === 'photo') toast('📸 Photo mode is already holding the round — resume it first.', 2600);
+      else toast('⏸ Nothing to pause right now.', 1800);
+    }
+    return false;
+  }
+  PauseCtl.on = true;
+  PauseCtl.reason = reason || 'manual';
+  gHold();
+  // Key PRESSES come off for the length of the pause and go back on resume;
+  // key RELEASES stay bound, so a key still held when the menu came up cannot
+  // be left stuck down (photo mode learned that one first).
+  PauseCtl.savedKeys = { down: window.onkeydown };
+  window.onkeydown = null;
+  // A focused answer box would keep taking keystrokes through the pause.
+  const fe = document.activeElement;
+  PauseCtl.refocus = (fe && fe.closest && fe.closest('.g-area, #pu-dock')) ? fe : null;
+  if(PauseCtl.refocus) PauseCtl.refocus.blur();
+  if(typeof padRelease === 'function'){ try{ padRelease(); }catch(e){} }
+  music(null);
+  document.body.classList.add('round-paused');
+  paintPauseMenu();
+  const ov = document.getElementById('pause-overlay');
+  if(ov){ ov.classList.add('show'); ov.setAttribute('aria-hidden', 'false'); }
+  setTimeout(() => { if(PauseCtl.on) document.getElementById('pause-resume')?.focus({ preventScroll: true }); }, 60);
+  if(PauseCtl.reason !== 'auto') snd('uiBack');
+  return true;
+}
+
+function pauseTeardown(){
+  PauseCtl.on = false;
+  document.body.classList.remove('round-paused');
+  const ov = document.getElementById('pause-overlay');
+  if(ov){ ov.classList.remove('show'); ov.setAttribute('aria-hidden', 'true'); }
+}
+
+function resumeRound(){
+  if(!PauseCtl.on) return;
+  pauseTeardown();
+  if(PauseCtl.savedKeys) window.onkeydown = PauseCtl.savedKeys.down;
+  PauseCtl.savedKeys = null;
+  gRelease();
+  // Re-queue every frame that came due while the round was held.
+  const w = PauseCtl.wrapped;
+  if(w){
+    PauseCtl.parked.forEach((rec, id) => {
+      rec.real = w.realRAF.call(window, rec.fire);
+      PauseCtl.live.set(id, rec);
+    });
+  }
+  PauseCtl.parked.clear();
+  if(PauseCtl.refocus && PauseCtl.refocus.isConnected) PauseCtl.refocus.focus({ preventScroll: true });
+  PauseCtl.refocus = null;
+  music('game');
+  snd('ui');
+}
+
+// Called by stopGame(), so a pause can never outlive its round — and by Quit
+// and Restart, which end the round from inside the menu.
+function pauseAbort(){
+  if(PauseCtl.on){
+    pauseTeardown();
+    PauseCtl.savedKeys = null;
+    PauseCtl.refocus = null;
+    gRelease();
+  }
+  PauseCtl.parked.clear();
+}
+
+// Restart is offered for an ordinary solo round only. A Boss Rush stage, the
+// Daily Hack, the Weekly Anomaly, a Rival Challenge, an Endless lane and a
+// party turn each have a start of their own that a plain relaunch would skip.
+function pauseCanRestart(){
+  // A campaign chapter is on the list too: a plain relaunch would skip the
+  // chapter's own stability tier and curated modifiers (§ 21).
+  return !!(curGame && SOLO_START[curGame] && !mp && !bossRush && !dailyActive &&
+            !anomalyActive && !chalActive && !endless &&
+            !(typeof partyRunActive === 'function' && partyRunActive()) &&
+            !(typeof campaignRunActive === 'function' && campaignRunActive()));
+}
+
+function paintPauseMenu(){
+  const gid = curGame;
+  const m = gid && META[gid];
+  const sub = document.getElementById('pause-sub');
+  if(sub){
+    sub.textContent = PauseCtl.reason === 'auto'
+      ? 'Held for you while you were away'
+      : 'The round is frozen — clock, hazards and timers';
+  }
+  const stats = document.getElementById('pause-stats');
+  if(stats){
+    const t = document.getElementById('g-time')?.textContent || '—';
+    const p = document.getElementById('g-pts')?.textContent || '0';
+    const title = document.getElementById('g-title')?.textContent || (m ? m.name : 'MISSION');
+    stats.innerHTML =
+      `<div class="ps-name">${m ? m.emoji + ' ' : ''}${esc(title)}</div>` +
+      `<div class="ps-row"><span>⏱️ <b>${esc(t)}</b></span><span>⭐ <b>${esc(p)}</b></span>` +
+      `<span>${DIFFICULTY_TIERS[currentDifficultyTier].icon} ${DIFFICULTY_TIERS[currentDifficultyTier].label}</span></div>`;
+  }
+  const rs = document.getElementById('pause-restart');
+  if(rs) rs.style.display = pauseCanRestart() ? '' : 'none';
+  const qb = document.getElementById('pause-quit');
+  if(qb) qb.textContent = bossRush ? '✕ ABANDON THE RUSH' : '✕ QUIT TO HUB';
+  paintPauseAudio();
+}
+function paintPauseAudio(){
+  const b = document.getElementById('pause-audio');
+  if(!b || !window.SFX) return;
+  const mode = SFX.mode || 'full';
+  b.textContent = mode === 'full' ? '🔊 AUDIO: MUSIC + SFX' : mode === 'sfx' ? '🔉 AUDIO: SFX ONLY' : '🔇 AUDIO: MUTED';
+}
+
+// ── THE MENU'S BUTTONS ─────────────────────────────────────────────────
+document.getElementById('pause-resume')?.addEventListener('click', () => resumeRound());
+document.getElementById('pause-audio')?.addEventListener('click', () => {
+  if(window.SFX && SFX.cycleMode) SFX.cycleMode();
+  // cycleMode() may restart the hub music; the round is still held, so keep it quiet.
+  music(null);
+  paintPauseAudio();
+  snd('toggle');
+});
+document.getElementById('pause-restart')?.addEventListener('click', () => {
+  if(!pauseCanRestart()) return;
+  const gid = curGame;
+  pauseAbort();
+  stopGame();
+  setControls(null);
+  document.getElementById('game-screen').classList.remove('canvas-game');
+  snd('success');
+  showScreen('game-screen');
+  prepGame(gid);
+});
+document.getElementById('pause-quit')?.addEventListener('click', () => {
+  // Quit runs whatever the mission registered as its own ending (Cyber Arena
+  // banks its run), so the hold is released first and the round ends exactly
+  // as if ← Quit had been pressed.
+  pauseAbort();
+  document.getElementById('btn-quit')?.click();
+});
+document.getElementById('btn-pause')?.addEventListener('click', () => {
+  if(PauseCtl.on) resumeRound(); else pauseRound('manual');
+});
+// The gamepad's B button (and anything else that closes overlays generically)
+// resumes rather than just hiding the menu over a held round.
+if(typeof registerOverlayCloser === 'function') registerOverlayCloser('pause-overlay', () => resumeRound(), true);
+
+// ── KEYS: Esc and P ────────────────────────────────────────────────────
+// Capture phase on WINDOW, registered at load: that runs before a mission's
+// own window.onkeydown (so it never sees the key that paused it) and before
+// photo mode's capture listener, which is bound later. While photo mode is up
+// this one refuses and lets the key through, so Escape leaves photo mode
+// without also pausing the round it hands back.
+window.addEventListener('keydown', e => {
+  if(e.key !== 'Escape' && e.key !== 'p' && e.key !== 'P') return;
+  if(e.repeat) return;
+  const t = e.target;
+  const typing = t && (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && t.type !== 'number' && t.type !== 'range'));
+  if(typing && e.key !== 'Escape') return;
+  if(PauseCtl.on){ e.preventDefault(); e.stopPropagation(); resumeRound(); return; }
+  if(!pauseRefusal()){
+    e.preventDefault(); e.stopPropagation();
+    pauseRound('manual');
+  }
+}, true);
+
+// ── AUTO-PAUSE ─────────────────────────────────────────────────────────
+// A hidden tab, a minimised window, a phone that took a call or locked its
+// screen: the round is held the moment the page stops being visible, and the
+// menu is waiting when the player comes back. A Network Arena round is left
+// alone — it cannot be held, and its own netcode already handles a drop.
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'hidden') pauseRound('auto');
+});
+window.addEventListener('pagehide', () => pauseRound('auto'));
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 14 · v42 — 🎃 SEASONAL EVENTS · NEON HAUNT
+// ══════════════════════════════════════════════════════════════════════
+// The arcade kept a daily clock (the Daily Hack), a weekly one (the season
+// track, the Weekly Anomaly) and nothing longer — no reason for October to
+// feel any different from March. An EVENT is a row in the table below: a UTC
+// window, a look, a shelf of limited stock, a board and a badge. A winter
+// event is one more row.
+//
+// Nothing about the event itself is stored. The window is DERIVED from the
+// date, like the Daily Hack's seed and the market's featured rotation, so
+// every client agrees on it with no server and no scheduled job. Only a
+// player's own progress lives on the profile — `players/<uid>/event`, keyed by
+// event AND year, so next October starts clean without anyone resetting it.
+//
+// Preview before the date: add ?event=haunt to the address (or ?event=off to
+// hide one). The override lasts for that browser tab.
+const EVENTS = [
+  { id:'haunt', name:'NEON HAUNT', icon:'🎃', board:'HAUNT BOARD',
+    from:[10, 1], to:[11, 1],            // Oct 1 – Nov 1 inclusive, UTC
+    tease: 7,                            // days of "arriving soon" before it opens
+    blurb:'The grid is haunted',
+    goalRuns: 5,
+    // Every 3D world leans toward these for the whole window — see
+    // applyWorldTint(), called from createWorld().
+    tint:{ zenith:'#1a0636', horizon:'#ff5a00', fog:'#2b0b4d', sun:'#ff7a2a',
+           amount: 0.5, horizonAmount: 0.28, saturation: 1.06 } }
+];
+
+const eventById = id => EVENTS.find(e => e.id === id) || null;
+
+// ?event=<id> / ?event=off, remembered for the tab so a reload keeps it.
+const EV_FORCE = (() => {
+  try{
+    const q = new URLSearchParams(location.search).get('event');
+    if(q !== null) sessionStorage.setItem('pi_event_force', q);
+    return sessionStorage.getItem('pi_event_force') || '';
+  }catch(e){ return ''; }
+})();
+
+// The window containing `now`, or the next one to come. Handles a window that
+// crosses New Year (from > to), which a winter event will.
+function eventWindow(ev, now = Date.now()){
+  const y = new Date(now).getUTCFullYear();
+  for(const yy of [y - 1, y, y + 1]){
+    const s = Date.UTC(yy, ev.from[0] - 1, ev.from[1]);
+    let e = Date.UTC(yy, ev.to[0] - 1, ev.to[1] + 1);          // exclusive
+    if(e <= s) e = Date.UTC(yy + 1, ev.to[0] - 1, ev.to[1] + 1);
+    if(now < e) return { start: s, end: e, key: ev.id + '-' + yy, live: now >= s };
+  }
+  return null;
+}
+
+// { ev, win } for the event running right now, or null.
+function activeEvent(now = Date.now()){
+  if(EV_FORCE === 'off') return null;
+  const forced = eventById(EV_FORCE);
+  if(forced){
+    const win = eventWindow(forced, now) || { start: now, end: now + 864e5 };
+    return { ev: forced, win: { ...win, live: true, key: forced.id + '-' + new Date(now).getUTCFullYear() } };
+  }
+  for(const ev of EVENTS){
+    const win = eventWindow(ev, now);
+    if(win && win.live) return { ev, win };
+  }
+  return null;
+}
+const eventLive = id => { const a = activeEvent(); return !!(a && a.ev.id === id); };
+const activeEventKey = () => { const a = activeEvent(); return a ? a.win.key : null; };
+
+// The one about to open, inside its teaser window.
+function eventTeaser(now = Date.now()){
+  if(EV_FORCE === 'off' || activeEvent(now)) return null;
+  for(const ev of EVENTS){
+    const win = eventWindow(ev, now);
+    if(!win || win.live) continue;
+    const days = Math.ceil((win.start - now) / 864e5);
+    if(days <= (ev.tease || 0)) return { ev, win, days };
+  }
+  return null;
+}
+
+const EV_MONTHS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+const eventLeavesLabel = ev => `LEAVES ${EV_MONTHS[ev.to[0] - 1]} ${ev.to[1]}`;
+function evLeftLabel(ms){
+  ms = Math.max(0, ms);
+  const d = Math.floor(ms / 864e5), h = Math.floor(ms % 864e5 / 36e5), m = Math.floor(ms % 36e5 / 6e4);
+  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+// ── A PLAYER'S PROGRESS ────────────────────────────────────────────────
+// Credited from recordRun() — the one place every finished round lands,
+// including a round banked offline and replayed later, which carries the key
+// of the event it was PLAYED in (ctx.ev) rather than the one running when it
+// syncs.
+function eventMine(key = activeEventKey()){
+  const e = user && user.event;
+  return (key && e && e.key === key) ? e : { key, runs: 0, pts: 0 };
+}
+function eventCredit(key, pts){
+  if(!user || !key) return null;
+  const cur = eventMine(key);
+  const next = { key, runs: (+cur.runs || 0) + 1, pts: (+cur.pts || 0) + Math.max(0, Math.round(+pts || 0)) };
+  user.event = next;
+  cacheProfile(user);
+  // Its OWN write, after the one that matters, with a catch that shrugs —
+  // the rules lesson (see firebase-rtdb-rules-allowlist in the repo notes).
+  if(db && !offlineMode && !isLocalSession()){
+    db.ref('players/' + user.uid + '/event').set(next)
+      .catch(e => console.warn('Event progress not stored (rules?):', e && e.code));
+  }
+  return next;
+}
+
+// ── THE LOOK ───────────────────────────────────────────────────────────
+function applyEventTheme(){
+  const a = activeEvent();
+  EVENTS.forEach(ev => document.body.classList.toggle('ev-' + ev.id, !!(a && a.ev.id === ev.id)));
+  let deco = document.getElementById('ev-deco');
+  if(a && a.ev.id === 'haunt'){
+    if(!deco){
+      deco = document.createElement('div');
+      deco.id = 'ev-deco';
+      deco.setAttribute('aria-hidden', 'true');
+      // Bats cross the top of the screen at their own heights and speeds;
+      // two pumpkins and a ghost bob in the lower corners.
+      let html = '';
+      for(let i = 0; i < 6; i++){
+        html += `<span class="evd-bat" style="top:${(4 + i * 7 + Math.random() * 5).toFixed(1)}%;` +
+                `animation-duration:${(14 + Math.random() * 12).toFixed(1)}s;animation-delay:-${(Math.random() * 20).toFixed(1)}s;` +
+                `font-size:${(0.9 + Math.random() * 0.9).toFixed(2)}rem">🦇</span>`;
+      }
+      html += '<span class="evd-float evd-l">🎃</span><span class="evd-float evd-r">🎃</span><span class="evd-float evd-g">👻</span>';
+      deco.innerHTML = html;
+      document.body.appendChild(deco);
+    }
+  }else if(deco){
+    deco.remove();
+  }
+}
+
+// The 3D worlds: a mix of each mission's own sky, fog and key light toward the
+// event's colours. A MIX, not a swap — each scene keeps its own lighting
+// design and is only pulled toward the month. Called from createWorld().
+// 🌍 v48: the equipped WORLD THEME (§ 20) first, then a running event on top
+// of it — at a lighter touch when both are on, so October still reads as
+// October in Synth Desert without drowning the theme the player paid for.
+function worldTintNow(){
+  const out = [];
+  const th = (typeof worldThemeTint === 'function') ? worldThemeTint() : null;
+  if(th) out.push(th);
+  const a = activeEvent();
+  if(a && a.ev.tint){
+    const t = a.ev.tint;
+    out.push(th ? { ...t, amount: (t.amount == null ? 0.5 : t.amount) * 0.55,
+                          horizonAmount: (t.horizonAmount == null ? 0.3 : t.horizonAmount) * 0.55 } : t);
+  }
+  return out.length ? out : null;
+}
+function evHexRgb(h){
+  h = String(h || '').replace('#', '');
+  if(h.length === 3) h = h.split('').map(c => c + c).join('');
+  if(!/^[0-9a-f]{6}$/i.test(h)) return null;
+  return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
+}
+function evMix(a, b, t){
+  const pa = evHexRgb(a), pb = evHexRgb(b);
+  if(!pa || !pb) return a;
+  return '#' + pa.map((v, i) => Math.round(v + (pb[i] - v) * t).toString(16).padStart(2, '0')).join('');
+}
+// ⚠️ HUE, NOT BRIGHTNESS. A plain mix toward a bright orange raised every
+// scene's sky and haze by several times its designed luminance, and bloom
+// turned Cyber Runner's whole corridor into one red glare. The mix is
+// rescaled to the ORIGINAL colour's luminance (lift = how much brighter it
+// may end up), so a tint changes what colour a scene is, never how bright.
+function evMixKeep(a, b, t, lift){
+  const pa = evHexRgb(a), pb = evHexRgb(b);
+  if(!pa || !pb) return a;
+  const m = pa.map((v, i) => v + (pb[i] - v) * t);
+  const lum = c => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const k = Math.min(3, (lum(pa) * (lift || 1) + 0.5) / (lum(m) + 0.5));
+  return '#' + m.map(v => Math.max(0, Math.min(255, Math.round(v * k))).toString(16).padStart(2, '0')).join('');
+}
+// Scales a colour's brightness — the one thing evMixKeep() deliberately never
+// does, for the themes that ARE a darkness (an orbital sky is black).
+function evScale(hex, k){
+  const c = evHexRgb(hex);
+  if(!c) return hex;
+  return '#' + c.map(v => Math.max(0, Math.min(255, Math.round(v * k))).toString(16).padStart(2, '0')).join('');
+}
+function applyWorldTint(env, fog, sun, grade, tint){
+  if(!tint) return;
+  if(Array.isArray(tint)){ tint.forEach(t => applyWorldTint(env, fog, sun, grade, t)); return; }
+  const t = tint.amount == null ? 0.5 : tint.amount;
+  if(tint.zenith)  env.zenith  = evMixKeep(env.zenith,  tint.zenith,  t);
+  if(tint.horizon) env.horizon = evMixKeep(env.horizon, tint.horizon, tint.horizonAmount == null ? t : tint.horizonAmount, 1.25);
+  if(tint.fog)     fog.color   = evMixKeep(fog.color,   tint.fog,     t);
+  if(tint.sun)     sun.color   = evMixKeep(sun.color,   tint.sun,     t * 0.7);
+  if(tint.saturation) grade.saturation = (grade.saturation || 1) * tint.saturation;
+  if(tint.lum){
+    if(tint.lum.zenith)  env.zenith  = evScale(env.zenith,  tint.lum.zenith);
+    if(tint.lum.horizon) env.horizon = evScale(env.horizon, tint.lum.horizon);
+    if(tint.lum.fog)     fog.color   = evScale(fog.color,   tint.lum.fog);
+  }
+  if(tint.fogDensity) fog.density = (fog.density || 0.01) * tint.fogDensity;
+}
+
+// ── THE HUB BANNER ─────────────────────────────────────────────────────
+function paintEventBanner(){
+  const a = activeEvent(), tz = a ? null : eventTeaser();
+  let el = document.getElementById('ev-banner');
+  if(!a && !tz){ if(el) el.remove(); return; }
+  const ev = (a || tz).ev;
+  if(!el){
+    const anchor = document.getElementById('mp-banner');
+    if(!anchor) return;
+    el = document.createElement('div');
+    el.id = 'ev-banner';
+    el.className = 'mp-banner ev-banner';
+    el.innerHTML =
+      `<span class="mp-banner-icon">${ev.icon}</span>` +
+      `<div class="mp-banner-txt"><div class="mp-banner-title" id="ev-banner-title"></div>` +
+      `<div class="mp-banner-sub" id="ev-banner-sub"></div>` +
+      `<div class="ev-prog" id="ev-prog"><i></i></div></div>` +
+      `<button class="btn btn-primary" id="btn-ev-shop" type="button">${ev.icon} LIMITED STOCK</button>`;
+    anchor.parentNode.insertBefore(el, anchor);
+    el.querySelector('#btn-ev-shop').addEventListener('click', () => {
+      if(!activeEvent()){ snd('deny'); toast(`${ev.icon} The stock arrives with the event.`, 2400); return; }
+      openMarket();
+      switchMarketTab('event');
+    });
+  }
+  el.classList.toggle('ev-tease', !a);
+  const title = el.querySelector('#ev-banner-title');
+  const sub = el.querySelector('#ev-banner-sub');
+  const prog = el.querySelector('#ev-prog');
+  const btn = el.querySelector('#btn-ev-shop');
+  if(a){
+    const mine = eventMine(a.win.key);
+    const left = a.win.end - Date.now();
+    title.textContent = `${ev.name} · ${evLeftLabel(left)} LEFT`;
+    const got = user && user.achievements && user.achievements[ev.id];
+    sub.textContent = `${ev.blurb} until ${EV_MONTHS[ev.to[0] - 1]} ${ev.to[1]}. ` +
+      (got ? `Badge earned — ${(+mine.pts || 0).toLocaleString()} haunt points banked.`
+           : `Finish ${ev.goalRuns} missions for the badge: ${Math.min(ev.goalRuns, +mine.runs || 0)}/${ev.goalRuns} · ${(+mine.pts || 0).toLocaleString()} pts on the ${ev.board.toLowerCase()}.`);
+    prog.style.display = '';
+    prog.firstChild.style.width = Math.min(100, ((+mine.runs || 0) / ev.goalRuns) * 100) + '%';
+    btn.disabled = false;
+  }else{
+    title.textContent = `${ev.name} · ARRIVES IN ${tz.days} DAY${tz.days === 1 ? '' : 'S'}`;
+    sub.textContent = `From ${EV_MONTHS[ev.from[0] - 1]} ${ev.from[1]}: limited stock in the Black Market, a ${ev.board.toLowerCase()} and a badge.`;
+    prog.style.display = 'none';
+    btn.disabled = true;
+  }
+}
+
+// ── THE BOARD ──────────────────────────────────────────────────────────
+// Points banked during the window, ranked from the same broad `players` read
+// the lane boards make — no new query, no new top-level node.
+function ensureEventBoard(){
+  const a = activeEvent();
+  let panel = document.getElementById('ev-lb-panel');
+  if(!a){
+    if(panel){ document.getElementById('ev-lb-label')?.remove(); panel.remove(); }
+    return null;
+  }
+  if(!panel){
+    const daily = document.getElementById('dh-lb-panel');
+    const anchor = daily && daily.previousElementSibling;       // the daily board's label
+    if(!anchor) return null;
+    const lbl = document.createElement('div');
+    lbl.className = 'sec-label ev-lb-label';
+    lbl.id = 'ev-lb-label';
+    lbl.innerHTML = `${a.ev.icon} ${a.ev.board} <em class="dh-reset" id="ev-reset"></em>`;
+    panel = document.createElement('div');
+    panel.className = 'lb-panel dh-lb-panel ev-lb-panel';
+    panel.id = 'ev-lb-panel';
+    panel.innerHTML = '<div class="lb-empty">Reading the board…</div>';
+    anchor.parentNode.insertBefore(lbl, anchor);
+    anchor.parentNode.insertBefore(panel, anchor);
+  }
+  const rs = document.getElementById('ev-reset');
+  if(rs) rs.textContent = 'ends in ' + evLeftLabel(a.win.end - Date.now());
+  return panel;
+}
+function paintEventBoardLocal(){
+  const a = activeEvent(), panel = ensureEventBoard();
+  if(!a || !panel) return;
+  const mine = eventMine(a.win.key);
+  panel.innerHTML = (+mine.pts || 0) > 0
+    ? laneRow({ name: (user && user.username) || 'You', pts: +mine.pts, tag: (+mine.runs || 0) + ' runs' }, 1, true)
+    : '<div class="lb-empty">No points on the board yet — every mission you finish this month counts.</div>';
+}
+function ingestEventBoard(snap){
+  const a = activeEvent(), panel = ensureEventBoard();
+  if(!a || !panel) return;
+  const rows = [];
+  try{
+    snap.forEach(c => {
+      const v = c.val() || {};
+      const e = v.event;
+      if(e && e.key === a.win.key && (+e.pts || 0) > 0){
+        rows.push({ uid: c.key, name: v.username || 'Operative', pts: +e.pts, tag: (+e.runs || 0) + ' runs' });
+      }
+    });
+  }catch(e){ console.warn('Event board unreadable:', e); }
+  const mine = eventMine(a.win.key);
+  if(user && (+mine.pts || 0) > 0 && !rows.some(r => r.uid === user.uid)){
+    rows.push({ uid: user.uid, name: user.username || 'You', pts: +mine.pts, tag: (+mine.runs || 0) + ' runs' });
+  }
+  rows.sort((x, y) => y.pts - x.pts);
+  panel.innerHTML = rows.length
+    ? rows.slice(0, 8).map((r, i) => laneRow(r, i + 1, !!user && r.uid === user.uid)).join('')
+    : '<div class="lb-empty">No points on the board yet — every mission you finish this month counts.</div>';
+}
+
+// ── THE SHELF ──────────────────────────────────────────────────────────
+// The event's stock from every category, side by side, on its own tab. The
+// same items also sit on their category shelves, so a player browsing
+// cursors finds the pumpkin there too.
+function renderEventShelf(){
+  const tab = document.getElementById('market-tab-event');
+  const grid = document.getElementById('shop-event');
+  const note = document.getElementById('ev-shelf-note');
+  const a = activeEvent();
+  if(tab){
+    tab.hidden = !a;
+    if(a) tab.textContent = `${a.ev.icon} Limited`;
+  }
+  if(!grid) return;
+  grid.innerHTML = '';
+  if(!a){
+    if(document.getElementById('panel-event')?.classList.contains('active')) switchMarketTab('convert');
+    return;
+  }
+  if(note){
+    note.textContent = `${a.ev.icon} ${a.ev.name} STOCK · on sale for ${evLeftLabel(a.win.end - Date.now())} more, ` +
+                       `then gone until next year. Anything you buy is yours for good.`;
+  }
+  ['colors', 'cursors', 'skins', 'drives', 'exits', 'powerups'].forEach(cat => {
+    (SHOP_ITEMS[cat] || []).forEach(item => {
+      if(item.event === a.ev.id) grid.appendChild(shopCardEl(cat, item));
+    });
+  });
+  bindShopButtons(grid);
+}
+
+// Painted at load (so the 3D tint and the look are right from the first
+// round) and again on every hub entry through refreshHubProgression.
+function paintEvent(){
+  try{
+    applyEventTheme();
+    paintEventBanner();
+    if(activeEvent()){
+      if(!document.getElementById('ev-lb-panel') || !db || offlineMode) paintEventBoardLocal();
+      else ensureEventBoard();
+    }else{
+      ensureEventBoard();
+    }
+  }catch(e){ console.warn('Event paint failed:', e); }
+}
+paintEvent();
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 15 · v43 — 🏷️ TITLES · 🪪 PLAYER CARDS · 📋 DAILY CONTRACTS
+// ══════════════════════════════════════════════════════════════════════
+
+// ── 🏷️ TITLES ──────────────────────────────────────────────────────────
+// Achievements were invisible to everyone but their owner. A title is one of
+// them, worn under your name on every board. The title is an ACHIEVEMENT ID,
+// stored at `players/<uid>/title`, and a board only shows it when that same
+// record also holds the achievement — so a title cannot be claimed by writing
+// the key alone. A few achievement names read badly as a title; those get
+// their own wording here, and everything else wears its own name.
+const TITLE_WORDS = {
+  'first-blood':'FIRST CONTACT', 'pts-5k':'FIVE-K OPERATIVE', 'pts-25k':'HIGH ROLLER',
+  'pts-100k':'SIX FIGURES', 'streak-7':'LOCKED IN', 'squad':'SQUAD LEADER',
+  'medal-diamond':'FLAWLESS', 'max-overclock':'OVERCLOCKED', 'haunt':'HAUNTED'
+};
+function titleText(id){
+  const a = typeof achById === 'function' ? achById(id) : null;
+  return a ? (TITLE_WORDS[id] || String(a.name).toUpperCase()) : '';
+}
+// The title a player RECORD may show, or ''.
+function titleOf(rec){
+  const id = rec && rec.title;
+  return (id && rec.achievements && rec.achievements[id]) ? titleText(id) : '';
+}
+const titleChip = rec => { const t = titleOf(rec); return t ? `<em class="lb-ttl">${esc(t)}</em>` : ''; };
+
+function setTitle(id){
+  if(!user) return;
+  const next = (id && user.achievements && user.achievements[id]) ? id : null;
+  user.title = next;
+  saveProfilePatch({ title: next });            // its own write — see § 12
+  snd(next ? 'equip' : 'uiBack');
+  toast(next ? `🏷️ Now wearing ${titleText(next)}` : '🏷️ Title removed', 2200);
+  if(typeof renderAchievementMatrix === 'function') renderAchievementMatrix();
+  loadLeaderboard();
+}
+
+// ── 🪪 PLAYER CARDS ────────────────────────────────────────────────────
+// Every board is built from player records the arcade already downloaded, so
+// a card needs no query of its own for anyone on a board — the records are
+// kept here as they arrive. A name from further down the grid is fetched once.
+const lbRecordCache = new Map();
+function cachePlayerRecord(uid, rec){
+  if(uid && rec && typeof rec === 'object') lbRecordCache.set(uid, { uid, ...rec });
+}
+function cacheSnapshotRecords(snap){
+  try{ snap.forEach(c => { cachePlayerRecord(c.key, c.val()); }); }catch(e){}
+}
+
+async function openPlayerCard(uid){
+  if(!uid) return;
+  let rec = (user && uid === user.uid) ? { ...user, uid } : lbRecordCache.get(uid);
+  if(!rec && db && !offlineMode){
+    try{
+      const snap = await withTimeout(db.ref('players/' + uid).once('value'), NET_WAIT);
+      if(snap.exists()){ rec = { uid, ...snap.val() }; cachePlayerRecord(uid, snap.val()); }
+    }catch(e){ console.warn('Player card read failed:', e); }
+  }
+  if(!rec){ snd('deny'); toast('🪪 That operative\'s card is out of reach right now.', 2400); return; }
+  openOverlay('pcard-overlay', () => renderPlayerCard(rec));
+}
+
+function renderPlayerCard(rec){
+  const body = document.getElementById('pcard-body');
+  if(!body) return;
+  const isMe = !!(user && rec.uid === user.uid);
+  const skin = findItem('skins', rec.equipped && rec.equipped.skins) || SHOP_ITEMS.skins[0];
+  const lvl = xpLevel(rec.xp || 0).level;
+  const season = seasonKey();
+  const weekly = (rec.weekly && rec.weekly.season === season) ? (+rec.weekly.pts || 0) : 0;
+  const achs = rec.achievements || {};
+  const achN = ACHIEVEMENTS.filter(a => achs[a.id]).length;
+  const streak = rec.streak || {};
+  // Medals from the RAW record when the card is ours or the record carries
+  // one; older records have none, and say so rather than showing zeroes.
+  const mb = rec.mbest || {};
+  const medals = { bronze: 0, silver: 0, gold: 0, diamond: 0, any: 0 };
+  Object.keys(SOLO_START).forEach(g => {
+    const i = medalIdx(g, +mb[g] || 0);
+    if(i < 0) return;
+    medals.any++;
+    for(let k = 0; k <= i; k++) medals[MEDALS[k].key]++;
+  });
+  const played = Object.keys(SOLO_START).filter(g =>
+    (rec.runs && rec.runs[g] > 0) || (rec.history && (rec.history[g] || []).length) || (rec.highScores && rec.highScores[g] > 0)).length;
+  // Best missions: by medal first, then by how close the banked best came to
+  // the cap — the same ranking the dossier uses.
+  const hs = rec.highScores || {};
+  const best = Object.keys(SOLO_START).map(g => {
+    const raw = +mb[g] || 0, award = +hs[g] || 0;
+    const cap = META[g].maxPts < 90000 ? META[g].maxPts : 0;
+    return { g, raw, award, m: medalIdx(g, raw), pct: cap ? Math.min(2, award / cap) : 0 };
+  }).filter(r => r.raw > 0 || r.award > 0)
+    .sort((a, b) => (b.m - a.m) || (b.pct - a.pct) || (b.award - a.award)).slice(0, 3);
+  const recent = ACHIEVEMENTS.filter(a => achs[a.id])
+    .sort((a, b) => (+achs[b.id] || 0) - (+achs[a.id] || 0)).slice(0, 6);
+  const title = titleOf(rec);
+  const tile = (ico, val, lbl) => `<div class="pc-tile"><span>${ico}</span><b>${val}</b><em>${lbl}</em></div>`;
+
+  let html =
+    `<div class="pc-hero">` +
+      `<div class="pc-skin">${skin.emoji}</div>` +
+      `<div class="pc-id"><div class="pc-name" id="pcard-heading">${esc(rec.username || 'Operative')}${isMe ? ' <span class="pc-you">YOU</span>' : ''}</div>` +
+      (title ? `<div class="pc-title">🏷️ ${esc(title)}</div>` : '') +
+      `<div class="pc-lvl">LVL ${lvl}${rec.isGuest ? ' · GUEST' : ''}</div></div>` +
+    `</div>` +
+    `<div class="pc-tiles">` +
+      tile('🏆', (+rec.totalPoints || 0).toLocaleString(), 'points') +
+      tile('📅', weekly.toLocaleString(), 'this week') +
+      tile('🔥', `${+streak.count || 0}`, `streak · best ${+streak.best || 0}`) +
+      tile('🏅', `${achN}/${ACHIEVEMENTS.length}`, 'achievements') +
+      tile('🥇', `${medals.any}`, `🥉${medals.bronze} 🥈${medals.silver} 🥇${medals.gold} 💎${medals.diamond}`) +
+      tile('🎮', `${played}/${Object.keys(SOLO_START).length}`, 'missions') +
+    `</div>`;
+  html += `<div class="pc-sec">🎯 BEST MISSIONS</div>`;
+  html += best.length
+    ? `<div class="pc-best">` + best.map(r =>
+        `<div class="pc-bm"><span class="pc-bm-ico">${META[r.g].emoji}</span>` +
+        `<span class="pc-bm-name">${esc(META[r.g].name)}</span>` +
+        `<span class="pc-bm-medal">${r.m >= 0 ? MEDALS[r.m].icon : ''}</span>` +
+        `<span class="pc-bm-pts">${(r.raw || r.award).toLocaleString()}</span></div>`).join('') + `</div>`
+    : `<div class="pc-empty">No missions on record yet.</div>`;
+  if(recent.length){
+    html += `<div class="pc-sec">🏅 LATEST BADGES</div><div class="pc-badges">` +
+      recent.map(a => `<span class="pc-badge" title="${esc(a.desc)}">${a.icon} ${esc(a.name)}</span>`).join('') + `</div>`;
+  }
+  // Doors, not labels.
+  const btns = [];
+  if(isMe){
+    btns.push(`<button class="btn btn-secondary btn-full" id="pc-title-btn" type="button">🏷️ ${title ? 'Change Title' : 'Pick A Title'}</button>`);
+  }else if(user && !rec.isGuest){
+    const fr = !!(user.friends && user.friends[rec.uid]);
+    btns.push(`<button class="btn btn-secondary btn-full" id="pc-rival-btn" type="button">${fr ? '★ Rival — Remove' : '☆ Add As Rival'}</button>`);
+  }
+  const ch = rec.challenge;
+  if(!isMe && ch && META[ch.gid] && ch.pts > 0){
+    const ok = missionUnlocked(ch.gid);
+    btns.push(`<button class="btn btn-primary btn-full" id="pc-chal-btn" type="button"${ok ? '' : ' disabled'}>` +
+              `⚔️ ${ok ? `Take Their Challenge · ${META[ch.gid].name} ${(+ch.pts).toLocaleString()}` : `Challenge Locked · Clearance ${missionClearance(ch.gid)}`}</button>`);
+  }
+  if(btns.length) html += `<div class="pc-btns">${btns.join('')}</div>`;
+  body.innerHTML = html;
+
+  document.getElementById('pc-title-btn')?.addEventListener('click', () => {
+    closeOverlay('pcard-overlay');
+    openOverlay('ach-overlay', renderAchievementMatrix);
+    toast('🏷️ Tap WEAR on any unlocked badge to wear it as your title.', 3200);
+  });
+  document.getElementById('pc-rival-btn')?.addEventListener('click', async () => {
+    if(!user || !db) return;
+    const had = !!user.friends[rec.uid];
+    if(had) delete user.friends[rec.uid]; else user.friends[rec.uid] = true;
+    snd(had ? 'uiBack' : 'success');
+    toast(had ? `☆ ${rec.username} removed from rivals` : `★ ${rec.username} added to rivals`, 2000);
+    renderPlayerCard(rec);
+    try{ await db.ref(`players/${user.uid}/friends/${rec.uid}`).set(had ? null : true); }
+    catch(err){ console.warn('Rival write failed:', err); }
+    loadLeaderboard();
+  });
+  document.getElementById('pc-chal-btn')?.addEventListener('click', () => {
+    if(!missionUnlocked(ch.gid)) return;
+    if(!chalBoard.some(c => c.uid === rec.uid)) chalBoard.push({ uid: rec.uid, name: rec.username, ...ch });
+    closeOverlay('pcard-overlay');
+    acceptChallenge(rec.uid);
+  });
+}
+
+document.getElementById('pcard-close')?.addEventListener('click', () => closeOverlay('pcard-overlay'));
+document.getElementById('pcard-overlay')?.addEventListener('click', e => {
+  if(e.target.id === 'pcard-overlay') closeOverlay('pcard-overlay');
+});
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape' && document.getElementById('pcard-overlay')?.classList.contains('show')) closeOverlay('pcard-overlay');
+});
+// Any board row that knows whose it is opens that player's card. Delegated,
+// so every re-render of every board is covered. The ☆ rival star handles its
+// own click in the capture phase and stops it before it gets here.
+document.addEventListener('click', e => {
+  const row = e.target.closest && e.target.closest('.lb-row[data-uid]');
+  if(!row || e.target.closest('button')) return;
+  snd('tab');
+  openPlayerCard(row.dataset.uid);
+});
+// 🏷️ WEAR, from the achievement matrix.
+document.getElementById('ach-matrix')?.addEventListener('click', e => {
+  const b = e.target.closest && e.target.closest('.ach-wear');
+  if(!b || !user) return;
+  setTitle(user.title === b.dataset.ach ? null : b.dataset.ach);
+});
+
+// ── 📋 DAILY CONTRACTS ─────────────────────────────────────────────────
+// Three small jobs a day. The arcade had plenty of reasons to come back (the
+// streak, the Daily Hack, the season) and none that said WHAT to play — so a
+// player with twenty-six missions played the same four. The first contract
+// always names a mission you rarely touch, or one you have never scored in.
+//
+// The day's three are dealt from a seed of the UTC day and the player's uid,
+// then STORED on the profile (`players/<uid>/contracts`), so they cannot
+// reshuffle mid-day or pay twice. Each pays credits; all three pay a bonus
+// and a consumable. Safe Mode runs count for the jobs that ask you to FINISH
+// something, never for the ones that ask for a score.
+const CONTRACT_REWARD = { fresh: 5, score: 4, medal: 4, hot: 4, daily: 4, variety: 3, kind: 3, chaos: 3 };
+const CONTRACT_BONUS = 5;
+const KIND_WORD = { reflex: '⚡ REFLEX', puzzle: '🧩 PUZZLE', patience: '🧘 PATIENCE', strategy: '♟️ STRATEGY' };
+
+function contractText(c){
+  const m = c.gid && META[c.gid];
+  switch(c.k){
+    case 'fresh':   return `Score in ${m.name} for the first time`;
+    case 'score':   return `Score ${c.target.toLocaleString()}+ in ${m.name}`;
+    case 'medal':   return 'Earn a 🥈 SILVER medal or better on any mission';
+    case 'hot':     return 'Score on 🟡 Overclock or 🔴 Meltdown';
+    case 'daily':   return 'Post a score on today\'s 📅 Daily Hack';
+    case 'variety': return `Finish 3 different missions (${(c.seen || []).length}/3)`;
+    case 'kind':    return `Finish a ${KIND_WORD[c.kind] || c.kind.toUpperCase()} mission`;
+    case 'chaos':   return 'Finish a run under a 🌀 chaos modifier';
+  }
+  return '';
+}
+const contractIcon = c => ({ fresh:'🆕', score:'🎯', medal:'🥈', hot:'🔥', daily:'📅', variety:'🗺️', kind:'🧩', chaos:'🌀' })[c.k] || '📋';
+
+function dealContracts(day){
+  const rng = makeRng(hashStr('contracts:' + day + ':' + (user ? user.uid : '')));
+  const open = Object.keys(SOLO_START).filter(g => missionUnlocked(g) && g !== 'arena');
+  const list = [];
+  // Slot 1 — a mission. Never-scored first; otherwise weighted toward the
+  // least-played half of what is open.
+  const fresh = open.filter(g => !missionScored(g));
+  if(fresh.length){
+    list.push({ k: 'fresh', gid: fresh[Math.floor(rng() * fresh.length)] });
+  }else if(open.length){
+    const byRuns = [...open].sort((a, b) => missionRuns(a) - missionRuns(b));
+    const pool = byRuns.slice(0, Math.max(1, Math.ceil(byRuns.length / 2)));
+    const gid = pool[Math.floor(rng() * pool.length)];
+    // Silver on the raw scale, rounded to a readable number.
+    const target = Math.max(10, Math.round(medalThresholds(gid)[1] / 10) * 10);
+    list.push({ k: 'score', gid, target });
+  }
+  // Slots 2 and 3 — two different kinds of job.
+  const kinds = ['medal', 'variety', 'kind', 'hot', 'chaos', 'daily'];
+  while(list.length < 3 && kinds.length){
+    const k = kinds.splice(Math.floor(rng() * kinds.length), 1)[0];
+    if(k === 'kind'){
+      const ks = Object.keys(KIND_WORD).filter(x => open.some(g => (MISSION_KINDS[g] || []).includes(x)));
+      if(!ks.length) continue;
+      list.push({ k, kind: ks[Math.floor(rng() * ks.length)] });
+    }else if(k === 'variety'){
+      list.push({ k, seen: [] });
+    }else{
+      list.push({ k });
+    }
+  }
+  return { day, list: list.map(c => ({ ...c, done: false })), bonus: false };
+}
+
+function contractsToday(){
+  if(!user) return null;
+  const day = dayKey();
+  let c = user.contracts;
+  if(!c || c.day !== day || !Array.isArray(c.list) || !c.list.length){
+    c = dealContracts(day);
+    user.contracts = c;
+    saveProfilePatch({ contracts: c });          // its own write
+  }
+  return c;
+}
+
+// Called by showResultsCard for every finished round. Returns the breakdown
+// rows it wants on the card.
+function settleContracts(run){
+  const rows = {};
+  if(!user || !run || run.internal || !SOLO_START[run.gid]) return rows;
+  if(typeof partyRunActive === 'function' && partyRunActive()) return rows;
+  const c = contractsToday();
+  if(!c) return rows;
+  const safe = run.tier === 'safe';
+  let paid = 0, changed = false;
+  c.list.forEach(ct => {
+    if(ct.done) return;
+    let hit = false;
+    switch(ct.k){
+      case 'fresh':   hit = run.gid === ct.gid && run.raw > 0; break;
+      case 'score':   hit = !safe && run.gid === ct.gid && run.raw >= ct.target; break;
+      case 'medal':   hit = !safe && medalIdx(run.gid, run.raw) >= 1; break;
+      case 'hot':     hit = (run.tier === 'overclocked' || run.tier === 'meltdown') && run.raw > 0; break;
+      case 'daily':   hit = !!run.daily && run.raw > 0; break;
+      case 'kind':    hit = (MISSION_KINDS[run.gid] || []).includes(ct.kind); break;
+      case 'chaos':   hit = !!run.chaos; break;
+      case 'variety':
+        ct.seen = Array.isArray(ct.seen) ? ct.seen : [];
+        if(!ct.seen.includes(run.gid)){ ct.seen.push(run.gid); changed = true; }
+        hit = ct.seen.length >= 3;
+        break;
+    }
+    if(hit){
+      ct.done = true; changed = true;
+      const cr = CONTRACT_REWARD[ct.k] || 3;
+      paid += cr;
+      rows[`📋 Contract Done`] = (rows['📋 Contract Done'] ? rows['📋 Contract Done'] + ' · ' : '') +
+                                `${contractIcon(ct)} +${cr} CR`;
+    }
+  });
+  let bonusItem = null;
+  if(!c.bonus && c.list.every(ct => ct.done)){
+    c.bonus = true; changed = true;
+    paid += CONTRACT_BONUS;
+    rows['📋 All Three Contracts'] = `+${CONTRACT_BONUS} CR bonus`;
+    bonusItem = true;
+  }
+  if(changed) saveProfilePatch({ contracts: c });
+  if(paid > 0){
+    user.credits = (user.credits || 0) + paid;
+    saveProfilePatch({ credits: user.credits });
+    setTimeout(() => { snd('coin'); toast(`📋 CONTRACT PAID · +${paid} CR`, 2600); }, 1400);
+  }
+  if(bonusItem){
+    setTimeout(() => {
+      const won = grantRandomConsumable();
+      if(won) toast(`📋 ALL CONTRACTS CLEARED — ${won.emoji} ${won.name} added to your kit`, 3200);
+    }, 4200);
+  }
+  return rows;
+}
+
+function contractsResetLabel(){
+  const now = Date.now();
+  const next = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate() + 1);
+  return evLeftLabel(next - now);
+}
+
+function paintContracts(){
+  const panel = document.getElementById('contracts-panel');
+  if(!panel || !user) return;
+  const c = contractsToday();
+  if(!c){ panel.innerHTML = ''; return; }
+  const doneN = c.list.filter(x => x.done).length;
+  panel.innerHTML =
+    `<div class="ct-head"><span class="ct-title">📋 TODAY'S CONTRACTS</span>` +
+    `<span class="ct-meta">${doneN}/${c.list.length} done · resets in ${contractsResetLabel()}</span></div>` +
+    c.list.map((ct, i) => {
+      const cr = CONTRACT_REWARD[ct.k] || 3;
+      const go = !ct.done && ct.gid && META[ct.gid] && missionUnlocked(ct.gid)
+        ? `<button class="btn btn-secondary btn-sm ct-go" data-gid="${ct.gid}" type="button">GO →</button>` : '';
+      return `<div class="ct-row${ct.done ? ' done' : ''}">` +
+        `<span class="ct-ico">${ct.done ? '✅' : contractIcon(ct)}</span>` +
+        `<span class="ct-txt">${esc(contractText(ct))}</span>` +
+        `<span class="ct-cr">+${cr} CR</span>${go}</div>`;
+    }).join('') +
+    `<div class="ct-bonus${c.bonus ? ' done' : ''}">${c.bonus ? '✅ Bonus paid' : `All three: +${CONTRACT_BONUS} CR and a free consumable`}</div>`;
+  panel.querySelectorAll('.ct-go').forEach(b => b.addEventListener('click', () => {
+    const card = document.querySelector(`.game-card[data-game="${b.dataset.gid}"]`);
+    if(card) card.click();
+  }));
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 16 · v44 — 🏍️ GAME 27: LIGHT CYCLE — the grid
+// ══════════════════════════════════════════════════════════════════════
+// The one cyberpunk classic the grid did not have. You ride a cycle that lays
+// a solid wall of light behind it; so do the droid riders. Touch any wall —
+// yours, theirs, the arena's — and you are derezzed. Box them in before they
+// box you in. Clear a wave and the walls come down and a harder one rides in.
+//
+// ONE SIMULATION, TWO RENDERERS. lcSim() is the whole game — the grid, the
+// riders, the droid brains, the collisions and the waves — and lcRound() is
+// the whole round: controls, clock, scoring and the ending. The 2D build and
+// the 3D build only DRAW it and feed it time, the way Coolant's two builds
+// share coolBuildShaft(), so a 3D score and a 2D score are the same score by
+// construction rather than by care.
+//
+// The grid is Grid Snake's: 28 × 25 cells on the 560 × 500 board. Directions
+// are ABSOLUTE (up is up on the screen), so the 3D camera never yaws — see the
+// never-yaw rule in § 3.
+//
+// Pause/photo rules (see § 13): every wall-clock read is gNow(), every timer
+// gLater(), and the sim only moves when the frame loop hands it time.
+const LC = {
+  CELL: 20, COLS: 28, ROWS: 25,
+  STEP: 0.1,               // seconds per cell at Stable, divided by the tier
+  STEP_MIN: 0.055,
+  WAVE_FASTER: 0.95,       // each wave rides a little quicker
+  CLOCK: 60,
+  KILL: 100, WAVE_BONUS: 150, PER_SEC: 10, CAP: 1200,
+  // Riders per wave and how clever they are (0 = panics, 1 = hunts you).
+  WAVES: [ { n: 2, iq: 0.3 }, { n: 3, iq: 0.5 }, { n: 3, iq: 0.7 }, { n: 4, iq: 0.85 } ],
+  COLORS: ['#ff7a1a', '#ff2442', '#ffd700', '#b35cff']
+};
+const LC_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+function lcSim(opts){
+  opts = opts || {};
+  const { COLS, ROWS } = LC;
+  const grid = new Int16Array(COLS * ROWS);         // 0 open, else rider id + 1
+  const at = (x, y) => y * COLS + x;
+  const inside = (x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS;
+  const open = (x, y) => inside(x, y) && grid[at(x, y)] === 0;
+
+  const S = {
+    riders: [], wave: 0, kills: 0, waves: 0, score: 0, secs: 0,
+    over: false, nextWaveIn: -1, nextId: 1, acc: 0,
+    stepEvery: Math.max(LC.STEP_MIN, LC.STEP / Math.max(0.3, opts.diff || 1))
+  };
+  const player = { id: 0, player: true, x: 6, y: (ROWS / 2) | 0, dir: { x: 1, y: 0 },
+                   queue: [], alive: true, trail: [], color: opts.color || '#00f5ff' };
+
+  function occupy(r, x, y){ grid[at(x, y)] = r.id + 1; r.trail.push([x, y]); r.x = x; r.y = y; }
+  function wipe(r, keepHead){
+    for(const [x, y] of r.trail) if(grid[at(x, y)] === r.id + 1) grid[at(x, y)] = 0;
+    r.trail = keepHead ? [[r.x, r.y]] : [];
+    if(keepHead) grid[at(r.x, r.y)] = r.id + 1;
+  }
+  occupy(player, player.x, player.y);
+  S.riders.push(player);
+
+  // ── WAVES ──
+  function spawnWave(){
+    const spec = LC.WAVES[Math.min(S.wave, LC.WAVES.length - 1)];
+    const mx = COLS >> 1, my = ROWS >> 1;
+    const starts = [
+      { x: COLS - 3, y: 2, d: { x: -1, y: 0 } },        { x: COLS - 3, y: ROWS - 3, d: { x: -1, y: 0 } },
+      { x: 2, y: 2, d: { x: 0, y: 1 } },                 { x: 2, y: ROWS - 3, d: { x: 0, y: -1 } },
+      { x: mx, y: 1, d: { x: 0, y: 1 } },                { x: mx, y: ROWS - 2, d: { x: 0, y: -1 } },
+      { x: COLS - 2, y: my, d: { x: -1, y: 0 } },        { x: 1, y: my, d: { x: 1, y: 0 } }
+    ].filter(s => open(s.x, s.y) && open(s.x + s.d.x, s.y + s.d.y))
+     .map(s => ({ ...s, far: Math.abs(s.x - player.x) + Math.abs(s.y - player.y) }))
+     .sort((a, b) => b.far - a.far);
+    const n = Math.min(spec.n, starts.length);
+    for(let i = 0; i < n; i++){
+      const s = starts[i];
+      const id = S.nextId++;
+      const r = { id, player: false, x: s.x, y: s.y, dir: s.d, next: s.d, alive: true, trail: [],
+                  color: LC.COLORS[(id - 1) % LC.COLORS.length], iq: spec.iq };
+      occupy(r, s.x, s.y);
+      S.riders.push(r);
+    }
+    S.wave++;
+    // Each wave rides a little quicker than the last.
+    if(S.wave > 1) S.stepEvery = Math.max(LC.STEP_MIN, S.stepEvery * LC.WAVE_FASTER);
+    return n;
+  }
+
+  // ── THE DROID BRAIN ──
+  // How much open floor is reachable from a cell (capped): the one number
+  // that says whether a turn is a corridor or a coffin.
+  function space(x, y, cap){
+    if(!open(x, y)) return 0;
+    const seen = new Uint8Array(COLS * ROWS);
+    const q = [x, y]; seen[at(x, y)] = 1;
+    let n = 0, h = 0;
+    while(h < q.length && n < cap){
+      const cx = q[h++], cy = q[h++]; n++;
+      for(const [dx, dy] of LC_DIRS){
+        const nx = cx + dx, ny = cy + dy;
+        if(inside(nx, ny) && !grid[at(nx, ny)] && !seen[at(nx, ny)]){ seen[at(nx, ny)] = 1; q.push(nx, ny); }
+      }
+    }
+    return n;
+  }
+  function think(r){
+    const d = r.dir;
+    const opts3 = [d, { x: -d.y, y: d.x }, { x: d.y, y: -d.x }];      // straight, and the two turns
+    const smart = Math.random() < r.iq;
+    // The cut-off point: a few cells in front of you.
+    const ax = player.x + player.dir.x * 3, ay = player.y + player.dir.y * 3;
+    let best = null, bestS = -Infinity;
+    for(const o of opts3){
+      const nx = r.x + o.x, ny = r.y + o.y;
+      if(!open(nx, ny)) continue;
+      let s = smart ? space(nx, ny, 90) : (open(nx + o.x, ny + o.y) ? 8 : 1);
+      if(o === d) s += 2;                                              // commitment
+      if(smart && player.alive && Math.random() < r.iq * 0.7){
+        s += Math.max(0, 30 - (Math.abs(nx - ax) + Math.abs(ny - ay))) * 0.8;   // the hunt
+      }
+      s += Math.random() * (1 - r.iq) * 6;                             // nerves
+      if(s > bestS){ bestS = s; best = o; }
+    }
+    r.next = best || d;                                                // boxed in: straight on
+  }
+
+  // ── THE STEP ──
+  // Everyone decides, then everyone moves at once. Two heads into one cell
+  // both die; a head into any wall dies. A droid that dies takes its wall with
+  // it. The player's crash is the ROUND's decision (the shield), so it is
+  // reported, and absorb() says whether it was taken.
+  function step(ev){
+    const alive = S.riders.filter(r => r.alive);
+    for(const r of alive){
+      if(r.player){
+        // One queued turn per step, so a quick double tap still makes a
+        // U-turn two cells wide rather than losing the first turn.
+        while(r.queue.length){
+          const q = r.queue.shift();
+          if(q.x !== -r.dir.x || q.y !== -r.dir.y){ r.dir = q; break; }
+        }
+      }else{
+        think(r); r.dir = r.next;
+      }
+      r.nx = r.x + r.dir.x; r.ny = r.y + r.dir.y;
+      r.crash = !open(r.nx, r.ny);
+    }
+    for(let i = 0; i < alive.length; i++){
+      for(let j = i + 1; j < alive.length; j++){
+        const a = alive[i], b = alive[j];
+        if(a.nx === b.nx && a.ny === b.ny){ a.crash = b.crash = true; }
+      }
+    }
+    for(const r of alive){
+      if(!r.crash || r.player) continue;
+      ev.push({ type: 'derez', color: r.color, x: r.x, y: r.y, trail: r.trail.slice() });
+      r.alive = false;
+      wipe(r, false);
+      S.kills++;
+      if(player.alive) S.score += LC.KILL;
+    }
+    if(player.alive && player.crash){
+      const saved = opts.absorb ? opts.absorb() : false;
+      if(!saved){
+        player.alive = false;
+        S.over = true;
+        ev.push({ type: 'dead', color: player.color, x: player.x, y: player.y, trail: player.trail.slice() });
+        return;
+      }
+      // 🛡️ The shield burns a hole: the cells round the one you hit are
+      // cleared (never another rider's head) and you ride through. Off the
+      // arena edge there is nothing to burn, so you are turned instead.
+      if(inside(player.nx, player.ny)){
+        for(let dy = -1; dy <= 1; dy++) for(let dx = -1; dx <= 1; dx++){
+          const x = player.nx + dx, y = player.ny + dy;
+          if(!inside(x, y)) continue;
+          const owner = grid[at(x, y)] - 1;
+          if(owner < 0) continue;
+          const o = S.riders.find(q => q.id === owner);
+          if(o && o.alive && o.x === x && o.y === y) continue;
+          grid[at(x, y)] = 0;
+          if(o) o.trail = o.trail.filter(([tx, ty]) => tx !== x || ty !== y);
+        }
+        ev.push({ type: 'absorb', x: player.nx, y: player.ny });
+      }else{
+        const turns = [{ x: -player.dir.y, y: player.dir.x }, { x: player.dir.y, y: -player.dir.x }]
+          .filter(t => open(player.x + t.x, player.y + t.y));
+        ev.push({ type: 'absorb', x: player.x, y: player.y });
+        if(!turns.length){ player.crash = false; player.nx = player.x; player.ny = player.y; player.stuck = true; }
+        else{ player.dir = turns[0]; player.nx = player.x + turns[0].x; player.ny = player.y + turns[0].y; }
+      }
+    }
+    for(const r of alive){
+      if(!r.alive) continue;
+      if(r.player && r.stuck){ r.stuck = false; continue; }
+      occupy(r, r.nx, r.ny);
+    }
+    // Wave cleared: the walls come down and the next wave rides in shortly.
+    if(S.nextWaveIn < 0 && !S.riders.some(r => !r.player && r.alive)){
+      S.waves++;
+      S.score += LC.WAVE_BONUS;
+      S.riders = [player];
+      grid.fill(0);
+      wipe(player, true);
+      S.nextWaveIn = 1.2;
+      ev.push({ type: 'clear', wave: S.waves });
+    }
+  }
+
+  return {
+    S, player, open,
+    start(){ spawnWave(); },
+    turn(x, y){
+      if(!player.alive) return;
+      const last = player.queue.length ? player.queue[player.queue.length - 1] : player.dir;
+      if((x === last.x && y === last.y) || (x === -last.x && y === -last.y)) return;
+      if(player.queue.length < 2) player.queue.push({ x, y });
+    },
+    // Advances the world by dt seconds; returns what happened.
+    update(dt){
+      const ev = [];
+      if(S.over) return ev;
+      if(S.nextWaveIn >= 0){
+        S.nextWaveIn -= dt;
+        if(S.nextWaveIn < 0){ const n = spawnWave(); ev.push({ type: 'wave', wave: S.wave, n }); }
+      }
+      S.acc += dt;
+      while(S.acc >= S.stepEvery && !S.over){ S.acc -= S.stepEvery; step(ev); }
+      return ev;
+    },
+    // How far the current step has run, for smooth drawing between cells.
+    frac(){ return Math.max(0, Math.min(1, S.acc / S.stepEvery)); },
+    second(){ if(player.alive && !S.over){ S.secs++; S.score += LC.PER_SEC; } }
+  };
+}
+
+// ── THE ROUND ──────────────────────────────────────────────────────────
+// The last round started, kept for the console: `lcLast.S` is the whole state.
+let lcLast = null;
+// Controls, clock, scoring and the ending, shared by both builds. `draw` is
+// the renderer's; it gets the sim and the events of the frame.
+function lcRound(o){
+  const diff = getDifficultyModifier();
+  const sim = lcSim({ diff, color: getEquippedColorHex(), absorb: () => survivedFatal() });
+  const S = sim.S;
+  const time0 = Math.round(LC.CLOCK * getTimeModifier());
+  let time = time0, ended = false;
+
+  setControls({ left:'←', action:'↑', drop:'↓', right:'→' });
+  setControlHint('SWIPE OR TAP AN ARROW TO TURN', 'ARROW KEYS / WASD TO TURN');
+  showTouchHint('SWIPE TO TURN · NEVER TOUCH A WALL OF LIGHT');
+  document.getElementById('g-time').textContent = time;
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--cyan),#ff7a1a)';
+
+  const turn = (x, y) => { hideTouchHint(); sim.turn(x, y); };
+  window.onkeydown = e => {
+    const k = e.code;
+    if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS'].includes(k)) e.preventDefault();
+    if(k === 'ArrowLeft'  || k === 'KeyA') turn(-1, 0);
+    if(k === 'ArrowRight' || k === 'KeyD') turn(1, 0);
+    if(k === 'ArrowUp'    || k === 'KeyW') turn(0, -1);
+    if(k === 'ArrowDown'  || k === 'KeyS') turn(0, 1);
+  };
+  document.getElementById('ctrl-left').onclick   = () => turn(-1, 0);
+  document.getElementById('ctrl-right').onclick  = () => turn(1, 0);
+  document.getElementById('ctrl-action').onclick = () => turn(0, -1);
+  document.getElementById('ctrl-drop').onclick   = () => turn(0, 1);
+  // Swipe: the dominant axis wins, and a long drag can chain turns.
+  let sx = 0, sy = 0;
+  bindCanvasDrag({
+    onDown(p){ hideTouchHint(); sx = p.x; sy = p.y; },
+    onMove(p){
+      const dx = p.x - sx, dy = p.y - sy;
+      if(Math.max(Math.abs(dx), Math.abs(dy)) < 24) return;
+      if(Math.abs(dx) > Math.abs(dy)) turn(dx > 0 ? 1 : -1, 0); else turn(0, dy > 0 ? 1 : -1);
+      sx = p.x; sy = p.y;
+    },
+    onUp(){}
+  });
+
+  gTimer = setInterval(() => {
+    if(ended) return;
+    time--;
+    sim.second();
+    document.getElementById('g-time').textContent = Math.max(0, time);
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time / time0 * 100)}%`;
+    setLive(Math.min(LC.CAP, S.score));
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end('timeout');
+  }, 1000);
+
+  function end(reason){
+    if(ended) return;
+    ended = true;
+    clearCanvasDrag();
+    if(reason !== 'timeout') snd('gameOver');
+    const earned = Math.min(LC.CAP, Math.round(S.score));
+    gLater(() => showResults('lightcycle', earned, {
+      '🏍️ Riders Derezzed': S.kills,
+      '🌊 Waves Cleared': S.waves,
+      '⏱️ Time On The Grid': `${S.secs}s`,
+      ...(reason === 'timeout' ? { '✅ Status': 'SURVIVED THE CLOCK' } : { '💥 Status': 'DEREZZED' }),
+      '🏆 Final Score': `${earned} PTS`
+    }), reason === 'timeout' ? 300 : 900);
+  }
+
+  sim.start();
+  snd('go');
+  return lcLast = {
+    sim, S,
+    // One frame: advance, publish, and hand the events to the renderer.
+    frame(dt){
+      if(ended) return [];
+      const ev = sim.update(dt);
+      for(const e of ev){
+        if(e.type === 'derez'){ snd('explode'); }
+        else if(e.type === 'dead'){ snd('bigExplode'); }
+        else if(e.type === 'clear'){ snd('wave'); toast(`🏍️ WAVE ${e.wave} CLEARED · +${LC.WAVE_BONUS}`, 1600); }
+        else if(e.type === 'wave'){ snd('powerup'); }
+      }
+      if(ev.length) setLive(Math.min(LC.CAP, S.score));
+      if(S.over) end('crash');
+      return ev;
+    },
+    get ended(){ return ended; }
+  };
+}
+
+// ── THE 2D BUILD ───────────────────────────────────────────────────────
+function startLightCycle(){
+  document.getElementById('g-canvas-holder').style.display = 'block';
+  const round = lcRound();
+  fitCanvas();
+  const { CELL, COLS, ROWS } = LC;
+  const W = BOARD_W, H = BOARD_H;
+  const S = round.S;
+  const fades = [], sparks = [];
+  let last = gNow(), banner = { text: 'WAVE 1', t: 1.6 };
+
+  const cx = x => x * CELL + CELL / 2, cy = y => y * CELL + CELL / 2;
+
+  function strokeTrail(pts, color, alpha, headX, headY){
+    if(!pts.length) return;
+    aCtx.save();
+    aCtx.globalAlpha = alpha;
+    aCtx.lineJoin = 'miter'; aCtx.lineCap = 'square';
+    for(const pass of [[CELL * 0.62, 0.18], [CELL * 0.3, 1]]){
+      aCtx.beginPath();
+      aCtx.moveTo(cx(pts[0][0]), cy(pts[0][1]));
+      for(let i = 1; i < pts.length; i++) aCtx.lineTo(cx(pts[i][0]), cy(pts[i][1]));
+      if(headX != null) aCtx.lineTo(headX, headY);
+      aCtx.strokeStyle = color; aCtx.lineWidth = pass[0]; aCtx.globalAlpha = alpha * pass[1];
+      aCtx.stroke();
+    }
+    aCtx.restore();
+  }
+
+  function loop(){
+    if(round.ended && !fades.length && !sparks.length){ return; }
+    gameLoopId = requestAnimationFrame(loop);
+    const now = gNow();
+    const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
+    const ev = round.frame(dt);
+    for(const e of ev){
+      if(e.type === 'derez' || e.type === 'dead'){
+        fades.push({ trail: e.trail || [], color: e.color, t: 1 });
+        for(let i = 0; i < 26; i++){
+          const a = Math.random() * Math.PI * 2, v = 1 + Math.random() * 4;
+          sparks.push({ x: cx(e.x), y: cy(e.y), vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 1, c: e.color });
+        }
+      }
+      if(e.type === 'absorb'){
+        for(let i = 0; i < 18; i++){
+          const a = Math.random() * Math.PI * 2, v = 1 + Math.random() * 3;
+          sparks.push({ x: cx(e.x), y: cy(e.y), vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 1, c: '#a855f7' });
+        }
+      }
+      if(e.type === 'clear') banner = { text: `WAVE ${e.wave} CLEARED`, t: 1.3 };
+      if(e.type === 'wave') banner = { text: `WAVE ${e.wave} · ${e.n} RIDERS`, t: 1.6 };
+    }
+
+    // ── DRAW ──
+    aCtx.clearRect(0, 0, W, H);
+    aCtx.fillStyle = '#04050d'; aCtx.fillRect(0, 0, W, H);
+    for(let i = 0; i <= COLS; i++){
+      aCtx.fillStyle = i % 4 === 0 ? 'rgba(0,245,255,0.09)' : 'rgba(0,245,255,0.035)';
+      aCtx.fillRect(i * CELL, 0, 1, H);
+    }
+    for(let j = 0; j <= ROWS; j++){
+      aCtx.fillStyle = j % 4 === 0 ? 'rgba(0,245,255,0.09)' : 'rgba(0,245,255,0.035)';
+      aCtx.fillRect(0, j * CELL, W, 1);
+    }
+    aCtx.save();
+    aCtx.strokeStyle = 'rgba(0,245,255,0.55)'; aCtx.lineWidth = 3;
+    aCtx.shadowBlur = 14; aCtx.shadowColor = '#00f5ff';
+    aCtx.strokeRect(1.5, 1.5, W - 3, H - 3);
+    aCtx.restore();
+
+    // Derezzed walls fade out where they stood.
+    for(let i = fades.length - 1; i >= 0; i--){
+      const f = fades[i];
+      if(dt > 0) f.t -= dt * 1.6;
+      if(f.t <= 0){ fades.splice(i, 1); continue; }
+      strokeTrail(f.trail, f.color, f.t * 0.8);
+    }
+
+    // Live walls, with each head drawn part-way into its next cell.
+    const k = round.sim.frac();
+    for(const r of S.riders){
+      if(!r.alive) continue;
+      const ahead = round.sim.open(r.x + r.dir.x, r.y + r.dir.y) ? k : 0;
+      const hx = cx(r.x) + r.dir.x * CELL * ahead, hy = cy(r.y) + r.dir.y * CELL * ahead;
+      strokeTrail(r.trail, r.color, 1, hx, hy);
+      aCtx.save();
+      const g = aCtx.createRadialGradient(hx, hy, 0, hx, hy, CELL * 1.4);
+      g.addColorStop(0, 'rgba(255,255,255,0.9)'); g.addColorStop(0.25, r.color); g.addColorStop(1, 'rgba(0,0,0,0)');
+      aCtx.fillStyle = g;
+      aCtx.fillRect(hx - CELL * 1.4, hy - CELL * 1.4, CELL * 2.8, CELL * 2.8);
+      aCtx.fillStyle = '#fff';
+      aCtx.fillRect(hx - 4, hy - 4, 8, 8);
+      aCtx.restore();
+      if(r.player) drawSkinBadge(hx, hy - CELL * 0.9, 12);
+    }
+
+    for(let i = sparks.length - 1; i >= 0; i--){
+      const p = sparks[i];
+      if(dt > 0){ p.x += p.vx; p.y += p.vy; p.vx *= 0.95; p.vy *= 0.95; p.t -= dt * 1.8; }
+      if(p.t <= 0){ sparks.splice(i, 1); continue; }
+      aCtx.globalAlpha = p.t; aCtx.fillStyle = p.c;
+      aCtx.fillRect(p.x - 2, p.y - 2, 4, 4);
+    }
+    aCtx.globalAlpha = 1;
+
+    // HUD: the wave and who is left.
+    const left = S.riders.filter(r => !r.player && r.alive).length;
+    aCtx.font = '700 12px Orbitron, sans-serif';
+    aCtx.fillStyle = 'rgba(234,246,255,0.8)';
+    aCtx.textAlign = 'left';
+    aCtx.fillText(`WAVE ${Math.max(1, S.wave)} · RIDERS ${left}`, 12, 22);
+    if(banner.t > 0){
+      if(dt > 0) banner.t -= dt;
+      aCtx.save();
+      aCtx.globalAlpha = Math.min(1, banner.t * 1.5);
+      aCtx.font = '900 30px Orbitron, sans-serif';
+      aCtx.textAlign = 'center';
+      aCtx.fillStyle = '#eaf6ff';
+      aCtx.shadowBlur = 18; aCtx.shadowColor = '#00f5ff';
+      aCtx.fillText(banner.text, W / 2, H * 0.42);
+      aCtx.restore();
+    }
+  }
+  gameLoopId = requestAnimationFrame(loop);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  🚀 POINT INVADERS — 3D MISSIONS, PART VI · THE CLASSICS WING
+// ══════════════════════════════════════════════════════════════════════
+// The missions added after the patience wing, starting with LIGHT CYCLE.
+// Same contract as every other part: each registers on PI3D.games under its
+// 2D id, keeps the 2D scoring exactly (here by sharing the 2D simulation
+// outright), never yaws the camera, and casts no shadows.
+(function(){
+'use strict';
+
+const P = window.PI3D;
+if(!P) return;
+const K = P.kit;
+const { begin3d, runLoop, mine } = K;
+
+const CITY_NIGHT = {
+  env:  { zenith:'#04061a', horizon:'#3a1050', ground:'#05060f', intensity: 1.35 },
+  fog:  { color:'#0d0722', density: 0.0052 },
+  sun:  { dir:[-0.4, -0.85, -0.5], color:'#6f7dff', intensity: 0.7 },
+  grade:{ exposure: 0.95, bloom: 0.42, threshold: 1.6, knee: 0.5, radius: 0.9,
+          vignette: 0.44, aberration: 0.45, grain: 0.028, scanline: 0.014, saturation: 1.12 }
+};
+
+// ══════════════════════════════════════════════
+//  🏍️ LIGHT CYCLE 3D — walls of light on a lit deck
+// ══════════════════════════════════════════════
+// Grid Snake's deck and framing, with the snake's slow orbit taken out: this
+// mission is steered in ABSOLUTE directions and the whole arena has to read
+// as fixed. The walls are real walls — a trail stands 0.9 units tall with a
+// hot rim along its top — so a pocket you are being boxed into looks like
+// one from the camera, which is the entire game.
+P.games.lightcycle = function(){
+  const w = begin3d(Object.assign({ ease: 0.12 }, CITY_NIGHT, {
+    env: { zenith:'#03061a', horizon:'#0f2a55', ground:'#04060f', intensity: 1.05 },
+    fog: { color:'#040a1a', density: 0.0058 }
+  }));
+  if(!w) return;
+  const r = w.r;
+  const round = lcRound();
+  const S = round.S;
+  const { COLS, ROWS } = LC;
+  const wx = x => x - COLS / 2 + 0.5;
+  const wz = y => y - ROWS / 2 + 0.5;
+  const WALL_H = 0.9, WALL_W = 0.14;
+  const fades = [];
+  const me = mine();
+
+  // A trail as straight runs, each stretched half a wall-width past its ends
+  // so two runs meeting at a corner close the corner instead of notching it.
+  function runs(trail, hx, hz, dir){
+    const out = [];
+    if(!trail.length) return out;
+    let s = trail[0], prev = trail[0], dx = 0, dy = 0;
+    for(let i = 1; i < trail.length; i++){
+      const c = trail[i];
+      const ndx = Math.sign(c[0] - prev[0]), ndy = Math.sign(c[1] - prev[1]);
+      if(i > 1 && (ndx !== dx || ndy !== dy)){ out.push([wx(s[0]), wz(s[1]), wx(prev[0]), wz(prev[1])]); s = prev; }
+      dx = ndx; dy = ndy; prev = c;
+    }
+    let ex = hx != null ? hx : wx(prev[0]), ez = hz != null ? hz : wz(prev[1]);
+    // The live end is pulled back behind the cycle, and just after a turn
+    // that would put it BEHIND the corner — a spur pointing the wrong way.
+    // It never ends before the run starts.
+    if(dir && ((ex - wx(s[0])) * dir.x + (ez - wz(s[1])) * dir.y) < 0){ ex = wx(s[0]); ez = wz(s[1]); }
+    out.push([wx(s[0]), wz(s[1]), ex, ez]);
+    return out;
+  }
+  function drawWalls(list, color, alpha){
+    for(const [x0, z0, x1, z1] of list){
+      const len = Math.hypot(x1 - x0, z1 - z0);
+      if(len < 0.01) continue;
+      const ex = (x1 - x0) / len * WALL_W * 0.5, ez = (z1 - z0) / len * WALL_W * 0.5;
+      const a = [x0 - ex, WALL_H / 2, z0 - ez], b = [x1 + ex, WALL_H / 2, z1 + ez];
+      r.beam(a, b, WALL_W, { height: WALL_H, color, emissive: color, emissiveStrength: 0.8 * alpha,
+                             metallic: 0.2, roughness: 0.45, alpha, detail: 0 });
+      r.beam([a[0], WALL_H + 0.02, a[2]], [b[0], WALL_H + 0.02, b[2]], WALL_W * 1.25,
+             { height: 0.05, color: '#ffffff', emissive: color, emissiveStrength: 2.2 * alpha, alpha, detail: 0 });
+    }
+  }
+  // A cycle is two upright glowing rings and a dark chrome body between
+  // them. The glow is kept small and at the tail: a big one at the head
+  // bloomed the whole model into a blob at exactly the point you steer from.
+  function drawBike(x, z, d, color, player){
+    const yaw = Math.atan2(d.x, d.y);
+    const fx = d.x * 0.5, fz = d.y * 0.5;
+    for(const s of [-1, 1]){
+      r.draw('thintorus', { pos:[x + fx * s, 0.4, z + fz * s], rot:[Math.PI / 2, yaw + Math.PI / 2, 0], scale: 0.9,
+                            color:'#e8f6ff', emissive: color, emissiveStrength: 1.3 });
+    }
+    r.draw('cube', { pos:[x, 0.46, z], rot:[0, yaw, 0], scale:[0.34, 0.3, 1.25],
+                     color:'#0b1020', metallic: 0.85, roughness: 0.25, rim: 1.6,
+                     emissive: color, emissiveStrength: 0.35 });
+    r.draw('cube', { pos:[x, 0.63, z], rot:[0, yaw, 0], scale:[0.12, 0.05, 1.1],
+                     color:'#ffffff', emissive: color, emissiveStrength: 1.6 });
+    r.draw('sphere', { pos:[x + fx * 0.25, 0.66, z + fz * 0.25], scale: 0.3,
+                       color: player ? '#eaf6ff' : '#1a1f33', metallic: 0.9, roughness: 0.12, rim: 1.2,
+                       emissive: color, emissiveStrength: player ? 0.35 : 0.25 });
+    r.glow([x - fx * 0.9, 0.35, z - fz * 0.9], 0.45, color, 0.5);
+  }
+
+  runLoop(dt => {
+    const ev = round.frame(dt);
+    for(const e of ev){
+      if(e.type === 'derez' || e.type === 'dead'){
+        fades.push({ list: runs(e.trail || []), color: e.color, t: 1 });
+        w.burst([wx(e.x), 0.6, wz(e.y)], e.color, 46, { speed: 13, life: 0.9 });
+        w.burst([wx(e.x), 0.6, wz(e.y)], '#ffffff', 14, { speed: 20, life: 0.4 });
+        if(e.type === 'derez') w.pop([wx(e.x), 2.2, wz(e.y)], '+' + LC.KILL, e.color);
+        w.kick(e.type === 'dead' ? 2.6 : 1.1);
+      }
+      if(e.type === 'absorb'){
+        w.burst([wx(e.x), 0.6, wz(e.y)], '#a855f7', 34, { speed: 12, life: 0.8 });
+        w.kick(1.4);
+      }
+      if(e.type === 'clear') w.pop([0, 3, 0], 'WAVE CLEAR +' + LC.WAVE_BONUS, '#39ff88');
+      if(e.type === 'wave') w.pop([0, 3, 0], 'WAVE ' + e.wave, '#00f5ff');
+    }
+
+    // A FIXED camera: Grid Snake's framing at the centre of its orbit.
+    w.goal.eye[0] = 0; w.goal.eye[1] = 23; w.goal.eye[2] = 18;
+    w.goal.target[0] = 0; w.goal.target[1] = 0; w.goal.target[2] = -1;
+    w.goal.fov = 64;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+
+    // ── DECK ──
+    r.draw('ground', { pos:[0, -0.35, 0], scale:[COLS + 3, 1, ROWS + 3],
+                       color:'#03060e', metallic: 0.5, roughness: 0.38, rim: 0.35 });
+    for(let x = 0; x <= COLS; x++){
+      const major = x % 4 === 0;
+      r.beam([wx(x) - 0.5, -0.28, wz(0) - 0.5], [wx(x) - 0.5, -0.28, wz(ROWS) - 0.5], major ? 0.05 : 0.025,
+             { color:'#0e3a5e', emissive:'#1270b0', emissiveStrength: major ? 1.0 : 0.55, height: 0.03 });
+    }
+    for(let y = 0; y <= ROWS; y++){
+      const major = y % 4 === 0;
+      r.beam([wx(0) - 0.5, -0.28, wz(y) - 0.5], [wx(COLS) - 0.5, -0.28, wz(y) - 0.5], major ? 0.05 : 0.025,
+             { color:'#0e3a5e', emissive:'#1270b0', emissiveStrength: major ? 1.0 : 0.55, height: 0.03 });
+    }
+    // The arena wall — the one wall that never comes down.
+    for(const s of [-1, 1]){
+      r.draw('cube', { pos:[s * (COLS / 2 + 0.3), 0.35, 0], scale:[0.4, 1.3, ROWS + 1.0],
+                       color:'#0a1224', metallic: 0.8, roughness: 0.3, rim: 1.2, emissive:'#00c8ff', emissiveStrength: 0.45 });
+      r.draw('cube', { pos:[0, 0.35, s * (ROWS / 2 + 0.3)], scale:[COLS + 1.0, 1.3, 0.4],
+                       color:'#0a1224', metallic: 0.8, roughness: 0.3, rim: 1.2, emissive:'#00c8ff', emissiveStrength: 0.45 });
+    }
+    r.light({ pos:[-12, 16, -12], color:'#4f7dff', intensity: 320, range: 55 });
+    r.light({ pos:[ 12, 16,  12], color:'#ff6a3a', intensity: 220, range: 55 });
+
+    // ── WALLS OF THE DEREZZED, going out ──
+    for(let i = fades.length - 1; i >= 0; i--){
+      const f = fades[i];
+      if(dt > 0) f.t -= dt * 1.5;
+      if(f.t <= 0){ fades.splice(i, 1); continue; }
+      drawWalls(f.list, f.color, f.t);
+    }
+
+    // ── RIDERS ──
+    const k = round.sim.frac();
+    let lights = 0;
+    for(const rd of S.riders){
+      if(!rd.alive) continue;
+      const ahead = round.sim.open(rd.x + rd.dir.x, rd.y + rd.dir.y) ? k : 0;
+      const hx = wx(rd.x) + rd.dir.x * ahead, hz = wz(rd.y) + rd.dir.y * ahead;
+      const color = rd.player ? me : rd.color;
+      // The wall is laid from the rear wheel, so it stops short of the body.
+      drawWalls(runs(rd.trail, hx - rd.dir.x * 0.55, hz - rd.dir.y * 0.55, rd.dir), color, 1);
+      drawBike(hx, hz, rd.dir, color, rd.player);
+      if(rd.player || lights < 3){
+        r.light({ pos:[hx, 1.6, hz], color, intensity: rd.player ? 110 : 70, range: 11 });
+        if(!rd.player) lights++;
+      }
+    }
+    w.end();
+  });
+};
+
+})();
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 17 · v45 — 🗄️ GAME 28: SERVER STACK — one tap, one tower
+// ══════════════════════════════════════════════════════════════════════
+// A server slab slides across the top of the tower; tap to drop it. Whatever
+// hangs past the slab below is sliced off and falls. Land within a hair of
+// perfect and nothing is cut — land three perfects running and the slab
+// grows back. Miss the tower entirely and the run is over.
+//
+// The easiest mission in the arcade to pick up (one input, no clock), which
+// is why it sits at clearance 1 — and the one where the 3D build earns its
+// keep: the tower's height IS the score, and in 3D you watch it climb.
+//
+// ONE SIMULATION, TWO RENDERERS, as LIGHT CYCLE (§ 16). stackSim() is the
+// game; the 2D build slides every slab along X and draws a side view, the
+// 3D build alternates X and Z the way the genre does. Either axis is the
+// same timing problem, so a 3D score and a 2D score are the same score.
+const SK = {
+  W0: 6,                 // the foundation's width and depth, world units
+  H: 0.5,                // one slab's height
+  RANGE: 5.4,            // how far out a slab starts from centre
+  SPEED: 5.2,            // units a second at Stable, times the tier
+  SPEED_UP: 0.018,       // a little faster every floor…
+  SPEED_MAX: 2.1,        // …up to this multiple
+  PERFECT: 0.13,         // within this many units counts as perfect (no cut)
+  REGROW: 0.08,          // width a third perfect in a row gives back
+  PLACE: 20, PERFECT_BONUS: 15, STREAK_BONUS: 5, STREAK_MAX: 25,
+  CAP: 1000
+};
+
+function stackSim(opts){
+  opts = opts || {};
+  const axes = opts.axes || ['x'];
+  const diff = opts.diff || 1;
+  const S = {
+    slabs: [{ x: 0, z: 0, w: SK.W0, d: SK.W0, y: 0, lvl: 0 }],   // the foundation
+    cur: null, falling: [], lvl: 0, score: 0, perfects: 0, streak: 0, best: 0,
+    over: false, placed: 0
+  };
+  const top = () => S.slabs[S.slabs.length - 1];
+
+  function spawn(){
+    const t = top();
+    const axis = axes[S.lvl % axes.length];
+    const side = (S.lvl % 2 === 0) ? -1 : 1;
+    S.cur = {
+      axis, x: t.x, z: t.z, w: t.w, d: t.d, y: t.y + SK.H, lvl: S.lvl + 1,
+      dir: -side,
+      speed: SK.SPEED * diff * Math.min(SK.SPEED_MAX, 1 + S.lvl * SK.SPEED_UP)
+    };
+    S.cur[axis] = (axis === 'x' ? t.x : t.z) + side * SK.RANGE;
+  }
+  spawn();
+
+  // Returns what the drop did, for the renderer and the round.
+  function drop(absorb){
+    if(S.over || !S.cur) return null;
+    const c = S.cur, t = top();
+    const a = c.axis;
+    const size = a === 'x' ? 'w' : 'd';
+    const off = c[a] - t[a];
+    const len = t[size];
+    let res;
+    if(Math.abs(off) <= SK.PERFECT){
+      // Perfect: snapped onto the slab below, nothing cut.
+      c[a] = t[a];
+      S.streak++; S.perfects++;
+      res = { type: 'perfect', streak: S.streak };
+      // A third perfect in a row grows the slab back along the axis it was
+      // dropped on, never past the foundation's own size.
+      if(S.streak >= 3 && c[size] < SK.W0){
+        c[size] = Math.min(SK.W0, c[size] * (1 + SK.REGROW));
+        res.grew = true;
+      }
+    }else if(Math.abs(off) >= len){
+      // A clean miss. The shield is the round's call.
+      if(absorb && absorb()){
+        c[a] = t[a];
+        S.streak = 0;
+        res = { type: 'saved' };
+      }else{
+        S.falling.push({ ...c, vy: 0, spin: (Math.random() - 0.5) * 3, rot: 0, t: 0 });
+        S.cur = null;
+        S.over = true;
+        return { type: 'miss' };
+      }
+    }else{
+      // A cut: the overlap stays, the overhang falls.
+      const keep = len - Math.abs(off);
+      const lo = Math.max(t[a] - len / 2, c[a] - len / 2), hi = Math.min(t[a] + len / 2, c[a] + len / 2);
+      const piece = { ...c, vy: 0, spin: (Math.random() - 0.5) * 3, rot: 0, t: 0 };
+      piece[size] = Math.abs(off);
+      piece[a] = off > 0 ? hi + Math.abs(off) / 2 : lo - Math.abs(off) / 2;
+      S.falling.push(piece);
+      c[size] = keep;
+      c[a] = (lo + hi) / 2;
+      S.streak = 0;
+      res = { type: 'cut', cut: Math.abs(off) };
+    }
+    S.slabs.push({ x: c.x, z: c.z, w: c.w, d: c.d, y: c.y, lvl: c.lvl });
+    S.lvl++; S.placed++;
+    S.score += SK.PLACE + (res.type === 'perfect' ? SK.PERFECT_BONUS + Math.min(SK.STREAK_MAX, (S.streak - 1) * SK.STREAK_BONUS) : 0);
+    S.best = Math.max(S.best, S.streak);
+    spawn();
+    return res;
+  }
+
+  return {
+    S, top, drop,
+    update(dt){
+      if(dt <= 0) return;
+      const c = S.cur;
+      if(c && !S.over){
+        const a = c.axis;
+        const t = top();
+        c[a] += c.dir * c.speed * dt;
+        const base = a === 'x' ? t.x : t.z;
+        if(c[a] > base + SK.RANGE){ c[a] = base + SK.RANGE; c.dir = -1; }
+        if(c[a] < base - SK.RANGE){ c[a] = base - SK.RANGE; c.dir = 1; }
+      }
+      for(let i = S.falling.length - 1; i >= 0; i--){
+        const f = S.falling[i];
+        f.vy -= 18 * dt; f.y += f.vy * dt; f.rot += f.spin * dt; f.t += dt;
+        if(f.t > 2.4) S.falling.splice(i, 1);
+      }
+    }
+  };
+}
+
+// ── THE ROUND ──────────────────────────────────────────────────────────
+let stackLast = null;          // the last round, for the console
+function stackRound(o){
+  o = o || {};
+  const diff = getDifficultyModifier();
+  const sim = stackSim({ axes: o.axes, diff });
+  const S = sim.S;
+  let ended = false;
+
+  setControls({ action:'⬇ DROP' });
+  setControlHint('TAP ANYWHERE TO DROP THE SLAB', 'SPACE / CLICK TO DROP THE SLAB');
+  showTouchHint('TAP TO DROP — LINE IT UP WITH THE ONE BELOW');
+  document.getElementById('g-time').textContent = '∞';
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,#39ff14,var(--cyan))';
+
+  const press = () => {
+    if(ended) return;
+    hideTouchHint();
+    const r = sim.drop(() => survivedFatal());
+    if(!r) return;
+    if(r.type === 'perfect'){ snd('combo', { semi: Math.min(12, r.streak * 2) }); if(r.grew) snd('powerup'); }
+    else if(r.type === 'cut'){ snd('land'); }
+    else if(r.type === 'saved'){ snd('shield'); }
+    else if(r.type === 'miss'){ snd('bigExplode'); end(); }
+    setLive(Math.min(SK.CAP, S.score));
+    document.getElementById('prog-fill').style.width = `${Math.min(100, S.score / SK.CAP * 100)}%`;
+    if(o.onDrop) o.onDrop(r);
+  };
+  window.onkeydown = e => {
+    if(e.repeat) return;
+    if(e.code === 'Space' || e.code === 'Enter' || e.code === 'ArrowDown'){ e.preventDefault(); press(); }
+  };
+  document.getElementById('ctrl-action').onclick = press;
+  bindCanvasDrag({ onDown(){ press(); }, onMove(){}, onUp(){} });
+
+  function end(){
+    if(ended) return;
+    ended = true;
+    clearCanvasDrag();
+    const earned = Math.min(SK.CAP, Math.round(S.score));
+    gLater(() => showResults('stack', earned, {
+      '🗄️ Floors Stacked': S.placed,
+      '✨ Perfect Drops': S.perfects,
+      '🔗 Best Perfect Run': S.best,
+      '🏆 Final Score': `${earned} PTS`
+    }), 1100);
+  }
+  snd('go');
+  return stackLast = { sim, S, press, get ended(){ return ended; } };
+}
+
+// ── THE 2D BUILD — a side view that climbs with the tower ─────────────
+function startServerStack(){
+  document.getElementById('g-canvas-holder').style.display = 'block';
+  const W = BOARD_W, H = BOARD_H;
+  let flash = 0, flashText = '', camY = 0;
+  const round = stackRound({ axes: ['x'], onDrop(r){
+    if(r.type === 'perfect'){ flash = 1; flashText = r.grew ? 'PERFECT · +WIDTH' : (r.streak > 1 ? `PERFECT ×${r.streak}` : 'PERFECT'); }
+    if(r.type === 'saved'){ flash = 1; flashText = '🛡️ SHIELD CATCH'; }
+  } });
+  fitCanvas();
+  const sim = round.sim, S = round.S;
+  const U = 32, SH = 22, DEPTH = 12;          // px per unit, px per slab, top-face depth
+  const cx = W / 2;
+  const groundY = H - 46;
+  let last = gNow();
+
+  const hue = lvl => (190 + lvl * 11) % 360;
+  function slab(x, w, yLevel, lvl, alpha, moving){
+    const sx = cx + (x - w / 2) * U, sw = w * U;
+    const sy = groundY - yLevel * SH + camY;
+    const h = hue(lvl);
+    aCtx.save();
+    aCtx.globalAlpha = alpha;
+    // top face
+    aCtx.fillStyle = `hsl(${h},90%,${moving ? 72 : 62}%)`;
+    aCtx.beginPath();
+    aCtx.moveTo(sx, sy); aCtx.lineTo(sx + DEPTH, sy - DEPTH * 0.6);
+    aCtx.lineTo(sx + sw + DEPTH, sy - DEPTH * 0.6); aCtx.lineTo(sx + sw, sy); aCtx.closePath(); aCtx.fill();
+    // side face
+    aCtx.fillStyle = `hsl(${h},70%,${moving ? 34 : 26}%)`;
+    aCtx.beginPath();
+    aCtx.moveTo(sx + sw, sy); aCtx.lineTo(sx + sw + DEPTH, sy - DEPTH * 0.6);
+    aCtx.lineTo(sx + sw + DEPTH, sy + SH - DEPTH * 0.6); aCtx.lineTo(sx + sw, sy + SH); aCtx.closePath(); aCtx.fill();
+    // front face — a server: dark panel, a lit strip, a row of LEDs
+    aCtx.fillStyle = `hsl(${h},60%,${moving ? 22 : 16}%)`;
+    aCtx.fillRect(sx, sy, sw, SH);
+    aCtx.fillStyle = `hsl(${h},100%,${moving ? 70 : 58}%)`;
+    aCtx.fillRect(sx, sy + 3, sw, 2);
+    for(let i = 8; i < sw - 6; i += 12){
+      aCtx.fillStyle = (i / 12 + lvl) % 3 === 0 ? '#39ff14' : 'rgba(255,255,255,0.35)';
+      aCtx.fillRect(sx + i, sy + SH - 8, 3, 3);
+    }
+    aCtx.restore();
+  }
+
+  function loop(){
+    if(round.ended && !S.falling.length){ /* keep drawing until the card lands */ }
+    gameLoopId = requestAnimationFrame(loop);
+    const now = gNow();
+    const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
+    sim.update(dt);
+    // The view climbs so the working slab stays in the upper middle.
+    const want = Math.max(0, (S.lvl + 1) * SH - H * 0.52);
+    if(dt > 0) camY += (want - camY) * Math.min(1, dt * 5);
+
+    aCtx.clearRect(0, 0, W, H);
+    const g = aCtx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#05030f'); g.addColorStop(1, '#0a1026');
+    aCtx.fillStyle = g; aCtx.fillRect(0, 0, W, H);
+    // A far skyline that drifts down as you climb (parallax).
+    aCtx.fillStyle = 'rgba(80,110,200,0.12)';
+    for(let i = 0; i < 14; i++){
+      const bw = 30 + (i * 37) % 26, bh = 60 + (i * 53) % 120;
+      aCtx.fillRect(i * 42 - 10, groundY - bh + camY * 0.3 + 40, bw, bh + 200);
+    }
+    // ground
+    aCtx.fillStyle = '#0c1430';
+    aCtx.fillRect(0, groundY + SH + camY, W, H);
+
+    for(const s of S.slabs){
+      const sy = groundY - s.y / SK.H * SH + camY;
+      if(sy > H + 40 || sy < -60) continue;
+      slab(s.x, s.w, s.y / SK.H, s.lvl, 1, false);
+    }
+    if(S.cur) slab(S.cur.x, S.cur.w, S.cur.y / SK.H, S.cur.lvl, 1, true);
+    for(const f of S.falling){
+      const sx = cx + f.x * U, sy = groundY - f.y / SK.H * SH + camY;
+      aCtx.save();
+      aCtx.translate(sx, sy + SH / 2);
+      aCtx.rotate(f.rot);
+      aCtx.globalAlpha = Math.max(0, 1 - f.t / 2.4);
+      aCtx.fillStyle = `hsl(${hue(f.lvl)},60%,30%)`;
+      aCtx.fillRect(-f.w * U / 2, -SH / 2, f.w * U, SH);
+      aCtx.restore();
+    }
+    if(flash > 0){
+      if(dt > 0) flash -= dt * 1.4;
+      aCtx.save();
+      aCtx.globalAlpha = Math.max(0, flash);
+      aCtx.font = '900 26px Orbitron, sans-serif';
+      aCtx.textAlign = 'center';
+      aCtx.fillStyle = '#eaffff'; aCtx.shadowBlur = 18; aCtx.shadowColor = '#39ff14';
+      aCtx.fillText(flashText, W / 2, H * 0.22);
+      aCtx.restore();
+    }
+    aCtx.font = '700 12px Orbitron, sans-serif';
+    aCtx.textAlign = 'left';
+    aCtx.fillStyle = 'rgba(234,246,255,0.8)';
+    aCtx.fillText(`FLOOR ${S.placed}` + (S.streak > 1 ? ` · PERFECT ×${S.streak}` : ''), 12, 22);
+    if(S.slabs.length === 1 && !round.ended){
+      aCtx.textAlign = 'center';
+      aCtx.fillStyle = 'rgba(234,246,255,0.55)';
+      aCtx.fillText('DROP IT WHEN IT LINES UP', W / 2, H - 14);
+    }
+  }
+  gameLoopId = requestAnimationFrame(loop);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  🚀 3D MISSIONS, PART VI (cont.) · 🗄️ SERVER STACK 3D — a tower in a city
+// ══════════════════════════════════════════════════════════════════════
+// The tower rises off a pedestal in the middle of the skyline, and the camera
+// climbs with it — straight up, never around: the slabs alternate between X
+// and Z, and a fixed three-quarter view shows both axes at once, so there is
+// nothing a rotating camera would add except a moving target for your timing.
+(function(){
+'use strict';
+
+const P = window.PI3D;
+if(!P) return;
+const K = P.kit;
+const { begin3d, runLoop } = K;
+
+const NIGHT = {
+  env:  { zenith:'#03051a', horizon:'#3a1050', ground:'#05060f', intensity: 1.3 },
+  fog:  { color:'#0b0620', density: 0.0048 },
+  sun:  { dir:[-0.4, -0.85, -0.5], color:'#6f7dff', intensity: 0.7 },
+  grade:{ exposure: 0.95, bloom: 0.42, threshold: 1.6, knee: 0.5, radius: 0.9,
+          vignette: 0.44, aberration: 0.4, grain: 0.028, scanline: 0.012, saturation: 1.12 }
+};
+
+// hsl → #rrggbb, because the renderer takes hex.
+function hslHex(h, s, l){
+  s /= 100; l /= 100;
+  const k = n => (n + h / 30) % 12, a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return '#' + [f(0), f(8), f(4)].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
+}
+
+P.games.stack = function(){
+  const w = begin3d(Object.assign({ ease: 0.08 }, NIGHT));
+  if(!w) return;
+  const r = w.r;
+  w.buildCity({ seed: 20260919, count: 72, spread: 115, hole: 17, y: -12 });
+  const round = stackRound({ axes: ['x', 'z'], onDrop(res){
+    const t = round.sim.top();
+    if(res.type === 'perfect'){
+      w.burst([t.x, t.y + SK.H, t.z], '#39ff88', 26, { speed: 8, life: 0.6 });
+      w.pop([t.x, t.y + 1.8, t.z], res.grew ? 'PERFECT +WIDTH' : (res.streak > 1 ? 'PERFECT X' + res.streak : 'PERFECT'), '#39ff88');
+    }
+    if(res.type === 'cut') w.kick(0.3);
+    if(res.type === 'saved'){ w.pop([t.x, t.y + 1.8, t.z], 'SHIELD CATCH', '#a855f7'); w.kick(0.8); }
+    if(res.type === 'miss') w.kick(1.6);
+  } });
+  const S = round.S;
+  const hue = lvl => (190 + lvl * 11) % 360;
+  let camTop = 0;
+
+  function slab(s, live, alpha, rot){
+    const h = hue(s.lvl);
+    const lit = hslHex(h, 95, live ? 62 : 55);
+    const body = hslHex(h, 55, live ? 22 : 15);
+    const cy = s.y + SK.H / 2;
+    const o = rot ? { rot } : {};
+    r.draw('techblock', Object.assign({ pos:[s.x, cy, s.z], scale:[s.w, SK.H * 0.94, s.d],
+      color: body, metallic: 0.6, roughness: 0.34, rim: 1.2,
+      emissive: lit, emissiveStrength: live ? 0.5 : 0.22, alpha }, o));
+    if(rot) return;
+    // A lit rim round the top edge: the line your eye lines the drop up by.
+    const y = s.y + SK.H * 0.97, hw = s.w / 2, hd = s.d / 2;
+    const e = { height: 0.05, color:'#ffffff', emissive: lit, emissiveStrength: live ? 1.9 : 1.2, alpha, detail: 0 };
+    r.beam([s.x - hw, y, s.z - hd], [s.x + hw, y, s.z - hd], 0.06, e);
+    r.beam([s.x - hw, y, s.z + hd], [s.x + hw, y, s.z + hd], 0.06, e);
+    r.beam([s.x - hw, y, s.z - hd], [s.x - hw, y, s.z + hd], 0.06, e);
+    r.beam([s.x + hw, y, s.z - hd], [s.x + hw, y, s.z + hd], 0.06, e);
+  }
+
+  runLoop(dt => {
+    round.sim.update(dt);
+    const topY = round.sim.top().y;
+    if(dt > 0) camTop += (topY - camTop) * Math.min(1, dt * 3);
+    w.goal.eye[0] = 10; w.goal.eye[1] = camTop + 7.5; w.goal.eye[2] = 13;
+    w.goal.target[0] = 0; w.goal.target[1] = camTop - 0.8; w.goal.target[2] = 0;
+    w.goal.fov = 50;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+    // Street level: without it the skyline hangs in the void below the
+    // horizon, every building cut off at its base in mid-air.
+    r.draw('ground', { pos:[0, -12.05, -60], scale:[420, 1, 360], color:'#05060f', metallic: 0.5, roughness: 0.35, rim: 0.2 });
+    w.drawGrid({ y: -11.95, halfX: 120, halfZ: 170, step: 12, color:'#3a1a7a', emissive: 0.7, width: 0.12 });
+    w.drawCity(0);
+
+    // The pedestal the foundation stands on, down to street level.
+    r.draw('cube', { pos:[0, -6, 0], scale:[SK.W0 + 0.8, 12, SK.W0 + 0.8],
+                     color:'#0a0f1f', metallic: 0.7, roughness: 0.3, rim: 1.1, detail: 1 });
+    for(const s of S.slabs){ if(topY - s.y <= 16) slab(s, false, 1); }
+    if(S.cur) slab(S.cur, true, 1);
+    for(const f of S.falling){
+      slab(f, false, Math.max(0, 1 - f.t / 2.4), [f.rot * 0.5, 0, f.rot]);
+    }
+
+    r.light({ pos:[0, topY + 3.2, 0], color:'#eaf6ff', intensity: 160, range: 14 });
+    r.light({ pos:[8, topY + 6, 8], color:'#6f7dff', intensity: 200, range: 26 });
+    if(S.cur) r.light({ pos:[S.cur.x, S.cur.y + 1.6, S.cur.z], color: hslHex(hue(S.cur.lvl), 95, 60), intensity: 80, range: 9 });
+    w.end();
+  });
+};
+
+})();
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 18 · v46 — 👾 GAME 29: DATA MUNCHER — the maze
+// ══════════════════════════════════════════════════════════════════════
+// The biggest arcade classic the grid was missing. Eat every data bit in the
+// maze while four security daemons hunt you; eat a power core and, for a few
+// seconds, you hunt them.
+//
+// The four daemons are the four classic personalities, because the genre
+// works BECAUSE they differ — four copies of one chaser are just a crowd:
+//   HUNTER    goes straight for you.
+//   INTERCEPT aims four cells ahead of where you are heading.
+//   FLANK     aims past you from the far side of HUNTER — the pincer.
+//   SHY       chases until it gets close, then breaks off to its corner.
+// All four alternate SCATTER (each to its own corner) and CHASE on a fixed
+// schedule, which is what gives a player breathing room to plan a route.
+//
+// ONE SIMULATION, TWO RENDERERS, like LIGHT CYCLE (§ 16) and SERVER STACK
+// (§ 17). The maze below was checked by script: mirror-symmetric, every cell
+// reachable, and not one dead end outside the daemon house.
+const DM = {
+  MAZE: [
+    "#####################",
+    "#o........#........o#",
+    "#.###.###.#.###.###.#",
+    "#...................#",
+    "#.###.#.#####.#.###.#",
+    "#.....#...#...#.....#",
+    "#####.###.#.###.#####",
+    "#####.#.......#.#####",
+    "#####.#.##-##.#.#####",
+    "#####...#GGG#...#####",
+    "#####.#.#####.#.#####",
+    "#####.#.......#.#####",
+    "#####.#.#####.#.#####",
+    "#.........#.........#",
+    "#.###.###.#.###.###.#",
+    "#o........P........o#",
+    "#.###.#.#####.#.###.#",
+    "#...................#",
+    "#####################"
+  ],
+  COLS: 21, ROWS: 19,
+  EXIT: [10, 7], HOME: [10, 9],
+  SPEED: 6.6,                // the muncher, cells a second
+  GHOST: 5.9,                // daemons at Stable, times the tier
+  LEVEL_UP: 0.06,            // daemons get this much faster each cleared maze
+  FRIGHT_SPEED: 3.6, EYES: 12, HOUSE: 3,
+  FRIGHT: 7, FRIGHT_MIN: 2.5,
+  CLOCK: 90,
+  DOT: 5, CORE: 20, GHOST_PTS: [60, 120, 180, 240], CLEAR: 150, CAP: 1300,
+  LIVES: 3,
+  MODES: [['scatter', 6], ['chase', 18], ['scatter', 5], ['chase', 20], ['scatter', 4], ['chase', 1e9]],
+  GHOSTS: [
+    { id: 'hunter',    name: 'HUNTER',    color: '#ff2442', corner: [19, 1],  home: [10, 9], release: 0 },
+    { id: 'intercept', name: 'INTERCEPT', color: '#ff5ad8', corner: [1, 1],   home: [9, 9],  release: 1.5 },
+    { id: 'flank',     name: 'FLANK',     color: '#39ff88', corner: [19, 17], home: [11, 9], release: 4 },
+    { id: 'shy',       name: 'SHY',       color: '#ffb020', corner: [1, 17],  home: [10, 9], release: 7 }
+  ]
+};
+const DM_DIRS = [{ x: 0, y: -1 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 0 }];   // classic tie order
+
+function dmSim(opts){
+  opts = opts || {};
+  const { COLS, ROWS, MAZE } = DM;
+  const diff = opts.diff || 1;
+  const cell = (x, y) => (x < 0 || y < 0 || x >= COLS || y >= ROWS) ? '#' : MAZE[y][x];
+  const walkable = (x, y) => { const c = cell(x, y); return c !== '#' && c !== '-' && c !== 'G'; };
+  let start = [10, 15];
+  const dots = new Set(), cores = new Set();
+  function fill(){
+    dots.clear(); cores.clear();
+    for(let y = 0; y < ROWS; y++) for(let x = 0; x < COLS; x++){
+      const c = MAZE[y][x];
+      if(c === '.') dots.add(y * COLS + x);
+      if(c === 'o') cores.add(y * COLS + x);
+      if(c === 'P') start = [x, y];
+    }
+  }
+  fill();
+
+  const S = {
+    level: 1, score: 0, lives: DM.LIVES, over: false, freeze: 1.6, ready: true,
+    modeIdx: 0, modeT: DM.MODES[0][1], fright: 0, eatChain: 0, eaten: 0, bits: 0, clears: 0,
+    t: 0
+  };
+  const player = { tx: start[0], ty: start[1], dir: { x: 0, y: 0 }, want: { x: -1, y: 0 }, prog: 0, alive: true };
+  const ghosts = DM.GHOSTS.map(g => ({ ...g, x: g.home[0], y: g.home[1], tx: g.home[0], ty: g.home[1],
+                                        dir: { x: 0, y: -1 }, prog: 0, state: 'house', wait: g.release, bob: Math.random() * 6 }));
+
+  function resetActors(){
+    player.tx = start[0]; player.ty = start[1]; player.prog = 0;
+    player.dir = { x: 0, y: 0 }; player.want = { x: -1, y: 0 };
+    ghosts.forEach(g => { g.x = g.home[0]; g.y = g.home[1]; g.tx = g.home[0]; g.ty = g.home[1]; g.prog = 0;
+                          g.dir = { x: 0, y: -1 }; g.state = 'house'; g.wait = g.release; });
+    S.fright = 0; S.eatChain = 0; S.modeIdx = 0; S.modeT = DM.MODES[0][1];
+  }
+
+  const ppos = () => ({ x: player.tx + player.dir.x * player.prog, y: player.ty + player.dir.y * player.prog });
+  const gpos = g => (g.state === 'house' || g.state === 'leaving' || g.state === 'entering')
+    ? { x: g.x, y: g.y } : { x: g.tx + g.dir.x * g.prog, y: g.ty + g.dir.y * g.prog };
+
+  // ── THE MUNCHER ──
+  function eatAt(x, y, ev){
+    const k = y * COLS + x;
+    if(dots.has(k)){ dots.delete(k); S.score += DM.DOT; S.bits++; ev.push({ type: 'dot', x, y }); }
+    if(cores.has(k)){
+      cores.delete(k); S.score += DM.CORE; S.eatChain = 0;
+      S.fright = Math.max(DM.FRIGHT_MIN, DM.FRIGHT - (S.level - 1) * 0.8);
+      ghosts.forEach(g => { if(g.state === 'active' || g.state === 'fright'){ g.state = 'fright'; g.reverse = true; } });
+      ev.push({ type: 'core', x, y });
+    }
+  }
+  function stepPlayer(dt, ev){
+    const w = player.want, d = player.dir;
+    // A reversal is instant, mid-cell — the classic escape.
+    if((d.x || d.y) && w.x === -d.x && w.y === -d.y){
+      player.tx += d.x; player.ty += d.y; player.dir = { x: w.x, y: w.y }; player.prog = 1 - player.prog;
+    }
+    if(!player.dir.x && !player.dir.y){
+      if(walkable(player.tx + w.x, player.ty + w.y)) player.dir = { x: w.x, y: w.y };
+      else return;
+    }
+    let dist = DM.SPEED * dt;
+    while(dist > 0){
+      const left = 1 - player.prog;
+      if(dist < left){ player.prog += dist; break; }
+      dist -= left;
+      player.tx += player.dir.x; player.ty += player.dir.y; player.prog = 0;
+      eatAt(player.tx, player.ty, ev);
+      const w2 = player.want;
+      if((w2.x || w2.y) && walkable(player.tx + w2.x, player.ty + w2.y)) player.dir = { x: w2.x, y: w2.y };
+      else if(!walkable(player.tx + player.dir.x, player.ty + player.dir.y)){ player.dir = { x: 0, y: 0 }; break; }
+    }
+  }
+
+  // ── THE DAEMONS ──
+  function targetOf(g){
+    const mode = DM.MODES[S.modeIdx][0];
+    if(mode === 'scatter') return g.corner;
+    const p = { x: player.tx, y: player.ty }, pd = player.dir;
+    if(g.id === 'hunter') return [p.x, p.y];
+    if(g.id === 'intercept') return [p.x + pd.x * 4, p.y + pd.y * 4];
+    if(g.id === 'flank'){
+      const h = ghosts[0], v = { x: p.x + pd.x * 2, y: p.y + pd.y * 2 };
+      return [v.x * 2 - h.tx, v.y * 2 - h.ty];
+    }
+    const dx = g.tx - p.x, dy = g.ty - p.y;               // shy
+    return (dx * dx + dy * dy > 64) ? [p.x, p.y] : g.corner;
+  }
+  function choose(g){
+    const back = { x: -g.dir.x, y: -g.dir.y };
+    let opts = DM_DIRS.filter(d => walkable(g.tx + d.x, g.ty + d.y) && !(d.x === back.x && d.y === back.y));
+    if(!opts.length) opts = [back];
+    if(g.state === 'fright'){ g.dir = opts[(Math.random() * opts.length) | 0]; return; }
+    const tg = g.state === 'eyes' ? DM.EXIT : targetOf(g);
+    let best = opts[0], bd = Infinity;
+    for(const d of opts){
+      const x = g.tx + d.x - tg[0], y = g.ty + d.y - tg[1];
+      const dd = x * x + y * y;
+      if(dd < bd){ bd = dd; best = d; }
+    }
+    g.dir = best;
+  }
+  function gridMove(g, speed, dt){
+    if(g.reverse){
+      g.reverse = false;
+      if(g.prog > 0){ g.tx += g.dir.x; g.ty += g.dir.y; g.prog = 1 - g.prog; }
+      g.dir = { x: -g.dir.x, y: -g.dir.y };
+    }
+    let dist = speed * dt;
+    while(dist > 0){
+      const left = 1 - g.prog;
+      if(dist < left){ g.prog += dist; break; }
+      dist -= left;
+      g.tx += g.dir.x; g.ty += g.dir.y; g.prog = 0;
+      if(g.state === 'eyes' && g.tx === DM.EXIT[0] && g.ty === DM.EXIT[1]){
+        g.state = 'entering'; g.x = g.tx; g.y = g.ty; return;
+      }
+      choose(g);
+    }
+  }
+  // Inside the house the daemons move on straight lines, not the grid.
+  function glide(g, tx, ty, speed, dt){
+    const dx = tx - g.x, dy = ty - g.y, d = Math.hypot(dx, dy);
+    const s = speed * dt;
+    if(d <= s){ g.x = tx; g.y = ty; return true; }
+    g.x += dx / d * s; g.y += dy / d * s;
+    return false;
+  }
+  function stepGhost(g, dt){
+    const lvlMul = 1 + (S.level - 1) * DM.LEVEL_UP;
+    if(g.state === 'house'){
+      g.bob += dt * 4;
+      g.wait -= dt;
+      if(g.wait <= 0) g.state = 'leaving';
+      return;
+    }
+    if(g.state === 'leaving'){
+      const atX = glide(g, DM.HOME[0], g.y, DM.HOUSE, dt);
+      if(atX && glide(g, DM.EXIT[0], DM.EXIT[1], DM.HOUSE, dt)){
+        g.tx = DM.EXIT[0]; g.ty = DM.EXIT[1]; g.prog = 0;
+        g.dir = { x: Math.random() < 0.5 ? -1 : 1, y: 0 };
+        g.state = S.fright > 0 ? 'fright' : 'active';
+      }
+      return;
+    }
+    if(g.state === 'entering'){
+      if(glide(g, DM.HOME[0], DM.HOME[1], DM.EYES * 0.5, dt)){ g.state = 'house'; g.wait = 0.8; }
+      return;
+    }
+    const speed = g.state === 'eyes' ? DM.EYES
+                : g.state === 'fright' ? DM.FRIGHT_SPEED
+                : DM.GHOST * diff * lvlMul;
+    gridMove(g, speed, dt);
+  }
+
+  // ── THE FRAME ──
+  function update(dt){
+    const ev = [];
+    if(S.over || dt <= 0) return ev;
+    S.t += dt;
+    if(S.freeze > 0){
+      S.freeze -= dt;
+      if(S.freeze <= 0){ S.ready = false; ev.push({ type: 'go' }); }
+      return ev;
+    }
+    // The scatter/chase clock stands still while the daemons are frightened.
+    if(S.fright > 0){
+      S.fright -= dt;
+      if(S.fright <= 0){ S.fright = 0; ghosts.forEach(g => { if(g.state === 'fright') g.state = 'active'; }); }
+    }else{
+      S.modeT -= dt;
+      if(S.modeT <= 0 && S.modeIdx < DM.MODES.length - 1){
+        S.modeIdx++; S.modeT = DM.MODES[S.modeIdx][1];
+        ghosts.forEach(g => { if(g.state === 'active') g.reverse = true; });   // the classic tell
+      }
+    }
+    stepPlayer(dt, ev);
+    ghosts.forEach(g => stepGhost(g, dt));
+
+    // Contact.
+    const p = ppos();
+    for(const g of ghosts){
+      if(g.state === 'house' || g.state === 'leaving' || g.state === 'entering' || g.state === 'eyes') continue;
+      const q = gpos(g);
+      if(Math.hypot(q.x - p.x, q.y - p.y) > 0.62) continue;
+      if(g.state === 'fright'){
+        const pts = DM.GHOST_PTS[Math.min(S.eatChain, DM.GHOST_PTS.length - 1)];
+        S.eatChain++; S.eaten++; S.score += pts;
+        g.state = 'eyes';
+        ev.push({ type: 'eat', x: q.x, y: q.y, pts, color: g.color });
+      }else if(opts.absorb && opts.absorb()){
+        // 🛡️ The shield throws the daemon home instead of the muncher.
+        g.state = 'eyes';
+        ev.push({ type: 'saved', x: q.x, y: q.y, color: g.color });
+      }else{
+        S.lives--;
+        ev.push({ type: 'caught', x: p.x, y: p.y, color: g.color, lives: S.lives });
+        if(S.lives <= 0){ S.over = true; return ev; }
+        resetActors();
+        S.freeze = 1.5; S.ready = true;
+        return ev;
+      }
+    }
+    if(!dots.size && !cores.size){
+      S.score += DM.CLEAR; S.clears++; S.level++;
+      fill(); resetActors();
+      S.freeze = 1.8; S.ready = true;
+      ev.push({ type: 'clear', level: S.level });
+    }
+    return ev;
+  }
+
+  return {
+    S, player, ghosts, dots, cores, cell, walkable, ppos, gpos, update,
+    steer(x, y){ player.want = { x, y }; }
+  };
+}
+
+// ── THE ROUND ──────────────────────────────────────────────────────────
+let dmLast = null;             // the last round, for the console
+function dmRound(){
+  const diff = getDifficultyModifier();
+  const sim = dmSim({ diff, absorb: () => survivedFatal() });
+  const S = sim.S;
+  const time0 = Math.round(DM.CLOCK * getTimeModifier());
+  let time = time0, ended = false;
+
+  setControls({ left:'←', action:'↑', drop:'↓', right:'→' });
+  setControlHint('SWIPE OR TAP AN ARROW TO STEER', 'ARROW KEYS / WASD TO STEER');
+  showTouchHint('SWIPE TO STEER · EAT EVERY DATA BIT');
+  document.getElementById('g-time').textContent = time;
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,#ffd700,#ff5ad8)';
+
+  const steer = (x, y) => { hideTouchHint(); sim.steer(x, y); };
+  window.onkeydown = e => {
+    const k = e.code;
+    if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS'].includes(k)) e.preventDefault();
+    if(k === 'ArrowLeft'  || k === 'KeyA') steer(-1, 0);
+    if(k === 'ArrowRight' || k === 'KeyD') steer(1, 0);
+    if(k === 'ArrowUp'    || k === 'KeyW') steer(0, -1);
+    if(k === 'ArrowDown'  || k === 'KeyS') steer(0, 1);
+  };
+  document.getElementById('ctrl-left').onclick   = () => steer(-1, 0);
+  document.getElementById('ctrl-right').onclick  = () => steer(1, 0);
+  document.getElementById('ctrl-action').onclick = () => steer(0, -1);
+  document.getElementById('ctrl-drop').onclick   = () => steer(0, 1);
+  let sx = 0, sy = 0;
+  bindCanvasDrag({
+    onDown(p){ hideTouchHint(); sx = p.x; sy = p.y; },
+    onMove(p){
+      const dx = p.x - sx, dy = p.y - sy;
+      if(Math.max(Math.abs(dx), Math.abs(dy)) < 22) return;
+      if(Math.abs(dx) > Math.abs(dy)) steer(dx > 0 ? 1 : -1, 0); else steer(0, dy > 0 ? 1 : -1);
+      sx = p.x; sy = p.y;
+    },
+    onUp(){}
+  });
+
+  gTimer = setInterval(() => {
+    if(ended) return;
+    time--;
+    document.getElementById('g-time').textContent = Math.max(0, time);
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time / time0 * 100)}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end('timeout');
+  }, 1000);
+
+  function end(reason){
+    if(ended) return;
+    ended = true;
+    clearCanvasDrag();
+    if(reason !== 'timeout') snd('gameOver');
+    const earned = Math.min(DM.CAP, Math.round(S.score));
+    gLater(() => showResults('muncher', earned, {
+      '💾 Data Bits Eaten': S.bits,
+      '👾 Daemons Eaten': S.eaten,
+      '🌀 Mazes Cleared': S.clears,
+      ...(reason === 'timeout' ? { '✅ Status': 'OUTLASTED THE CLOCK' } : { '💥 Status': 'CAUGHT' }),
+      '🏆 Final Score': `${earned} PTS`
+    }), reason === 'timeout' ? 300 : 1100);
+  }
+
+  let chomp = 0;
+  return dmLast = {
+    sim, S,
+    frame(dt){
+      if(ended) return [];
+      const ev = sim.update(dt);
+      for(const e of ev){
+        if(e.type === 'dot'){ if(++chomp % 2) snd('eat', { semi: 2 }); }
+        else if(e.type === 'core') snd('powerup');
+        else if(e.type === 'eat') snd('combo', { semi: 4 + Math.min(8, S.eatChain * 2) });
+        else if(e.type === 'saved') snd('shield');
+        else if(e.type === 'caught') snd(S.over ? 'bigExplode' : 'hurt');
+        else if(e.type === 'clear'){ snd('victory'); toast(`👾 MAZE CLEARED · +${DM.CLEAR}`, 1800); }
+        else if(e.type === 'go') snd('go');
+      }
+      if(ev.length) setLive(Math.min(DM.CAP, S.score));
+      if(S.over) end('caught');
+      return ev;
+    },
+    get ended(){ return ended; }
+  };
+}
+
+// ── THE 2D BUILD ───────────────────────────────────────────────────────
+function startDataMuncher(){
+  document.getElementById('g-canvas-holder').style.display = 'block';
+  const round = dmRound();
+  fitCanvas();
+  const { COLS, ROWS } = DM;
+  const W = BOARD_W, H = BOARD_H;
+  const C = Math.floor(Math.min(W / COLS, H / ROWS));
+  const ox = Math.floor((W - C * COLS) / 2), oy = Math.floor((H - C * ROWS) / 2);
+  const sim = round.sim, S = round.S;
+  const me = getEquippedColorHex();
+  const pops = [];
+  let last = gNow(), mouth = 0;
+  const X = x => ox + x * C + C / 2, Y = y => oy + y * C + C / 2;
+
+  // The maze's outline, built once: an edge wherever a wall meets open floor.
+  const edges = new Path2D();
+  for(let y = 0; y < ROWS; y++) for(let x = 0; x < COLS; x++){
+    if(sim.cell(x, y) !== '#') continue;
+    const L = ox + x * C, T = oy + y * C;
+    const openAt = (a, b) => sim.cell(a, b) !== '#' && a >= 0 && b >= 0 && a < COLS && b < ROWS;
+    if(openAt(x, y - 1)){ edges.moveTo(L, T + 0.5); edges.lineTo(L + C, T + 0.5); }
+    if(openAt(x, y + 1)){ edges.moveTo(L, T + C - 0.5); edges.lineTo(L + C, T + C - 0.5); }
+    if(openAt(x - 1, y)){ edges.moveTo(L + 0.5, T); edges.lineTo(L + 0.5, T + C); }
+    if(openAt(x + 1, y)){ edges.moveTo(L + C - 0.5, T); edges.lineTo(L + C - 0.5, T + C); }
+  }
+
+  function daemon(g, t){
+    const q = sim.gpos(g);
+    const bob = g.state === 'house' ? Math.sin(g.bob) * 3 : 0;
+    const x = X(q.x), y = Y(q.y) + bob, r = C * 0.42;
+    const fr = g.state === 'fright';
+    const flash = fr && S.fright < 2 && Math.floor(S.fright * 6) % 2 === 0;
+    if(g.state !== 'eyes'){
+      aCtx.save();
+      aCtx.fillStyle = fr ? (flash ? '#eaf6ff' : '#2a3bff') : g.color;
+      aCtx.shadowBlur = 12; aCtx.shadowColor = aCtx.fillStyle;
+      aCtx.beginPath();
+      aCtx.arc(x, y - r * 0.15, r, Math.PI, 0);
+      const base = y + r * 0.85, wav = Math.sin(t * 14) * 2;
+      aCtx.lineTo(x + r, base);
+      for(let i = 0; i < 3; i++){
+        const x0 = x + r - (i + 1) * (2 * r / 3);
+        aCtx.quadraticCurveTo(x0 + r / 3, base - 5 + (i % 2 ? wav : -wav), x0, base);
+      }
+      aCtx.closePath();
+      aCtx.fill();
+      aCtx.restore();
+    }
+    // Eyes, looking the way it is going.
+    const d = g.state === 'house' ? { x: 0, y: -1 } : g.dir;
+    for(const s of [-1, 1]){
+      const ex = x + s * r * 0.38, ey = y - r * 0.25;
+      aCtx.fillStyle = fr ? '#ffd0d0' : '#ffffff';
+      aCtx.beginPath(); aCtx.ellipse(ex, ey, r * 0.22, r * 0.28, 0, 0, Math.PI * 2); aCtx.fill();
+      if(!fr){
+        aCtx.fillStyle = '#10204a';
+        aCtx.beginPath(); aCtx.arc(ex + d.x * r * 0.1, ey + d.y * r * 0.12, r * 0.12, 0, Math.PI * 2); aCtx.fill();
+      }
+    }
+  }
+
+  function loop(){
+    gameLoopId = requestAnimationFrame(loop);
+    const now = gNow();
+    const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
+    const ev = round.frame(dt);
+    for(const e of ev){
+      if(e.type === 'eat') pops.push({ x: X(e.x), y: Y(e.y), text: '+' + e.pts, t: 1, c: e.color });
+      if(e.type === 'saved') pops.push({ x: X(e.x), y: Y(e.y), text: 'SHIELD', t: 1, c: '#a855f7' });
+    }
+    const moving = !!(sim.player.dir.x || sim.player.dir.y) && !S.freeze;
+    if(dt > 0 && moving) mouth += dt * 14;
+
+    aCtx.clearRect(0, 0, W, H);
+    aCtx.fillStyle = '#03040c'; aCtx.fillRect(0, 0, W, H);
+    // walls: a faint fill and a neon outline
+    aCtx.fillStyle = 'rgba(20,40,120,0.18)';
+    for(let y = 0; y < ROWS; y++) for(let x = 0; x < COLS; x++){
+      if(sim.cell(x, y) === '#') aCtx.fillRect(ox + x * C, oy + y * C, C, C);
+    }
+    aCtx.save();
+    aCtx.strokeStyle = '#2f6bff'; aCtx.lineWidth = 2;
+    aCtx.shadowBlur = 10; aCtx.shadowColor = '#2f6bff';
+    aCtx.stroke(edges);
+    aCtx.restore();
+    // the house door
+    aCtx.fillStyle = '#ff5ad8';
+    aCtx.fillRect(ox + 10 * C + 3, oy + 8 * C + C / 2 - 2, C - 6, 4);
+    // data bits and power cores
+    aCtx.fillStyle = 'rgba(234,246,255,0.9)';
+    sim.dots.forEach(k => { const x = k % COLS, y = (k / COLS) | 0; aCtx.fillRect(X(x) - 2, Y(y) - 2, 4, 4); });
+    const pulse = 0.6 + 0.4 * Math.sin(S.t * 7);
+    sim.cores.forEach(k => {
+      const x = k % COLS, y = (k / COLS) | 0;
+      aCtx.save(); aCtx.fillStyle = '#ffd700'; aCtx.shadowBlur = 16 * pulse; aCtx.shadowColor = '#ffd700';
+      aCtx.beginPath(); aCtx.arc(X(x), Y(y), C * 0.24 * (0.8 + pulse * 0.3), 0, Math.PI * 2); aCtx.fill(); aCtx.restore();
+    });
+    // the muncher
+    const p = sim.ppos();
+    const px = X(p.x), py = Y(p.y), pr = C * 0.42;
+    const face = (sim.player.dir.x || sim.player.dir.y) ? sim.player.dir : sim.player.want;
+    const ang = Math.atan2(face.y, face.x);
+    const open = moving ? 0.08 + Math.abs(Math.sin(mouth)) * 0.32 : 0.18;
+    aCtx.save();
+    aCtx.fillStyle = me; aCtx.shadowBlur = 14; aCtx.shadowColor = me;
+    aCtx.beginPath(); aCtx.moveTo(px, py);
+    aCtx.arc(px, py, pr, ang + open * Math.PI, ang - open * Math.PI + Math.PI * 2);
+    aCtx.closePath(); aCtx.fill();
+    aCtx.restore();
+    drawSkinBadge(px, py - C * 0.85, 11);
+    // the daemons
+    sim.ghosts.forEach(g => daemon(g, S.t));
+    // pops
+    for(let i = pops.length - 1; i >= 0; i--){
+      const q = pops[i];
+      if(dt > 0){ q.t -= dt * 1.2; q.y -= dt * 20; }
+      if(q.t <= 0){ pops.splice(i, 1); continue; }
+      aCtx.save(); aCtx.globalAlpha = q.t;
+      aCtx.font = '900 13px Orbitron, sans-serif'; aCtx.textAlign = 'center';
+      aCtx.fillStyle = q.c; aCtx.fillText(q.text, q.x, q.y); aCtx.restore();
+    }
+    // HUD
+    aCtx.font = '700 11px Orbitron, sans-serif';
+    aCtx.textAlign = 'left'; aCtx.fillStyle = 'rgba(234,246,255,0.85)';
+    aCtx.fillText(`LEVEL ${S.level}`, ox + 4, oy - 2 > 10 ? oy - 2 : 12);
+    aCtx.textAlign = 'right';
+    aCtx.fillText('● '.repeat(Math.max(0, S.lives)).trim() || '—', W - ox - 4, oy - 2 > 10 ? oy - 2 : 12);
+    if(S.ready && !round.ended){
+      aCtx.save();
+      aCtx.font = '900 20px Orbitron, sans-serif'; aCtx.textAlign = 'center';
+      aCtx.fillStyle = '#ffd700'; aCtx.shadowBlur = 14; aCtx.shadowColor = '#ffd700';
+      aCtx.fillText(S.clears && S.level > 1 && S.freeze > 0 ? `LEVEL ${S.level}` : 'READY!', X(10), Y(11) + 7);
+      aCtx.restore();
+    }
+  }
+  gameLoopId = requestAnimationFrame(loop);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  🚀 3D MISSIONS, PART VI (cont.) · 👾 DATA MUNCHER 3D — a maze on a chip
+// ══════════════════════════════════════════════════════════════════════
+// The maze is a circuit board seen from a fixed three-quarter view: the walls
+// are raised blocks with lit caps, the data bits float over the traces, and
+// the four daemons are drones that hover a hand's width off the board. The
+// camera never moves at all — a maze has to stay where the player learned it.
+(function(){
+'use strict';
+
+const P = window.PI3D;
+if(!P) return;
+const K = P.kit;
+const { begin3d, runLoop, mine } = K;
+
+const NIGHT = {
+  env:  { zenith:'#03051a', horizon:'#1a1050', ground:'#05060f', intensity: 1.2 },
+  fog:  { color:'#060720', density: 0.005 },
+  sun:  { dir:[-0.4, -0.85, -0.5], color:'#6f7dff', intensity: 0.7 },
+  grade:{ exposure: 0.95, bloom: 0.42, threshold: 1.6, knee: 0.5, radius: 0.9,
+          vignette: 0.44, aberration: 0.4, grain: 0.028, scanline: 0.012, saturation: 1.12 }
+};
+
+P.games.muncher = function(){
+  const w = begin3d(Object.assign({ ease: 0.1 }, NIGHT));
+  if(!w) return;
+  const r = w.r;
+  const round = dmRound();
+  const sim = round.sim, S = round.S;
+  const { COLS, ROWS } = DM;
+  const wx = x => x - COLS / 2 + 0.5;
+  const wz = y => y - ROWS / 2 + 0.5;
+  const me = mine();
+  let mouth = 0;
+
+  // Wall cells, once.
+  const walls = [];
+  for(let y = 0; y < ROWS; y++) for(let x = 0; x < COLS; x++) if(sim.cell(x, y) === '#') walls.push([wx(x), wz(y)]);
+
+  runLoop(dt => {
+    const ev = round.frame(dt);
+    for(const e of ev){
+      if(e.type === 'eat'){ w.burst([wx(e.x), 0.8, wz(e.y)], e.color, 30, { speed: 10, life: 0.7 }); w.pop([wx(e.x), 2, wz(e.y)], '+' + e.pts, e.color); w.kick(0.6); }
+      if(e.type === 'saved'){ w.burst([wx(e.x), 0.8, wz(e.y)], '#a855f7', 30, { speed: 10, life: 0.7 }); w.kick(0.9); }
+      if(e.type === 'caught'){ const p = sim.ppos(); w.burst([wx(p.x), 0.7, wz(p.y)], me, 50, { speed: 12, life: 1 }); w.kick(2.2); }
+      if(e.type === 'core'){ w.kick(0.5); }
+      if(e.type === 'clear'){ w.pop([0, 3, 0], 'MAZE CLEAR', '#39ff88'); }
+    }
+    const moving = !!(sim.player.dir.x || sim.player.dir.y) && S.freeze <= 0;
+    if(dt > 0 && moving) mouth += dt * 14;
+
+    // A fixed camera, framed on the geometry like Grid Snake's (scaled to this board).
+    w.goal.eye[0] = 0; w.goal.eye[1] = 17.5; w.goal.eye[2] = 13.5;
+    w.goal.target[0] = 0; w.goal.target[1] = 0; w.goal.target[2] = -0.7;
+    w.goal.fov = 64;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+    // The board.
+    r.draw('ground', { pos:[0, -0.3, 0], scale:[COLS + 2, 1, ROWS + 2], color:'#04081a', metallic: 0.55, roughness: 0.36, rim: 0.3 });
+    for(const [x, z] of walls){
+      // Kept DARK with a thin lit cap: the corridors are where the action is,
+      // and bright walls drowned the daemons against them.
+      r.draw('cube', { pos:[x, 0.3, z], scale:[1, 0.62, 1], color:'#070b20', metallic: 0.55, roughness: 0.35, rim: 0.6,
+                       emissive:'#1a3bff', emissiveStrength: 0.08 });
+      r.draw('cube', { pos:[x, 0.63, z], scale:[0.96, 0.03, 0.96], color:'#0a1236', emissive:'#2f6bff', emissiveStrength: 0.55, detail: 0 });
+    }
+    // The house door.
+    r.draw('cube', { pos:[wx(10), 0.25, wz(8)], scale:[0.9, 0.12, 0.2], color:'#ffffff', emissive:'#ff5ad8', emissiveStrength: 1.8 });
+    // Data bits and power cores.
+    sim.dots.forEach(k => {
+      const x = k % COLS, y = (k / COLS) | 0;
+      r.draw('cube', { pos:[wx(x), 0.32, wz(y)], scale: 0.16, color:'#ffffff', emissive:'#dff6ff', emissiveStrength: 1.3, detail: 0 });
+    });
+    const pulse = 0.6 + 0.4 * Math.sin(S.t * 7);
+    sim.cores.forEach(k => {
+      const x = k % COLS, y = (k / COLS) | 0;
+      // No light of its own: MAX_LIGHTS is 10, the rig takes 3, and the
+      // muncher and the nearest daemons need the rest.
+      r.draw('sphere', { pos:[wx(x), 0.45, wz(y)], scale: 0.42 + pulse * 0.1, color:'#ffe680', emissive:'#ffd700', emissiveStrength: 1.2 + pulse * 0.6 });
+    });
+
+    // The muncher: a sphere with a dark wedge for a mouth that opens and shuts.
+    const p = sim.ppos();
+    const face = (sim.player.dir.x || sim.player.dir.y) ? sim.player.dir : sim.player.want;
+    const yaw = Math.atan2(face.x, face.y);
+    const open = moving ? 0.1 + Math.abs(Math.sin(mouth)) * 0.35 : 0.15;
+    const mx = wx(p.x), mz = wz(p.y);
+    r.draw('sphere', { pos:[mx, 0.45, mz], scale: 0.78, color: me, metallic: 0.4, roughness: 0.25, rim: 1.3, emissive: me, emissiveStrength: 0.7 });
+    r.draw('cube', { pos:[mx + face.x * 0.3, 0.45, mz + face.y * 0.3], rot:[0, yaw, 0], scale:[0.05 + open * 0.9, 0.55 * (0.4 + open), 0.42],
+                     color:'#02030a', metallic: 0, roughness: 0.9 });
+    r.light({ pos:[mx, 1.6, mz], color: me, intensity: 70, range: 8 });
+
+    // The daemons.
+    let lit = 0;
+    for(const g of sim.ghosts){
+      const q = sim.gpos(g);
+      const x = wx(q.x), z = wz(q.y);
+      const hover = 0.55 + Math.sin(S.t * 5 + g.bob) * 0.08;
+      const fr = g.state === 'fright';
+      const flash = fr && S.fright < 2 && Math.floor(S.fright * 6) % 2 === 0;
+      const col = fr ? (flash ? '#eaf6ff' : '#2a3bff') : g.color;
+      const dyaw = Math.atan2(g.dir.x, g.dir.y);
+      if(g.state !== 'eyes'){
+        r.draw('drone', { pos:[x, hover, z], rot:[0, dyaw, 0], scale: 0.82, color: col, metallic: 0.5, roughness: 0.3, rim: 1.2,
+                          emissive: col, emissiveStrength: fr ? 1.0 : 0.75 });
+        r.glow([x, hover, z], 0.8, col, 0.8);
+        if(lit < 3){ r.light({ pos:[x, 1.4, z], color: col, intensity: 45, range: 5 }); lit++; }
+      }
+      for(const s of [-1, 1]){
+        r.draw('sphere', { pos:[x + Math.cos(dyaw) * s * 0.16 + g.dir.x * 0.18, hover + 0.18, z - Math.sin(dyaw) * s * 0.16 + g.dir.y * 0.18],
+                           scale: 0.14, color:'#ffffff', emissive:'#ffffff', emissiveStrength: g.state === 'eyes' ? 1.6 : 0.8 });
+      }
+    }
+    r.light({ pos:[-8, 12, -8], color:'#4f7dff', intensity: 260, range: 40 });
+    r.light({ pos:[ 8, 12,  8], color:'#ff5ad8', intensity: 180, range: 40 });
+    w.end();
+  });
+};
+
+})();
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 19 · v47 — 🎉 PARTY MODE — pass-and-play on one device
+// ══════════════════════════════════════════════════════════════════════
+// The Network Arena needs two devices and a connection. The most common way
+// people actually play a game together is passing ONE device round the room —
+// so this is that: 2–6 names, three missions, everyone plays each mission in
+// turn, and the highest total wins.
+//
+// A party turn is somebody else's run on the owner's device, so it must touch
+// NOTHING of the owner's: no points, XP, medals, contracts, event progress,
+// pace or position ghosts, and never a consumable from the owner's kit. The
+// turn's result is taken at showResults() through vsResultTap — the same seam
+// a Boss Rush stage uses — so the card, saveScore() and recordRun() are never
+// reached at all; partyRunActive() is the belt to that brace for the handful
+// of paths that run DURING a round (the shield, the position ghost).
+//
+// FAIR BOARDS: each mission is played on one seed per party. Math.random is
+// patched across the mission's start() (the layout) and dailyRand() is pointed
+// at a seeded stream for the length of the turn (Math Blitz's questions, Pulse
+// Sync's chart) — the Daily Hack's own trick — so the generated missions deal
+// every player the identical board.
+var party = null;             // var, not let: partyRunActive() is asked from code that can run before this line
+const PARTY_MIN = 2, PARTY_MAX = 6, PARTY_ROUNDS = 3;
+const PARTY_COLORS = ['#00f5ff', '#ff0090', '#39ff14', '#ffd700', '#a855f7', '#ff6600'];
+const PARTY_EXCLUDE = ['arena', 'battlebots'];   // no finish line / a long economy round
+const PARTY_SAME_BOARD = ['math', 'path', 'trace', 'defrag', 'cutter', 'sorter', 'coolant', 'memory'];
+const LS_PARTY = 'pi_party_names';
+
+function partyRunActive(){ return !!(party && party.stage === 'play'); }
+
+function partyPool(){
+  return Object.keys(SOLO_START).filter(g => !PARTY_EXCLUDE.includes(g) && missionUnlocked(g));
+}
+function partyShuffle(){
+  const pool = partyPool();
+  const out = [];
+  while(out.length < PARTY_ROUNDS && pool.length) out.push(pool.splice((Math.random() * pool.length) | 0, 1)[0]);
+  return out;
+}
+
+// ── THE OVERLAY — setup, turn cards and the final board ─────────────
+function partyOpen(){
+  const ov = document.getElementById('party-overlay');
+  if(!ov) return;
+  ov.classList.add('show'); ov.setAttribute('aria-hidden', 'false');
+}
+function partyHide(){
+  const ov = document.getElementById('party-overlay');
+  if(!ov) return;
+  ov.classList.remove('show'); ov.setAttribute('aria-hidden', 'true');
+}
+
+let partyDraft = null;        // the setup form's state, kept between openings
+function openPartySetup(keep){
+  if(!user) return;
+  if(!keep || !partyDraft){
+    const saved = (() => { const a = lsGet(LS_PARTY, null); return Array.isArray(a) && a.length >= 2 ? a.slice(0, PARTY_MAX) : null; })();
+    partyDraft = { names: saved || [String(user.username || 'PLAYER 1').slice(0, 16), 'PLAYER 2'], missions: partyShuffle() };
+  }
+  paintPartySetup();
+  partyOpen();
+  snd('tab');
+}
+
+function paintPartySetup(){
+  const body = document.getElementById('party-body');
+  const sub = document.getElementById('party-sub');
+  if(!body || !partyDraft) return;
+  if(sub) sub.textContent = 'Two to six players · one device · three missions';
+  const pool = partyPool();
+  const tier = DIFFICULTY_TIERS[currentDifficultyTier];
+  const opt = sel => pool.map(g => `<option value="${g}"${g === sel ? ' selected' : ''}>${META[g].emoji} ${esc(META[g].name)}</option>`).join('');
+  body.innerHTML =
+    `<div class="pt-sec">👥 PLAYERS <em>${partyDraft.names.length}/${PARTY_MAX}</em></div>` +
+    `<div class="pt-players">` + partyDraft.names.map((n, i) =>
+      `<div class="pt-player" style="--pc:${PARTY_COLORS[i]}"><span class="pt-dot"></span>` +
+      `<input class="input pt-name" data-i="${i}" maxlength="16" value="${esc(n).replace(/"/g, '&quot;')}" placeholder="PLAYER ${i + 1}" autocomplete="off" spellcheck="false">` +
+      (partyDraft.names.length > PARTY_MIN ? `<button class="pt-del" data-i="${i}" type="button" aria-label="Remove player">✕</button>` : '') +
+      `</div>`).join('') + `</div>` +
+    (partyDraft.names.length < PARTY_MAX ? `<button class="btn btn-secondary btn-sm pt-add" id="pt-add" type="button">＋ ADD PLAYER</button>` : '') +
+    `<div class="pt-sec">🎯 MISSIONS <em>everyone plays all three, in turn</em></div>` +
+    `<div class="pt-missions">` + partyDraft.missions.map((g, i) =>
+      `<label class="pt-mission"><span>${i + 1}</span><select class="input fb-select pt-pick" data-i="${i}">${opt(g)}</select>` +
+      (PARTY_SAME_BOARD.includes(g) ? `<em class="pt-same">SAME BOARD FOR ALL</em>` : '') + `</label>`).join('') + `</div>` +
+    `<button class="btn btn-secondary btn-sm" id="pt-shuffle" type="button">🎲 SHUFFLE MISSIONS</button>` +
+    `<div class="pt-note">Played on ${tier.icon} <b>${esc(tier.label)}</b> (the hub's stability dial). No chaos, no power-ups, and ` +
+    `nothing is saved to anyone's profile — it is a party.</div>` +
+    `<button class="btn btn-primary btn-full btn-lg" id="pt-start" type="button">🎉 START THE PARTY</button>`;
+
+  body.querySelectorAll('.pt-name').forEach(inp => inp.addEventListener('input', () => {
+    partyDraft.names[+inp.dataset.i] = inp.value;
+  }));
+  body.querySelectorAll('.pt-del').forEach(b => b.addEventListener('click', () => {
+    partyDraft.names.splice(+b.dataset.i, 1); snd('uiBack'); paintPartySetup();
+  }));
+  document.getElementById('pt-add')?.addEventListener('click', () => {
+    partyDraft.names.push('PLAYER ' + (partyDraft.names.length + 1)); snd('ui'); paintPartySetup();
+    const last = body.querySelectorAll('.pt-name'); last[last.length - 1]?.focus();
+  });
+  body.querySelectorAll('.pt-pick').forEach(s => s.addEventListener('change', () => {
+    partyDraft.missions[+s.dataset.i] = s.value; paintPartySetup();
+  }));
+  document.getElementById('pt-shuffle')?.addEventListener('click', () => {
+    partyDraft.missions = partyShuffle(); snd('tab'); paintPartySetup();
+  });
+  document.getElementById('pt-start')?.addEventListener('click', startParty);
+}
+
+function startParty(){
+  const names = partyDraft.names.map((n, i) => String(n || '').trim().slice(0, 16) || ('PLAYER ' + (i + 1)));
+  const missions = partyDraft.missions.filter(g => SOLO_START[g]);
+  if(names.length < PARTY_MIN){ snd('deny'); toast('🎉 A party needs at least two players.', 2400); return; }
+  if(missions.length !== PARTY_ROUNDS){ snd('deny'); toast('🎉 Pick three missions.', 2400); return; }
+  lsSet(LS_PARTY, names);
+  party = {
+    players: names.map((name, i) => ({ name, color: PARTY_COLORS[i], scores: [] })),
+    missions, round: 0, turn: 0, stage: 'turn',
+    seed: (Math.random() * 0xffffffff) >>> 0
+  };
+  snd('success');
+  showPartyTurn();
+}
+
+function partyBoardHTML(highlight){
+  const totals = party.players.map((p, i) => ({ i, p, total: p.scores.reduce((a, b) => a + (b || 0), 0) }))
+    .sort((a, b) => b.total - a.total);
+  // Which mission each column is: three bare numbers mean nothing without it,
+  // so the heading belongs to the board rather than to the final card alone.
+  return `<div class="pt-board">` +
+    `<div class="pt-heads"><span></span><span></span><span></span>` +
+      party.missions.map(g => `<span title="${esc(META[g].name)}">${META[g].emoji}</span>`).join('') +
+      `<span>TOTAL</span></div>` +
+    totals.map((t, rank) =>
+    `<div class="pt-row${t.i === highlight ? ' on' : ''}" style="--pc:${t.p.color}">` +
+    `<span class="pt-rank">${rank === 0 && t.total > 0 ? '👑' : '#' + (rank + 1)}</span>` +
+    `<span class="pt-dot"></span><span class="pt-rname">${esc(t.p.name)}</span>` +
+    party.missions.map((g, k) => `<span class="pt-cell${k === party.round && party.stage !== 'final' ? ' cur' : ''}">${t.p.scores[k] != null ? t.p.scores[k].toLocaleString() : '·'}</span>`).join('') +
+    `<span class="pt-total">${t.total.toLocaleString()}</span></div>`).join('') + `</div>`;
+}
+
+function showPartyTurn(){
+  const body = document.getElementById('party-body');
+  const sub = document.getElementById('party-sub');
+  if(!body || !party) return;
+  const p = party.players[party.turn], gid = party.missions[party.round];
+  const m = META[gid];
+  if(sub) sub.textContent = `Round ${party.round + 1} of ${PARTY_ROUNDS}`;
+  body.innerHTML =
+    `<div class="pt-turn" style="--pc:${p.color}">` +
+      `<div class="pt-pass">PASS THE DEVICE TO</div>` +
+      `<div class="pt-who">${esc(p.name)}</div>` +
+      `<div class="pt-what">${m.emoji} ${esc(m.name)}${PARTY_SAME_BOARD.includes(gid) ? ' · <em>same board for everyone</em>' : ''}</div>` +
+      `<div class="pt-how">${esc(MISSION_HOW[gid] || '')}</div>` +
+      `<button class="btn btn-primary btn-full btn-lg" id="pt-go" type="button">▶ ${esc(p.name)} — GO!</button>` +
+    `</div>` +
+    `<div class="pt-sec">🏆 SCOREBOARD</div>` + partyBoardHTML(party.turn) +
+    `<button class="btn btn-secondary btn-sm pt-end" id="pt-end" type="button">✕ END THE PARTY</button>`;
+  document.getElementById('pt-go')?.addEventListener('click', partyGo);
+  document.getElementById('pt-end')?.addEventListener('click', () => { abortParty(); snd('uiBack'); enterHub(); });
+  partyOpen();
+  setTimeout(() => document.getElementById('pt-go')?.focus({ preventScroll: true }), 60);
+}
+
+function partyGo(){
+  if(!party || party.stage !== 'turn') return;
+  const gid = party.missions[party.round];
+  const p = party.players[party.turn];
+  partyHide();
+  party.stage = 'play';
+  curGame = gid;
+  showScreen('game-screen');
+  resetGameStage(gid);
+  document.getElementById('g-title').textContent = `🎉 ${p.name} · ${META[gid].name}`;
+  vsResultTap = partyTap;
+  // Quit is a legitimate end to a turn: it scores what was on the board.
+  onQuitGame = () => {
+    const live = parseInt(document.getElementById('g-pts')?.textContent, 10) || 0;
+    stopGame();
+    setControls(null);
+    partyTurnDone(live);
+  };
+  snd('success');
+  countdown(() => {
+    if(!partyRunActive()) return;
+    const seed = hashStr('party:' + party.seed + ':' + party.round) >>> 0;
+    // The turn's seeded stream: read through dailyRand() by the missions that
+    // keep drawing during play (Math Blitz's questions, Pulse Sync's chart).
+    dailyRng = makeRng(seed);
+    const realRandom = Math.random;
+    Math.random = makeRng(seed ^ 0x9e3779b9);
+    try{
+      runMissionStart(() => {
+        if(!(window.PI3D && PI3D.startFor(gid))) SOLO_START[gid]();
+      });
+    }finally{ Math.random = realRandom; }
+  });
+}
+
+function partyTap(gid, pts){
+  if(!partyRunActive()) return false;
+  // The tap short-circuits showResults(), so the finished round is still
+  // running its loop — stop it here, the way a Boss Rush stage does.
+  stopGame();
+  setControls(null);
+  partyTurnDone(pts);
+  return true;
+}
+
+function partyTurnDone(pts){
+  if(!party) return;
+  const p = party.players[party.turn];
+  p.scores[party.round] = Math.max(0, Math.round(+pts || 0));
+  dailyRng = null;
+  if(vsResultTap === partyTap) vsResultTap = null;
+  onQuitGame = null;
+  party.stage = 'turn';
+  snd('results');
+  toast(`🎉 ${p.name} · ${META[party.missions[party.round]].name} · ${p.scores[party.round].toLocaleString()}`, 2200);
+  party.turn++;
+  if(party.turn >= party.players.length){ party.turn = 0; party.round++; }
+  if(party.round >= PARTY_ROUNDS) showPartyFinal();
+  else showPartyTurn();
+}
+
+function showPartyFinal(){
+  party.stage = 'final';
+  const body = document.getElementById('party-body');
+  const sub = document.getElementById('party-sub');
+  if(!body) return;
+  const ranked = party.players.map((p, i) => ({ i, p, total: p.scores.reduce((a, b) => a + (b || 0), 0) }))
+    .sort((a, b) => b.total - a.total);
+  const top = ranked[0];
+  const tie = ranked.length > 1 && ranked[1].total === top.total;
+  if(sub) sub.textContent = 'Final scores';
+  body.innerHTML =
+    `<div class="pt-win" style="--pc:${top.p.color}">` +
+      `<div class="pt-crown">👑</div>` +
+      `<div class="pt-wname">${tie ? 'A TIE AT THE TOP' : esc(top.p.name) + ' WINS'}</div>` +
+      `<div class="pt-wpts">${top.total.toLocaleString()} PTS</div>` +
+    `</div>` +
+    partyBoardHTML(-1) +
+    `<div class="pt-final-btns">` +
+      `<button class="btn btn-primary" id="pt-again" type="button">🔁 REMATCH</button>` +
+      `<button class="btn btn-secondary" id="pt-new" type="button">🎲 NEW MISSIONS</button>` +
+      `<button class="btn btn-secondary" id="pt-hub" type="button">🏠 HUB</button>` +
+    `</div>`;
+  snd('victory');
+  document.getElementById('pt-again')?.addEventListener('click', () => {
+    partyDraft = { names: party.players.map(p => p.name), missions: party.missions.slice() };
+    startParty();
+  });
+  document.getElementById('pt-new')?.addEventListener('click', () => {
+    partyDraft = { names: party.players.map(p => p.name), missions: partyShuffle() };
+    party = null;
+    paintPartySetup();
+  });
+  document.getElementById('pt-hub')?.addEventListener('click', () => { abortParty(); enterHub(); });
+  partyOpen();
+}
+
+// Walking away ends the party — called from enterHub(), the one door every
+// "I'm done" path goes through.
+function abortParty(){
+  if(!party) return;
+  if(vsResultTap === partyTap) vsResultTap = null;
+  if(party.stage === 'play') dailyRng = null;
+  party = null;
+  partyHide();
+}
+
+document.getElementById('btn-party')?.addEventListener('click', () => openPartySetup(true));
+document.getElementById('party-close')?.addEventListener('click', () => {
+  if(party && party.stage !== 'play'){ abortParty(); enterHub(); } else partyHide();
+  snd('uiBack');
+});
+if(typeof registerOverlayCloser === 'function'){
+  registerOverlayCloser('party-overlay', () => {
+    if(party && party.stage !== 'play'){ abortParty(); enterHub(); } else partyHide();
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 20 · v48 — 🌍 WORLD THEMES — one shelf, every 3D mission
+// ══════════════════════════════════════════════════════════════════════
+// Every 3D mission was built on the same rain-black city night, so a theme is
+// not twenty-nine reskins: it is ONE tint, applied where every world is made
+// (createWorld → applyWorldTint, the hook the seasonal events use). The tint
+// shifts each mission's own sky, haze and key light toward the theme's
+// colours while keeping each scene's brightness (evMixKeep), so a mission
+// designed dark stays dark and one designed bright stays bright.
+//
+// A cosmetic like any other: bought with credits, equipped per profile, kept
+// forever. 3D only — the 2D boards draw their own flat palettes.
+SHOP_ITEMS.worlds = [
+  { id:'wld-rain',   name:'Rain City',    price:0,  emoji:'🌃', default:true,
+    sky:['#04061a', '#3a1050'],
+    desc:'The house look — a rain-black city night in violet and neon, every 3D mission exactly as built.' },
+  { id:'wld-toxic',  name:'Toxic Sector', price:12, emoji:'☣️',
+    sky:['#021a06', '#1f7a12', '#041006'],
+    desc:'Radioactive green on black: the grid after a meltdown nobody reported. Every 3D mission.',
+    tint:{ zenith:'#021a06', horizon:'#39ff14', fog:'#0a2a10', sun:'#a8ff60', amount: 0.7, horizonAmount: 0.45, saturation: 1.08 } },
+  { id:'wld-desert', name:'Synth Desert', price:14, emoji:'🌅',
+    sky:['#2a0b3d', '#ff4d6d', '#3a1030'],
+    desc:'A sunset that never finishes setting — hot pink horizon, purple sky, warm haze. Every 3D mission.',
+    tint:{ zenith:'#2a0b3d', horizon:'#ff4d6d', fog:'#3a1030', sun:'#ffb347', amount: 0.7, horizonAmount: 0.55, saturation: 1.08 } },
+  { id:'wld-deep',   name:'Deep Net',     price:16, emoji:'🌊',
+    sky:['#021a2a', '#00a6b8', '#03303a'],
+    desc:'An undersea server farm: teal light filtering down, deep blue above, a cold green haze. Every 3D mission.',
+    tint:{ zenith:'#021a2a', horizon:'#00a6b8', fog:'#04363f', sun:'#40e0d0', amount: 0.75, horizonAmount: 0.55, saturation: 1.05 } },
+  { id:'wld-orbit',  name:'Orbital Deck', price:20, emoji:'🪐',
+    sky:['#000000', '#1a2250', '#02030a'],
+    desc:'Out past the atmosphere — a black sky, hard white starlight and no haze at all. Every 3D mission.',
+    tint:{ zenith:'#05070c', horizon:'#1b2440', fog:'#05070d', sun:'#f0f4ff', amount: 0.85, horizonAmount: 0.8,
+           lum:{ zenith: 0.25, horizon: 0.45, fog: 0.3 }, fogDensity: 0.3, saturation: 0.9 } }
+];
+
+// The equipped theme's tint, or null for Rain City. Read by worldTintNow()
+// every time a 3D world is built — i.e. at the start of every 3D round.
+function worldThemeTint(){
+  const id = user && user.equipped && user.equipped.worlds;
+  const item = id && findItem('worlds', id);
+  return (item && item.tint) || null;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 21 · v49 — 📖 CAMPAIGN · ROOT ACCESS
+// ══════════════════════════════════════════════════════════════════════
+// Every mode in the arcade was "pick something and score". The campaign is a
+// PATH: twenty hand-built chapters in four acts, told by ARC, the grid's
+// sysadmin, about THE GLITCH — the thing that broke out of Battle Bots.
+//
+// A chapter is a ROW, not new game code: an existing mission, a stability
+// tier, a curated chaos stack (armed through prepGame's `mod` door, exactly as
+// the Weekly Anomaly arms its own) and three star targets on the mission's RAW
+// score, like medals. One star clears a chapter and opens the next; each act
+// also asks for a number of stars, so a player who scraped through is sent
+// back for a better run before the story goes on. The finale is a Boss Rush
+// chain on a FIXED queue — the Glitch's riders, its daemons, and the Glitch
+// itself in the siege lane.
+//
+// Campaign rounds are real rounds: they bank points, XP, medals and contracts
+// as normal. Stars live at players/<uid>/campaign/<chapter>, written on their
+// own (the rules lesson). Clearance is not checked — the story walks you into
+// missions the grid would still have locked, the way the Daily Hack does.
+const CAMPAIGN_ACTS = [
+  { n: 1, name: 'BOOT SEQUENCE',      need: 0 },
+  { n: 2, name: 'CONTAINMENT BREACH', need: 6 },
+  { n: 3, name: 'DEEP NET',           need: 15 },
+  { n: 4, name: 'ROOT ACCESS',        need: 26 }
+];
+const CAMPAIGN = [
+  // ── ACT I · BOOT SEQUENCE ──
+  { id:'c01', act:1, title:'WAKE-UP CALL',      gid:'click',    tier:'stable', mods:[], stars:[200, 320, 420],
+    story:"Operative, this is ARC — I keep the grid running. Something woke up inside Battle Bots last night and started calling itself THE GLITCH. Before I send you after it: show me your hands still work." },
+  { id:'c02', act:1, title:'FIREWALL DRILL',    gid:'dodge',    tier:'stable', mods:[], stars:[300, 500, 650],
+    story:"The Glitch is hurling corrupted cores at the edge of the grid. Keep your core in one piece while I trace where they're coming from." },
+  { id:'c03', act:1, title:'MEMORY LEAK',       gid:'memory',   tier:'stable', mods:[], stars:[225, 375, 525],
+    story:"It's scrambling our memory banks, pair by pair. Match them back up before the leak spreads to the rest of the grid." },
+  { id:'c04', act:1, title:'FIRST WAVE',        gid:'nebula',   tier:'stable', mods:[], stars:[300, 550, 750],
+    story:"Its first wave of invaders is dropping on Sector 1. They're clumsy — it's still learning. Hold the line and teach it something." },
+  { id:'c05', act:1, title:'SIGNAL CHAIN',      gid:'snake',    tier:'stable', mods:[], stars:[300, 600, 850],
+    story:"I need a clean data chain long enough to follow the Glitch's trail. Grow it long, and whatever you do, don't bite yourself." },
+  // ── ACT II · CONTAINMENT BREACH ──
+  { id:'c06', act:2, title:'LAG SPIKE',         gid:'reaction', tier:'stable', mods:['packet'], stars:[150, 250, 320],
+    story:"It's eating our inputs now — one in seven never arrives. I can't stop that yet. React anyway." },
+  { id:'c07', act:2, title:'FORCED CHECKSUMS',  gid:'math',     tier:'overclocked', mods:[], stars:[250, 400, 550],
+    story:"It overclocked the checksum node to lock me out. The sums are simple. The clock isn't. Solve at overclock speed." },
+  { id:'c08', act:2, title:'BLACKOUT FLIGHT',   gid:'flappy',   tier:'stable', mods:['blind'], stars:[300, 500, 700],
+    story:"It cut the feed to the drone bay — you'll lose the picture every second and a half. Fly it by feel through the dark." },
+  { id:'c09', act:2, title:'MIRROR COURT',      gid:'pong',     tier:'stable', mods:['inverse'], stars:[200, 400, 600],
+    story:"The Glitch flipped the controls on the courts. Up is down now. It thinks that's funny. Win the rally anyway." },
+  { id:'c10', act:2, title:'THE ACCESS PULSE',  gid:'hacker',   tier:'overclocked', mods:[], stars:[250, 450, 600],
+    story:"I caught its access pulse on the mainframe floor. Memorise it and play it back — fast, before it changes the pattern." },
+  // ── ACT III · DEEP NET ──
+  { id:'c11', act:3, title:'GRID RIDERS',       gid:'lightcycle', tier:'stable', mods:[], stars:[300, 550, 800],
+    story:"We're inside its network now, and it rides the grid on cycles of its own. Wall them in. Don't let them wall you." },
+  { id:'c12', act:3, title:'DAEMON HUNT',       gid:'muncher',  tier:'stable', mods:[], stars:[350, 650, 950],
+    story:"Its daemons are guarding the data it stole. Eat the maze clean — and when you find a power core, eat them too." },
+  { id:'c13', act:3, title:'CORRUPTED VOLUME',  gid:'defrag',   tier:'overclocked', mods:[], stars:[300, 550, 800],
+    story:"Whole sectors of this drive are corrupt. Read the numbers, sweep the clean ones, and mark the rot before the clock runs out." },
+  { id:'c14', act:3, title:'PULSE HIJACK',      gid:'rhythm',   tier:'stable', mods:['lowband'], stars:[400, 750, 1050],
+    story:"It's jamming our frequency with static. Keep the beat through the noise — the pulses are still there under it." },
+  { id:'c15', act:3, title:'ROGUE CODE STORM',  gid:'meteor',   tier:'overclocked', mods:[], stars:[350, 650, 900],
+    story:"It's raining rogue code on our last servers. If they fall, we lose the way back out. Shield every one." },
+  // ── ACT IV · ROOT ACCESS ──
+  { id:'c16', act:4, title:'GHOST PROTOCOL',    gid:'cutter',   tier:'stable', mods:[], stars:[350, 700, 1000],
+    story:"Its core is guarded by patrol cones that never sleep. Slip between them and tag the nodes. Don't get lit up." },
+  { id:'c17', act:4, title:'THE CIPHER',        gid:'trace',    tier:'overclocked', mods:[], stars:[250, 500, 750],
+    story:"The core door is locked behind a four-slot cipher. No reflexes this time — just you, the feedback pegs, and cold logic." },
+  { id:'c18', act:4, title:'CORE MELTDOWN',     gid:'coolant',  tier:'stable', mods:[], stars:[400, 750, 1050],
+    story:"It's overheating the core to cook us out. Fly the cooling shaft and keep the temperature down. Nothing stops when you let go." },
+  { id:'c19', act:4, title:'REBUILD THE WALL',  gid:'stack',    tier:'overclocked', mods:[], stars:[300, 550, 780],
+    story:"Our firewall is in pieces. Rebuild it floor by floor, as high and as clean as you can, before we open the last door." },
+  { id:'c20', act:4, title:'ROOT ACCESS',       chain:['lightcycle', 'muncher', 'battlebots'], tier:'stable', mods:[], stars:[1, 1500, 2400],
+    story:"This is it. Three layers stand between us and root: its riders, its daemons, and THE GLITCH itself at the end of the siege lane. One chain, one integrity bar. Break all three and the grid is ours." }
+];
+const CAMPAIGN_MAX_STARS = CAMPAIGN.length * 3;
+
+// ⚠️ LOAD ORDER. The hooks that call into this section (showResultsCard,
+// enterHub, pauseCanRestart, recordRun, refreshHubProgression) sit far EARLIER
+// in the file, and a `let`/`const` stays in its temporal dead zone until its own
+// line has run — even `typeof x` throws there. So everything a hook can reach
+// is a `var` or a function declaration (both hoisted), and each hook is wrapped
+// in try/catch. Only the tables below are `const`, and only this section reads them.
+var campaignActive = null;                 // { i, restore } while a chapter is being played
+function campaignRunActive(){ return !!campaignActive; }
+function campaignStarsOf(id){ return Math.max(0, Math.min(3, +(user && user.campaign && user.campaign[id]) || 0)); }
+function campaignTotal(){ return CAMPAIGN.reduce((a, c) => a + campaignStarsOf(c.id), 0); }
+function campaignUnlocked(i){
+  const c = CAMPAIGN[i];
+  if(!c) return false;
+  const act = CAMPAIGN_ACTS[c.act - 1];
+  if(campaignTotal() < act.need) return false;
+  return i === 0 || campaignStarsOf(CAMPAIGN[i - 1].id) >= 1;
+}
+function campaignNext(){
+  const i = CAMPAIGN.findIndex((c, k) => campaignUnlocked(k) && campaignStarsOf(c.id) === 0);
+  return i >= 0 ? i : Math.max(0, CAMPAIGN.map((c, k) => campaignUnlocked(k)).lastIndexOf(true));
+}
+function starsFor(c, raw){ return c.stars.filter(t => raw >= t).length; }
+function starStr(n){ return '★'.repeat(n) + '☆'.repeat(3 - n); }
+
+// ── KEEPING STARS ACROSS A SERVER REFRESH ──────────────────────────────
+// A chapter's stars are written best-effort (saveProfilePatch) and never queued, so stars earned offline — or
+// while the database's rules do not name `campaign` — live only in this device's mirror. The two places that swap
+// the server's copy of the profile in (loadUser, and the resync once banked runs drain) would replace them, so each
+// calls this first with what the device was holding: any object with a `.campaign` map (the cached profile, or the
+// user about to be replaced). Stars only ever rise, so the merge is a per-chapter max; what the server was missing
+// is sent back in ONE write that carries campaign keys alone, so a refusal cannot touch anything else.
+function campaignReconcile(held){
+  const mine = held && held.campaign;
+  if(!user || !mine || typeof mine !== 'object') return;
+  const star = v => Math.max(0, Math.min(3, Math.floor(+v) || 0));
+  const send = {};
+  CAMPAIGN.forEach(c => {
+    const kept = star(mine[c.id]);
+    if(kept > star(user.campaign && user.campaign[c.id])){
+      user.campaign = user.campaign || {};
+      user.campaign[c.id] = kept;
+      send['campaign/' + c.id] = kept;
+    }
+  });
+  if(Object.keys(send).length) saveProfilePatch(send);
+}
+
+// ── PLAYING A CHAPTER ──────────────────────────────────────────────────
+function startChapter(i){
+  const c = CAMPAIGN[i];
+  if(!user || !c || !campaignUnlocked(i)){ snd('deny'); return; }
+  if(bossRush || mp || endless || dailyActive || anomalyActive){ snd('deny'); return; }
+  closeOverlay('campaign-overlay');
+  // A second call before the first chapter has ended (a double tap) must not
+  // record the CHAPTER's tier as the one to hand back.
+  campaignActive = { i, restore: campaignActive ? campaignActive.restore : currentDifficultyTier };
+  setDifficultyTier(c.tier);
+  lockDifficultySelector();
+  toast(`📖 CHAPTER ${i + 1} · ${c.title}`, 2600);
+  if(c.chain){
+    startBossRush(c.chain);
+    return;
+  }
+  curGame = c.gid;
+  document.getElementById('g-title').textContent = `📖 ${i + 1} · ${c.title} · ${META[c.gid].name}`;
+  showScreen('game-screen');
+  snd('success');
+  const mods = (c.mods || []).map(id => CHAOS_MODS.find(m => m.id === id)).filter(Boolean);
+  // null, not undefined: an armed Chaos Protocol must not roll a SECOND stack
+  // on top of the chapter's curated one.
+  prepGame(c.gid, mods.length ? mods : null);
+}
+
+function endChapter(){
+  if(!campaignActive) return;
+  const r = campaignActive.restore;
+  campaignActive = null;
+  unlockDifficultySelector();
+  if(r) setDifficultyTier(r);
+}
+function abortCampaign(){ endChapter(); }
+
+// Called from showResultsCard with the RAW score. Returns breakdown rows.
+function settleCampaign(gid, raw, opts){
+  if(!campaignActive || !user) return {};
+  const i = campaignActive.i, c = CAMPAIGN[i];
+  const want = c.chain ? 'bossrush' : c.gid;
+  if(gid !== want) return {};
+  // A chain that collapsed is not a clear, whatever it banked on the way.
+  const lost = c.chain && opts && String(opts.name || '').includes('LOST');
+  const got = lost ? 0 : starsFor(c, Math.max(0, Math.round(+raw || 0)));
+  const had = campaignStarsOf(c.id);
+  const rows = {};
+  rows[`📖 Chapter ${i + 1}`] = c.title;
+  rows['⭐ Stars'] = starStr(Math.max(got, had)) + (got > had ? `  · NEW +${got - had}` : '');
+  if(got > had){
+    user.campaign = user.campaign || {};
+    user.campaign[c.id] = got;
+    saveProfilePatch({ ['campaign/' + c.id]: got });
+    setTimeout(() => snd('levelUp'), 800);
+  }
+  const nextI = i + 1;
+  // "Cleared" means cleared on ANY run: a poor replay of a chapter already held
+  // must not read "one star to clear", nor lose its Next Chapter button.
+  const best = Math.max(got, had);
+  if(best < 1) rows['📖 Next'] = `one star to clear — ${c.chain ? 'finish the chain' : c.stars[0].toLocaleString() + ' on the mission'}`;
+  else if(nextI < CAMPAIGN.length && !campaignUnlocked(nextI)){
+    const act = CAMPAIGN_ACTS[CAMPAIGN[nextI].act - 1];
+    rows['📖 Next'] = `ACT ${act.n} needs ${act.need} ★ — you have ${campaignTotal()}`;
+  }
+  campaignActive.done = { i, got, best };
+  return rows;
+}
+
+// After the card is built: its two buttons become the campaign's.
+function campaignAfterCard(){
+  if(!campaignActive || !campaignActive.done) { endChapter(); return; }
+  const { i, got, best } = campaignActive.done;
+  endChapter();
+  const again = document.getElementById('btn-again');
+  const hub = document.getElementById('btn-hub');
+  const nextI = i + 1;
+  if(best >= 1 && nextI < CAMPAIGN.length && campaignUnlocked(nextI)){
+    again.textContent = '▶ Next Chapter';
+    again.onclick = () => startChapter(nextI);
+  }else{
+    again.textContent = '↻ Replay Chapter';
+    again.onclick = () => startChapter(i);
+  }
+  hub.textContent = '📖 Campaign';
+  hub.onclick = () => { enterHub(); openCampaign(); };
+  if(i === CAMPAIGN.length - 1 && got >= 1){
+    setTimeout(() => toast('📖 ROOT ACCESS — the grid is ours. ARC says thank you, operative.', 4200), 1600);
+  }
+}
+
+// ── THE MAP ────────────────────────────────────────────────────────────
+var campaignSel = null;
+// The MODAL scrolls, not #campaign-body — and the chapter's detail card sits at
+// the top of the body while the node that was tapped may be four acts down.
+function campaignScrollTop(smooth){
+  const sc = document.querySelector('#campaign-overlay .fb-modal');
+  if(!sc) return;
+  const calm = smooth && !document.documentElement.classList.contains('reduced-motion');
+  if(calm && sc.scrollTo) sc.scrollTo({ top: 0, behavior: 'smooth' });
+  else sc.scrollTop = 0;
+}
+function openCampaign(sel){
+  if(!user) return;
+  campaignSel = sel != null ? sel : campaignNext();
+  openOverlay('campaign-overlay', renderCampaign);
+  campaignScrollTop(false);
+}
+function renderCampaign(){
+  const body = document.getElementById('campaign-body');
+  const sub = document.getElementById('campaign-sub');
+  if(!body || !user) return;
+  const total = campaignTotal();
+  if(sub) sub.textContent = `${total} of ${CAMPAIGN_MAX_STARS} ★ · told by ARC, the grid's sysadmin`;
+  const i = Math.max(0, Math.min(CAMPAIGN.length - 1, campaignSel || 0));
+  const c = CAMPAIGN[i];
+  const open = campaignUnlocked(i);
+  const tier = DIFFICULTY_TIERS[c.tier];
+  const mods = (c.mods || []).map(id => CHAOS_MODS.find(m => m.id === id)).filter(Boolean);
+  const what = c.chain
+    ? c.chain.map(g => `${META[g].emoji} ${esc(META[g].name)}`).join(' → ')
+    : `${META[c.gid].emoji} ${esc(META[c.gid].name)}`;
+  const targets = c.chain
+    ? `★ finish the chain · ★★ ${c.stars[1].toLocaleString()} · ★★★ ${c.stars[2].toLocaleString()}`
+    : c.stars.map((t, k) => `${'★'.repeat(k + 1)} ${t.toLocaleString()}`).join(' · ');
+  const act = CAMPAIGN_ACTS[c.act - 1];
+  let html =
+    `<div class="cp-detail${open ? '' : ' locked'}">` +
+      `<div class="cp-kicker">ACT ${act.n} · ${act.name} · CHAPTER ${i + 1}</div>` +
+      `<div class="cp-title">${esc(c.title)}</div>` +
+      `<div class="cp-story">“${esc(c.story)}” <em>— ARC</em></div>` +
+      `<div class="cp-facts"><span>${what}</span><span>${tier.icon} ${esc(tier.label)}</span>` +
+      (mods.length ? `<span>${mods.map(m => m.icon + ' ' + esc(m.name)).join(' + ')}</span>` : '') + `</div>` +
+      `<div class="cp-targets">${targets}</div>` +
+      `<div class="cp-have">${starStr(campaignStarsOf(c.id))}</div>` +
+      (open
+        ? `<button class="btn btn-primary btn-full btn-lg" id="cp-play" type="button">▶ ${campaignStarsOf(c.id) ? 'REPLAY' : 'PLAY'} CHAPTER ${i + 1}</button>`
+        : `<div class="cp-lock">🔒 ${total < act.need ? `ACT ${act.n} opens at ${act.need} ★ — you have ${total}` : 'Clear the chapter before this one first'}</div>`) +
+    `</div>`;
+  for(const a of CAMPAIGN_ACTS){
+    const got = CAMPAIGN.filter(x => x.act === a.n).reduce((s, x) => s + campaignStarsOf(x.id), 0);
+    html += `<div class="cp-act${total < a.need ? ' shut' : ''}"><span>ACT ${a.n} · ${a.name}</span>` +
+            `<em>${total < a.need ? `🔒 ${a.need} ★` : `${got}/15 ★`}</em></div><div class="cp-grid">`;
+    CAMPAIGN.forEach((x, k) => {
+      if(x.act !== a.n) return;
+      const ok = campaignUnlocked(k), st = campaignStarsOf(x.id);
+      const icon = x.chain ? '👑' : META[x.gid].emoji;
+      html += `<button class="cp-node${ok ? '' : ' locked'}${k === i ? ' sel' : ''}${st ? ' done' : ''}" data-i="${k}" type="button"` +
+              ` aria-label="Chapter ${k + 1}: ${esc(x.title)}, ${st} of 3 stars${ok ? '' : ', locked'}"${k === i ? ' aria-current="true"' : ''}>` +
+              `<span class="cp-n">${k + 1}</span><span class="cp-ico">${ok ? icon : '🔒'}</span>` +
+              `<span class="cp-nt">${esc(x.title)}</span><span class="cp-st">${starStr(st)}</span></button>`;
+    });
+    html += `</div>`;
+  }
+  body.innerHTML = html;
+  body.querySelectorAll('.cp-node').forEach(b => b.addEventListener('click', () => {
+    campaignSel = +b.dataset.i; snd('tab'); renderCampaign();
+    // The map was rebuilt, so the tapped node is gone — hand focus to its
+    // replacement (without letting the focus scroll fight the scroll below).
+    body.querySelector('.cp-node.sel')?.focus({ preventScroll: true });
+    campaignScrollTop(true);
+  }));
+  document.getElementById('cp-play')?.addEventListener('click', () => startChapter(i));
+}
+
+function paintCampaignBanner(){
+  const sub = document.getElementById('cp-banner-sub');
+  if(!sub || !user) return;
+  const total = campaignTotal();
+  const n = campaignNext();
+  const done = CAMPAIGN.every(c => campaignStarsOf(c.id) >= 1);
+  sub.textContent = done
+    ? `Root access achieved · ${total}/${CAMPAIGN_MAX_STARS} ★ — go back for every last star.`
+    : total ? `Chapter ${n + 1} · ${CAMPAIGN[n].title} · ${total}/${CAMPAIGN_MAX_STARS} ★`
+            : 'Twenty chapters against THE GLITCH, the thing that broke out of Battle Bots. Start at chapter one.';
+}
+
+document.getElementById('btn-campaign')?.addEventListener('click', () => openCampaign());
+document.getElementById('campaign-close')?.addEventListener('click', () => closeOverlay('campaign-overlay'));
+document.getElementById('campaign-overlay')?.addEventListener('click', e => {
+  if(e.target.id === 'campaign-overlay') closeOverlay('campaign-overlay');
+});
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape' && document.getElementById('campaign-overlay')?.classList.contains('show')) closeOverlay('campaign-overlay');
 });

@@ -22,7 +22,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=39">
+<link rel="stylesheet" href="style.css?v=49">
 </head>
 <body>
 
@@ -119,6 +119,9 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
   <div class="diff-selector" id="diff-selector">
     <span class="diff-label">⚙️ SYSTEM STABILITY</span>
     <div class="diff-btns">
+      <!-- 🔵 SAFE MODE — the one tier below Stable: slower hazards, a longer
+           clock, half the pay, and no medals or grid records. -->
+      <button class="diff-btn diff-safe" id="diff-btn-safe" data-tier="safe" title="Slower hazards, 40% more time, half the points. No medals.">🔵 Safe Mode</button>
       <button class="diff-btn diff-stable active" id="diff-btn-stable" data-tier="stable">🟢 Stable Core</button>
       <button class="diff-btn diff-overclocked" id="diff-btn-overclocked" data-tier="overclocked">🟡 Overclock</button>
       <button class="diff-btn diff-meltdown" id="diff-btn-meltdown" data-tier="meltdown">🔴 Meltdown</button>
@@ -172,6 +175,17 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
   <div class="loadout-rail" id="loadout-rail"></div>
   <div class="hub-body">
     <div>
+      <!-- 📖 CAMPAIGN — ROOT ACCESS. Twenty chapters in four acts against THE
+           GLITCH (§ 21). First on the page because it is a PATH: the banners
+           below are doors into one round, this one is the story around them. -->
+      <div class="mp-banner cp-banner" id="cp-banner">
+        <span class="mp-banner-icon">📖</span>
+        <div class="mp-banner-txt">
+          <div class="mp-banner-title">CAMPAIGN · ROOT ACCESS</div>
+          <div class="mp-banner-sub" id="cp-banner-sub">Twenty chapters against THE GLITCH, the thing that broke out of Battle Bots. Start at chapter one.</div>
+        </div>
+        <button class="btn btn-primary" id="btn-campaign">PLAY →</button>
+      </div>
       <!-- 🌐 NETWORK ARENA — the door to live head-to-head play. Sits above the
            mission grid because it's a different KIND of thing from the solo
            cards: a lobby, not a round you can start on the spot. -->
@@ -193,6 +207,16 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
           <div class="mp-banner-sub">Five random missions back-to-back. One combined score, no breaks — quit and you forfeit the lot.</div>
         </div>
         <button class="btn btn-primary" id="btn-boss-rush">RUN IT →</button>
+      </div>
+      <!-- 🎉 PARTY MODE — pass-and-play on one device (§ 19). Nothing a party
+           turn does is saved to anyone's profile. -->
+      <div class="mp-banner pt-banner" id="party-banner">
+        <span class="mp-banner-icon">🎉</span>
+        <div class="mp-banner-txt">
+          <div class="mp-banner-title">PARTY MODE</div>
+          <div class="mp-banner-sub">2–6 players, one device. Everyone takes a turn on the same three missions — the highest total wins.</div>
+        </div>
+        <button class="btn btn-primary" id="btn-party">🎉 START A PARTY</button>
       </div>
       <!-- 📅 DAILY HACK — the same locked layout for everyone, every UTC day.
            Its own banner rather than a mission card because the mission is not
@@ -231,7 +255,15 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <!-- 🔒 The clearance summary. Painted by paintMissionLocks(); says how many
            missions are still shut so a player can tell at a glance without
            scanning twenty-one cards for a padlock. -->
+      <!-- 📋 TODAY'S CONTRACTS — three small jobs, dealt per player per UTC
+           day and stored on the profile. Built by paintContracts() (§ 15). -->
+      <div class="contracts-panel" id="contracts-panel"></div>
       <div class="sec-label">⚡ SELECT MISSION <em class="mission-clearance" id="mission-clearance"></em></div>
+      <!-- ⭐ GRID TOOLS — filter chips (all / favourites / reflex / puzzle /
+           patience / strategy) and the order toggle. Built by paintGridTools();
+           per-device state in localStorage. Nothing in the grid is moved in the
+           DOM — filtering is a class and ordering is CSS `order`. -->
+      <div class="grid-tools" id="grid-tools"></div>
       <div class="games-grid">
         <div class="game-card" data-game="click" data-c="cyan">
           <span class="gc-icon">🖱️</span>
@@ -394,6 +426,26 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
           <div class="gc-desc">One thruster, real inertia, one cooling shaft. Nothing stops when you let go!</div>
           <span class="gc-pts" data-c="red">UP TO 1350 PTS</span>
         </div>
+        <!-- 🏍️🗄️👾 THE CLASSICS WING (v44+). The arcade classics the grid was
+             missing, rebuilt for it. Each ships with a 2D and a 3D build. -->
+        <div class="game-card" data-game="lightcycle" data-c="cyan">
+          <span class="gc-icon">🏍️</span>
+          <div class="gc-name" data-c="cyan">LIGHT CYCLE</div>
+          <div class="gc-desc">Ride the grid on a wall of light — trap the droid riders before they trap you!</div>
+          <span class="gc-pts" data-c="cyan">UP TO 1200 PTS</span>
+        </div>
+        <div class="game-card" data-game="stack" data-c="lime">
+          <span class="gc-icon">🗄️</span>
+          <div class="gc-name" data-c="lime">SERVER STACK</div>
+          <div class="gc-desc">Tap to drop each server slab — whatever overhangs is sliced off. How high can you build?</div>
+          <span class="gc-pts" data-c="lime">UP TO 1000 PTS</span>
+        </div>
+        <div class="game-card" data-game="muncher" data-c="gold">
+          <span class="gc-icon">👾</span>
+          <div class="gc-name" data-c="gold">DATA MUNCHER</div>
+          <div class="gc-desc">Eat every data bit in the maze — then grab a power core and hunt the daemons back!</div>
+          <span class="gc-pts" data-c="gold">UP TO 1300 PTS</span>
+        </div>
       </div>
     </div>
     <div>
@@ -484,6 +536,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <div class="diff-selector mp-diff" id="mp-diff-selector">
       <span class="diff-label">⚙️ SYSTEM STABILITY</span>
       <div class="diff-btns">
+        <button class="diff-btn diff-safe" id="mp-diff-btn-safe" data-tier="safe" title="Slower hazards, 40% more time, half the points.">🔵 Safe Mode</button>
         <button class="diff-btn diff-stable active" id="mp-diff-btn-stable" data-tier="stable">🟢 Stable Core</button>
         <button class="diff-btn diff-overclocked" id="mp-diff-btn-overclocked" data-tier="overclocked">🟡 Overclock</button>
         <button class="diff-btn diff-meltdown" id="mp-diff-btn-meltdown" data-tier="meltdown">🔴 Meltdown</button>
@@ -638,6 +691,10 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <button class="market-tab" data-tab="skins">🤖 Skins</button>
     <button class="market-tab" data-tab="drives">🎵 Music Drives</button>
     <button class="market-tab" data-tab="exits">💀 Exit States</button>
+    <!-- 🌍 WORLD THEMES — one tint over every 3D mission (§ 20). -->
+    <button class="market-tab" data-tab="worlds">🌍 Worlds</button>
+    <!-- 🎃 SEASONAL STOCK — shown only while an event runs (renderEventShelf). -->
+    <button class="market-tab market-tab-event" data-tab="event" id="market-tab-event" hidden>🎃 Limited</button>
     <!-- 🎒 Not a tab — a door. A loadout is not stock, it is a saved
          arrangement of the stock you already own, so it opens the same overlay
          the hub rail does rather than pretending to be a seventh shelf. -->
@@ -674,6 +731,14 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <div class="market-panel" id="panel-skins"><div class="shop-grid" id="shop-skins"></div></div>
     <div class="market-panel" id="panel-drives"><div class="shop-grid" id="shop-drives"></div></div>
     <div class="market-panel" id="panel-exits"><div class="shop-grid" id="shop-exits"></div></div>
+    <div class="market-panel" id="panel-worlds">
+      <div class="ev-shelf-note wld-note">🌍 A world theme restyles the sky, the haze and the light of EVERY 3D mission at once. It shows in 3D CYBERPUNK mode — switch from ⚙️ Settings.</div>
+      <div class="shop-grid" id="shop-worlds"></div>
+    </div>
+    <div class="market-panel" id="panel-event">
+      <div class="ev-shelf-note" id="ev-shelf-note"></div>
+      <div class="shop-grid" id="shop-event"></div>
+    </div>
   </div>
 </div>
 
@@ -703,6 +768,9 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
          own in the grid that the readouts cannot reach into: beside the pills
          when there is room, beside Quit when there is not. -->
     <div class="g-actions">
+      <!-- ⏸️ PAUSE. Esc / P / START do the same; the round also pauses itself
+           when the page is hidden. Refused (with a toast) in the Network Arena. -->
+      <button class="btn btn-secondary btn-sm btn-pause" id="btn-pause" title="Pause (Esc / P)" aria-label="Pause">⏸</button>
       <button class="btn btn-secondary btn-sm btn-sound" id="btn-sound-game" title="Audio">🔊</button>
       <!-- 📸 PHOTO MODE. 3D only, and it says so rather than doing nothing when
            the player is in 2D. -->
@@ -1023,6 +1091,69 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════
+     🎉 PARTY MODE — setup, the pass-the-device cards and the final
+     board all render into one overlay. See § 19.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay party-tint" id="party-overlay" aria-hidden="true">
+  <div class="fb-modal party-modal" role="dialog" aria-modal="true" aria-labelledby="party-heading">
+    <button class="fb-close" id="party-close" aria-label="Close party">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="party-heading">🎉 PARTY MODE</div>
+      <div class="fb-sub" id="party-sub">—</div>
+    </div>
+    <div class="party-body" id="party-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     📖 CAMPAIGN — the chapter map and the selected chapter's briefing
+     from ARC. Built by renderCampaign(); see § 21 in app.js.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay campaign-tint" id="campaign-overlay" aria-hidden="true">
+  <div class="fb-modal campaign-modal" role="dialog" aria-modal="true" aria-labelledby="campaign-heading">
+    <button class="fb-close" id="campaign-close" aria-label="Close campaign">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="campaign-heading">📖 ROOT ACCESS</div>
+      <div class="fb-sub" id="campaign-sub">—</div>
+    </div>
+    <div id="campaign-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     🪪 PLAYER CARD — what a name on any board opens. Built from the
+     player record the board already downloaded; see § 15.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay pcard-tint" id="pcard-overlay" aria-hidden="true">
+  <div class="fb-modal pcard-modal" role="dialog" aria-modal="true" aria-labelledby="pcard-heading">
+    <button class="fb-close" id="pcard-close" aria-label="Close player card">✕</button>
+    <div class="pcard-body" id="pcard-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     ⏸️ PAUSE — the round is held (frames, clocks, timers) and the board
+     is hidden behind an opaque backdrop, so a paused puzzle cannot be
+     studied. Built by paintPauseMenu(); see § 13 in app.js.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay pause-tint" id="pause-overlay" aria-hidden="true">
+  <div class="fb-modal pause-modal" role="dialog" aria-modal="true" aria-labelledby="pause-heading">
+    <div class="fb-head">
+      <div class="fb-title" id="pause-heading">⏸️ PAUSED</div>
+      <div class="fb-sub" id="pause-sub">—</div>
+    </div>
+    <div class="pause-stats" id="pause-stats"></div>
+    <div class="pause-btns">
+      <button class="btn btn-primary btn-full btn-lg" id="pause-resume" type="button">▶ RESUME</button>
+      <button class="btn btn-secondary btn-full" id="pause-restart" type="button">↻ RESTART MISSION</button>
+      <button class="btn btn-secondary btn-full" id="pause-audio" type="button">🔊 AUDIO</button>
+      <button class="btn btn-secondary btn-full" id="pause-quit" type="button">✕ QUIT TO HUB</button>
+    </div>
+    <div class="pause-hint">Esc or P to resume · START on a controller</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
      💀 EXIT STATE STAGE — where a custom death animation plays.
      One host element for all three styles; each is a CSS class on it,
      so adding a fourth never means adding a fourth element.
@@ -1084,7 +1215,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
          paintInputToggles(). Side by side because they are a pair, not a list. -->
     <section class="set-sec" aria-labelledby="set-input-h">
       <div class="set-sec-h"><span id="set-input-h">🎮 INPUT</span></div>
-      <p class="set-note">Haptics buzz on hits, absorbs, scores and fails. With the gamepad on, the left stick aims, <b>A</b> acts, <b>B</b> closes, and <b>START</b> quits.</p>
+      <p class="set-note">Haptics buzz on hits, absorbs, scores and fails. With the gamepad on, the left stick aims, <b>A</b> acts, <b>B</b> closes, and <b>START</b> pauses.</p>
       <div class="set-row">
         <button class="btn btn-secondary inp-toggle" id="btn-haptics" aria-pressed="false">📳 HAPTICS</button>
         <button class="btn btn-secondary inp-toggle" id="btn-pad" aria-pressed="true">🎮 PAD</button>
@@ -1231,7 +1362,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=39"></script>
+<script src="app.js?v=49"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker

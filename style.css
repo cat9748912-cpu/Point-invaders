@@ -988,7 +988,17 @@ html.is-offline .fb-overlay{padding-bottom:calc(20px + 3.4rem + env(safe-area-in
 
 .fb-opt{font-size:.85em;color:var(--dimmer);letter-spacing:.08em;text-transform:none}
 .fb-select{appearance:none;cursor:pointer;background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);background-position:calc(100% - 18px) 50%,calc(100% - 13px) 50%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:40px}
-.fb-select option{background:#0b0e1e;color:var(--text)}
+/* The one part of a <select> the page cannot paint is the open list: that is
+   an OS window, and its frame, its scrollbar and its highlight bar are drawn
+   from the colour scheme, not from CSS. Left at the default light, a
+   dark-styled select dropped a white slab with a white scrollbar over the
+   hub. The rows themselves need an OPAQUE colour for the same reason: .input
+   paints var(--s2), rgba(255,255,255,.08), which Chrome cannot composite into
+   a popup, so it fell back to white and left every white-texted label
+   invisible. Keyed off the element, not one class, so the next select in the
+   game is born themed. */
+select{color-scheme:dark}
+select option{background:#0b0e1e;color:var(--text)}
 .fb-textarea{min-height:110px;resize:vertical;font-size:.92rem;line-height:1.5;font-family:var(--fb)}
 .fb-textarea::placeholder{color:var(--dimmer);font-family:var(--fd);font-size:.62rem;letter-spacing:.06em;line-height:1.9}
 .fb-count{font-family:var(--fd);font-size:.5rem;letter-spacing:.14em;color:var(--dimmer);text-align:right;margin-top:6px}
@@ -4048,3 +4058,600 @@ body.mode-3d .btn-save-acct:disabled{animation:none}
     0 12px 18px -8px rgba(0,0,0,.8),0 0 18px rgba(57,255,20,.32),
     inset 0 1px 0 var(--lip-hi),inset 0 -1px 0 var(--lip-lo)}
 }
+
+/* ══════════════════════════════════════════════════════════════
+   § v40 — 🔵 SAFE MODE · 🏅 MEDALS & GRID RECORDS · ⭐ FAVOURITES & FILTERS
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 🔵 SAFE MODE — the one tier below Stable, in a cool blue ── */
+.diff-btns{flex-wrap:wrap;justify-content:center}
+.diff-btn.diff-safe.active{background:rgba(77,163,255,.12);color:#4da3ff;box-shadow:0 0 10px #4da3ff}
+.diff-btn.diff-safe.active:hover{box-shadow:0 0 15px #4da3ff}
+.diff-selector.tier-safe{border-color:rgba(77,163,255,.45)}
+.diff-selector.tier-safe::before{background:#4da3ff}
+.res-bonus.res-bonus-safe{border-color:#4da3ff;color:#4da3ff;background:rgba(77,163,255,.08);box-shadow:0 0 10px rgba(77,163,255,.35)}
+#toast.toast-safe{border-color:#4da3ff;color:#4da3ff;box-shadow:0 10px 30px rgba(77,163,255,.25)}
+#toast.toast-medal{border-color:var(--gold);color:var(--gold);box-shadow:0 10px 30px rgba(255,215,0,.25)}
+body.mode-3d .diff-btn.diff-safe.active{--wallb:#0a2a4a}
+/* Four tiers on a phone: a 2×2 block, not a row that runs off the edge. */
+@media (max-width:520px){
+  .diff-btns{display:grid;grid-template-columns:1fr 1fr;width:100%;gap:6px}
+  .diff-btn{padding:10px 8px}
+}
+
+/* ── 🏅 THE CARD STRIP — medal, bar to the next one, the record holder ──
+   Decorative: the card handles every click, so it never takes the pointer. */
+.gc-medal{
+  --mcol:#56607a;
+  margin-top:10px;display:flex;flex-direction:column;gap:5px;text-align:left
+}
+.game-card > .gc-medal{pointer-events:none}
+.gc-medal.m-bronze{--mcol:#d08a45}
+.gc-medal.m-silver{--mcol:#c9d2e3}
+.gc-medal.m-gold{--mcol:#ffd700}
+.gc-medal.m-diamond{--mcol:#7df9ff}
+.gm-row{display:flex;align-items:center;gap:7px}
+.gm-ico{font-size:1rem;line-height:1;width:1.35em;text-align:center;flex-shrink:0}
+.gc-medal.m-none .gm-ico{color:var(--dimmer);font-size:.95rem}
+.gm-bar{flex:1;height:5px;min-width:0;border-radius:3px;background:rgba(255,255,255,.07);overflow:hidden}
+.gm-bar i{display:block;height:100%;border-radius:3px;background:var(--mcol);box-shadow:0 0 8px var(--mcol)}
+.gc-medal.m-none .gm-bar i{box-shadow:none}
+.gm-next{font-family:var(--fd);font-size:.46rem;font-weight:700;letter-spacing:.06em;color:var(--dim);white-space:nowrap}
+.gm-rec{
+  font-family:var(--fb);font-size:.66rem;font-weight:600;color:var(--dim);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis
+}
+/* The lock tag sits across the foot of a locked card; the strip would only
+   peek out from under it. */
+.game-card.locked .gc-medal{display:none}
+body.mode-3d .gc-medal{transform:translateZ(10px)}
+@media (max-width:700px){
+  .gm-next{font-size:.42rem}
+  .gm-rec{font-size:.6rem}
+}
+
+/* ── 🏅 THE RESULTS PANEL ── */
+#res-medal{
+  --mcol:#56607a;
+  max-width:440px;margin:-8px auto 20px;padding:12px 14px;border-radius:12px;
+  background:var(--s2);border:1px solid var(--mcol);text-align:left
+}
+#res-medal.m-bronze{--mcol:#d08a45}
+#res-medal.m-silver{--mcol:#c9d2e3}
+#res-medal.m-gold{--mcol:#ffd700}
+#res-medal.m-diamond{--mcol:#7df9ff}
+#res-medal.m-safe{--mcol:#4da3ff}
+.rm-top{display:flex;align-items:center;gap:12px}
+.rm-ico{display:inline-block;font-size:1.9rem;line-height:1}
+.rm-txt{
+  display:flex;flex-direction:column;
+  font-family:var(--fd);font-size:.7rem;font-weight:900;letter-spacing:.12em;color:var(--mcol)
+}
+.rm-txt b{color:#fff;margin-right:6px}
+.rm-txt em{font-family:var(--fb);font-style:normal;font-weight:600;font-size:.76rem;letter-spacing:0;color:var(--dim);margin-top:3px}
+.rm-bar{height:6px;border-radius:3px;background:rgba(255,255,255,.07);overflow:hidden;margin:11px 0 6px}
+.rm-bar i{display:block;height:100%;border-radius:3px;background:var(--mcol);box-shadow:0 0 10px var(--mcol)}
+.rm-next{font-size:.78rem;color:var(--dim)}
+.rm-rec{
+  margin-top:9px;padding-top:9px;border-top:1px solid var(--border);
+  font-family:var(--fd);font-size:.6rem;font-weight:900;letter-spacing:.12em;color:var(--gold)
+}
+#res-medal.is-new{animation:medalIn .8s cubic-bezier(.2,1.4,.4,1) both;box-shadow:0 0 30px -6px var(--mcol)}
+#res-medal.is-new .rm-ico{animation:medalSpin 1.3s ease .15s both}
+@keyframes medalIn{0%{transform:scale(.86);opacity:0}100%{transform:none;opacity:1}}
+@keyframes medalSpin{
+  0%{transform:perspective(300px) rotateY(0) scale(.5)}
+  65%{transform:perspective(300px) rotateY(540deg) scale(1.25)}
+  100%{transform:perspective(300px) rotateY(720deg) scale(1)}
+}
+html.reduced-motion #res-medal.is-new,
+html.reduced-motion #res-medal.is-new .rm-ico{animation:none}
+
+/* ── ⭐ THE FAVOURITE STAR — the ⓘ badge's twin, in the other top corner ── */
+.gc-fav{
+  position:absolute;top:8px;left:8px;z-index:3;
+  width:30px;height:30px;line-height:28px;padding:0;text-align:center;
+  border-radius:50%;cursor:pointer;font-size:1rem;
+  background:rgba(255,255,255,.06);border:1px solid var(--border);color:var(--dim);
+  transition:color .15s,border-color .15s,background .15s
+}
+.gc-fav::after{content:'';position:absolute;inset:-9px;border-radius:50%}
+.gc-fav:hover{color:var(--gold);border-color:var(--gold);background:rgba(255,215,0,.1)}
+.gc-fav.on{color:var(--gold);border-color:rgba(255,215,0,.6);background:rgba(255,215,0,.12);text-shadow:0 0 10px rgba(255,215,0,.6)}
+@media (pointer: coarse){
+  .gc-fav{width:40px;height:40px;line-height:38px;font-size:1.15rem;top:6px;left:6px}
+  .gc-fav::after{inset:-6px}
+}
+.game-card.is-fav{border-color:rgba(255,215,0,.32)}
+/* Same reason as the ⓘ: the card is preserve-3d and its contents are lifted
+   off the face, so a control at Z 0 is behind them for hit-testing too. */
+body.mode-3d .gc-fav{
+  transform:translateZ(34px);
+  box-shadow:
+    0 1px 0 #131a2e,0 2px 0 #0a0e1c,
+    0 6px 10px -6px rgba(0,0,0,.8),
+    inset 0 1px 0 rgba(255,255,255,.14),inset 0 -1px 0 rgba(0,0,0,.45);
+  transition:transform .12s ease,box-shadow .12s ease,border-color .15s,color .15s;
+}
+body.mode-3d .gc-fav:hover{transform:translateZ(34px) translateY(-1px)}
+body.mode-3d .gc-fav:active{
+  transform:translateZ(34px) translateY(2px);
+  box-shadow:0 0 0 #131a2e,inset 0 2px 5px rgba(0,0,0,.6);
+}
+
+/* ── ⭐ GRID TOOLS — the filter chips reuse the Network Arena's .mp-filter ── */
+.grid-tools{margin:-2px 0 14px}
+.grid-tools .gt-chips{margin-bottom:0;align-items:center}
+.grid-tools .gt-sort{margin-left:auto}
+.gt-empty{
+  margin-top:12px;padding:18px;border:1px dashed var(--border2);border-radius:12px;
+  text-align:center;font-size:.86rem;color:var(--dim)
+}
+.gt-empty:empty{display:none}
+.game-card.gf-hide{display:none}
+@media (max-width:700px){
+  .grid-tools .gt-sort{margin-left:0}
+}
+
+/* ══════════════════════════════════════════════════════════════
+   § v41 — ⏸️ PAUSE MENU
+   The backdrop is near-opaque on purpose: a paused Signal Trace or Defrag
+   board that stayed readable would be free thinking time against a clock.
+   ══════════════════════════════════════════════════════════════ */
+.pause-tint{background:rgba(3,3,12,.965);backdrop-filter:blur(18px);z-index:2100}
+.pause-tint .fb-modal{max-width:420px;border-color:rgba(0,245,255,.45);
+  box-shadow:0 0 70px rgba(0,245,255,.14),inset 0 0 0 1px rgba(255,255,255,.03)}
+.pause-tint .fb-modal::before{background:linear-gradient(90deg,transparent,var(--cyan),transparent);box-shadow:0 0 12px var(--cyan)}
+.pause-tint .fb-title{background:linear-gradient(90deg,var(--cyan),var(--pink));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.pause-stats{
+  background:var(--s2);border:1px solid var(--border);border-radius:12px;
+  padding:12px 14px;margin:4px 0 18px;text-align:center
+}
+.ps-name{font-family:var(--fd);font-size:.66rem;font-weight:900;letter-spacing:.12em;color:#fff;margin-bottom:8px}
+.ps-row{display:flex;justify-content:center;flex-wrap:wrap;gap:8px 16px;font-size:.84rem;color:var(--dim)}
+.ps-row b{color:var(--cyan);font-family:var(--fd);font-size:.8rem}
+.pause-btns{display:flex;flex-direction:column;gap:10px}
+.pause-hint{margin-top:14px;text-align:center;font-size:.74rem;color:var(--dimmer)}
+/* The header button: a touch wider than the other glyph buttons, because it
+   is the one a player reaches for in a hurry. */
+.btn-pause{min-width:40px}
+@media (pointer:coarse){ .btn-pause{min-width:48px} }
+
+/* ══════════════════════════════════════════════════════════════
+   § v42 — 🎃 SEASONAL EVENTS · NEON HAUNT
+   Everything here is scoped to body.ev-haunt (set by applyEventTheme() from
+   the date), so outside October none of it exists. The player's own colour
+   cosmetic owns --cyan, so the event accents with its own two colours rather
+   than repainting that variable.
+   ══════════════════════════════════════════════════════════════ */
+body.ev-haunt{--ev-a:#ff7a1a;--ev-b:#a24dff}
+
+/* A pumpkin-and-violet night behind every screen: two fixed glows, painted
+   once, no animation, never in front of anything. */
+body.ev-haunt::before{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(120% 55% at 50% 108%,rgba(255,106,0,.16),transparent 60%),
+    radial-gradient(90% 50% at 50% -8%,rgba(150,60,255,.14),transparent 62%);
+}
+body.ev-haunt .hub-bar{box-shadow:0 0 34px -8px rgba(255,122,26,.45),inset 0 -1px 0 rgba(162,77,255,.35)}
+body.ev-haunt .hub-logo-sm::after{content:' 🎃';-webkit-text-fill-color:initial}
+body.ev-haunt .sec-label{text-shadow:0 0 12px rgba(255,122,26,.25)}
+
+/* ── The hub banner ── */
+.ev-banner{
+  border-color:rgba(255,122,26,.55)!important;
+  background:linear-gradient(120deg,rgba(255,106,0,.13),rgba(120,40,200,.12) 60%,rgba(8,6,20,.6))!important;
+  box-shadow:0 0 40px -10px rgba(255,122,26,.5)
+}
+/* Gradient text like every banner title — and a drop-shadow FILTER, never a
+   text-shadow, which Chrome paints over a background-clip:text face. */
+.ev-banner .mp-banner-title{background:linear-gradient(90deg,#ffc08a,#ff7a1a 45%,#c78bff);-webkit-background-clip:text;background-clip:text;filter:drop-shadow(0 0 8px rgba(255,122,26,.45))}
+.ev-banner.ev-tease{opacity:.86;border-style:dashed!important}
+.ev-prog{height:5px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;margin-top:8px;max-width:320px}
+.ev-prog i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,#ff7a1a,#a24dff);box-shadow:0 0 10px rgba(255,122,26,.6)}
+.ev-lb-label{color:#ffb070}
+
+/* ── Floating decorations (hub only, never over a round) ── */
+#ev-deco{position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden;display:none}
+body.ev-haunt:has(#hub-screen.active) #ev-deco{display:block}
+html.reduced-motion #ev-deco{display:none!important}
+.evd-bat{position:absolute;left:-60px;opacity:.55;filter:drop-shadow(0 0 6px rgba(162,77,255,.8));
+  animation-name:evdFly;animation-timing-function:linear;animation-iteration-count:infinite}
+@keyframes evdFly{
+  0%{transform:translate(0,0) scaleX(-1)}
+  25%{transform:translate(28vw,-3vh) scaleX(-1)}
+  50%{transform:translate(55vw,2vh) scaleX(-1)}
+  75%{transform:translate(82vw,-2vh) scaleX(-1)}
+  100%{transform:translate(112vw,1vh) scaleX(-1)}
+}
+.evd-float{position:absolute;font-size:2.1rem;opacity:.42;animation:evdBob 6s ease-in-out infinite;
+  filter:drop-shadow(0 0 12px rgba(255,122,26,.7))}
+.evd-l{left:2.5%;bottom:9%}
+.evd-r{right:3%;bottom:14%;animation-delay:-2.2s;font-size:1.7rem}
+.evd-g{right:9%;top:22%;animation-delay:-4s;font-size:1.5rem;opacity:.3;filter:drop-shadow(0 0 10px rgba(255,255,255,.5))}
+@keyframes evdBob{0%,100%{transform:translateY(0) rotate(-4deg)}50%{transform:translateY(-14px) rotate(4deg)}}
+@media (max-width:700px){ .evd-float{display:none} }
+
+/* ── The shelf ── */
+.market-tab-event{color:#ffb070!important;border-color:rgba(255,122,26,.5)!important}
+.market-tab-event.active{background:rgba(255,122,26,.14)!important;box-shadow:0 0 18px rgba(255,122,26,.3)}
+.ev-shelf-note{
+  margin:0 0 16px;padding:12px 14px;border-radius:12px;
+  border:1px dashed rgba(255,122,26,.55);background:rgba(255,106,0,.07);
+  font-family:var(--fd);font-size:.56rem;font-weight:700;letter-spacing:.1em;line-height:1.7;color:#ffb070
+}
+.shop-card.shop-event{border-color:rgba(255,122,26,.45)}
+.shop-evtag{
+  display:inline-block;margin:0 auto 6px;padding:3px 10px;border-radius:20px;
+  font-family:var(--fd);font-size:.44rem;font-weight:900;letter-spacing:.12em;
+  color:#1a0800;background:linear-gradient(90deg,#ff9a3c,#ff6a00);box-shadow:0 0 12px rgba(255,122,26,.5)
+}
+
+/* ── 🪦 GRAVEYARD SHIFT — the event's exit state ── */
+/* ⚠️ The layer itself carries a background. With a TRANSPARENT root, Chrome
+   drew the 3D chrome's lifted buttons (preserve-3d, translateZ) OVER this
+   z-index 2500 layer in 3D mode — the hub's buttons showed through the
+   headstones. Every other exit paints its root, which is why only this one
+   met it. */
+#exit-fx.fx-grave{background:rgba(3,1,8,.35);animation:gvOut 1.8s ease forwards}
+@keyframes gvOut{0%,82%{opacity:1}100%{opacity:0}}
+.gv-sky{position:absolute;inset:0;
+  background:linear-gradient(180deg,#07020f 0%,#1a0630 55%,#3a1236 80%,#5a1d10 100%);
+  animation:gvSky .35s ease both}
+@keyframes gvSky{from{opacity:0}to{opacity:.97}}
+.gv-moon{position:absolute;left:66%;top:14%;width:15vmin;height:15vmin;border-radius:50%;
+  background:radial-gradient(circle at 38% 38%,#fff8e0,#ffd98a 55%,#e8a64a);
+  box-shadow:0 0 60px 12px rgba(255,210,130,.35);animation:gvMoon 1.1s cubic-bezier(.2,.8,.2,1) .1s both}
+@keyframes gvMoon{from{transform:translateY(40vh);opacity:0}to{transform:none;opacity:1}}
+.gv-bat{position:absolute;left:-8%;animation-name:gvBat;animation-timing-function:ease-in;animation-fill-mode:both;
+  filter:drop-shadow(0 0 4px #000)}
+@keyframes gvBat{from{transform:translate(0,0) scaleX(-1)}to{transform:translate(118vw,-18vh) scaleX(-1)}}
+.gv-hill{position:absolute;left:-10%;right:-10%;bottom:-30vh;height:52vh;border-radius:50%;
+  background:#050208;box-shadow:0 -6px 30px rgba(255,106,0,.25)}
+.gv-stones{position:absolute;left:0;right:0;bottom:6vh;display:flex;justify-content:center;align-items:flex-end;gap:4vw}
+.gv-stone{width:calc(9vmin * var(--s));height:calc(13vmin * var(--s));border-radius:48% 48% 6% 6%/38% 38% 6% 6%;
+  background:linear-gradient(180deg,#5b5a6e,#2a2936);box-shadow:inset 0 3px 0 rgba(255,255,255,.12),0 0 18px rgba(0,0,0,.6);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.4vmin;
+  animation:gvRise .6s cubic-bezier(.2,1.3,.4,1) both}
+@keyframes gvRise{from{transform:translateY(22vh)}to{transform:none}}
+.gv-main{width:22vmin;height:28vmin}
+.gv-main b{font-family:var(--fd);font-size:2.6vmin;letter-spacing:.2em;color:#e9e6ff}
+.gv-main em{font-family:var(--fd);font-style:normal;font-weight:900;font-size:4.6vmin;color:#ffb070;text-shadow:0 0 12px rgba(255,122,26,.7)}
+.gv-main i{font-family:var(--fd);font-style:normal;font-size:1.8vmin;letter-spacing:.3em;color:#bdb8d8}
+
+/* ══════════════════════════════════════════════════════════════
+   § v43 — 🏷️ TITLES · 🪪 PLAYER CARDS · 📋 DAILY CONTRACTS
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 🏷️ A title under a name on the boards ── */
+.lb-ttl{
+  display:block;font-style:normal;margin-top:2px;
+  font-family:var(--fd);font-size:.42rem;font-weight:900;letter-spacing:.14em;
+  color:var(--gold);opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis
+}
+.lb-row[data-uid]{cursor:pointer}
+.lb-row[data-uid]:hover .lb-name{text-decoration:underline;text-decoration-color:rgba(255,255,255,.3);text-underline-offset:3px}
+.ach-wear{
+  margin-top:8px;width:100%;padding:6px 8px;border-radius:8px;cursor:pointer;
+  font-family:var(--fd);font-size:.44rem;font-weight:900;letter-spacing:.12em;
+  background:rgba(255,215,0,.06);border:1px solid rgba(255,215,0,.3);color:var(--gold)
+}
+.ach-wear:hover{background:rgba(255,215,0,.14)}
+.ach-wear.on{background:rgba(255,215,0,.2);border-color:var(--gold);box-shadow:0 0 12px rgba(255,215,0,.3)}
+
+/* ── 🪪 The player card ── */
+.pcard-tint .fb-modal{max-width:500px;border-color:rgba(255,215,0,.4);box-shadow:0 0 70px rgba(255,215,0,.12),inset 0 0 0 1px rgba(255,255,255,.03)}
+.pcard-tint .fb-modal::before{background:linear-gradient(90deg,transparent,var(--gold),transparent);box-shadow:0 0 12px var(--gold)}
+.pcard-body{display:flex;flex-direction:column;gap:14px;text-align:left}
+.pc-hero{display:flex;align-items:center;gap:16px;padding-right:34px}
+.pc-skin{font-size:3.2rem;line-height:1;filter:drop-shadow(0 0 14px rgba(0,245,255,.35))}
+.pc-id{min-width:0}
+.pc-name{font-family:var(--fd);font-size:1rem;font-weight:900;letter-spacing:.08em;color:#fff;word-break:break-word}
+.pc-you{font-size:.5rem;letter-spacing:.14em;padding:2px 7px;border-radius:10px;background:rgba(0,245,255,.15);color:var(--cyan);vertical-align:middle}
+.pc-title{margin-top:5px;font-family:var(--fd);font-size:.56rem;font-weight:900;letter-spacing:.14em;color:var(--gold)}
+.pc-lvl{margin-top:5px;font-family:var(--fd);font-size:.52rem;letter-spacing:.14em;color:var(--dim)}
+.pc-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.pc-tile{background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 8px;text-align:center;display:flex;flex-direction:column;gap:3px}
+.pc-tile span{font-size:1.1rem}
+.pc-tile b{font-family:var(--fd);font-size:.78rem;color:#fff}
+.pc-tile em{font-style:normal;font-size:.62rem;color:var(--dim);line-height:1.3}
+.pc-sec{font-family:var(--fd);font-size:.56rem;font-weight:700;letter-spacing:.16em;color:var(--dimmer)}
+.pc-best{display:flex;flex-direction:column;gap:6px}
+.pc-bm{display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:10px;
+  background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:8px 12px}
+.pc-bm-ico{font-size:1.2rem}
+.pc-bm-name{font-family:var(--fd);font-size:.56rem;font-weight:700;letter-spacing:.08em;color:var(--txt)}
+.pc-bm-pts{font-family:var(--fd);font-size:.62rem;color:var(--cyan)}
+.pc-badges{display:flex;flex-wrap:wrap;gap:6px}
+.pc-badge{font-size:.72rem;padding:4px 9px;border-radius:14px;background:var(--s2);border:1px solid var(--border);color:var(--txt)}
+.pc-empty{font-size:.82rem;color:var(--dim)}
+.pc-btns{display:flex;flex-direction:column;gap:8px}
+@media (max-width:420px){ .pc-tiles{grid-template-columns:repeat(2,1fr)} }
+
+/* ── 📋 Today's contracts ── */
+.contracts-panel{
+  margin:0 0 18px;padding:14px 16px;border-radius:var(--r);
+  background:linear-gradient(135deg,rgba(57,255,20,.05),rgba(0,245,255,.04));
+  border:1px solid rgba(57,255,20,.3)
+}
+.contracts-panel:empty{display:none}
+.ct-head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.ct-title{font-family:var(--fd);font-size:.66rem;font-weight:900;letter-spacing:.14em;color:var(--lime)}
+.ct-meta{font-size:.74rem;color:var(--dim)}
+.ct-row{display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:10px;
+  padding:8px 10px;border-radius:10px;background:var(--s2);border:1px solid var(--border);margin-bottom:6px}
+.ct-row.done{opacity:.62}
+.ct-row.done .ct-txt{text-decoration:line-through;text-decoration-color:rgba(57,255,20,.6)}
+.ct-ico{font-size:1.05rem}
+.ct-txt{font-size:.84rem;color:var(--txt);line-height:1.35}
+.ct-cr{font-family:var(--fd);font-size:.52rem;font-weight:900;letter-spacing:.08em;color:var(--cyan);white-space:nowrap}
+.ct-go{padding:6px 10px!important;min-height:0!important;font-size:.5rem!important}
+.ct-bonus{margin-top:4px;font-size:.76rem;color:var(--dim);text-align:right}
+.ct-bonus.done{color:var(--lime)}
+@media (max-width:520px){
+  .ct-row{grid-template-columns:auto 1fr auto;row-gap:6px}
+  .ct-go{grid-column:1 / -1;justify-self:end}
+}
+
+/* ══════════════════════════════════════════════════════════════
+   § v47 — 🎉 PARTY MODE
+   ══════════════════════════════════════════════════════════════ */
+.pt-banner .mp-banner-title{background:linear-gradient(90deg,#ff0090,#ffd700 55%,#39ff14);-webkit-background-clip:text;background-clip:text}
+.party-tint .fb-modal{max-width:560px;border-color:rgba(255,0,144,.45);box-shadow:0 0 70px rgba(255,0,144,.14),inset 0 0 0 1px rgba(255,255,255,.03)}
+.party-tint .fb-modal::before{background:linear-gradient(90deg,transparent,#ff0090,#ffd700,transparent);box-shadow:0 0 12px #ff0090}
+.party-tint .fb-title{background:linear-gradient(90deg,#ff0090,#ffd700);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.party-body{display:flex;flex-direction:column;gap:12px;text-align:left}
+.pt-sec{font-family:var(--fd);font-size:.58rem;font-weight:700;letter-spacing:.16em;color:var(--dimmer);margin-top:4px}
+.pt-sec em{font-family:var(--fb);font-style:normal;letter-spacing:0;font-size:.74rem;margin-left:6px;color:var(--dim)}
+.pt-players{display:flex;flex-direction:column;gap:7px}
+.pt-player{display:flex;align-items:center;gap:9px}
+.pt-dot{width:12px;height:12px;border-radius:50%;background:var(--pc);box-shadow:0 0 10px var(--pc);flex-shrink:0}
+.pt-name{flex:1;min-width:0;padding:9px 12px!important}
+/* The same control as the modal's own ✕ (.fb-close) — 30px, glyph centred,
+   and flex:none so a long name cannot squash it into an oval. */
+.pt-del{flex:none;width:30px;height:30px;display:flex;align-items:center;justify-content:center;
+  border-radius:50%;border:1px solid var(--border);background:var(--s2);color:var(--dim);
+  font-size:.8rem;cursor:pointer;transition:all .2s}
+.pt-del:hover{color:var(--red);border-color:var(--red);background:rgba(255,36,66,.1)}
+/* Both section actions hug their text; START THE PARTY is the only full-width
+   bar in the sheet. Left to stretch, SHUFFLE came out 507px against ADD
+   PLAYER's 110px — two sibling secondary buttons at odds. */
+.pt-add,#pt-shuffle{align-self:flex-start}
+.pt-missions{display:flex;flex-direction:column;gap:7px}
+.pt-mission{display:grid;grid-template-columns:22px 1fr;align-items:center;gap:8px}
+.pt-mission > span{font-family:var(--fd);font-size:.7rem;color:var(--gold);text-align:center}
+/* Same control as the feedback modal's type dropdown — .fb-select for the
+   CSS chevron and the themed option list. Its padding-right:40px is what
+   keeps a long mission name off that chevron, and .pt-pick's own padding is
+   !important, so the room has to be written back into the shorthand here. */
+.pt-pick{padding:9px 38px 9px 10px!important}
+.pt-same{grid-column:2;justify-self:start;margin-top:2px;font-style:normal;
+  font-family:var(--fd);font-size:.46rem;font-weight:700;letter-spacing:.14em;
+  color:var(--lime);background:rgba(57,255,20,.08);border:1px solid currentColor;
+  border-radius:20px;padding:3px 9px}
+.pt-note{font-size:.8rem;line-height:1.5;color:var(--dim);background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.pt-note b{color:var(--text)}
+/* the pass-the-device card */
+.pt-turn{text-align:center;padding:18px 14px;border-radius:14px;border:1px solid var(--pc);
+  background:radial-gradient(120% 90% at 50% 0%,color-mix(in srgb,var(--pc) 16%,transparent),transparent 70%),var(--s2);
+  box-shadow:0 0 30px -12px var(--pc)}
+.pt-pass{font-family:var(--fd);font-size:.54rem;letter-spacing:.2em;color:var(--dim)}
+.pt-who{font-family:var(--fd);font-size:1.6rem;font-weight:900;letter-spacing:.06em;color:var(--pc);margin:6px 0 10px;
+  filter:drop-shadow(0 0 10px var(--pc));word-break:break-word}
+.pt-what{font-family:var(--fd);font-size:.72rem;font-weight:700;letter-spacing:.1em;color:#fff}
+.pt-what em{font-style:normal;color:var(--lime);font-size:.6rem}
+.pt-how{font-size:.82rem;line-height:1.5;color:var(--dim);margin:8px 0 14px}
+/* the scoreboard */
+.pt-board{display:flex;flex-direction:column;gap:5px}
+.pt-row,.pt-heads{display:grid;grid-template-columns:34px 12px 1fr repeat(3,56px) 64px;align-items:center;gap:8px;padding:7px 10px;border-radius:9px}
+.pt-row{background:var(--s2);border:1px solid var(--border)}
+.pt-row.on{border-color:var(--pc);box-shadow:0 0 14px -6px var(--pc)}
+.pt-heads{padding-top:0;padding-bottom:0;border:1px solid transparent;
+  font-family:var(--fd);font-size:.5rem;letter-spacing:.1em;color:var(--dimmer);text-align:right}
+/* These emoji ARE the column labels, so they are sized to be read rather than
+   to match the TOTAL caption beside them. */
+.pt-heads span[title]{font-size:.92rem;line-height:1}
+.pt-rank{font-family:var(--fd);font-size:.62rem;color:var(--dim)}
+.pt-rname{font-family:var(--fd);font-size:.58rem;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pt-cell{font-family:var(--fd);font-size:.56rem;color:var(--dim);text-align:right}
+.pt-cell.cur{color:var(--gold)}
+.pt-total{font-family:var(--fd);font-size:.66rem;font-weight:900;color:var(--cyan);text-align:right}
+.pt-end{align-self:center;margin-top:4px}
+/* the winner */
+.pt-win{text-align:center;padding:10px 0 6px}
+.pt-crown{font-size:2.8rem;animation:ptCrown 1.4s cubic-bezier(.2,1.4,.4,1) both}
+@keyframes ptCrown{from{transform:translateY(-30px) scale(.4);opacity:0}to{transform:none;opacity:1}}
+html.reduced-motion .pt-crown{animation:none}
+.pt-wname{font-family:var(--fd);font-size:1.2rem;font-weight:900;letter-spacing:.08em;color:var(--pc);filter:drop-shadow(0 0 12px var(--pc))}
+.pt-wpts{font-family:var(--fd);font-size:.8rem;color:var(--gold);margin-top:4px}
+.pt-final-btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:6px}
+@media (max-width:520px){
+  .pt-row,.pt-heads{grid-template-columns:26px 10px 1fr repeat(3,40px) 50px;gap:5px;padding:6px 7px}
+  .pt-row .pt-dot{width:10px;height:10px}   /* 12px overran its 10px track */
+  .pt-heads span[title]{font-size:.8rem}
+  .pt-cell{font-size:.48rem}
+  .pt-who{font-size:1.2rem}
+  /* REMATCH + NEW MISSIONS do not fit one row here, and wrapping left the
+     primary stranded alone above the other two. */
+  .pt-final-btns{flex-direction:column;align-items:stretch}
+  .pt-final-btns .btn{width:100%}
+}
+
+/* ── 🧊 in the 3D chrome: the board is a stack of plates like the
+   leaderboard's, and the pass card is the panel the GO button stands on. The
+   party sheet was the one screen left flat inside an extruded modal. ── */
+body.mode-3d .pt-row,
+body.mode-3d .pt-turn,
+body.mode-3d .pt-note{transform-style:preserve-3d}
+body.mode-3d .pt-row{
+  --wall:#121829;--wallb:#080b16;
+  background-image:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,0) 60%);
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wallb),
+    0 7px 10px -6px rgba(0,0,0,.8),
+    inset 0 1px 0 rgba(255,255,255,.1)
+}
+/* The leader's plate takes the gold body the leaderboard's #1 has. It is
+   the row after the heading — not :first-of-type, which .pt-heads owns. */
+body.mode-3d .pt-heads + .pt-row{--wall:#6b5600;--wallb:#3a2f00}
+/* Whose turn it is stands one wall taller and keeps its accent glow; same
+   specificity as the leader rule, so it comes last and wins when they are
+   the same player. */
+body.mode-3d .pt-row.on{
+  --wall:#1b2340;--wallb:#0a0f1e;
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wallb),
+    0 5px 0 var(--wallb),0 12px 16px -8px rgba(0,0,0,.85),
+    0 0 20px -7px var(--pc),
+    inset 0 1px 0 rgba(255,255,255,.14)
+}
+/* .pt-turn paints its face with a radial tint through the background
+   shorthand, so it gets the body only — a background-image here would wipe it. */
+body.mode-3d .pt-turn{
+  box-shadow:
+    0 1px 0 #10162a,0 2px 0 #10162a,0 3px 0 #070a14,0 4px 0 #070a14,
+    0 16px 24px -12px rgba(0,0,0,.85),
+    0 0 30px -12px var(--pc),
+    inset 0 1px 0 rgba(255,255,255,.11),inset 0 -1px 0 rgba(0,0,0,.5)
+}
+body.mode-3d .pt-note{
+  background-image:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,0) 70%);
+  box-shadow:
+    0 1px 0 #10162a,0 2px 0 #10162a,0 3px 0 #070a14,0 4px 0 #070a14,
+    0 14px 22px -12px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.11),inset 0 -1px 0 rgba(0,0,0,.5)
+}
+body.mode-3d .pt-del{
+  box-shadow:0 1px 0 #171e33,0 2px 0 #0a0e1a,0 4px 6px -3px rgba(0,0,0,.8),
+             inset 0 1px 0 rgba(255,255,255,.18);
+  transition:transform .14s var(--pop-ease),box-shadow .14s var(--pop-ease),color .14s,border-color .14s
+}
+body.mode-3d .pt-del:hover{transform:perspective(500px) translateZ(6px) scale(1.06)}
+body.mode-3d .pt-del:active{transform:translateY(2px)}
+
+/* ══════════════════════════════════════════════════════════════
+   § v48 — 🌍 WORLD THEMES
+   ══════════════════════════════════════════════════════════════ */
+.shop-sky{
+  width:100%;height:74px;border-radius:10px;margin-bottom:10px;position:relative;overflow:hidden;
+  border:1px solid rgba(255,255,255,.08);box-shadow:inset 0 -18px 30px rgba(0,0,0,.45)
+}
+.shop-sky span{position:absolute;right:10px;bottom:6px;font-size:1.7rem;filter:drop-shadow(0 0 8px rgba(0,0,0,.6))}
+/* A horizon glow line, so the sunset reads as a sunset rather than a gradient. */
+.shop-sky::after{content:'';position:absolute;left:0;right:0;top:62%;height:2px;background:rgba(255,255,255,.35);filter:blur(1px)}
+.wld-note{border-color:rgba(0,245,255,.4)!important;background:rgba(0,245,255,.05)!important;color:var(--cyan)!important}
+
+/* ══════════════════════════════════════════════════════════════
+   § v49 — 📖 CAMPAIGN · ROOT ACCESS
+   Terminal green and gold: ARC's console. Same furniture as the party and
+   anomaly screens (.mp-banner, .fb-overlay/.fb-modal); only the accents and
+   the chapter map are new. Colours are palette vars, so cb-safe repoints them.
+   ══════════════════════════════════════════════════════════════ */
+.cp-banner{border-color:rgba(57,255,20,.42);background:linear-gradient(120deg,rgba(57,255,20,.11),rgba(0,245,255,.07))}
+.cp-banner .mp-banner-title{background:linear-gradient(90deg,var(--lime),var(--cyan) 60%,var(--gold));-webkit-background-clip:text;background-clip:text}
+.campaign-tint .fb-modal,.campaign-modal{max-width:620px}
+.campaign-tint .fb-modal{border-color:rgba(57,255,20,.45);box-shadow:0 0 70px rgba(57,255,20,.14),inset 0 0 0 1px rgba(255,255,255,.03)}
+.campaign-tint .fb-head{margin-bottom:18px}
+#campaign-body{display:flex;flex-direction:column;text-align:left}
+
+/* ── the selected chapter: ARC's briefing ── */
+.cp-detail{
+  position:relative;overflow:hidden;padding:16px 16px 14px;margin-bottom:4px;border-radius:14px;
+  border:1px solid rgba(57,255,20,.34);
+  background:linear-gradient(160deg,rgba(57,255,20,.08),rgba(0,245,255,.03) 60%),var(--s1);
+  box-shadow:0 0 28px -14px var(--lime)
+}
+/* CRT scanlines, faint enough to read as texture rather than noise. */
+.cp-detail::before{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(0deg,rgba(57,255,20,.035) 0 1px,transparent 1px 3px)
+}
+.cp-detail > *{position:relative}
+.cp-detail.locked{border-color:var(--border);background:var(--s1);box-shadow:none}
+.cp-detail.locked .cp-title,.cp-detail.locked .cp-story{opacity:.72}
+.cp-kicker{font-family:var(--fd);font-size:.5rem;font-weight:700;letter-spacing:.2em;line-height:1.6;color:var(--lime)}
+.cp-detail.locked .cp-kicker{color:var(--dim)}
+.cp-title{font-family:var(--fd);font-size:1.2rem;font-weight:900;letter-spacing:.06em;color:#fff;margin:7px 0 11px;overflow-wrap:anywhere}
+.cp-story{
+  font-size:.95rem;line-height:1.55;color:rgba(255,255,255,.82);margin-bottom:12px;
+  padding-left:12px;border-left:2px solid rgba(57,255,20,.5)
+}
+.cp-story em{
+  font-style:normal;font-family:var(--fd);font-size:.52rem;font-weight:700;letter-spacing:.14em;
+  color:var(--lime);margin-left:4px;white-space:nowrap
+}
+.cp-facts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.cp-facts span{
+  font-family:var(--fd);font-size:.5rem;font-weight:700;letter-spacing:.08em;line-height:1.3;
+  padding:5px 10px;border-radius:999px;border:1px solid var(--border);
+  background:rgba(255,255,255,.05);color:var(--text)
+}
+.cp-targets{font-family:var(--fd);font-size:.56rem;letter-spacing:.05em;line-height:1.7;color:var(--gold);text-align:center;text-wrap:balance;margin:4px 0 2px}
+.cp-have{font-size:2.1rem;line-height:1.1;letter-spacing:.18em;color:var(--gold);text-align:center;text-shadow:0 0 16px rgba(255,215,0,.45);margin:2px 0 12px}
+.cp-lock{
+  font-family:var(--fd);font-size:.58rem;font-weight:700;letter-spacing:.1em;line-height:1.6;text-align:center;
+  color:var(--orange);padding:11px 12px;border-radius:10px;
+  border:1px dashed rgba(255,102,0,.45);background:rgba(255,102,0,.06)
+}
+
+/* ── the map: four acts of five ── */
+.cp-act{
+  display:flex;align-items:baseline;justify-content:space-between;gap:10px;
+  margin:18px 2px 8px;padding-bottom:6px;border-bottom:1px solid rgba(57,255,20,.22);
+  font-family:var(--fd);font-size:.58rem;font-weight:700;letter-spacing:.16em;color:var(--lime)
+}
+.cp-act em{font-style:normal;letter-spacing:.06em;color:var(--gold);white-space:nowrap}
+.cp-act.shut{color:var(--dimmer);border-bottom-color:var(--border)}
+.cp-act.shut em{color:var(--dim)}
+.cp-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.cp-node{
+  position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0;
+  padding:12px 4px 8px;border-radius:12px;border:1px solid var(--border);background:var(--s1);
+  color:var(--text);font-family:var(--fb);cursor:pointer;
+  transition:border-color .16s,background .16s,transform .16s
+}
+.cp-node:hover{border-color:var(--lime);transform:translateY(-2px)}
+.cp-node:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.cp-node.done{border-color:rgba(57,255,20,.42)}
+.cp-node.locked{border-style:dashed}
+.cp-node.locked:hover{border-color:var(--border2)}
+.cp-node.sel{border-style:solid;border-color:var(--gold);background:rgba(255,215,0,.08);box-shadow:0 0 16px -6px var(--gold)}
+.cp-n{position:absolute;top:5px;left:8px;font-family:var(--fd);font-size:.5rem;font-weight:700;color:var(--dim)}
+.cp-node.done .cp-n{color:var(--lime)}
+.cp-ico{font-size:1.5rem;line-height:1;margin-top:6px}
+.cp-nt{
+  font-family:var(--fd);font-size:.5rem;font-weight:700;letter-spacing:.04em;line-height:1.3;
+  text-align:center;min-height:2.6em;overflow-wrap:anywhere;padding:0 2px
+}
+.cp-st{font-size:.74rem;letter-spacing:.06em;color:var(--gold)}
+.cp-node:not(.done) .cp-st{color:var(--dimmer)}
+.cp-node.locked .cp-ico,.cp-node.locked .cp-nt,.cp-node.locked .cp-st{opacity:.5}
+@media (max-width:520px){
+  .cp-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .campaign-tint .fb-modal{padding:24px 16px 20px}
+  .cp-title{font-size:1.02rem}
+  .cp-have{font-size:1.8rem}
+}
+
+/* ── 🧊 in the 3D chrome: each chapter is a plate, like a leaderboard row ── */
+body.mode-3d .cp-node{
+  --wall:#121829;--wallb:#080b16;
+  background-image:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,0) 60%);
+  transform:perspective(760px) translateZ(0);
+  transition:transform .16s var(--pop-ease),box-shadow .16s var(--pop-ease),border-color .16s;
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wallb),
+    0 7px 10px -6px rgba(0,0,0,.8),
+    inset 0 1px 0 rgba(255,255,255,.1)
+}
+body.mode-3d .cp-node:hover{
+  transform:perspective(760px) translateZ(8px) translateY(-2px);
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wallb),
+    0 5px 0 var(--wallb),0 14px 18px -8px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.14)
+}
+body.mode-3d .cp-node.done{--wall:#0f4a12;--wallb:#062308}
+body.mode-3d .cp-node.sel{--wall:#6b5600;--wallb:#3a2f00}
+body.mode-3d .cp-node.locked{--wall:#0d1120;--wallb:#05070f}
