@@ -4418,18 +4418,133 @@ html.reduced-motion #ev-deco{display:none!important}
    bar in the sheet. Left to stretch, SHUFFLE came out 507px against ADD
    PLAYER's 110px — two sibling secondary buttons at odds. */
 .pt-add,#pt-shuffle{align-self:flex-start}
-.pt-missions{display:flex;flex-direction:column;gap:7px}
-.pt-mission{display:grid;grid-template-columns:22px 1fr;align-items:center;gap:8px}
-.pt-mission > span{font-family:var(--fd);font-size:.7rem;color:var(--gold);text-align:center}
-/* Same control as the feedback modal's type dropdown — .fb-select for the
-   CSS chevron and the themed option list. Its padding-right:40px is what
-   keeps a long mission name off that chevron, and .pt-pick's own padding is
-   !important, so the room has to be written back into the shorthand here. */
-.pt-pick{padding:9px 38px 9px 10px!important}
-.pt-same{grid-column:2;justify-self:start;margin-top:2px;font-style:normal;
-  font-family:var(--fd);font-size:.46rem;font-weight:700;letter-spacing:.14em;
-  color:var(--lime);background:rgba(57,255,20,.08);border:1px solid currentColor;
-  border-radius:20px;padding:3px 9px}
+/* ── the three mission slots ──
+   Each round is a plate you press to change it, made of the parts a hub card
+   is made of: the mission's art, its name in its own accent, its one-line
+   hook. They replaced three native <select>s, whose open list is an OS window
+   no stylesheet can paint — a flat grey list in 2D, and the one flat object
+   left in the 3D party flow. */
+.pt-missions{display:flex;flex-direction:column;gap:8px}
+/* --acc is the mission's accent, from the palette NAME the hub card carries
+   in data-c (partyCardInfo). var(--cyan) and friends rather than hex, so the
+   colour-blind palette re-points these exactly as it does the hub grid. */
+.pt-slot,.ptp-card{--acc:var(--cyan)}
+.pt-slot[data-c="pink"],.ptp-card[data-c="pink"]{--acc:var(--pink)}
+.pt-slot[data-c="lime"],.ptp-card[data-c="lime"]{--acc:var(--lime)}
+.pt-slot[data-c="gold"],.ptp-card[data-c="gold"]{--acc:var(--gold)}
+.pt-slot[data-c="purple"],.ptp-card[data-c="purple"]{--acc:var(--purple)}
+.pt-slot[data-c="orange"],.ptp-card[data-c="orange"]{--acc:var(--orange)}
+.pt-slot[data-c="red"],.ptp-card[data-c="red"]{--acc:var(--red)}
+.pt-slot{
+  position:relative;display:grid;grid-template-columns:24px 40px minmax(0,1fr) auto;align-items:center;gap:12px;
+  width:100%;padding:11px 14px 11px 10px;text-align:left;cursor:pointer;
+  font:inherit;color:var(--text);
+  background:linear-gradient(90deg,color-mix(in srgb,var(--acc) 11%,transparent),transparent 58%),var(--s1);
+  border:1px solid var(--border);border-radius:var(--r);
+  box-shadow:inset 3px 0 0 var(--acc);
+  transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease
+}
+/* The card is the only hit target. Its parts are lifted off the face in the 3D
+   chrome, and a lifted child in a preserve-3d parent hit-tests in front of
+   anything at Z 0 — the ⓘ badge's bug on the hub cards. None has a handler. */
+.pt-slot > *,.ptp-card > *{pointer-events:none}
+.pt-slot-n{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:50%;
+  border:1px solid color-mix(in srgb,var(--gold) 50%,transparent);background:color-mix(in srgb,var(--gold) 7%,transparent);
+  font-family:var(--fd);font-size:.6rem;font-weight:700;color:var(--gold)}
+.pt-slot-ico{font-size:1.75rem;line-height:1;text-align:center;
+  filter:drop-shadow(0 0 10px color-mix(in srgb,var(--acc) 38%,transparent))}
+.pt-slot-txt{min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:5px 9px}
+/* A fixed line box for the name row, taller than the SAME BOARD chip: left to
+   size itself, the one slot carrying the chip came out 4px taller. */
+.pt-slot-name{font-family:var(--fd);font-size:.64rem;font-weight:700;letter-spacing:.08em;line-height:18px;color:var(--acc)}
+.pt-slot-desc{flex-basis:100%;min-width:0;font-size:.8rem;color:var(--dim);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pt-same{font-style:normal;white-space:nowrap;line-height:1.2;
+  font-family:var(--fd);font-size:.44rem;font-weight:700;letter-spacing:.14em;
+  color:var(--lime);background:color-mix(in srgb,var(--lime) 8%,transparent);border:1px solid currentColor;
+  border-radius:20px;padding:2px 8px}
+.pt-slot-go{font-family:var(--fd);font-size:.48rem;font-weight:700;letter-spacing:.14em;color:var(--dim);
+  padding:6px 10px;border:1px solid var(--border);border-radius:20px;
+  transition:color .2s ease,border-color .2s ease,background-color .2s ease}
+/* Hover is gated on a real pointer: a tap latches :hover on most phones, and
+   the plate stayed lifted and lit long after the finger had moved on. */
+@media (hover:hover){
+  .pt-slot:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--acc) 70%,transparent);
+    box-shadow:inset 3px 0 0 var(--acc),0 8px 26px -8px color-mix(in srgb,var(--acc) 45%,transparent)}
+  .pt-slot:hover .pt-slot-go{color:var(--acc);border-color:var(--acc);background:color-mix(in srgb,var(--acc) 10%,transparent)}
+}
+.pt-slot:active{transform:scale(.985)}
+.pt-slot:focus-visible{outline:2px solid var(--acc);outline-offset:3px}
+/* The ring a pick leaves on the slot it changed (both of them, on a swap).
+   An overlay that fades, NOT an animated box-shadow: an animation on
+   box-shadow replaces the whole stack, 3D walls included, while it runs. */
+.pt-slot::after{content:'';position:absolute;inset:-1px;border-radius:inherit;pointer-events:none;opacity:0;
+  border:1px solid var(--acc);box-shadow:0 0 24px -2px var(--acc),inset 0 0 18px -8px var(--acc)}
+.pt-slot.pt-flash::after{animation:ptFlash 1.1s ease-out}
+@keyframes ptFlash{0%,30%{opacity:1}100%{opacity:0}}
+html.reduced-motion .pt-slot.pt-flash::after{animation:none}
+
+/* ── the mission picker (#ptpick-overlay) ──
+   A second overlay standing ON the setup sheet, so it goes above the shell's
+   z-index. Its backdrop is lighter and less blurred than the shell's: the
+   sheet is already sitting on a dimmed, blurred page, and the full treatment
+   again is the doubled dim the Settings hand-off steps aside to avoid — this
+   keeps the party visibly underneath the thing being chosen for it. */
+#ptpick-overlay{z-index:2050;background:rgba(2,2,10,.58);backdrop-filter:blur(3px)}
+.ptpick-tint .fb-modal{max-width:780px;border-color:rgba(255,215,0,.42);box-shadow:0 0 70px rgba(255,215,0,.12),inset 0 0 0 1px rgba(255,255,255,.03)}
+.ptpick-tint .fb-modal::before{background:linear-gradient(90deg,transparent,#ffd700,#ff0090,transparent);box-shadow:0 0 12px #ffd700}
+.ptpick-tint .fb-title{background:linear-gradient(90deg,#ffd700,#ff0090);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.ptpick-tint .fb-head{margin-bottom:22px}
+/* The rows are further apart than the columns: a round tab stands 9px above
+   its card, and in the 3D chrome the card above has an 8px wall under it. */
+.ptp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:20px 12px}
+/* The hub card, at picker scale: art, name in its accent, the hook, the cap. */
+.ptp-card{
+  position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;
+  padding:22px 12px 14px;cursor:pointer;font:inherit;color:var(--text);
+  background:var(--s1);border:1px solid var(--border);border-radius:var(--rl);
+  transition:transform .25s ease,border-color .25s ease,box-shadow .25s ease
+}
+.ptp-ico{font-size:2.2rem;line-height:1;margin-bottom:11px}
+.ptp-name{font-family:var(--fd);font-size:.56rem;font-weight:700;letter-spacing:.08em;line-height:1.5;color:var(--acc);margin-bottom:7px}
+.ptp-desc{font-size:.74rem;line-height:1.4;color:var(--dim);margin-bottom:12px;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.ptp-pills{margin-top:auto;display:flex;flex-wrap:wrap;justify-content:center;gap:5px}
+.ptp-pts,.ptp-same{padding:3px 9px;border-radius:20px;border:1px solid;white-space:nowrap;
+  font-family:var(--fd);font-size:.44rem;font-weight:700;letter-spacing:.06em}
+.ptp-pts{color:var(--acc);border-color:var(--acc);background:color-mix(in srgb,var(--acc) 6%,transparent)}
+/* Borders and washes are mixed from the same variable as the text, so the
+   colour-blind palette moves all three together. */
+.ptp-same{color:var(--lime);border-color:color-mix(in srgb,var(--lime) 60%,transparent);background:color-mix(in srgb,var(--lime) 7%,transparent)}
+/* Which round a card is in: a tab on the top edge. In a corner it ran into
+   the centred art. Opaque, because it sits across the card's border line. */
+.ptp-badge{position:absolute;top:-9px;left:50%;transform:translateX(-50%);padding:3px 9px;border-radius:20px;white-space:nowrap;
+  font-family:var(--fd);font-size:.42rem;font-weight:900;letter-spacing:.1em;line-height:1.2}
+/* This round's mission now: lit in its own accent, the way the pass card is. */
+.ptp-card.on{border-color:var(--acc);
+  background:radial-gradient(120% 90% at 50% 0%,color-mix(in srgb,var(--acc) 18%,transparent),transparent 70%),var(--s2);
+  box-shadow:0 0 0 1px var(--acc),0 0 30px -8px var(--acc)}
+.ptp-card.on .ptp-badge{color:#05060f;background:var(--acc);box-shadow:0 0 12px -2px var(--acc)}
+/* Another round's mission: badged with that round, its print set back, still
+   pickable (it swaps). The PRINT dims, not the card — opacity on the card
+   would dim the tab too, and in the 3D chrome opacity is a grouping property
+   that forces the card flat and drops its raised art onto the face. */
+.ptp-card.taken > :not(.ptp-badge){opacity:.5;transition:opacity .2s ease}
+.ptp-card.taken .ptp-badge{color:var(--gold);border:1px solid color-mix(in srgb,var(--gold) 60%,transparent);background:#0b0e1e}
+@media (hover:hover){
+  .ptp-card:hover{transform:translateY(-4px) scale(1.02);border-color:var(--acc);
+    box-shadow:0 8px 30px color-mix(in srgb,var(--acc) 22%,transparent)}
+  .ptp-card.on:hover{box-shadow:0 0 0 1px var(--acc),0 8px 30px color-mix(in srgb,var(--acc) 32%,transparent)}
+  .ptp-card.taken:hover > *{opacity:1}
+}
+.ptp-card:active{transform:scale(.97)}
+.ptp-card:focus-visible{outline:2px solid var(--acc);outline-offset:3px}
+.ptp-card.taken:focus-visible > *{opacity:1}
+.ptp-foot{margin-top:18px;display:flex;flex-direction:column;gap:4px;
+  font-size:.78rem;line-height:1.5;color:var(--dimmer);text-align:center}
+/* the legend's ⇄, drawn as the taken tab is */
+.ptp-key{display:inline-block;padding:0 7px;border-radius:20px;font-size:.7rem;line-height:1.5;
+  color:var(--gold);border:1px solid color-mix(in srgb,var(--gold) 55%,transparent);background:color-mix(in srgb,var(--gold) 8%,transparent)}
 .pt-note{font-size:.8rem;line-height:1.5;color:var(--dim);background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
 .pt-note b{color:var(--text)}
 /* the pass-the-device card */
@@ -4476,6 +4591,17 @@ html.reduced-motion .pt-crown{animation:none}
      primary stranded alone above the other two. */
   .pt-final-btns{flex-direction:column;align-items:stretch}
   .pt-final-btns .btn{width:100%}
+  .pt-slot{grid-template-columns:22px 32px minmax(0,1fr) auto;gap:9px;padding:10px 10px 10px 8px}
+  .pt-slot-ico{font-size:1.45rem}
+  .pt-slot-name{font-size:.56rem}
+  .pt-slot-desc{font-size:.74rem}
+  .pt-slot-go{padding:5px 8px;font-size:.42rem;letter-spacing:.1em}
+  /* auto-fill's 158px floor leaves ONE column on a 375px phone; two it is. */
+  .ptp-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 10px}
+  .ptp-card{padding:22px 8px 12px}
+  .ptp-ico{font-size:1.8rem;margin-bottom:8px}
+  .ptp-name{font-size:.5rem}
+  .ptp-desc{font-size:.7rem}
 }
 
 /* ── 🧊 in the 3D chrome: the board is a stack of plates like the
@@ -4529,6 +4655,127 @@ body.mode-3d .pt-del{
 }
 body.mode-3d .pt-del:hover{transform:perspective(500px) translateZ(6px) scale(1.06)}
 body.mode-3d .pt-del:active{transform:translateY(2px)}
+
+/* The mission slots and the picker's cards are plates like the hub's cards:
+   the same wall stack, lip and contact shade, lifted on hover, driven down on
+   press, and tilted toward the pointer — .pt-slot and .ptp-card are in the
+   tilt registry in app.js (SEL); a class missing there never gets --tx/--ty. */
+body.mode-3d .pt-slot,
+body.mode-3d .ptp-card{
+  --wall:#141a2c;--wallb:#070a14;--tx:0deg;--ty:0deg;
+  transform-style:preserve-3d;
+  transform-origin:50% 60%;
+  transition:transform .2s var(--pop-ease),box-shadow .2s var(--pop-ease),border-color .2s
+}
+/* A slot is a wide, short plate, so it takes a fraction of the tilt a card
+   does: at the full nine degrees its far end swung ~40px out of the sheet.
+   Its face keeps the 2D accent wash, restated WITH the specular in one
+   background shorthand — a background-image alone would wipe the wash, the
+   .pt-turn trap above. */
+body.mode-3d .pt-slot{
+  background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,0) 55%),
+             linear-gradient(90deg,color-mix(in srgb,var(--acc) 12%,transparent),transparent 58%),var(--s1);
+  transform:perspective(var(--eye)) translateZ(0) rotateX(calc(var(--tx) * .5)) rotateY(calc(var(--ty) * .15));
+  box-shadow:
+    inset 3px 0 0 var(--acc),
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),
+    0 4px 0 var(--wallb),0 5px 0 var(--wallb),0 6px 0 var(--wallb),
+    0 14px 20px -10px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.13),inset 0 -1px 0 rgba(0,0,0,.5)
+}
+body.mode-3d .ptp-card{
+  overflow:visible;           /* anything else flattens the card — see .game-card */
+  background-image:linear-gradient(170deg,rgba(255,255,255,.07),rgba(255,255,255,0) 46%);
+  transform:perspective(var(--eye)) translateZ(0) rotateX(var(--tx)) rotateY(var(--ty));
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wall),
+    0 5px 0 var(--wallb),0 6px 0 var(--wallb),0 7px 0 var(--wallb),0 8px 0 var(--wallb),
+    0 18px 26px -12px rgba(0,0,0,.85),
+    inset 0 1px 0 rgba(255,255,255,.14),inset 0 -1px 0 rgba(0,0,0,.5)
+}
+/* This round's mission stands in its own colour — walls mixed from its
+   accent, the way .mode-card.on takes cyan ones — a step higher, and lit. Its
+   2D face is a radial wash through the shorthand, restated with the specular. */
+body.mode-3d .ptp-card.on{
+  --wall:color-mix(in srgb,var(--acc) 42%,#070a14);--wallb:color-mix(in srgb,var(--acc) 22%,#05070e);
+  background:linear-gradient(170deg,rgba(255,255,255,.09),rgba(255,255,255,0) 46%),
+             radial-gradient(120% 90% at 50% 0%,color-mix(in srgb,var(--acc) 18%,transparent),transparent 70%),var(--s2);
+  transform:perspective(var(--eye)) translateZ(10px) rotateX(var(--tx)) rotateY(var(--ty));
+  box-shadow:
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wall),
+    0 5px 0 var(--wallb),0 6px 0 var(--wallb),0 7px 0 var(--wallb),0 8px 0 var(--wallb),
+    0 22px 30px -12px rgba(0,0,0,.9),
+    0 0 34px -8px var(--acc),
+    inset 0 1px 0 rgba(255,255,255,.22),inset 0 -1px 0 rgba(0,0,0,.5)
+}
+@media (hover:hover){
+  body.mode-3d .pt-slot:hover{
+    transform:perspective(var(--eye)) translateZ(12px) rotateX(calc(var(--tx) * .5)) rotateY(calc(var(--ty) * .15));
+    box-shadow:
+      inset 3px 0 0 var(--acc),
+      0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wall),
+      0 5px 0 var(--wallb),0 6px 0 var(--wallb),0 7px 0 var(--wallb),0 8px 0 var(--wallb),0 9px 0 var(--wallb),
+      0 26px 32px -16px rgba(0,0,0,.9),
+      0 0 30px -10px var(--acc),
+      inset 0 1px 0 rgba(255,255,255,.18),inset 0 -1px 0 rgba(0,0,0,.5)
+  }
+  body.mode-3d .ptp-card:hover,
+  body.mode-3d .ptp-card.on:hover{
+    transform:perspective(var(--eye)) translateZ(28px) rotateX(var(--tx)) rotateY(var(--ty));
+    box-shadow:
+      0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wall),
+      0 5px 0 var(--wall),0 6px 0 var(--wallb),0 7px 0 var(--wallb),0 8px 0 var(--wallb),
+      0 9px 0 var(--wallb),0 10px 0 var(--wallb),0 11px 0 var(--wallb),0 12px 0 var(--wallb),
+      0 13px 0 var(--wallb),0 14px 0 var(--wallb),
+      0 40px 50px -18px rgba(0,0,0,.92),
+      0 0 40px -10px var(--acc),
+      inset 0 1px 0 rgba(255,255,255,.2),inset 0 -1px 0 rgba(0,0,0,.5)
+  }
+}
+body.mode-3d .pt-slot:active{
+  transform:perspective(var(--eye)) translateZ(1px) translateY(4px);
+  box-shadow:inset 3px 0 0 var(--acc),0 1px 0 var(--wall),0 2px 0 var(--wallb),
+             0 6px 10px -5px rgba(0,0,0,.8),inset 0 3px 8px rgba(0,0,0,.5)
+}
+body.mode-3d .ptp-card:active,
+body.mode-3d .ptp-card.on:active{
+  transform:perspective(var(--eye)) translateZ(2px) translateY(4px);
+  box-shadow:0 1px 0 var(--wall),0 2px 0 var(--wallb),0 6px 10px -5px rgba(0,0,0,.8),
+             inset 0 3px 8px rgba(0,0,0,.5)
+}
+/* Parts stand off the face, the art furthest — the parallax is the depth cue. */
+body.mode-3d .pt-slot-ico{transform:translateZ(18px)}
+body.mode-3d .pt-slot-n,
+body.mode-3d .pt-slot-txt,
+body.mode-3d .pt-slot-go{transform:translateZ(8px)}
+body.mode-3d .ptp-ico{transform:translateZ(24px)}
+body.mode-3d .ptp-badge{transform:translateX(-50%) translateZ(16px)}
+body.mode-3d .ptp-name,
+body.mode-3d .ptp-desc,
+body.mode-3d .ptp-pills{transform:translateZ(9px)}
+/* The modal slab's walls, restated with the picker's gold glow: the tint rule
+   above would otherwise leave this the one flat modal in the 3D interface. */
+body.mode-3d .ptpick-tint .fb-modal{
+  box-shadow:
+    0 2px 0 #131a2e,0 4px 0 #131a2e,0 6px 0 #080c18,0 8px 0 #080c18,0 10px 0 #05070f,
+    0 44px 70px -22px rgba(0,0,0,.95),0 0 60px -10px rgba(255,215,0,.26),
+    inset 0 1px 0 rgba(255,255,255,.16),inset 0 -1px 0 rgba(0,0,0,.6);
+}
+@media (max-width:560px){
+  body.mode-3d .pt-slot-ico{transform:translateZ(12px)}
+  body.mode-3d .ptp-ico{transform:translateZ(16px)}
+}
+/* Reduced motion (html.reduced-motion follows the OS until the player sets
+   it): the solids stay, the travel goes. Hover changes the light, not the
+   position — and the pointer tilt stops too, which the parallax code cannot
+   do itself: it reads the OS preference once, at load. */
+html.reduced-motion body:not(.mode-3d) .pt-slot:hover,
+html.reduced-motion body:not(.mode-3d) .ptp-card:hover{transform:none}
+html.reduced-motion body.mode-3d .pt-slot:hover{transform:perspective(var(--eye)) translateZ(0)}
+html.reduced-motion body.mode-3d .ptp-card:hover{transform:perspective(var(--eye)) translateZ(0)}
+html.reduced-motion body.mode-3d .ptp-card.on:hover{transform:perspective(var(--eye)) translateZ(10px)}
+html.reduced-motion .pt-slot,
+html.reduced-motion .ptp-card{--tx:0deg !important;--ty:0deg !important}
 
 /* ══════════════════════════════════════════════════════════════
    § v48 — 🌍 WORLD THEMES

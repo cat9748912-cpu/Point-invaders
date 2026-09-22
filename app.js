@@ -20214,7 +20214,8 @@ document.getElementById('btn-mp-addbot').onclick = async function(){
 (function(){
 'use strict';
 
-const SEL = '.game-card,.shop-card,.mp-mode,.mode-card,.lb-row,.bb-btn';
+// .pt-slot / .ptp-card: the party's mission slots and its picker's cards (§ 19).
+const SEL = '.game-card,.shop-card,.mp-mode,.mode-card,.lb-row,.bb-btn,.pt-slot,.ptp-card';
 const MAX = 9;                      // degrees at the corner of a card
 const flat = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 if(flat || (typeof isTouchDevice !== 'undefined' && isTouchDevice)) return;
@@ -35937,11 +35938,25 @@ function padPad(id, down){
   el.classList.toggle('pad-lit', down);
 }
 
+// The overlay the player is looking at. Two can be open at once — the party's
+// mission picker stands over its setup sheet — and querySelector's FIRST match
+// is the one underneath: B closed the whole party instead of the picker, and
+// the d-pad walked cards the player could not see. On top is the highest
+// z-index, and among equals the later one in the document.
+function padTopOverlay(){
+  let top = null, tz = -Infinity;
+  document.querySelectorAll('.fb-overlay.show').forEach(ov => {
+    const z = parseInt(getComputedStyle(ov).zIndex, 10) || 0;
+    if(z >= tz){ tz = z; top = ov; }
+  });
+  return top;
+}
+
 // Off the board: walk focus with the d-pad, click with A. Rate-limited, because
 // a held stick would otherwise skip the whole screen in three frames.
 function padNavigate(dx, dy, fire){
   const now = performance.now();
-  const screen = document.querySelector('.fb-overlay.show') || document.querySelector('.screen.active');
+  const screen = padTopOverlay() || document.querySelector('.screen.active');
   if(!screen) return;
   const items = [...screen.querySelectorAll('button:not([disabled]), .game-card:not(.locked), input, select, [tabindex="0"]')]
     .filter(el => el.offsetParent !== null);
@@ -36073,7 +36088,7 @@ function padPoll(now){
     if(edge(0, a0)) padNavigate(0, 0, true);
     if(edge(9, start) && typeof pauseActive === 'function' && pauseActive()) resumeRound();
     if(edge(1, b1)){
-      const ov = document.querySelector('.fb-overlay.show');
+      const ov = padTopOverlay();
       if(ov) closeOverlay(ov.id);
       else document.getElementById('btn-mp-back')?.click();
     }
@@ -40584,6 +40599,21 @@ function partyShuffle(){
   return out;
 }
 
+// A mission's accent and its one-line hook come off its card in the hub grid,
+// the way the briefing reads its hook: the grid is where both are written, so
+// a colour or a line changed there changes here too. The colour is kept as the
+// palette NAME, not CARD_COLORS' hex — the stylesheet maps it to var(--cyan)
+// and friends, which is what the colour-blind palette (html.cb-safe) re-points.
+function partyCardInfo(g){
+  const card = document.querySelector('.game-card[data-game="' + g + '"]');
+  const c = card && card.dataset.c;
+  return {
+    c: CARD_COLORS[c] ? c : 'cyan',
+    desc: card ? ((card.querySelector('.gc-desc') || {}).textContent || '').trim() : ''
+  };
+}
+function ptAttr(s){ return esc(s).replace(/"/g, '&quot;'); }
+
 // ── THE OVERLAY — setup, turn cards and the final board ─────────────
 function partyOpen(){
   const ov = document.getElementById('party-overlay');
@@ -40592,8 +40622,11 @@ function partyOpen(){
 }
 function partyHide(){
   const ov = document.getElementById('party-overlay');
-  if(!ov) return;
-  ov.classList.remove('show'); ov.setAttribute('aria-hidden', 'true');
+  if(ov){ ov.classList.remove('show'); ov.setAttribute('aria-hidden', 'true'); }
+  // The picker never outlives the sheet it stands on. Closed AFTER the sheet
+  // is down, so it hands focus to no slot: a focused button in a hidden sheet
+  // is one Enter away from opening a picker over nothing.
+  closePartyPicker(true);
 }
 
 let partyDraft = null;        // the setup form's state, kept between openings
@@ -40613,9 +40646,23 @@ function paintPartySetup(){
   const sub = document.getElementById('party-sub');
   if(!body || !partyDraft) return;
   if(sub) sub.textContent = 'Two to six players · one device · three missions';
-  const pool = partyPool();
   const tier = DIFFICULTY_TIERS[currentDifficultyTier];
-  const opt = sel => pool.map(g => `<option value="${g}"${g === sel ? ' selected' : ''}>${META[g].emoji} ${esc(META[g].name)}</option>`).join('');
+  // A round's slot is a plate that opens the picker below — what each one
+  // shows is what a hub card shows: the art, the name in its accent, the hook.
+  const slot = (g, i) => {
+    const m = META[g] || { name: g, emoji: '🕹️' };
+    const info = partyCardInfo(g);
+    const same = PARTY_SAME_BOARD.includes(g);
+    return `<button class="pt-slot" type="button" data-i="${i}" data-c="${info.c}" aria-haspopup="dialog" ` +
+        `aria-label="${ptAttr(`Round ${i + 1}: ${m.name}${same ? ', same board for everyone' : ''}. Change mission`)}">` +
+      `<span class="pt-slot-n">${i + 1}</span>` +
+      `<span class="pt-slot-ico">${m.emoji}</span>` +
+      `<span class="pt-slot-txt"><span class="pt-slot-name">${esc(m.name)}</span>` +
+        (same ? `<em class="pt-same">SAME BOARD FOR ALL</em>` : '') +
+        (info.desc ? `<span class="pt-slot-desc">${esc(info.desc)}</span>` : '') + `</span>` +
+      `<span class="pt-slot-go">CHANGE</span>` +
+    `</button>`;
+  };
   body.innerHTML =
     `<div class="pt-sec">👥 PLAYERS <em>${partyDraft.names.length}/${PARTY_MAX}</em></div>` +
     `<div class="pt-players">` + partyDraft.names.map((n, i) =>
@@ -40624,10 +40671,8 @@ function paintPartySetup(){
       (partyDraft.names.length > PARTY_MIN ? `<button class="pt-del" data-i="${i}" type="button" aria-label="Remove player">✕</button>` : '') +
       `</div>`).join('') + `</div>` +
     (partyDraft.names.length < PARTY_MAX ? `<button class="btn btn-secondary btn-sm pt-add" id="pt-add" type="button">＋ ADD PLAYER</button>` : '') +
-    `<div class="pt-sec">🎯 MISSIONS <em>everyone plays all three, in turn</em></div>` +
-    `<div class="pt-missions">` + partyDraft.missions.map((g, i) =>
-      `<label class="pt-mission"><span>${i + 1}</span><select class="input fb-select pt-pick" data-i="${i}">${opt(g)}</select>` +
-      (PARTY_SAME_BOARD.includes(g) ? `<em class="pt-same">SAME BOARD FOR ALL</em>` : '') + `</label>`).join('') + `</div>` +
+    `<div class="pt-sec" id="pt-msec">🎯 MISSIONS <em>everyone plays all three, in turn</em></div>` +
+    `<div class="pt-missions" role="group" aria-labelledby="pt-msec">` + partyDraft.missions.map(slot).join('') + `</div>` +
     `<button class="btn btn-secondary btn-sm" id="pt-shuffle" type="button">🎲 SHUFFLE MISSIONS</button>` +
     `<div class="pt-note">Played on ${tier.icon} <b>${esc(tier.label)}</b> (the hub's stability dial). No chaos, no power-ups, and ` +
     `nothing is saved to anyone's profile — it is a party.</div>` +
@@ -40643,14 +40688,177 @@ function paintPartySetup(){
     partyDraft.names.push('PLAYER ' + (partyDraft.names.length + 1)); snd('ui'); paintPartySetup();
     const last = body.querySelectorAll('.pt-name'); last[last.length - 1]?.focus();
   });
-  body.querySelectorAll('.pt-pick').forEach(s => s.addEventListener('change', () => {
-    partyDraft.missions[+s.dataset.i] = s.value; paintPartySetup();
-  }));
+  body.querySelectorAll('.pt-slot').forEach(b => b.addEventListener('click', () => openPartyPicker(+b.dataset.i)));
   document.getElementById('pt-shuffle')?.addEventListener('click', () => {
     partyDraft.missions = partyShuffle(); snd('tab'); paintPartySetup();
   });
   document.getElementById('pt-start')?.addEventListener('click', startParty);
 }
+
+// ── THE MISSION PICKER — a card grid standing over the setup sheet ──
+// The three rounds used to be native <select>s, and an open <select> is an OS
+// list: flat grey rows, no mission art, no accent, nothing the 3D chrome can
+// reach — the one flat object left in the party flow. A slot now opens this
+// grid instead, built from the parts a hub card is made of.
+//
+// It is a second overlay ON TOP of the sheet (#ptpick-overlay, z-index above
+// the shell's 2000), not a re-render of #party-body, so every way out of it —
+// ✕, Escape, the backdrop, a gamepad's B — lands back on the sheet as it was,
+// and nothing in it can reach abortParty().
+//
+// DUPLICATES SWAP. A mission another round already has is badged with that
+// round's number, and picking it trades the two rounds' missions instead of
+// being refused: three different missions holds by construction, and the host
+// never meets a dead card. (The <select>s let one mission in twice.)
+var ptPickSlot = -1;          // the round the open picker is choosing for; -1 = closed. var: partyHide() reaches it
+function ptPickOpen(){ return ptPickSlot >= 0; }
+
+function openPartyPicker(i){
+  const ov = document.getElementById('ptpick-overlay');
+  if(!ov || !partyDraft || !(i >= 0 && i < partyDraft.missions.length)) return;
+  ptPickSlot = i;
+  paintPartyPicker();
+  // The sheet underneath goes inert while this is up: out of the tab order and
+  // the accessibility tree. The picker itself is inert whenever it is closed,
+  // because a closed .fb-overlay is only transparent — its buttons would
+  // otherwise sit in the tab order behind everything.
+  const sheet = document.getElementById('party-overlay');
+  if(sheet) sheet.inert = true;
+  ov.inert = false;
+  ov.classList.add('show'); ov.setAttribute('aria-hidden', 'false');
+  snd('tab');
+  const modal = ov.querySelector('.fb-modal');
+  const cur = ov.querySelector('.ptp-card.on') || ov.querySelector('.ptp-card');
+  if(cur){
+    cur.focus({ preventScroll: true });
+    // Scrolled by layout offsets, not scrollIntoView: the modal is still
+    // sliding in, and a rect read mid-transform lands the card short.
+    if(modal) modal.scrollTop = Math.max(0, cur.offsetTop + cur.offsetHeight / 2 - modal.clientHeight / 2);
+  }
+}
+
+function paintPartyPicker(){
+  const body = document.getElementById('ptpick-body');
+  const i = ptPickSlot;
+  if(!body || !partyDraft || i < 0) return;
+  const pool = partyPool();
+  const cur = partyDraft.missions[i];
+  const head = document.getElementById('ptpick-heading');
+  const sub = document.getElementById('ptpick-sub');
+  if(head) head.textContent = `🎯 ROUND ${i + 1} MISSION`;
+  if(sub) sub.textContent = `Round ${i + 1} of ${PARTY_ROUNDS} · everyone plays it in turn`;
+  const card = g => {
+    const m = META[g], info = partyCardInfo(g);
+    const same = PARTY_SAME_BOARD.includes(g);
+    const at = partyDraft.missions.indexOf(g);         // the round that has it, if any
+    const on = g === cur, taken = !on && at >= 0;
+    const capped = m.maxPts && m.maxPts < 99999;
+    const label = m.name + (same ? ', same board for everyone' : '') +
+      (on ? `, round ${i + 1}'s mission now` : taken ? `, in round ${at + 1} now: picking it swaps the two rounds` : '');
+    return `<button class="ptp-card${on ? ' on' : ''}${taken ? ' taken' : ''}" type="button" data-g="${g}" data-c="${info.c}" ` +
+        `aria-pressed="${on}" aria-label="${ptAttr(label)}"${info.desc ? ` aria-describedby="ptp-d-${g}"` : ''}>` +
+      (on ? `<span class="ptp-badge">✓ ROUND ${i + 1}</span>` : taken ? `<span class="ptp-badge">⇄ ROUND ${at + 1}</span>` : '') +
+      `<span class="ptp-ico">${m.emoji}</span>` +
+      `<span class="ptp-name">${esc(m.name)}</span>` +
+      (info.desc ? `<span class="ptp-desc" id="ptp-d-${g}">${esc(info.desc)}</span>` : '') +
+      `<span class="ptp-pills">` +
+        // The RAW cap, written the way the hub card writes it. Not the hub
+        // card's live text: that is scaled by the stability dial, and a party
+        // turn is scored raw — it never reaches the card that applies the tier.
+        (capped ? `<span class="ptp-pts">UP TO ${m.maxPts} PTS</span>` : '') +
+        (same ? `<span class="ptp-same">SAME BOARD</span>` : '') +
+      `</span>` +
+    `</button>`;
+  };
+  // Why the grid is the size it is: missions still behind clearance, and the
+  // two that sit parties out (PARTY_EXCLUDE) once the host can see them on the
+  // hub and would otherwise go looking for them here.
+  const shut = Object.keys(SOLO_START).filter(g => !PARTY_EXCLUDE.includes(g) && !missionUnlocked(g)).length;
+  const out = PARTY_EXCLUDE.filter(g => META[g] && missionUnlocked(g));
+  const foot = [
+    `<span class="ptp-key">⇄</span> a mission another round has — picking it swaps the two`,
+    shut ? `🔒 ${shut} more open up as you level up` : '',
+    out.length ? out.map(g => `${META[g].emoji} ${esc(META[g].name)}`).join(' and ') + ` sit${out.length === 1 ? 's' : ''} parties out` : ''
+  ].filter(Boolean);
+  body.innerHTML = `<div class="ptp-grid">` + pool.map(card).join('') + `</div>` +
+    `<div class="ptp-foot">${foot.map(f => `<div>${f}</div>`).join('')}</div>`;
+  body.querySelectorAll('.ptp-card').forEach(b => {
+    // The hub card's blip, and desktop only for the hub card's reason: on a
+    // phone every hover is the start of a tap.
+    if(!isTouchDevice) b.addEventListener('mouseenter', () => snd('hover'));
+    b.addEventListener('click', () => partyPick(b.dataset.g));
+  });
+}
+
+function partyPick(g){
+  const i = ptPickSlot;
+  if(i < 0 || !partyDraft || !SOLO_START[g]) return;
+  const was = partyDraft.missions[i];
+  const j = g === was ? -1 : partyDraft.missions.indexOf(g);
+  if(j >= 0) partyDraft.missions[j] = was;           // taken: the two rounds trade
+  partyDraft.missions[i] = g;
+  // Repaint first, then close: closing hands focus to the slot, and the repaint
+  // is what builds the slot button that focus has to land on.
+  if(g !== was) paintPartySetup();
+  closePartyPicker(true);
+  snd('ui');
+  if(g === was) return;
+  [i, j].forEach(k => document.querySelector(`#party-body .pt-slot[data-i="${k}"]`)?.classList.add('pt-flash'));
+  if(j >= 0) toast(`⇄ Rounds ${Math.min(i, j) + 1} and ${Math.max(i, j) + 1} swapped missions`, 2000);
+}
+
+function closePartyPicker(quiet){
+  const i = ptPickSlot;
+  ptPickSlot = -1;
+  const ov = document.getElementById('ptpick-overlay');
+  const sheet = document.getElementById('party-overlay');
+  if(sheet) sheet.inert = false;
+  if(!ov || !ov.classList.contains('show')) return;
+  ov.classList.remove('show'); ov.setAttribute('aria-hidden', 'true');
+  ov.inert = true;
+  if(!quiet) snd('uiBack');
+  // Back to the slot that opened it, looked up fresh: a pick repaints the
+  // sheet, so the button that was clicked no longer exists.
+  if(sheet && sheet.classList.contains('show')){
+    document.querySelector(`#party-body .pt-slot[data-i="${i}"]`)?.focus();
+  }
+}
+
+// Keys while the picker is up. Capture phase on window, so this runs ahead of
+// everything bound on document — the Escape listeners there belong to other
+// dialogs — and ahead of any window.onkeydown a finished mission left behind:
+// while it is up the picker owns the keyboard, the feedback terminal's rule.
+// Escape stops HERE, so it closes the picker and only the picker.
+window.addEventListener('keydown', e => {
+  if(!ptPickOpen()) return;
+  const ov = document.getElementById('ptpick-overlay');
+  if(!ov) return;
+  e.stopImmediatePropagation();
+  if(e.key === 'Escape'){ e.preventDefault(); if(!e.repeat) closePartyPicker(); return; }
+  const a = document.activeElement;
+  if(e.key === 'Tab'){
+    // aria-modal promises the focus stays in here, so Tab wraps.
+    const f = [...ov.querySelectorAll('button:not([disabled])')];
+    if(!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if(!ov.contains(a)){ e.preventDefault(); first.focus(); }
+    else if(e.shiftKey && a === first){ e.preventDefault(); last.focus(); }
+    else if(!e.shiftKey && a === last){ e.preventDefault(); first.focus(); }
+    return;
+  }
+  // Arrows walk the grid as a grid. Its column count is whatever auto-fill
+  // made of this width, so it is read off the laid-out track list.
+  const cards = [...ov.querySelectorAll('.ptp-card')];
+  const k = cards.indexOf(a);
+  if(k < 0) return;
+  const grid = ov.querySelector('.ptp-grid');
+  const cols = Math.max(1, grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length : 1);
+  const to = { ArrowRight: k + 1, ArrowLeft: k - 1, ArrowDown: k + cols, ArrowUp: k - cols,
+               Home: 0, End: cards.length - 1 }[e.key];
+  if(to == null) return;
+  e.preventDefault();
+  if(to >= 0 && to < cards.length){ cards[to].focus(); snd('hover'); }
+}, true);
 
 function startParty(){
   const names = partyDraft.names.map((n, i) => String(n || '').trim().slice(0, 16) || ('PLAYER ' + (i + 1)));
@@ -40824,6 +41032,13 @@ if(typeof registerOverlayCloser === 'function'){
     if(party && party.stage !== 'play'){ abortParty(); enterHub(); } else partyHide();
   });
 }
+// The picker's ways out all go back to the sheet — none of them is the
+// party's closer above, which ends a party in progress.
+document.getElementById('ptpick-close')?.addEventListener('click', () => closePartyPicker());
+document.getElementById('ptpick-overlay')?.addEventListener('click', e => {
+  if(e.target.id === 'ptpick-overlay') closePartyPicker();
+});
+if(typeof registerOverlayCloser === 'function') registerOverlayCloser('ptpick-overlay', () => closePartyPicker(), true);
 
 // ══════════════════════════════════════════════════════════════════════
 //  § 20 · v48 — 🌍 WORLD THEMES — one shelf, every 3D mission

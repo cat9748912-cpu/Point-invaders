@@ -22,7 +22,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=49">
+<link rel="stylesheet" href="style.css?v=50">
 </head>
 <body>
 
@@ -1106,6 +1106,23 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════
+     🎯 PARTY MISSION PICKER — the card grid a setup slot opens. It
+     stands OVER #party-overlay (a higher z-index than the shell's)
+     and every way out returns to the sheet; nothing in it can end
+     the party. inert while closed. Built by paintPartyPicker(); § 19.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay ptpick-tint" id="ptpick-overlay" aria-hidden="true" inert>
+  <div class="fb-modal ptpick-modal" role="dialog" aria-modal="true" aria-labelledby="ptpick-heading" aria-describedby="ptpick-sub">
+    <button class="fb-close" id="ptpick-close" type="button" aria-label="Back to the party setup">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="ptpick-heading">🎯 ROUND 1 MISSION</div>
+      <div class="fb-sub" id="ptpick-sub">—</div>
+    </div>
+    <div class="ptpick-body" id="ptpick-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
      📖 CAMPAIGN — the chapter map and the selected chapter's briefing
      from ARC. Built by renderCampaign(); see § 21 in app.js.
      ══════════════════════════════════════════════════════════════ -->
@@ -1362,7 +1379,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=49"></script>
+<script src="app.js?v=50"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker
