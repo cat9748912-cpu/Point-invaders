@@ -2520,7 +2520,6 @@ body.mode-3d .gfx-toggle.on,body.mode-3d .g-actions .btn-gfx-game.on{--wall:#8a6
 .loadout-tint .fb-modal{border-color:rgba(57,255,20,.3)}
 .onboard-tint .fb-modal{border-color:rgba(0,245,255,.4)}
 .photo-tint .fb-modal{border-color:rgba(255,215,0,.32)}
-.market-tab-door{margin-left:auto}
 
 @media (max-width:760px){
   .loadout-rail{margin-left:10px;margin-right:10px}
@@ -4276,6 +4275,19 @@ html.reduced-motion #ev-deco{display:none!important}
 /* ── The shelf ── */
 .market-tab-event{color:#ffb070!important;border-color:rgba(255,122,26,.5)!important}
 .market-tab-event.active{background:rgba(255,122,26,.14)!important;box-shadow:0 0 18px rgba(255,122,26,.3)}
+/* Nine tabs on one line. The eight stock tabs leave 27px of a 1060px row, and
+   the event tab is ~106px, so while it shows (renderEventShelf sets has-event)
+   every tab gives up a few pixels of side padding and the gap closes a little.
+   Outside an event the row keeps its roomier look.
+   ⚠️ The padding must SNAP, not animate: .market-tab's `transition:all` would
+   ease it over .2s, and for those frames the nine wide tabs wrap — the very
+   two-line row this rule exists to prevent, flashed on every first visit. So
+   the 2D transition list here names only what hover and .active change. (3D
+   tabs carry their own list, which never included padding — and which this
+   must not clobber, or their hover press would stop animating.) */
+.market-tabs.has-event{gap:6px}
+.market-tabs.has-event .market-tab{padding-left:12px;padding-right:12px}
+body:not(.mode-3d) .market-tabs.has-event .market-tab{transition-property:color,background-color,border-color,box-shadow}
 .ev-shelf-note{
   margin:0 0 16px;padding:12px 14px;border-radius:12px;
   border:1px dashed rgba(255,122,26,.55);background:rgba(255,106,0,.07);

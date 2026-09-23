@@ -22,7 +22,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=50">
+<link rel="stylesheet" href="style.css?v=51">
 </head>
 <body>
 
@@ -695,10 +695,8 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <button class="market-tab" data-tab="worlds">🌍 Worlds</button>
     <!-- 🎃 SEASONAL STOCK — shown only while an event runs (renderEventShelf). -->
     <button class="market-tab market-tab-event" data-tab="event" id="market-tab-event" hidden>🎃 Limited</button>
-    <!-- 🎒 Not a tab — a door. A loadout is not stock, it is a saved
-         arrangement of the stock you already own, so it opens the same overlay
-         the hub rail does rather than pretending to be a seventh shelf. -->
-    <button class="market-tab market-tab-door" id="btn-market-loadouts">🎒 Loadouts</button>
+    <!-- 🎒 No loadout door here: it pushed this row onto a second line. Loadouts
+         are reached from the hub's loadout rail (MANAGE) only. -->
   </div>
   <div class="market-body">
     <div class="market-panel active" id="panel-convert">
@@ -732,7 +730,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <div class="market-panel" id="panel-drives"><div class="shop-grid" id="shop-drives"></div></div>
     <div class="market-panel" id="panel-exits"><div class="shop-grid" id="shop-exits"></div></div>
     <div class="market-panel" id="panel-worlds">
-      <div class="ev-shelf-note wld-note">🌍 A world theme restyles the sky, the haze and the light of EVERY 3D mission at once. It shows in 3D CYBERPUNK mode — switch from ⚙️ Settings.</div>
+      <div class="ev-shelf-note wld-note">🌍 A world theme rebuilds the city and restyles the sky, the haze and the light of EVERY 3D mission at once. It shows in 3D CYBERPUNK mode — switch from ⚙️ Settings.</div>
       <div class="shop-grid" id="shop-worlds"></div>
     </div>
     <div class="market-panel" id="panel-event">
@@ -1379,7 +1377,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=50"></script>
+<script src="app.js?v=51"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker

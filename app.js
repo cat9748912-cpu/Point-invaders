@@ -2719,10 +2719,6 @@ function enterHub(){
 document.getElementById('btn-boss-rush')?.addEventListener('click',()=>startBossRush());
 document.getElementById('btn-market')?.addEventListener('click',()=>openMarket());
 document.getElementById('btn-market-back')?.addEventListener('click',()=>enterHub());
-// 🎒 The market's loadout door. It opens the same overlay the hub rail does —
-// one shelf, two ways in, because a saved kit is relevant in both places.
-document.getElementById('btn-market-loadouts')?.addEventListener('click',
-  () => openOverlay('loadout-overlay', renderLoadouts));
 
 document.querySelectorAll('.game-card').forEach(card=>{
   // Desktop only: on a phone every "hover" is really the start of a tap, so
@@ -21672,6 +21668,10 @@ uniform float uTime;
 // surface in the frame, so a phone that starts dropping frames turns them down
 // (and, at the bottom of the range, off) before it gives up resolution.
 uniform float uDetailScale;
+// World themes relight the offices: uWinMix of the lit windows take the
+// theme colour instead of the warm and cool tenants. 0 is the house look.
+uniform vec3  uWinTint;
+uniform float uWinMix;
 #ifdef ULTRA
 // 1 when the world has an open sky (a city horizon to reflect), 0 for an
 // enclosed set, which reflects its own ceiling lights instead.
@@ -22060,8 +22060,14 @@ void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
     tint = mix(tint, vec3(0.86, 0.93, 1.0), step(0.8, hash21(c.yx + 4.4)) * 0.8);
     meanLit = 0.16;
 #endif
+    // World theme: most lit windows glow in the theme colour, each at its own
+    // brightness, and the distant average shifts with them so a far tower
+    // agrees with a near one. uWinMix 0 leaves every line above untouched.
+    float themed = uWinMix * step(0.3, hash21(c + 2.7));
+    tint = mix(tint, uWinTint * mix(0.7, 1.25, hash21(c + 6.1)), themed);
+    vec3 meanTint = mix(mix(cool, warm, 0.5), uWinTint, uWinMix * 0.7);
     float lb = mix(meanLit, lit * bright, wLod);
-    tint = mix(mix(cool, warm, 0.5), tint, wLod);
+    tint = mix(meanTint, tint, wLod);
     float gS = glass * side * amt;
     float mS = (1.0 - span) * mull * side * amt;
     float mask = glass * lb * side;
@@ -22459,7 +22465,12 @@ void main(){
   // shadowless render is what stops two dark objects merging into one blob.
   // ULTRA keeps a share of it for exactly that reason, and lets the reflected
   // skyline do the rest of the edge work the way a real surface would.
-  float rim = pow(1.0 - clamp(dot(Ng, V), 1e-4, 1.0), 3.5) * vMat.z;
+  // 🌍 A NEGATIVE rim marks an instance that stands outside the haze — a sun
+  // or a planet hundreds of units off, which the fog below would otherwise
+  // erase. Its magnitude is still the rim strength. No draw passed a negative
+  // rim before the world looks, so every existing model is untouched.
+  float rim = pow(1.0 - clamp(dot(Ng, V), 1e-4, 1.0), 3.5) * abs(vMat.z);
+  float fogFree = step(vMat.z, -1e-4);
 #ifdef ULTRA
   rim *= RIM_ULTRA;
 #endif
@@ -22477,7 +22488,7 @@ void main(){
   float d = length(uCam - vWorld);
   float fogAmt = 1.0 - exp2(-pow(d * uFogDensity, 2.0));
   vec3 fogCol = mix(uFogCol, envSample(-V), 0.35);
-  color = mix(color, fogCol, clamp(fogAmt, 0.0, 1.0));
+  color = mix(color, fogCol, clamp(fogAmt, 0.0, 1.0) * (1.0 - fogFree));
 
   fragColor = vec4(color, vColor.a);
 }`;
@@ -22502,11 +22513,13 @@ void main(){
   // quad is built in view space and always faces the lens.
   vec3 right = vec3(uView[0][0], uView[1][0], uView[2][0]);
   vec3 up    = vec3(uView[0][1], uView[1][1], uView[2][1]);
-  vec3 world = aCentre.xyz + (right * aPos.x + up * aPos.y) * aCentre.w;
+  // 🌍 A NEGATIVE size marks a glow outside the haze (the halo of a sun or a
+  // planet far off), exactly as a negative rim does for a mesh.
+  vec3 world = aCentre.xyz + (right * aPos.x + up * aPos.y) * abs(aCentre.w);
   vUV = aUV;
   vTint = aTint;
   float d = length(uCam - aCentre.xyz);
-  vFog = exp2(-pow(d * uFogDensity, 2.0));
+  vFog = aCentre.w < 0.0 ? 1.0 : exp2(-pow(d * uFogDensity, 2.0));
   gl_Position = uProj * uView * vec4(world, 1.0);
 }`;
 
@@ -22547,6 +22560,13 @@ uniform vec3  uHorizon;
 uniform vec3  uGround;
 uniform float uEnvInt;
 uniform float uTime;
+// 🌍 The equipped world theme: 0 house night, 1 toxic, 2 desert, 3 deep,
+// 4 orbital. Each body is a sky direction (xyz) and an angular radius (w);
+// what a body IS depends on the theme — see the themed skies below.
+uniform float uTheme;
+uniform vec4  uBodyA;
+uniform vec4  uBodyB;
+uniform vec4  uBodyC;
 #ifdef ULTRA
 uniform vec3  uSunDir;
 uniform vec3  uSunCol;
@@ -22566,6 +22586,71 @@ float hash21(vec2 p){
   p = fract(p * vec2(233.34, 851.73));
   p += dot(p, p + 23.45);
   return fract(p.x * p.y);
+}
+
+// Value noise. Shared by Ultra's clouds and moon and by the themed skies, which
+// both profiles draw.
+float vnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash21(i),               hash21(i + vec2(1.0, 0.0)), f.x),
+             mix(hash21(i + vec2(0.0,1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+float fbm3(vec2 p){
+  return (vnoise(p) * 0.5 + vnoise(p * 2.03 + 7.1) * 0.25 + vnoise(p * 4.1 + 3.3) * 0.125) / 0.875;
+}
+
+// ── 🌍 THEMED SKIES ────────────────────────────────────────────────────────
+// Everything here is painted at infinity, so a planet never swims as the camera
+// moves and the skyline always stands in front of it: the sky pass only shades
+// pixels no geometry covered. None of it depends on the key light, because a
+// mission aims that light for its own subject, not for the sky.
+
+// A frame around a sky direction b: x to its right, y up. Returned in units of
+// rad, so 1.0 is the edge of a body of angular radius rad.
+vec2 skyUV(vec3 d, vec3 b, float rad){
+  vec3 t1 = normalize(cross(b, vec3(0.0, 1.0, 0.0)));
+  vec3 t2 = cross(t1, b);
+  return vec2(dot(d, t1), dot(d, t2)) / rad;
+}
+
+// 🌅🪐 The synthwave sun, the desert's mountains, the ringed giant, the moons
+// and the black hole used to be painted here, at infinity. They read as a
+// backdrop pasted behind the game, so they are real geometry now (WORLD LOOKS
+// in § 2): lit by the scene, approaching as the round goes on. All this pass
+// still does for them is bend the stars around the hole (see main()).
+
+// 🌊 Underwater: the bright window of the surface overhead, a caustic web
+// rippling across it, and shafts of light slanting down.
+vec3 skyDeep(vec3 c, vec3 dir){
+  if(dir.y <= 0.0) return c;
+  c += vec3(0.25, 0.75, 0.85) * smoothstep(0.62, 0.97, dir.y) * 0.32;
+  // The caustic web is a fine net on the surface far overhead, not an aurora:
+  // small cells, sharp threads, and only up where the surface is.
+  vec2 cp = dir.xz / (dir.y + 0.25) * 6.5;
+  float n1 = vnoise(cp + vec2(uTime * 0.35, uTime * 0.22));
+  float n2 = vnoise(cp * 1.37 - vec2(uTime * 0.28, -uTime * 0.18) + 5.0);
+  float web = pow(1.0 - abs(n1 - n2), 14.0);
+  c += vec3(0.35, 0.95, 1.0) * web * smoothstep(0.3, 0.8, dir.y) * 0.24;
+  vec2 ring = normalize(dir.xz + 1e-5);
+  float rays = vnoise(ring * 9.0 + vec2(uTime * 0.05, 0.0));
+  c += vec3(0.3, 0.85, 0.95) * smoothstep(0.55, 0.95, rays) * smoothstep(0.02, 0.5, dir.y)
+     * (1.0 - smoothstep(0.7, 0.95, dir.y)) * 0.16;
+  return c;
+}
+
+// ☣️ A sick sun behind drifting bands of green smog.
+vec3 skyToxic(vec3 c, vec3 dir, vec2 p, float aa){
+  float rr = length(p);
+  float disc = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, rr);
+  // Lime, dim and darkened at the limb: a sun seen through fallout, not a moon.
+  vec3 sunC = vec3(0.7, 1.0, 0.26);
+  float sm = 0.0;
+  if(dir.y > -0.05) sm = fbm3(dir.xz / (dir.y + 0.35) * 1.4 + vec2(uTime * 0.012, 0.0));
+  float smog = smoothstep(0.38, 0.8, sm) * smoothstep(-0.05, 0.25, dir.y) * (1.0 - smoothstep(0.6, 0.95, dir.y));
+  vec3 o = c + sunC * (exp(-max(rr - 1.0, 0.0) * 1.6) * 0.16 + exp(-rr * 0.35) * 0.05);
+  o = mix(o, sunC * (0.62 + 0.3 * (1.0 - rr * rr)), disc * (1.0 - smog * 0.8));
+  return mix(o, vec3(0.10, 0.18, 0.06) * uEnvInt + sunC * 0.08 * exp(-rr * 0.5), smog * 0.6);
 }
 
 #ifdef ULTRA
@@ -22611,12 +22696,6 @@ vec3 skylineColor(vec3 d){
   vec3 base = uGround * 0.9 + uHorizon * 0.22 + vec3(0.03, 0.022, 0.014) * (0.5 + hash11(bi + 3.0));
   return (base + wash * occ * occ) * uEnvInt;
 }
-float vnoise(vec2 p){
-  vec2 i = floor(p), f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(hash21(i),               hash21(i + vec2(1.0, 0.0)), f.x),
-             mix(hash21(i + vec2(0.0,1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
-}
 #endif
 
 void main(){
@@ -22627,6 +22706,28 @@ void main(){
   vec3 fwd = fwidth(dir);
   float pix = max(length(fwd), 1e-5);
   vec3 c = envSample(dir);
+
+  // 🕳️ The orbital theme's black hole bends the background around it, so the
+  // stars and the nebula are looked up along the LENSED direction sdir. A point
+  // lens: a source at beta shows at theta where beta = theta - E*E/theta, which
+  // puts an Einstein ring at E and flips what lies inside it to the far side.
+  // Faded to nothing by twelve shadow radii, so the bent patch has no seam.
+  // uBodyB follows the hole's GEOMETRY: the world sends its direction and
+  // angular size every frame as it drifts closer.
+  vec3 sdir = dir;
+  vec2 hp = vec2(1e3);
+  bool hole = uTheme > 3.5 && uBodyB.w > 1e-4 && dot(dir, uBodyB.xyz) > 0.5;
+  if(hole){
+    vec3 bt1 = normalize(cross(uBodyB.xyz, vec3(0.0, 1.0, 0.0)));
+    vec3 bt2 = cross(bt1, uBodyB.xyz);
+    hp = vec2(dot(dir, bt1), dot(dir, bt2)) / uBodyB.w;
+    float rho = length(hp);
+    if(rho < 12.0){
+      float k = 2.1 / max(rho * rho, 1.0) * (1.0 - smoothstep(6.0, 12.0, rho));
+      vec2 s = hp * (1.0 - k);
+      sdir = normalize(uBodyB.xyz + (s.x * bt1 + s.y * bt2) * uBodyB.w);
+    }
+  }
 
   // A wide, slow band of light pollution sitting just above the horizon —
   // the thing that makes a night sky over a city read as a city.
@@ -22640,24 +22741,51 @@ void main(){
   // vertical dash: the sky looked like it was raining. Rows get their own
   // azimuth count (shrinking with cos(elevation)) so cells stay square and
   // nothing shears as the camera pitches.
-  if(dir.y > 0.05 && dir.y < 0.995){
-    float el = asin(dir.y);
-    float az = atan(dir.z, dir.x);
+  // 🌍 Out past the atmosphere the sky is thick with stars; under the sea
+  // there are none. The brightness is normalised to the cut, so the house
+  // night is exactly the (h - 0.9955) * 520 it always was.
+  float starCut = uTheme > 3.5 ? 0.986 : (uTheme > 2.5 ? 2.0 : 0.9955);
+  if(sdir.y > 0.05 && sdir.y < 0.995 && starCut < 1.0){
+    float el = asin(sdir.y);
+    float az = atan(sdir.z, sdir.x);
     const float K = 70.0;
     float row = floor(el * K);
     float ka = max(1.0, floor(cos((row + 0.5) / K) * K));
     float cx = floor((az / 6.2831853 + 0.5) * ka * 6.2831853);
     vec2 cell = vec2(cx, row);
     float h = hash21(cell);
-    if(h > 0.9955){
+    if(h > starCut){
       vec2 jit = vec2(hash21(cell + 17.3), hash21(cell + 41.7)) * 0.7 + 0.15;
       float sEl = (row + jit.y) / K;
       float sAz = ((cx + jit.x) / (ka * 6.2831853) - 0.5) * 6.2831853;
       vec3 sd = vec3(cos(sEl) * cos(sAz), sin(sEl), cos(sEl) * sin(sAz));
-      float ang = length(cross(dir, sd));
+      float ang = length(cross(sdir, sd));
       float core = 1.0 - smoothstep(0.35 * pix, 1.35 * pix, ang);
       float tw = 0.55 + 0.45 * sin(uTime * 2.0 + h * 60.0);
-      c += vec3(0.75, 0.85, 1.0) * (h - 0.9955) * 520.0 * core * tw * smoothstep(0.05, 0.3, dir.y);
+      c += vec3(0.75, 0.85, 1.0) * (h - starCut) / (1.0 - starCut) * 2.34 * core * tw * smoothstep(0.05, 0.3, sdir.y);
+    }
+  }
+
+  // ── 🌍 The themed skies (see the functions above). A body is only drawn in
+  // the hemisphere it faces, or it would show again at its antipode. The
+  // desert and the orbital deck paint nothing here but their air: their sun,
+  // mountains, planets and black hole are geometry (WORLD LOOKS, § 2).
+  if(uTheme > 0.5){
+    if(uTheme < 1.5){
+      vec2 sp = (uBodyA.w > 1e-4 && dot(dir, uBodyA.xyz) > 0.0) ? skyUV(dir, uBodyA.xyz, uBodyA.w) : vec2(1e3);
+      c = skyToxic(c, dir, sp, pix / max(uBodyA.w, 1e-4));
+    }else if(uTheme > 2.5 && uTheme < 3.5){
+      c = skyDeep(c, dir);
+    }else if(uTheme > 3.5){
+      // A faint nebula along one great circle, in the lensed direction too.
+      // The band's falloff is tested first: the noise is the dearest thing in
+      // this sky, and most of it lies where the band has faded to nothing.
+      float bandN = exp(-pow(dot(sdir, vec3(0.8437, 0.2978, 0.4467)) / 0.3, 2.0));
+      if(bandN > 0.03){
+        float nb = fbm3(sdir.xy * 2.1 + sdir.z * 1.3 + 3.0);
+        c += mix(vec3(0.20, 0.05, 0.34), vec3(0.03, 0.22, 0.32), 0.5 + 0.5 * sin(nb * 9.0 + sdir.x * 4.0))
+           * smoothstep(0.42, 0.85, nb) * bandN * 0.4;
+      }
     }
   }
 
@@ -22665,8 +22793,9 @@ void main(){
   // ── The moon, where the key light says it is. Only when it is well above the
   // horizon: a key light aimed from low down is a sign or a street light, not a
   // moon, and a disc sitting on the skyline would say otherwise.
+  // 🌍 The house night only: every theme brings a sky of its own.
   vec3 md = normalize(-uSunDir);
-  if(md.y > 0.12 && md.y < 0.97){
+  if(uTheme < 0.5 && md.y > 0.12 && md.y < 0.97){
     float cosA = dot(dir, md);
     float ang = length(cross(dir, md));
     const float MR = 0.0105;
@@ -22683,7 +22812,8 @@ void main(){
 
   // ── Night cloud, lit from below by the city. Thin, slow, and gone before
   // the zenith and the horizon so it never becomes an overcast lid.
-  if(dir.y > 0.02){
+  // 🌍 Not under the sea, and not in orbit.
+  if(dir.y > 0.02 && uTheme < 2.5){
     vec2 cp = dir.xz / (dir.y + 0.12) * 0.9 + vec2(uTime * 0.006, uTime * 0.002);
     float n = vnoise(cp) * 0.5 + vnoise(cp * 2.03 + 7.1) * 0.25
             + vnoise(cp * 4.1 + 3.3) * 0.125 + vnoise(cp * 8.3 + 1.7) * 0.0625;
@@ -22694,7 +22824,8 @@ void main(){
   }
 
   // ── The distant skyline, hazed, in front of all of it.
-  if(abs(dir.y) < 0.35){
+  // 🌍 The desert's mountain range stands where this would.
+  if(abs(dir.y) < 0.35 && (uTheme < 1.5 || uTheme > 2.5)){
     float fx = length(fwd.xz) / max(length(dir.xz), 0.2) * 120.0 / 6.2831853;
     float fy = fwd.y + 0.0015;
     c = mix(c, skylineColor(dir), skylineMask(dir, fx, fy) * 0.62);
@@ -23601,6 +23732,13 @@ function createRenderer(canvas, opts){
   let sunDir = [-0.4, -1, -0.35], sunCol = [0.28, 0.34, 0.55];
   let env = { zenith:[0.012,0.016,0.045], horizon:[0.16,0.05,0.22], ground:[0.008,0.012,0.02], intensity:1 };
   let sky = true, skyGain = 1;
+  // 🌍 World theme state: which themed sky to paint, its three bodies (xyz
+  // direction + angular radius each), and the window relight. All of it is
+  // re-sent by every world every frame (createWorld defaults it), so none of it
+  // can stick to the next mission the way `sky:false` once did.
+  let skyTheme = 0;
+  const skyBodies = new Float32Array(12);
+  let winTint = [1, 1, 1], winMix = 0;
   let fog = { color:[0.05,0.03,0.10], density:0.012 };
   let post = {
     exposure: 1.0, bloom: 0.85, threshold: 1.05, knee: 0.6, radius: 1.0,
@@ -23741,6 +23879,13 @@ function createRenderer(canvas, opts){
       // switch the sky off and keep the flat fog clear behind its walls.
       if(o.sky != null) sky = !!o.sky;
       if(o.skyGain != null) skyGain = o.skyGain;
+      if(o.theme != null) skyTheme = +o.theme || 0;
+      if(o.bodies !== undefined){
+        skyBodies.fill(0);
+        (o.bodies || []).slice(0, 3).forEach((b, i) => { if(b) skyBodies.set(b.slice(0, 4), i * 4); });
+      }
+      if(o.winTint) winTint = hexToLinear(o.winTint);
+      if(o.winMix != null) winMix = o.winMix;
     },
 
     fog(o){
@@ -23864,6 +24009,24 @@ function createRenderer(canvas, opts){
       }));
     },
 
+    // 🌍 The same test as project() without the DOM: p's depth along the view
+    // (> 0) when it lies within `margin` of the frustum (1 = the screen edge),
+    // else 0. project() reads canvas.clientWidth, which forces a layout
+    // whenever the page is dirty — about 20µs a call, 2.5ms a frame at the
+    // hundred-odd calls the world dressing makes, for pixels it never needs.
+    viewDepth(p, margin){
+      const x = p[0], y = p[1], z = p[2];
+      const vx = view[0]*x + view[4]*y + view[8]*z  + view[12];
+      const vy = view[1]*x + view[5]*y + view[9]*z  + view[13];
+      const vz = view[2]*x + view[6]*y + view[10]*z + view[14];
+      const cw = proj[3]*vx + proj[7]*vy + proj[11]*vz + proj[15];
+      if(cw <= 0.0001) return 0;
+      const m = (margin || 1) * cw;
+      const cx = proj[0]*vx + proj[4]*vy + proj[8]*vz  + proj[12];
+      const cy = proj[1]*vx + proj[5]*vy + proj[9]*vz  + proj[13];
+      return (cx < -m || cx > m || cy < -m || cy > m) ? 0 : cw;
+    },
+
     // World → CSS pixel, for DOM overlays (floating score text, lock-on
     // reticles). Returns null behind the camera or outside the frustum.
     project(p){
@@ -23928,6 +24091,8 @@ function createRenderer(canvas, opts){
       gl.uniform1f(U.uTime, time);
       gl.uniform1f(U.uDetailScale, caps.detail);
       if(U.uSkyOn) gl.uniform1f(U.uSkyOn, sky ? 1 : 0);
+      if(U.uWinTint) gl.uniform3fv(U.uWinTint, winTint);
+      if(U.uWinMix) gl.uniform1f(U.uWinMix, winMix);
 
       // Opaque, one instanced call per geometry.
       for(const name in buckets){
@@ -23974,6 +24139,10 @@ function createRenderer(canvas, opts){
         gl.uniform1f(S.uTime, time);
         if(S.uSunDir) gl.uniform3fv(S.uSunDir, sunDir);
         if(S.uSunCol) gl.uniform3fv(S.uSunCol, sunCol);
+        if(S.uTheme) gl.uniform1f(S.uTheme, skyTheme);
+        if(S.uBodyA) gl.uniform4fv(S.uBodyA, skyBodies.subarray(0, 4));
+        if(S.uBodyB) gl.uniform4fv(S.uBodyB, skyBodies.subarray(4, 8));
+        if(S.uBodyC) gl.uniform4fv(S.uBodyC, skyBodies.subarray(8, 12));
         gl.bindVertexArray(null);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         gl.depthMask(true);
@@ -25272,6 +25441,1441 @@ function seeded(seed){
 
 const NEON = ['#00f5ff', '#ff0090', '#a855f7', '#ffd700', '#39ff88', '#ff6600'];
 
+// ══════════════════════════════════════════════
+//  🌍 WORLD LOOKS — the city each world theme builds
+// ══════════════════════════════════════════════
+// A world theme used to be a tint and nothing more (§ 20 → applyWorldTint), so
+// Toxic Sector was the same rain-black city in green light. A LOOK is what the
+// theme does to the place itself: the towers' finish and window light, the
+// neon, props planned per building (sludge running down the facades, dunes the
+// towers are half buried in, kelp and coral, dishes and docking rings), a few
+// set pieces for the whole city, and a sky of its own, painted by FS_SKY from
+// `theme` and `bodies`. Rain City has no look, so it draws exactly what it
+// always drew.
+//
+// ⚠️ THE CITY LAYOUT MUST NOT MOVE. Props are planned from their OWN seeded
+// sequence, after every tower is placed; drawing them from the towers'
+// sequence would shift every building in every theme.
+// ⚠️ NOTHING IN THE PLAY SPACE. Every prop stands on, against or above its own
+// tower, and the one that sticks out sideways (a solar wing) always points
+// AWAY from the corridor the city's hole is cut for.
+
+// A surface of revolution about Y from a top-to-bottom [radius, y] profile,
+// with smooth normals. `inside` adds the inner skin (reversed winding and
+// normals), so an open shell such as a dish is solid from both sides.
+function lathe(profile, seg, part, inside){
+  const m = E.mesh.empty();
+  const n = profile.length;
+  const nr = [], ny = [];
+  for(let i = 0; i < n; i++){
+    const a = profile[Math.max(0, i - 1)], b = profile[Math.min(n - 1, i + 1)];
+    const tr = b[0] - a[0], ty = b[1] - a[1];
+    const l = Math.hypot(tr, ty) || 1;
+    nr.push(-ty / l); ny.push(tr / l);
+  }
+  for(const side of (inside ? [1, -1] : [1])){
+    const base = m.pos.length / 3;
+    for(let i = 0; i < n; i++){
+      for(let j = 0; j <= seg; j++){
+        const a = j / seg * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
+        m.pos.push(profile[i][0] * ca, profile[i][1], profile[i][0] * sa);
+        m.nrm.push(nr[i] * ca * side, ny[i] * side, nr[i] * sa * side);
+        m.uv.push(j / seg, i / Math.max(1, n - 1));
+        m.part.push(part || 0);
+      }
+    }
+    for(let i = 0; i < n - 1; i++){
+      for(let j = 0; j < seg; j++){
+        const a = base + i * (seg + 1) + j, b = a + 1, c = a + seg + 1, d = c + 1;
+        if(side > 0) m.idx.push(a, b, d, a, d, c);
+        else         m.idx.push(a, d, b, a, c, d);
+      }
+    }
+  }
+  return m;
+}
+
+// ── The props. Unit-sized and centred like every built-in, one geometry each,
+// so a street full of them is still one instanced draw. Materials come from
+// PARTS: a prop drawn with a trace of emissive (0.004) lights only its LAMP
+// part — the leaking lid of a drum, the tip of a coral finger — at full lamp
+// brightness, while its paint stays paint.
+
+// ☣️ A 200-litre drum: body, two rolling hoops, and a lid that is leaking.
+function geoBarrel(){
+  const M = E.mesh, P = E.PART, m = M.empty();
+  M.merge(m, M.cylinder(16, 0.5, 0.5, 0.05));
+  M.merge(m, M.cylinder(16, 0.5, 0.5, 0), { pos:[0,  0.2, 0], scale:[1.05, 0.06, 1.05], part: P.TRIM });
+  M.merge(m, M.cylinder(16, 0.5, 0.5, 0), { pos:[0, -0.2, 0], scale:[1.05, 0.06, 1.05], part: P.TRIM });
+  M.merge(m, M.cylinder(16, 0.5, 0.5, 0), { pos:[0,  0.5, 0], scale:[0.8, 0.03, 0.8],   part: P.LAMP });
+  return m;
+}
+// ☣️ A waste tank: domed head, a glowing sight band, a vent.
+function geoTank(){
+  const M = E.mesh, P = E.PART, m = M.empty();
+  M.merge(m, M.cylinder(18, 0.5, 0.5, 0.04), { pos:[0, -0.1, 0], scale:[1, 0.8, 1] });
+  M.merge(m, M.sphere(18, 10),               { pos:[0, 0.3, 0],  scale:[1, 0.5, 1], part: P.TRIM });
+  M.merge(m, M.cylinder(18, 0.5, 0.5, 0),    { pos:[0, 0.02, 0], scale:[1.03, 0.1, 1.03], part: P.LAMP });
+  M.merge(m, M.cylinder(8, 0.5, 0.5, 0),     { pos:[0.28, 0.55, 0], scale:[0.08, 0.34, 0.08], part: P.TRIM });
+  return m;
+}
+// 🌴 A palm: a trunk leaning into a gentle curve, and a crown of drooping fronds.
+function geoPalm(){
+  const M = E.mesh, m = M.empty();
+  const SEG = 5, H = 0.74 / SEG;
+  let x = 0, y = -0.5, lean = 0;
+  for(let i = 0; i < SEG; i++){
+    lean += 0.063;
+    const r0 = 0.05 - i * 0.0063;
+    M.merge(m, M.cylinder(6, 0.5, 0.5, 0), {
+      pos:[x + Math.sin(lean) * H * 0.5, y + Math.cos(lean) * H * 0.5, 0],
+      rot:[0, 0, -lean], scale:[r0 * 2, H * 1.08, r0 * 2]
+    });
+    x += Math.sin(lean) * H; y += Math.cos(lean) * H;
+  }
+  // Each frond is built pointing along +X, drooping further along its length,
+  // and only then turned about the trunk — mergeMesh rotates X, Y, then Z, so a
+  // droop and a turn cannot be one transform.
+  const crown = [x, y, 0];
+  for(let k = 0; k < 7; k++){
+    const fr = M.empty();
+    let px = 0, py = 0;
+    for(const [len, wid, droop] of [[0.2, 0.075, 0.25], [0.24, 0.05, 0.85]]){
+      const dx = Math.cos(droop), dy = -Math.sin(droop);
+      M.merge(fr, M.box(), { pos:[px + dx * len * 0.5, py + dy * len * 0.5, 0], rot:[0, 0, -droop], scale:[len, 0.012, wid] });
+      px += dx * len; py += dy * len;
+    }
+    M.merge(m, fr, { pos: crown, rot:[0, k / 7 * Math.PI * 2 + (k % 2) * 0.2, 0] });
+  }
+  M.merge(m, M.sphere(6, 4), { pos:[crown[0] + 0.03, crown[1] - 0.03, 0.02],  scale:[0.05, 0.05, 0.05] });
+  M.merge(m, M.sphere(6, 4), { pos:[crown[0] - 0.02, crown[1] - 0.035, -0.03], scale:[0.05, 0.05, 0.05] });
+  return m;
+}
+// 🏜️ A dune: a long windward slope up to a crest, a steep slip face behind
+// it, horns tapering at either end, and wind ripples across the slope. A
+// heightfield on a unit square, base at y = −0.5 and crest at +0.5; the
+// towers used to stand in squashed spheres, which read as boulders.
+function geoDune(){
+  const m = E.mesh.empty();
+  const N = 12, CREST = 0.18;
+  const hAt = (x, z) => {
+    // ⚠️ Clamped: the normals are central differences, which sample a hair
+    // OUTSIDE the square at its edges, and a fractional power of a negative
+    // number is NaN. A NaN normal is a NaN pixel, and bloom smears NaNs into
+    // white blotches across half the frame.
+    x = Math.max(-0.5, Math.min(0.5, x)); z = Math.max(-0.5, Math.min(0.5, z));
+    const along = z < CREST ? Math.pow((z + 0.5) / (CREST + 0.5), 1.6)
+                            : Math.pow(Math.max(0, 1 - (z - CREST) / (0.5 - CREST)), 0.6);
+    const across = Math.pow(Math.max(0, 1 - Math.pow(Math.abs(x) / 0.5, 2)), 0.7);
+    const ripple = z < CREST ? 1 + 0.035 * Math.sin(z * 40 + Math.sin(x * 9) * 1.5) : 1;
+    return along * across * ripple;
+  };
+  const e = 1e-3;
+  for(let i = 0; i <= N; i++){
+    for(let j = 0; j <= N; j++){
+      const x = -0.5 + i / N, z = -0.5 + j / N, h = hAt(x, z);
+      const dx = (hAt(x + e, z) - hAt(x - e, z)) / (2 * e), dz = (hAt(x, z + e) - hAt(x, z - e)) / (2 * e);
+      const l = Math.hypot(dx, 1, dz);
+      m.pos.push(x, h - 0.5, z);
+      m.nrm.push(-dx / l, 1 / l, -dz / l);
+      m.uv.push(i / N, j / N);
+      m.part.push(0);
+    }
+  }
+  for(let i = 0; i < N; i++){
+    for(let j = 0; j < N; j++){
+      const a = i * (N + 1) + j, b = a + 1, c = a + N + 1, d = c + 1;
+      m.idx.push(a, b, c, b, d, c);
+    }
+  }
+  return m;
+}
+// 🌵 A saguaro: a trunk and two arms, every column capped round.
+function geoCactus(){
+  const M = E.mesh, m = M.empty();
+  const col = (x, y, h, r) => {
+    M.merge(m, M.cylinder(10, 0.5, 0.5, 0.15), { pos:[x, y + h * 0.5, 0], scale:[r * 2, h, r * 2] });
+    M.merge(m, M.sphere(10, 6), { pos:[x, y + h, 0], scale:[r * 2, r * 1.6, r * 2] });
+  };
+  col(0, -0.5, 0.88, 0.11);
+  M.merge(m, M.cylinder(8, 0.5, 0.5, 0.1), { pos:[0.16, -0.05, 0], rot:[0, 0, Math.PI / 2], scale:[0.15, 0.22, 0.15] });
+  col(0.27, -0.12, 0.3, 0.075);
+  M.merge(m, M.cylinder(8, 0.5, 0.5, 0.1), { pos:[-0.15, -0.2, 0], rot:[0, 0, Math.PI / 2], scale:[0.14, 0.2, 0.14] });
+  col(-0.25, -0.27, 0.24, 0.07);
+  return m;
+}
+// 🌿 Kelp: a stipe wandering in a slow S, a blade at every joint turned round
+// the stem, and a float bulb under each — LAMP, so they glow like the real
+// bioluminescent thing when drawn with a trace of emissive.
+// ⚠️ Kept LEAN on purpose, like every prop here: a city carries a few hundred
+// of them, and on an HD 520 the first build (nine joints, a bulb on each)
+// cost the Deep Net several milliseconds of sub-pixel slivers.
+function geoKelp(){
+  const M = E.mesh, P = E.PART, m = M.empty();
+  const N = 6, H = 1 / N;
+  let x = 0, y = -0.5;
+  for(let i = 0; i < N; i++){
+    const bend = Math.sin(i * 1.2) * 0.1;
+    const cx = x + Math.sin(bend) * H * 0.5, cy = y + Math.cos(bend) * H * 0.5;
+    M.merge(m, M.cylinder(5, 0.5, 0.5, 0), { pos:[cx, cy, 0], rot:[0, 0, -bend], scale:[0.03, H * 1.06, 0.03] });
+    const bl = M.empty();
+    M.merge(bl, M.box(), { pos:[Math.cos(0.5) * 0.15, Math.sin(0.5) * 0.15, 0], rot:[0, 0, 0.5], scale:[0.3, 0.01, 0.1] });
+    if(i % 2) M.merge(bl, M.sphere(5, 3), { pos:[0.02, 0, 0], scale:[0.06, 0.06, 0.06], part: P.LAMP });
+    M.merge(m, bl, { pos:[cx, cy, 0], rot:[0, i * 2.4, 0] });
+    x += Math.sin(bend) * H; y += Math.cos(bend) * H;
+  }
+  return m;
+}
+// 🪸 A coral head: a brain-coral dome and a stand of branching fingers whose
+// tips are LAMP.
+function geoCoral(){
+  const M = E.mesh, P = E.PART, m = M.empty();
+  M.merge(m, M.sphere(10, 6), { pos:[0.14, -0.42, 0.06], scale:[0.5, 0.3, 0.46] });
+  // A finger from (bx,by,bz) along the direction mergeMesh's rot [ax, 0, az]
+  // gives +Y: (-cos ax sin az, cos ax cos az, sin ax).
+  const limb = (bx, by, bz, ax, az, len, r, depth) => {
+    const dx = -Math.cos(ax) * Math.sin(az), dy = Math.cos(ax) * Math.cos(az), dz = Math.sin(ax);
+    M.merge(m, M.cylinder(5, 0.35, 0.5, 0), {
+      pos:[bx + dx * len * 0.5, by + dy * len * 0.5, bz + dz * len * 0.5], rot:[ax, 0, az], scale:[r * 2, len, r * 2]
+    });
+    M.merge(m, M.sphere(5, 4), { pos:[bx + dx * len, by + dy * len, bz + dz * len], scale:[r * 1.5, r * 1.5, r * 1.5], part: P.LAMP });
+    if(depth > 0){
+      const mx = bx + dx * len * 0.55, my = by + dy * len * 0.55, mz = bz + dz * len * 0.55;
+      limb(mx, my, mz, ax + 0.45, az - 0.5, len * 0.55, r * 0.7, depth - 1);
+      limb(mx, my, mz, ax - 0.4, az + 0.55, len * 0.5, r * 0.7, depth - 1);
+    }
+  };
+  limb(-0.1, -0.5, 0, 0.05, 0.1, 0.62, 0.06, 1);
+  limb(-0.12, -0.5, 0.05, 0.35, -0.35, 0.5, 0.05, 1);
+  limb(-0.05, -0.5, -0.05, -0.4, 0.3, 0.45, 0.05, 1);
+  return m;
+}
+// 🪼 A jellyfish: an open bell and a skirt of tentacles (LAMP) with four
+// frilled mouth-arms. Drawn translucent, so the blend pass sees both faces.
+function geoJelly(){
+  const M = E.mesh, P = E.PART, m = M.empty();
+  M.merge(m, lathe([[0.001, 0.5], [0.2, 0.47], [0.34, 0.4], [0.43, 0.28], [0.48, 0.13], [0.49, 0.02], [0.45, -0.04]], 16, 0, false));
+  for(let i = 0; i < 8; i++){
+    const a = i / 8 * Math.PI * 2, len = 0.9 + (i % 3) * 0.2;
+    M.merge(m, M.box(), { pos:[Math.cos(a) * 0.4, -0.04 - len * 0.5, Math.sin(a) * 0.4], rot:[0, -a, 0], scale:[0.012, len, 0.012], part: P.LAMP });
+  }
+  for(let i = 0; i < 4; i++){
+    const a = i / 4 * Math.PI * 2 + 0.4;
+    M.merge(m, M.box(), { pos:[Math.cos(a) * 0.08, -0.35, Math.sin(a) * 0.08], rot:[0, -a, 0.08], scale:[0.07, 0.62, 0.012] });
+  }
+  return m;
+}
+// 🛰️ A solar wing: an arm off the wall and a framed panel standing upright,
+// running out along +X from x = 0 to 1.
+function geoSolar(){
+  const M = E.mesh, P = E.PART, m = M.empty();
+  M.merge(m, M.box(), { pos:[0.07, 0, 0], scale:[0.14, 0.05, 0.05], part: P.TRIM });
+  M.merge(m, M.box(), { pos:[0.57, 0, 0], scale:[0.86, 0.42, 0.018] });
+  M.merge(m, M.box(), { pos:[0.57,  0.215, 0], scale:[0.88, 0.014, 0.03], part: P.TRIM });
+  M.merge(m, M.box(), { pos:[0.57, -0.215, 0], scale:[0.88, 0.014, 0.03], part: P.TRIM });
+  for(let i = 0; i <= 4; i++) M.merge(m, M.box(), { pos:[0.14 + i * 0.215, 0, 0], scale:[0.014, 0.44, 0.03], part: P.TRIM });
+  M.merge(m, M.box(), { pos:[0.57, 0, 0], scale:[0.86, 0.01, 0.026], part: P.TRIM });
+  return m;
+}
+// 📡 A dish: a two-sided paraboloid, a feed on a boom at its focus, a post and
+// a base, and a red obstruction lamp on the feed.
+function geoDish(){
+  const M = E.mesh, P = E.PART, m = M.empty();
+  const prof = [];
+  for(let i = 0; i <= 5; i++){ const r = 0.5 * (1 - i / 5) + 0.001; prof.push([r, 0.9 * r * r]); }
+  M.merge(m, lathe(prof, 14, 0, true), { pos:[0, 0.12, 0] });
+  M.merge(m, M.cylinder(8, 0.5, 0.5, 0),     { pos:[0, 0.26, 0],  scale:[0.025, 0.28, 0.025], part: P.TRIM });
+  M.merge(m, M.cylinder(10, 0.3, 0.5, 0.1),  { pos:[0, 0.42, 0],  scale:[0.07, 0.06, 0.07],   part: P.TRIM });
+  M.merge(m, M.cylinder(10, 0.5, 0.5, 0.05), { pos:[0, -0.12, 0], scale:[0.12, 0.3, 0.12],    part: P.TRIM });
+  M.merge(m, M.cylinder(12, 0.5, 0.5, 0.05), { pos:[0, -0.3, 0],  scale:[0.34, 0.06, 0.34],   part: P.TRIM });
+  M.merge(m, M.sphere(6, 4), { pos:[0, 0.46, 0], scale:[0.03, 0.03, 0.03], part: P.NAV_RED });
+  return m;
+}
+// 🐟 A reef fish, nose to -Z like every craft here: a flattened body, a
+// forked tail, and a LAMP eye-spot.
+function geoFish(){
+  const M = E.mesh, P = E.PART, m = M.empty();
+  M.merge(m, M.sphere(8, 5), { pos:[0, 0, -0.05], scale:[0.22, 0.34, 0.7] });
+  M.merge(m, M.box(), { pos:[0,  0.07, 0.38], rot:[ 0.5, 0, 0], scale:[0.02, 0.2, 0.12] });
+  M.merge(m, M.box(), { pos:[0, -0.07, 0.38], rot:[-0.5, 0, 0], scale:[0.02, 0.2, 0.12] });
+  M.merge(m, M.box(), { pos:[0, 0.04, -0.26], scale:[0.2, 0.05, 0.05], part: P.LAMP });
+  return m;
+}
+// 📶 A lattice mast: three chords, a ring of rungs every sixth of its height,
+// and an obstruction lamp at the top — the station's silhouette against the
+// planets.
+function geoMast(){
+  const M = E.mesh, P = E.PART, m = M.empty();
+  const R = 0.06, TAU3 = Math.PI * 2 / 3;
+  for(let k = 0; k < 3; k++){
+    M.merge(m, M.box(), { pos:[Math.cos(k * TAU3) * R, 0, Math.sin(k * TAU3) * R], scale:[0.014, 1, 0.014], part: P.TRIM });
+  }
+  for(let i = 0; i <= 6; i++){
+    const y = -0.5 + i / 6;
+    for(let k = 0; k < 3; k++){
+      const x0 = Math.cos(k * TAU3) * R, z0 = Math.sin(k * TAU3) * R;
+      const x1 = Math.cos((k + 1) * TAU3) * R, z1 = Math.sin((k + 1) * TAU3) * R;
+      // A box's +X turned by rot y = θ points along (cos θ, 0, −sin θ).
+      M.merge(m, M.box(), { pos:[(x0 + x1) / 2, y, (z0 + z1) / 2], rot:[0, -Math.atan2(z1 - z0, x1 - x0), 0],
+                            scale:[Math.hypot(x1 - x0, z1 - z0), 0.01, 0.01], part: P.TRIM });
+    }
+  }
+  M.merge(m, M.sphere(6, 4), { pos:[0, 0.51, 0], scale:[0.045, 0.045, 0.045], part: P.NAV_RED });
+  return m;
+}
+// ── 🌅🪐 HORIZON GEOMETRY ──
+// A convex 2D outline (counter-clockwise, in the XY plane) extruded `depth`
+// along Z: a front face toward +Z (the cameras look down −Z), a back face and
+// flat side walls.
+function extrudeConvex(m, pts, depth, part){
+  const n = pts.length, h = depth / 2, p = part || 0;
+  let cx = 0, cy = 0;
+  for(const q of pts){ cx += q[0]; cy += q[1]; }
+  cx /= n; cy /= n;
+  for(const [zf, nz] of [[h, 1], [-h, -1]]){
+    const base = m.pos.length / 3;
+    m.pos.push(cx, cy, zf); m.nrm.push(0, 0, nz); m.uv.push(0.5, 0.5); m.part.push(p);
+    for(const q of pts){ m.pos.push(q[0], q[1], zf); m.nrm.push(0, 0, nz); m.uv.push(q[0] + 0.5, q[1] + 0.5); m.part.push(p); }
+    for(let i = 0; i < n; i++){
+      const a = base + 1 + i, b = base + 1 + (i + 1) % n;
+      if(nz > 0) m.idx.push(base, a, b); else m.idx.push(base, b, a);
+    }
+  }
+  for(let i = 0; i < n; i++){
+    const q0 = pts[i], q1 = pts[(i + 1) % n];
+    const ex = q1[0] - q0[0], ey = q1[1] - q0[1], l = Math.hypot(ex, ey);
+    if(l < 1e-6) continue;
+    const nx = ey / l, ny = -ex / l;           // outward, for a CCW outline
+    const base = m.pos.length / 3;
+    for(const [x, y, z] of [[q0[0], q0[1], h], [q1[0], q1[1], h], [q1[0], q1[1], -h], [q0[0], q0[1], -h]]){
+      m.pos.push(x, y, z); m.nrm.push(nx, ny, 0); m.uv.push(0, 0); m.part.push(p);
+    }
+    m.idx.push(base, base + 3, base + 2, base, base + 2, base + 1);
+  }
+  return m;
+}
+// One horizontal slice of a disc of radius 0.5, between heights yTop > yBot:
+// the synthwave sun is ten of these, each its own colour, with real gaps.
+function sunSlice(m, yTop, yBot, depth){
+  const R = 0.5, N = 12, pts = [];
+  const a0 = Math.asin(Math.max(-1, Math.min(1, yBot / R))), a1 = Math.asin(Math.max(-1, Math.min(1, yTop / R)));
+  for(let i = 0; i <= N; i++){ const a = a0 + (a1 - a0) * i / N; pts.push([Math.cos(a) * R, Math.sin(a) * R]); }
+  for(let i = N; i >= 0; i--){ const a = a0 + (a1 - a0) * i / N; pts.push([-Math.cos(a) * R, Math.sin(a) * R]); }
+  // Drop the doubled point where the two arcs meet at the crown.
+  const clean = pts.filter((q, i) => { const r = pts[(i + 1) % pts.length]; return Math.hypot(q[0] - r[0], q[1] - r[1]) > 1e-6; });
+  return extrudeConvex(m, clean, depth);
+}
+// The sun's slices, top to bottom: a gold crown fading to magenta, the lower
+// half cut by slits that widen toward the foot. [top, bottom, colour].
+const SUN_SLICES = [
+  [ 0.500,  0.365, '#ffe45e'], [ 0.365,  0.235, '#ffcb49'], [ 0.235,  0.115, '#ffa83d'],
+  [ 0.115,  0.012, '#ff8741'], [-0.014, -0.082, '#ff6c4e'], [-0.112, -0.168, '#ff535f'],
+  [-0.206, -0.252, '#ff3e74'], [-0.300, -0.336, '#ff2f8a'], [-0.390, -0.417, '#fc22a1'],
+  [-0.470, -0.489, '#f018b8']
+];
+// A mountain range's height at (x, z) on the unit square: sharp cone peaks
+// along a ridge (a max of cones, so the saddles between them are ridges too),
+// falling to nothing at every edge. Seeded, so each range is its own.
+function mtnField(seed){
+  const g = seeded(seed), peaks = [];
+  for(let i = 0; i < 6; i++){
+    peaks.push({ x: -0.42 + i * 0.168 + (g() - 0.5) * 0.08, z: (g() - 0.5) * 0.22, h: 0.4 + g() * 0.6, w: 0.11 + g() * 0.09 });
+  }
+  const top = Math.max(...peaks.map(p => p.h));
+  return (x, z) => {
+    let h = 0;
+    for(const p of peaks){
+      const d = Math.hypot((x - p.x) / p.w, (z - p.z) / (p.w * 1.7));
+      h = Math.max(h, p.h * Math.max(0, 1 - d));
+    }
+    const ex = Math.max(0, Math.min(1, (0.5 - Math.abs(x)) / 0.1));
+    const ez = Math.max(0, Math.min(1, (0.5 - Math.abs(z)) / 0.16));
+    return h / top * ex * ez;
+  };
+}
+const MTN_NX = 18, MTN_NZ = 8;
+// ⛰️ The range itself: low-poly, every facet flat-shaded, base at y = −0.5 and
+// the tallest peak at +0.5.
+function geoMountain(seed){
+  const m = E.mesh.empty(), hAt = mtnField(seed);
+  const P = (i, j) => { const x = -0.5 + i / MTN_NX, z = -0.5 + j / MTN_NZ; return [x, hAt(x, z) - 0.5, z]; };
+  const tri = (a, b, c) => {
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const l = Math.hypot(nx, ny, nz);
+    if(l < 1e-9) return;
+    nx /= l; ny /= l; nz /= l;
+    if(ny < 0){ nx = -nx; ny = -ny; nz = -nz; const t = b; b = c; c = t; }   // every facet faces up
+    const base = m.pos.length / 3;
+    for(const q of [a, b, c]){ m.pos.push(q[0], q[1], q[2]); m.nrm.push(nx, ny, nz); m.uv.push(q[0] + 0.5, q[2] + 0.5); m.part.push(0); }
+    m.idx.push(base, base + 1, base + 2);
+  };
+  for(let i = 0; i < MTN_NX; i++){
+    for(let j = 0; j < MTN_NZ; j++){
+      const a = P(i, j), b = P(i, j + 1), c = P(i + 1, j), d = P(i + 1, j + 1);
+      // Alternate the diagonal, so the facets do not all lean the same way.
+      if((i + j) & 1){ tri(a, b, c); tri(b, d, c); } else { tri(a, b, d); tri(a, d, c); }
+    }
+  }
+  return m;
+}
+// Thin boxes from a to b, merged into m — the neon lines of the wireframe
+// look, lifted a hair off the surface so they never fight the facets.
+function lineBox(m, a, b, t, part){
+  const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], len = Math.hypot(dx, dy, dz);
+  if(len < 1e-6) return;
+  E.mesh.merge(m, E.mesh.box(), { pos: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2],
+    rot: [-Math.asin(dy / len), Math.atan2(dx, dz), 0], scale: [t, t, len], part: part || 0 });
+}
+// A neon line as a low RIDGE along a → b: two faces meeting at a crest, not a
+// box's six. A grid line's underside lies against the range and its ends butt
+// into the next segment, so neither was ever seen — and at twelve triangles a
+// segment the boxed grids were the dearest thing on the horizon (1.2-2 ms on
+// an HD 520, more than the ranges they outline).
+function lineRidge(m, a, b, t, part){
+  let dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+  const len = Math.hypot(dx, dy, dz);
+  if(len < 1e-6) return;
+  dx /= len; dy /= len; dz /= len;
+  // side = dir × up (x for a segment straight up), crest = side × dir.
+  let sx = -dz, sz = dx;
+  const sl = Math.hypot(sx, sz);
+  if(sl < 1e-3){ sx = 1; sz = 0; } else { sx /= sl; sz /= sl; }
+  const nx = -sz * dy, ny = sz * dx - sx * dz, nz = sx * dy;
+  const h = t * 0.5, lo = -t * 0.3, hi = t * 0.6;
+  const at = (q, side, up) => [q[0] + sx * side + nx * up, q[1] + ny * up, q[2] + sz * side + nz * up];
+  const La = at(a, -h, lo), Lb = at(b, -h, lo), Ca = at(a, 0, hi), Cb = at(b, 0, hi), Ra = at(a, h, lo), Rb = at(b, h, lo);
+  ridgeFace(m, La, Lb, Cb, Ca, nx - sx, ny, nz - sz, part || 0);
+  ridgeFace(m, Ca, Cb, Rb, Ra, nx + sx, ny, nz + sz, part || 0);
+}
+// One flat quad, wound to face `h` (the side it is seen from).
+function ridgeFace(m, p0, p1, p2, p3, hx, hy, hz, part){
+  const ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2], vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
+  let gx = uy * vz - uz * vy, gy = uz * vx - ux * vz, gz = ux * vy - uy * vx;
+  const gl = Math.hypot(gx, gy, gz);
+  if(gl < 1e-12) return;
+  const flip = gx * hx + gy * hy + gz * hz < 0;
+  if(flip){ gx = -gx; gy = -gy; gz = -gz; }
+  const base = m.pos.length / 3;
+  for(const q of [p0, p1, p2, p3]){ m.pos.push(q[0], q[1], q[2]); m.nrm.push(gx / gl, gy / gl, gz / gl); m.uv.push(0.5, 0.5); m.part.push(part); }
+  if(flip) m.idx.push(base, base + 2, base + 1, base, base + 3, base + 2);
+  else     m.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+}
+// ⛰️ Its wireframe: the grid the range was built on, where the ground has
+// risen (lines lying flat on the plain would only fight the floor). `step` 2
+// keeps every other row and column — still ON the surface, since each kept
+// line runs through every vertex on it — for the side lanes' ranges, which
+// the towers hide most of.
+function geoMountainGrid(seed, step){
+  step = step || 1;
+  const m = E.mesh.empty(), hAt = mtnField(seed), T = 0.011, LIFT = 0.006;
+  const P = (i, j) => { const x = -0.5 + i / MTN_NX, z = -0.5 + j / MTN_NZ; return [x, hAt(x, z) - 0.5 + LIFT, z]; };
+  const up = q => q[1] > -0.5 + LIFT + 0.02;
+  for(let j = 0; j <= MTN_NZ; j += step) for(let i = 0; i < MTN_NX; i++){
+    const a = P(i, j), b = P(i + 1, j);
+    if(up(a) || up(b)) lineRidge(m, a, b, T);
+  }
+  for(let i = 0; i <= MTN_NX; i += step) for(let j = 0; j < MTN_NZ; j++){
+    const a = P(i, j), b = P(i, j + 1);
+    if(up(a) || up(b)) lineRidge(m, a, b, T);
+  }
+  return m;
+}
+// 🔺 The edges of E.mesh.prism(4, 0, 0.5): four slanted edges and the base,
+// for a pyramid outlined in neon.
+function geoPyrEdges(){
+  const m = E.mesh.empty(), apex = [0, 0.5, 0];
+  const c = [0, 1, 2, 3].map(i => [Math.cos(i * Math.PI / 2) * 0.5, -0.5, Math.sin(i * Math.PI / 2) * 0.5]);
+  for(let i = 0; i < 4; i++){ lineBox(m, c[i], apex, 0.012); lineBox(m, c[i], c[(i + 1) % 4], 0.012); }
+  return m;
+}
+// 🌅 A facade emblem: the whole slitted sun as ONE flat mesh, for a single
+// neon colour on a wall.
+function geoEmblem(){
+  const m = E.mesh.empty();
+  for(const [a, b] of SUN_SLICES) sunSlice(m, a, b, 0.02);
+  return m;
+}
+// 🪐 A banded planet: latitude strips, each with its OWN vertices (a part id is
+// flat-interpolated, so a strip must not share a row with its neighbour),
+// alternating PAINT and TRIM (dark metal). The arcade's material parts do what
+// a texture would, and the whole planet is one draw.
+// ⚠️ Each strip is [south, north] and is built NORTH TO SOUTH, as buildSphere
+// runs. The first cut unpacked the pair the other way round: every strip was
+// wound inside out (and one row deep), the camera saw the far side's inner
+// faces, and the rim term — which reads the geometric normal — lit the whole
+// disc flat in the emissive colour.
+function geoPlanet(){
+  const P = E.PART, m = E.mesh.empty(), deg = Math.PI / 180, SEG = 48;
+  const BANDS = [[57, 90, P.PAINT], [46, 57, P.TRIM], [21, 46, P.PAINT], [13, 21, P.TRIM], [-14, 13, P.PAINT],
+                 [-22, -14, P.TRIM], [-44, -22, P.PAINT], [-56, -44, P.TRIM], [-90, -56, P.PAINT]];
+  for(const [south, north, part] of BANDS){
+    const rows = Math.max(1, Math.round((north - south) / 5)), base = m.pos.length / 3;
+    for(let i = 0; i <= rows; i++){
+      const lat = (north - (north - south) * i / rows) * deg;
+      for(let j = 0; j <= SEG; j++){
+        const lon = j / SEG * Math.PI * 2;
+        const nx = Math.cos(lat) * Math.cos(lon), ny = Math.sin(lat), nz = Math.cos(lat) * Math.sin(lon);
+        m.pos.push(nx * 0.5, ny * 0.5, nz * 0.5); m.nrm.push(nx, ny, nz); m.uv.push(j / SEG, i / rows); m.part.push(part);
+      }
+    }
+    for(let i = 0; i < rows; i++) for(let j = 0; j < SEG; j++){
+      const a = base + i * (SEG + 1) + j, b = a + 1, c = a + SEG + 1, d = c + 1;
+      m.idx.push(a, b, d, a, d, c);
+    }
+  }
+  return m;
+}
+// A tube along Z, for r.beam() (a sky bridge between two towers).
+function geoTube(){
+  const m = E.mesh.empty();
+  E.mesh.merge(m, E.mesh.cylinder(12, 0.5, 0.5, 0), { rot: [Math.PI / 2, 0, 0] });
+  return m;
+}
+// A flat ring between radii ri and ro (ro ≤ 0.5) in the XZ plane, both faces:
+// one band of a planet's ring system.
+function geoAnnulus(ri, ro){
+  const m = E.mesh.empty(), N = 72;
+  for(const s of [1, -1]){
+    const base = m.pos.length / 3;
+    for(let j = 0; j <= N; j++){
+      const a = j / N * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
+      for(const r of [ri, ro]){ m.pos.push(ca * r, 0, sa * r); m.nrm.push(0, s, 0); m.uv.push(j / N, r === ri ? 0 : 1); m.part.push(0); }
+    }
+    for(let j = 0; j < N; j++){
+      const a = base + j * 2, b = a + 2, c = a + 1, d = a + 3;     // a,b inner; c,d outer
+      if(s > 0) m.idx.push(a, b, d, a, d, c); else m.idx.push(a, d, b, a, c, d);
+    }
+  }
+  return m;
+}
+// 🫧 A habitat dome on a trim ring.
+function geoDome(){
+  const M = E.mesh, P = E.PART, m = M.empty();
+  const prof = [];
+  for(let i = 0; i <= 8; i++){ const a = i / 8 * Math.PI / 2; prof.push([Math.sin(a) * 0.5 + 0.001, Math.cos(a) * 0.9 - 0.4]); }
+  M.merge(m, lathe(prof, 20, 0, false));
+  M.merge(m, M.cylinder(20, 0.5, 0.5, 0.05), { pos:[0, -0.45, 0], scale:[1.06, 0.1, 1.06], part: P.TRIM });
+  return m;
+}
+
+// Registered lazily, the first time a themed world is built on a renderer; a
+// renderer rebuilt after a lost context comes back without them, so this runs
+// on every themed world and only builds what is missing. The CPU meshes are
+// kept, so a rebuild never re-runs the builders.
+const DRESS_GEO = [
+  ['w_barrel',  geoBarrel, 'BRUSHED', 0.3],
+  ['w_tank',    geoTank,   'TECH',    0.35],
+  ['w_palm',    geoPalm,   null,      0],
+  ['w_dune',    geoDune,   null,      0],
+  ['w_cactus',  geoCactus, null,      0],
+  ['w_kelp',    geoKelp,   null,      0],
+  ['w_coral',   geoCoral,  null,      0],
+  ['w_jelly',   geoJelly,  null,      0],
+  ['w_solar',   geoSolar,  'TECH',    0.5],
+  ['w_dish',    geoDish,   'BRUSHED', 0.35],
+  ['w_dome',    geoDome,   null,      0],
+  ['w_fish',    geoFish,   null,      0],
+  ['w_mast',    geoMast,   null,      0],
+  // A box and a disc of their own for the slabs that run THROUGH a tower (the
+  // light bands, the sludge on a ledge). The opaque pass draws geometries in
+  // the order they were first used, and the shared 'box' is in use long before
+  // any tower, so a band drawn with it was shaded in full and then painted
+  // over by the tower; drawn with these, which first appear after the towers,
+  // everything but the rim fails the depth test before it is shaded.
+  ['w_slab',    () => E.mesh.box(),               null, 0],
+  ['w_disc',    () => E.mesh.cylinder(20, 0.5, 0.5, 0), null, 0],
+  // 🌅🪐 The horizon: the sun's slices, three mountain ranges and their
+  // wireframes, the pyramids' neon edges, a facade emblem, the sky-bridge
+  // tube, a neon wire ring for a globe's grid, and four ring-system bands.
+  ...SUN_SLICES.map(([a, b], i) => ['w_sun' + i, () => sunSlice(E.mesh.empty(), a, b, 0.03), null, 0]),
+  ['w_mtnA',    () => geoMountain(7101), null, 0],
+  ['w_mtnB',    () => geoMountain(4242), null, 0],
+  ['w_mtnC',    () => geoMountain(9337), null, 0],
+  ['w_mtnGA',   () => geoMountainGrid(7101), null, 0],
+  ['w_mtnGB',   () => geoMountainGrid(4242), null, 0],
+  ['w_mtnGC',   () => geoMountainGrid(9337), null, 0],
+  ['w_mtnLA',   () => geoMountainGrid(7101, 2), null, 0],
+  ['w_mtnLB',   () => geoMountainGrid(4242, 2), null, 0],
+  ['w_mtnLC',   () => geoMountainGrid(9337, 2), null, 0],
+  ['w_pyredge', geoPyrEdges, null, 0],
+  ['w_emblem',  geoEmblem,   null, 0],
+  ['w_tube',    geoTube,     'BRUSHED', 0.4],
+  ['w_wire',    () => E.mesh.torus(0.5, 0.012, 48, 6), null, 0],
+  ['w_planet',  geoPlanet,   null, 0],
+  ['w_ringA',   () => geoAnnulus(0.300, 0.345), null, 0],
+  ['w_ringB',   () => geoAnnulus(0.352, 0.405), null, 0],
+  ['w_ringC',   () => geoAnnulus(0.418, 0.458), null, 0],
+  ['w_ringD',   () => geoAnnulus(0.463, 0.500), null, 0],
+  ['w_pyramid', () => E.mesh.prism(4, 0, 0.5, 0.03, 0), null, 0]
+];
+const dressMesh = Object.create(null);
+function ensureDressGeos(r){
+  for(const [name, make, style, amt] of DRESS_GEO){
+    if(r.hasGeometry(name)) continue;
+    const mesh = dressMesh[name] || (dressMesh[name] = make());
+    r.addGeometry(name, mesh, style ? E.SURF[style] + amt : 0);
+  }
+}
+
+// Where a prop can stand on each of the four tower silhouettes, in the
+// geometry's own unit space (buildTower and friends in the geometry section).
+//   ledge / lx, lz  the first roof down from the top that is open to the sky,
+//                   and its half-extent — the stage above covers its middle
+//   drip / face     where sludge starts down the front face, and that face's
+//                   depth; the side faces sit at x = ±0.5 (or on the round)
+//   crown           the tip of the mast, for a beacon
+//   spots           [x, y, z, r]: flat places a prop can stand, r the largest
+//                   prop radius that fits there, as a share of the tower's
+//                   narrower side. The first spot is the biggest.
+//   bands           [y, half-width, half-depth]: where a band of running
+//                   lights can wrap the body, at that height's footprint
+const DRESS_KIND = {
+  tower: { ledge: 0.38, lx: 0.5, lz: 0.5, drip: 0.37, face: 0.5, crown: 1.093,
+    bands: [[-0.2, 0.5, 0.5], [0.15, 0.5, 0.5], [0.56, 0.35, 0.35]],
+    spots: [[0, 0.78, 0, 0.19],
+            [0.275, 0.68, 0.275, 0.06], [-0.275, 0.68, 0.275, 0.06], [0.275, 0.68, -0.275, 0.06], [-0.275, 0.68, -0.275, 0.06],
+            [0, 0.68, 0.275, 0.055], [0.275, 0.68, 0, 0.055], [-0.275, 0.68, 0, 0.055],
+            [0.455, 0.38, 0.455, 0.045], [-0.455, 0.38, 0.455, 0.045]] },
+  tower2: { ledge: 0.555, lx: 0.51, lz: 0.28, drip: 0.5, face: 0.26, crown: 0.575, slab: true,
+    bands: [[-0.25, 0.5, 0.305], [0.2, 0.5, 0.305]],
+    spots: [[-0.28, 0.555, 0, 0.2], [0.08, 0.555, 0.05, 0.12], [-0.42, 0.555, 0.18, 0.08], [0.18, 0.555, -0.16, 0.08], [-0.05, 0.555, -0.18, 0.08]] },
+  tower3: { ledge: 0.02, lx: 0.5, lz: 0.5, drip: 0.01, face: 0.5, crown: 1.112,
+    bands: [[-0.3, 0.5, 0.5], [0.1, 0.38, 0.38], [0.35, 0.28, 0.28]],
+    spots: [[0.445, 0.02, 0.445, 0.05], [-0.445, 0.02, 0.445, 0.05], [0.445, 0.02, -0.445, 0.05], [-0.445, 0.02, -0.445, 0.05],
+            [0, 0.02, 0.445, 0.05], [0.445, 0.02, 0, 0.05], [-0.445, 0.02, 0, 0.05],
+            [0.33, 0.2, 0.33, 0.045], [-0.33, 0.2, 0.33, 0.045]] },
+  tower4: { ledge: 0.325, lx: 0.57, lz: 0.57, drip: 0.29, face: 0.45, crown: 0.985, round: true,
+    bands: [[-0.2, 0.473, 0.473], [0.1, 0.447, 0.447]],
+    spots: [0, 1, 2, 3, 4, 5].map(k => [Math.cos(k * 1.047 + 0.52) * 0.29, 0.6, Math.sin(k * 1.047 + 0.52) * 0.29, 0.085]) }
+};
+
+const DRESS_MAT = {
+  ooze:    { color: '#3dff2a', emissive: '#39ff14', es: 1.75, metallic: 0,    roughness: 0.22, rim: 0.4,  detail: 0 },
+  pool:    { color: '#27c91a', emissive: '#39ff14', es: 0.95, metallic: 0.1,  roughness: 0.12, rim: 0.3,  detail: 0 },
+  poolLow: { color: '#1f9e16', emissive: '#39ff14', es: 0.55, metallic: 0.1,  roughness: 0.1,  rim: 0.3,  detail: 0 },
+  barrel:  { color: '#dcae1c', emissive: '#44ff1a', es: 0.004, metallic: 0.35, roughness: 0.5, rim: 0.6 },
+  tank:    { color: '#8f8a6a', emissive: '#44ff1a', es: 0.004, metallic: 0.6,  roughness: 0.55, rim: 0.6 },
+  sand:    { color: '#c99068', metallic: 0,    roughness: 1.0,  rim: 0.55, detail: 0 },
+  palm:    { color: '#170b1d', metallic: 0,    roughness: 0.8,  rim: 1.6,  detail: 0 },
+  cactus:  { color: '#1e4a2b', metallic: 0,    roughness: 0.85, rim: 1.0,  detail: 0 },
+  pyramid: { color: '#2a151a', metallic: 0.05, roughness: 0.9,  rim: 0.8,  detail: 0 },
+  // Kelp glows faintly all over (bioluminescent, and a dark strand against a
+  // dark tower simply vanished), with its float bulbs brighter still.
+  kelp:    { color: '#2f9a5e', emissive: '#27d98a', es: 0.32, metallic: 0, roughness: 0.55, rim: 1.4, detail: 0 },
+  anem:    { color: '#ff6fb0', emissive: '#ff6fb0', es: 0.45, metallic: 0, roughness: 0.5, rim: 1.0, detail: 0 },
+  shaft:   { color: '#9ff6ff', emissive: '#9ff6ff', es: 0.5, metallic: 0, roughness: 1, rim: 0, detail: 0, alpha: 0.055 },
+  solar:   { color: '#10265e', metallic: 0.35, roughness: 0.2,  rim: 0.8 },
+  dish:    { color: '#cfd6e2', metallic: 0.55, roughness: 0.35, rim: 0.7 },
+  dome:    { color: '#8fe6ff', emissive: '#7df9ff', es: 0.35, metallic: 0.1, roughness: 0.08, rim: 0.9, detail: 0 },
+  ring:    { color: '#8a93a6', metallic: 0.85, roughness: 0.3,  rim: 0.8 },
+  ringLit: { color: '#7df9ff', emissive: '#7df9ff', es: 2.0, metallic: 0, roughness: 0.4, detail: 0 },
+  band:    { color: '#dff6ff', emissive: '#bfefff', es: 1.5, metallic: 0, roughness: 0.4, rim: 0.4, detail: 0 },
+  mast:    { color: '#9aa3b5', metallic: 0.8,  roughness: 0.4,  rim: 0.9 },
+  ship:    { color: '#c9d2e0', metallic: 0.7,  roughness: 0.35, rim: 0.8 }
+};
+const FISH_COLS = ['#ffd23f', '#38e8c6', '#ff8a3d', '#7df9ff', '#ff5fa2'];
+const fishMat = FISH_COLS.map(c => ({ color: c, emissive: c, es: 0.55, metallic: 0.2, roughness: 0.4, rim: 1.0, detail: 0 }));
+const CORAL_COLS = ['#ff5fa2', '#ff8a3d', '#b967ff', '#ffd23f', '#ff4f7a', '#38e8c6'];
+const JELLY_COLS = ['#ff7ad9', '#b967ff', '#7df9ff', '#ff9ec7'];
+const coralMat = CORAL_COLS.map(c => ({ color: c, emissive: c, es: 0.004, metallic: 0, roughness: 0.55, rim: 0.8, detail: 0 }));
+const jellyMat = JELLY_COLS.map(c => ({ color: c, emissive: c, es: 0.7, metallic: 0, roughness: 0.3, rim: 1.2, detail: 0, alpha: 0.55 }));
+
+// The looks. `code` is FS_SKY's uTheme; `bodies` are the sky's [x, y, z, angular
+// radius] (normalised below); `cull` is how far round each body the star field
+// billboards must stay out, since those are drawn after the sky and would
+// otherwise shine through a planet. `neon` replaces NEON index for index, so a
+// tower keeps its place in the palette.
+const LOOKS = {
+  toxic: {
+    code: 1, winTint: '#9dff3a', winMix: 0.72,
+    tower: { color: '#0e150d', metallic: 0.45, roughness: 0.64 },
+    neon: ['#39ff14', '#a6ff00', '#e8ff3a', '#39ff88', '#7dff3a', '#ffd400'],
+    bodies: [[0.2301, 0.3090, -0.9229, 0.045]],
+    cull: [0.07]
+  },
+  desert: {
+    code: 2, winTint: '#ffb347', winMix: 0.5,
+    tower: { color: '#1b1016', metallic: 0.3, roughness: 0.74 },
+    neon: ['#ff2a6d', '#ff6ec7', '#ffb347', '#b967ff', '#05d9e8', '#ff9e3d'],
+    // No painted bodies: the sun and the mountains are geometry (THE HORIZON).
+    bodies: null, cull: null
+  },
+  deep: {
+    code: 3, winTint: '#5ff4ff', winMix: 0.6,
+    tower: { color: '#07161c', metallic: 0.5, roughness: 0.5 },
+    neon: ['#00f5ff', '#2de2e6', '#7df9ff', '#39ffb0', '#b967ff', '#ff5fd2'],
+    bodies: null, cull: null
+  },
+  orbit: {
+    code: 4, winTint: '#dfe8ff', winMix: 0.45,
+    tower: { color: '#0d111a', metallic: 0.75, roughness: 0.38 },
+    neon: ['#f0f4ff', '#7df9ff', '#9db4ff', '#ffffff', '#ff3b3b', '#ffd700'],
+    // No painted bodies: the planets and the black hole are geometry (THE
+    // HORIZON); the sky pass is only sent the hole's position, each frame, to
+    // bend the stars behind it.
+    bodies: null, cull: null
+  }
+};
+for(const k in LOOKS){
+  const L = LOOKS[k];
+  if(L.bodies) L.bodies = L.bodies.map(b => { const l = Math.hypot(b[0], b[1], b[2]) || 1; return [b[0] / l, b[1] / l, b[2] / l, b[3]]; });
+  L.cullDirs = L.bodies ? L.bodies.map((b, i) => [b[0], b[1], b[2], Math.cos(L.cull[i])]) : null;
+}
+
+// Picks a spot on a tower's roofs, never the same one twice for one building.
+function takeSpot(K, used, g, bigOnly){
+  const free = [];
+  for(let i = 0; i < K.spots.length; i++) if(!used[i] && (!bigOnly || i === 0)) free.push(i);
+  if(!free.length) return null;
+  const i = free[(g() * free.length) | 0];
+  used[i] = true;
+  return K.spots[i];
+}
+
+// A dress item is { g: geometry, x, y, z: offsets in WORLD units in the tower's
+// own frame (x across, z toward the camera, y up from its foot), ry/rx/rz,
+// sx/sy/sz, m: material, a: animation, ph: phase }, or { glow: true, … }.
+//   a: 1 pulse · 2 drip (grows from `top`) · 3 the drip's bulb · 4 sway
+//      5 spin · 6 vapour · 7 bubble · 8 blink
+
+// ☣️ Overrun with the waste nobody reported.
+function planToxic(b, g, K, inner){
+  const L = [], W = b.w, D = b.d, H = b.h, M = DRESS_MAT;
+  const used = [];
+  // Sludge pooled on the first open roof: the stage above hides its middle, so
+  // it reads as a glowing ring round the setback.
+  L.push({ g: K.round ? 'w_disc' : 'w_slab', x: 0, y: H * (0.5 + K.ledge) + 0.1, z: 0,
+           sx: W * K.lx * 1.96, sy: 0.3, sz: D * K.lz * 1.96, m: M.ooze, a: 1, ph: g() * 6.28 });
+  // Sludge running down the front face, and down the side that faces the
+  // corridor (the face the forward-flying missions actually look at), each
+  // drip ending in a bulb.
+  const top = H * (0.5 + K.drip);
+  const nd = 2 + ((g() * 3) | 0), ns = 1 + (g() < 0.5 ? 1 : 0);
+  for(let i = 0; i < nd + ns; i++){
+    const front = i < nd;
+    const len = H * (0.08 + g() * 0.3), wid = 0.3 + g() * 0.5, ph = g() * 6.28;
+    let x, z;
+    if(front){
+      let ux = (g() * 2 - 1) * (K.round ? 0.3 : 0.4);
+      if(K.slab) ux = (ux < 0 ? -1 : 1) * (0.2 + Math.abs(ux) * 0.6);   // clear of the core spine
+      const uz = K.round ? Math.sqrt(Math.max(0, K.face * K.face - ux * ux)) : K.face;
+      x = W * ux; z = D * uz + 0.07;
+    }else{
+      const uz = (g() * 2 - 1) * (K.slab ? 0.2 : 0.38);
+      const ux = K.round ? Math.sqrt(Math.max(0, K.face * K.face - uz * uz)) : 0.5;
+      x = inner * (W * ux + 0.07); z = D * uz;
+    }
+    L.push({ g: 'box', x, y: top - len * 0.5, z, sx: front ? wid : 0.14, sy: len, sz: front ? 0.14 : wid,
+             m: M.ooze, a: 2, ph, top, len });
+    if(g() < 0.75) L.push({ g: 'lowsphere', x, y: top - len, z, sx: wid * 1.4, sy: wid * 1.7, sz: wid * 1.4,
+                            m: M.ooze, a: 3, ph, top, len, sm: true });
+  }
+  // Drums on the roof — a cluster, a couple knocked over — in a slick of their
+  // own leak.
+  const s0 = g() < 0.75 ? takeSpot(K, used, g) : null;
+  if(s0){
+    const room = s0[3] * Math.min(W, D);
+    const cx = W * s0[0], cy = H * (0.5 + s0[1]), cz = D * s0[2];
+    const n = 2 + ((g() * 3) | 0);
+    for(let i = 0; i < n; i++){
+      const s = 0.8 + g() * 0.35;
+      const ox = cx + (g() * 2 - 1) * Math.max(0.3, room), oz = cz + (g() * 2 - 1) * Math.max(0.3, room);
+      const tipped = g() < 0.3;
+      L.push({ g: 'w_barrel', x: ox, y: cy + (tipped ? s * 0.45 : s * 0.65), z: oz,
+               rx: tipped ? Math.PI / 2 : 0, ry: g() * 6.28, sx: s * 0.9, sy: s * 1.3, sz: s * 0.9, m: M.barrel, sm: true });
+    }
+    L.push({ g: 'cylinder', x: cx, y: cy + 0.05, z: cz, sx: 1.2 + room * 2.4, sy: 0.08, sz: 1 + room * 2, m: M.pool, a: 1, ph: g() * 6.28, sm: true });
+  }
+  // One big tank, where there is room for one.
+  const s1 = g() < 0.55 ? takeSpot(K, used, g, true) : null;
+  if(s1 && s1[3] * Math.min(W, D) > 0.9){
+    const dia = s1[3] * Math.min(W, D) * 1.7, ht = dia * 1.3;
+    L.push({ g: 'w_tank', x: W * s1[0], y: H * (0.5 + s1[1]) + ht * 0.5, z: D * s1[2], ry: g() * 6.28,
+             sx: dia, sy: ht, sz: dia, m: M.tank, sm: true });
+  }
+  // The pool the whole block stands in: three overlapping slicks, because one
+  // tidy disc read as a green plate under every tower.
+  for(let i = 0; i < 3; i++){
+    const a = g() * 6.28, rr = 0.25 + g() * 0.35;
+    L.push({ g: 'lowsphere', x: Math.cos(a) * W * rr, y: 0.05, z: D * 0.15 + Math.sin(a) * D * rr,
+             sx: W * (0.9 + g() * 0.8), sy: 0.35, sz: D * (0.8 + g() * 0.7), m: M.poolLow, a: 1, ph: g() * 6.28, sm: i > 0 });
+  }
+  // Vapour coming off the roof.
+  L.push({ glow: true, x: W * (g() - 0.5) * 0.4, y: H * (0.5 + K.spots[0][1]) + 1, z: D * (g() - 0.5) * 0.4,
+           size: 2.5 + g() * 2, col: '#6dff3a', int: 0.22, a: 6, ph: g() });
+  return L;
+}
+
+// Neon finishes by colour, made once and shared by every tower that uses one.
+const NEON_MAT = Object.create(null);
+const neonMat = (c, es) => NEON_MAT[c + es] || (NEON_MAT[c + es] = { color: c, emissive: c, es, metallic: 0, roughness: 0.4, rim: 0.5, detail: 0 });
+const DESERT_NEON = ['#ff2a6d', '#05d9e8', '#ff6ec7', '#b967ff'];
+
+// 🌅 Half buried in the dunes of a sunset that never finishes.
+function planDesert(b, g, K, inner){
+  const L = [], W = b.w, D = b.d, H = b.h, M = DRESS_MAT;
+  const used = [];
+  // Synthwave neon on the architecture itself: a tube of light up the
+  // front-left corner, a cornice line at the first setback, and on one tower in
+  // three a slitted sun emblem on the facade — a Miami strip at dusk.
+  const nm = neonMat(DESERT_NEON[(g() * DESERT_NEON.length) | 0], 1.8);
+  const ly = H * (0.5 + K.ledge);
+  if(K.round){
+    L.push({ g: 'w_disc', x: 0, y: ly - 0.2, z: 0, sx: W * K.lx * 2.02, sy: 0.35, sz: D * K.lz * 2.02, m: nm, a: 1, ph: g() * 6.28 });
+  }else{
+    const fz = D * (K.slab ? 0.26 : 0.5);
+    L.push({ g: 'box', x: -W * 0.5 + 0.12, y: ly * 0.5, z: fz - 0.12, sx: 0.32, sy: ly, sz: 0.32, m: nm });
+    L.push({ g: 'box', x: 0, y: ly - 0.35, z: fz + 0.08, sx: W * 1.0, sy: 0.32, sz: 0.3, m: nm, a: 1, ph: g() * 6.28 });
+    if(g() < 0.34){
+      const s = Math.min(W, H) * 0.5;
+      L.push({ g: 'w_emblem', x: W * (g() - 0.5) * 0.3, y: ly * 0.62, z: fz + 0.16, sx: s, sy: s, sz: s,
+               m: neonMat(g() < 0.5 ? '#ff9e3d' : '#ff2a6d', 1.5), sm: true });
+    }
+  }
+  // The dune the tower is half buried in, heaped by the wind toward the
+  // camera side, and often a second, smaller one against a flank. Both lean
+  // AWAY from the corridor, so no sand spills toward the play space: the
+  // inner toe stops within a quarter of a tower's width of its wall.
+  // Each is a real dune (w_dune), turned so its long windward slope faces the
+  // camera and runs up the tower's front, with the crest just behind it.
+  const dx = -inner * W * (0.1 + g() * 0.15), dz = D * (0.15 + g() * 0.25);
+  const A = W * (0.7 + g() * 0.25), C = D * (0.7 + g() * 0.25), Hd = H * (0.13 + g() * 0.2);
+  L.push({ g: 'w_dune', x: dx, y: Hd * 0.5, z: dz, ry: Math.PI + (g() - 0.5) * 0.8, sx: A * 2, sy: Hd, sz: C * 2, m: M.sand });
+  // A smaller drift trailing off its outer shoulder.
+  const Ht = Hd * (0.45 + g() * 0.25);
+  L.push({ g: 'w_dune', x: dx - inner * A * 0.75, y: Ht * 0.5, z: dz + C * 0.2, ry: Math.PI + (g() - 0.5) * 1.2,
+           sx: A * 1.3, sy: Ht, sz: C * 1.4, m: M.sand });
+  if(g() < 0.5){
+    const Hf = H * (0.06 + g() * 0.08);
+    L.push({ g: 'w_dune', x: -inner * W * 0.6, y: Hf * 0.5, z: D * (g() - 0.5) * 0.5, ry: Math.PI + (g() - 0.5) * 1.5,
+             sx: W * (0.9 + g() * 0.4), sy: Hf, sz: D * (1.1 + g() * 0.5), m: M.sand });
+  }
+  // Sand drifted up against the first setback.
+  L.push({ g: 'lowsphere', x: W * (g() - 0.5) * 0.3, y: H * (0.5 + K.ledge), z: D * K.lz * 0.8,
+           sx: W * (K.round ? 0.5 : 0.75), sy: 1.2 + H * 0.02, sz: D * 0.28, m: M.sand });
+  // Palms on the roofs: the synthwave skyline's own silhouette.
+  const np = g() < 0.5 ? (g() < 0.4 ? 2 : 1) : 0;
+  for(let i = 0; i < np; i++){
+    const s = takeSpot(K, used, g);
+    if(!s) break;
+    const ht = 3.5 + g() * 3;
+    L.push({ g: 'w_palm', x: W * s[0], y: H * (0.5 + s[1]) + ht * 0.5, z: D * s[2], ry: g() * 6.28,
+             sx: ht * 1.25, sy: ht * 1.3, sz: ht * 1.25, m: M.palm, a: 4, ph: g() * 6.28, amp: 0.035 });
+  }
+  // A saguaro at the foot of the dune's front slope, where the sand has run
+  // out to almost nothing.
+  if(g() < 0.4){
+    const px = dx + (g() - 0.5) * A * 0.9, pz = dz + C * (0.85 + g() * 0.25);
+    const ht = 2.5 + g() * 2.5;
+    L.push({ g: 'w_cactus', x: px, y: ht * 0.45, z: pz, ry: g() * 6.28, sx: ht, sy: ht, sz: ht, m: M.cactus, sm: true });
+  }
+  return L;
+}
+
+// 🌊 Sunk: kelp up the walls, coral growing out of them, anemones on the
+// ledges, fish circling, bubbles off the roofs.
+function planDeep(b, g, K, inner){
+  const L = [], W = b.w, D = b.d, H = b.h, M = DRESS_MAT;
+  const used = [];
+  const nk = 2 + (g() < 0.5 ? 1 : 0);
+  for(let i = 0; i < nk; i++){
+    const len = H * (0.35 + g() * 0.5), wide = 3.2 + g() * 1.6;
+    let x, z;
+    if(i < nk - 1){ x = W * (g() * 2 - 1) * 0.42; z = D * (K.slab ? 0.3 : 0.52) + 0.6; }
+    else          { x = inner * (W * 0.52 + 0.6); z = D * (g() * 2 - 1) * 0.35; }
+    // A far tower keeps its first strand, the tallest thing it has.
+    L.push({ g: 'w_kelp', x, y: len * 0.5, z, ry: g() * 6.28, sx: wide, sy: len, sz: wide,
+             m: M.kelp, a: 4, ph: g() * 6.28, amp: 0.07, sm: i > 0 });
+  }
+  // Coral heads growing OUT of the walls, front and corridor side, at any
+  // height, leaning outward the way reef growth leans to the light. The roofs
+  // are the one face most of these cameras never see.
+  const nw = 2 + ((g() * 3) | 0);
+  for(let i = 0; i < nw; i++){
+    const size = 1.8 + g() * 1.6, yy = H * (0.1 + g() * 0.75);
+    const mat = coralMat[(g() * coralMat.length) | 0];
+    if(g() < 0.6){
+      const ux = (g() * 2 - 1) * 0.4;
+      const uz = K.round ? Math.sqrt(Math.max(0, K.face * K.face - ux * ux)) : (K.slab ? 0.26 : 0.5);
+      L.push({ g: 'w_coral', x: W * ux, y: yy, z: D * uz + size * 0.3, rx: 0.9, ry: 0, sx: size, sy: size, sz: size, m: mat, sm: true });
+    }else{
+      const uz = (g() * 2 - 1) * (K.slab ? 0.2 : 0.4);
+      const ux = K.round ? Math.sqrt(Math.max(0, K.face * K.face - uz * uz)) : 0.5;
+      L.push({ g: 'w_coral', x: inner * (W * ux + size * 0.3), y: yy, z: D * uz, rz: -inner * 0.9, sx: size, sy: size, sz: size, m: mat, sm: true });
+    }
+  }
+  // Anemones on the front corners of the first ledge.
+  for(const sd of [-1, 1]){
+    if(g() < 0.6) L.push({ g: 'lowsphere', x: sd * W * K.lx * 0.78, y: H * (0.5 + K.ledge) + 0.3, z: D * K.lz * 0.78,
+                           sx: 1.3 + g() * 0.8, sy: 0.9, sz: 1.3 + g() * 0.8, m: M.anem, a: 1, ph: g() * 6.28, sm: true });
+  }
+  // A school of fish wheeling round one tower in three.
+  if(g() < 0.34){
+    L.push({ school: true, n: 7 + ((g() * 5) | 0), R: Math.max(W, D) * (0.75 + g() * 0.25), y: H * (0.3 + g() * 0.45),
+             v: (0.35 + g() * 0.3) * (g() < 0.5 ? -1 : 1), s: 0.9 + g() * 0.5, m: fishMat[(g() * fishMat.length) | 0], ph: g() * 6.28, sm: true });
+  }
+  const nc = 1 + (g() < 0.6 ? 1 : 0) + (g() < 0.3 ? 1 : 0);
+  for(let i = 0; i < nc; i++){
+    const s = takeSpot(K, used, g);
+    if(!s) break;
+    const size = Math.min(3.2, Math.max(1.2, s[3] * Math.min(W, D) * 2.2));
+    L.push({ g: 'w_coral', x: W * s[0], y: H * (0.5 + s[1]) + size * 0.5, z: D * s[2], ry: g() * 6.28,
+             sx: size, sy: size, sz: size, m: coralMat[(g() * coralMat.length) | 0], sm: true });
+  }
+  for(let i = 0; i < 2; i++){
+    const s = K.spots[(g() * K.spots.length) | 0];
+    L.push({ glow: true, x: W * s[0] + (g() - 0.5), y: H * (0.5 + s[1]) + 0.5, z: D * s[2] + (g() - 0.5),
+             size: 0.4 + g() * 0.25, col: '#c8fbff', int: 0.6, a: 7, ph: g(), sm: true });
+  }
+  return L;
+}
+
+// 🪐 In orbit: the city as a station — beacons, solar wings, dishes, domes and
+// docking rings.
+function planOrbit(b, g, K, inner){
+  const L = [], W = b.w, D = b.d, H = b.h, M = DRESS_MAT;
+  const used = [];
+  const cx = K.slab ? W * 0.46 : 0;
+  L.push({ glow: true, x: cx, y: H * (0.5 + K.crown) + 0.2, z: 0, size: 1.6, col: g() < 0.8 ? '#ff2a2a' : '#ffffff',
+           int: 1.1, a: 8, ph: g() });
+  // Running lights round the body at every band, so each tower reads as a
+  // pressurised module rather than an office block. A slab through the tower,
+  // 7cm proud of every face: only the lit rim ever shows.
+  for(const [uy, hx, hz] of K.bands){
+    L.push({ g: K.round ? 'w_disc' : 'w_slab', x: 0, y: H * (0.5 + uy), z: 0,
+             sx: W * hx * 2 + 0.14, sy: 0.3, sz: D * hz * 2 + 0.14, m: M.band, a: 1, ph: g() * 6.28 });
+  }
+  // A lattice mast on one roof in two, with its own blinking lamp.
+  if(g() < 0.5){
+    const s = takeSpot(K, used, g);
+    if(s){
+      const mh = H * (0.25 + g() * 0.3), top = H * (0.5 + s[1]);
+      L.push({ g: 'w_mast', x: W * s[0], y: top + mh * 0.5, z: D * s[2], ry: g() * 6.28, sx: 3.2, sy: mh, sz: 3.2, m: M.mast, sm: true });
+      L.push({ glow: true, x: W * s[0], y: top + mh + 0.3, z: D * s[2], size: 1.4, col: '#ff2a2a', int: 1.0, a: 8, ph: g() });
+    }
+  }
+  // Solar wings on the OUTER wall only — never out into the corridor.
+  if(H > 18 && g() < 0.45){
+    const outer = -inner, nw = g() < 0.4 ? 2 : 1;
+    for(let i = 0; i < nw; i++){
+      const len = W * (0.7 + g() * 0.4);
+      L.push({ g: 'w_solar', x: outer * W * (K.round ? 0.47 : 0.5), y: H * (0.3 + g() * 0.3), z: D * (g() - 0.5) * 0.5,
+               ry: outer > 0 ? 0 : Math.PI, sx: len, sy: len, sz: len, m: M.solar });
+    }
+  }
+  if(g() < 0.4){
+    const s = takeSpot(K, used, g);
+    if(s){
+      const size = Math.min(3.4, Math.max(1.6, s[3] * Math.min(W, D) * 2.6));
+      L.push({ g: 'w_dish', x: W * s[0], y: H * (0.5 + s[1]) + size * 0.3, z: D * s[2], rx: 0.55, ry: g() * 6.28,
+               sx: size, sy: size, sz: size, m: M.dish, a: 5, ph: g() * 6.28, sm: true });
+    }
+  }
+  if(g() < 0.35){
+    const s = takeSpot(K, used, g, true);
+    if(s && s[3] * Math.min(W, D) > 0.8){
+      const r = s[3] * Math.min(W, D) * 1.9;
+      L.push({ g: 'w_dome', x: W * s[0], y: H * (0.5 + s[1]) + r * 0.45, z: D * s[2], sx: r, sy: r * 0.9, sz: r, m: M.dome });
+    }
+  }
+  // A docking ring round the body of a tall, squarish tower, with a lit band.
+  if(!K.slab && H > 20 && g() < 0.35){
+    const rad = Math.max(W, D) * 0.5 * 1.35, sc = rad / 0.4, y = H * (0.5 + (K.round ? 0.05 : -0.05));
+    L.push({ g: 'torus', x: 0, y, z: 0, sx: sc, sy: sc * 0.35, sz: sc, m: M.ring });
+    L.push({ g: 'thintorus', x: 0, y, z: 0, sx: sc * 0.93, sy: sc * 0.5, sz: sc * 0.93, m: M.ringLit, a: 1, ph: g() * 6.28 });
+  }
+  return L;
+}
+
+const DRESS_PLAN = { toxic: planToxic, desert: planDesert, deep: planDeep, orbit: planOrbit };
+
+// The set pieces a look adds to the whole city rather than to one tower.
+// (The desert's pyramids travel with its mountains now — see THE HORIZON.)
+function planSet(look, o, g, list){
+  const S = [];
+  const spread = o.spread || 130, hole = o.hole || 26, y0 = o.y != null ? o.y : -10;
+  const side = () => (g() < 0.5 ? -1 : 1);
+  if(look === 'deep'){
+    // Jellyfish drifting between the towers — above the play floor and never
+    // inside the corridor, so nothing reads as a hazard coming in.
+    for(let i = 0; i < 10; i++){
+      S.push({ g: 'w_jelly', x: side() * (hole - 2 + g() * spread * 0.6), y: 8 + g() * 26, z: -20 - g() * 160,
+               s: 3.5 + g() * 3, m: jellyMat[(g() * jellyMat.length) | 0], a: 'jelly', ph: g() * 6.28 });
+    }
+    // Shafts of light from the surface. Four, and slim: each is a translucent
+    // box the full height of the frame, shaded by the whole mesh shader.
+    for(let i = 0; i < 4; i++){
+      const w = 2.5 + g() * 2.5;
+      S.push({ g: 'box', x: side() * (8 + g() * 100), y: 45, z: -40 - g() * 150, rz: (g() - 0.5) * 0.5,
+               sx: w, sy: 150, sz: w * 0.35, m: DRESS_MAT.shaft, a: 'shaft', ph: g() * 6.28 });
+    }
+  }else if(look === 'orbit'){
+    for(let i = 0; i < 7; i++){
+      S.push({ g: 'ship', x: side() * (hole + 8 + g() * spread * 0.5), y: 18 + g() * 26, z: -20 - g() * 170,
+               s: 1.1 + g() * 0.6, v: (5 + g() * 7) * (g() < 0.5 ? -1 : 1), m: DRESS_MAT.ship, a: 'fly' });
+    }
+    // Sky bridges: a pressurised tube from a tower to its nearest neighbour
+    // on the SAME side of the corridor (so no tube can cross the play space),
+    // run between their centres — the ends are hidden inside the walls.
+    const used = new Set();
+    for(let i = 0; i < (list || []).length; i++){
+      const a = list[i];
+      if(used.has(i) || a.h < 16) continue;
+      let best = -1, bd = 1e9;
+      for(let j = 0; j < list.length; j++){
+        const b = list[j];
+        if(j === i || used.has(j) || b.h < 16 || Math.sign(b.x) !== Math.sign(a.x)) continue;
+        const d = Math.hypot(b.x - a.x, b.z - a.z);
+        if(d > 12 && d < 34 && d < bd){ bd = d; best = j; }
+      }
+      if(best < 0 || g() < 0.3) continue;
+      used.add(i); used.add(best);
+      S.push({ a: 'bridge', i, j: best, y: Math.min(a.h, list[best].h) * (0.3 + g() * 0.35), r: 1.1 + g() * 0.5 });
+    }
+  }
+  return S;
+}
+
+// ── Drawing. One scratch options object, filled per prop, so a street of
+// props allocates nothing per frame; the engine copies what it keeps.
+const _do = { pos: [0, 0, 0], rot: [0, 0, 0], scale: [1, 1, 1] };
+const _dp = [0, 0, 0];
+function dressPut(r, geo, x, y, z, rx, ry, rz, sx, sy, sz, m, es){
+  _do.pos[0] = x; _do.pos[1] = y; _do.pos[2] = z;
+  _do.rot[0] = rx; _do.rot[1] = ry; _do.rot[2] = rz;
+  _do.scale[0] = sx; _do.scale[1] = sy; _do.scale[2] = sz;
+  _do.color = m.color; _do.emissive = m.emissive; _do.emissiveStrength = es != null ? es : m.es;
+  _do.metallic = m.metallic; _do.roughness = m.roughness; _do.rim = m.rim;
+  _do.detail = m.detail; _do.alpha = m.alpha;
+  r.draw(geo, _do);
+}
+const fract = v => v - Math.floor(v);
+
+// `near` is false for a tower far enough off that its small props (`sm`)
+// would only be sub-pixel slivers — see dressView() in createWorld.
+function drawDress(r, t, b, z, list, near){
+  const c = b.c, s = b.s;
+  for(let i = 0; i < list.length; i++){
+    const d = list[i];
+    if(d.sm && !near) continue;
+    if(d.school){
+      _dp[0] = b.x; _dp[1] = b.y + d.y; _dp[2] = z;
+      if(!r.viewDepth(_dp, 1.6)) continue;
+      // Round the tower at radius R, each fish turned onto the tangent of its
+      // circle: the nose (−Z) at yaw θ points along (−sin θ, −cos θ).
+      for(let k = 0; k < d.n; k++){
+        const a = t * d.v + d.ph + k * 0.3;
+        const fx = Math.cos(a) * d.R, fz = Math.sin(a) * d.R;
+        const fy = d.y + Math.sin(t * 1.3 + k * 1.7) * 0.8 + (k % 3) * 0.6;
+        const yaw = d.v > 0 ? Math.PI - a : -a;
+        dressPut(r, 'w_fish', b.x + fx * c + fz * s, b.y + fy, z - fx * s + fz * c, 0, b.rot + yaw, 0, d.s, d.s, d.s, d.m);
+      }
+      continue;
+    }
+    let x = d.x, y = d.y, zz = d.z, sy = d.sy, rx = d.rx || 0, ry = d.ry || 0, rz = d.rz || 0, es;
+    switch(d.a){
+      case 1: es = d.m.es * (0.8 + 0.2 * Math.sin(t * 1.6 + d.ph)); break;
+      case 2: { const k = 0.86 + 0.14 * Math.sin(t * 0.5 + d.ph); sy = d.len * k; y = d.top - sy * 0.5;
+                es = d.m.es * (0.85 + 0.15 * Math.sin(t * 1.9 + d.ph)); break; }
+      case 3: { const k = 0.86 + 0.14 * Math.sin(t * 0.5 + d.ph); y = d.top - d.len * k; break; }
+      case 4: rx += d.amp * Math.sin(t * 0.8 + d.ph); rz += d.amp * Math.cos(t * 0.63 + d.ph * 1.3); break;
+      case 5: ry += t * 0.25; break;
+    }
+    if(d.glow){
+      let size = d.size, k = d.int;
+      if(d.a === 6){ const u = fract(t * 0.09 + d.ph); y += u * 9; size *= 0.6 + u; k *= Math.sin(u * Math.PI); }
+      else if(d.a === 7){ const u = fract(t * 0.22 + d.ph); y += u * 20; x += Math.sin(t * 2 + d.ph * 30) * 0.35; k *= Math.min(1, u * 8) * (1 - u * 0.6); }
+      else if(d.a === 8){ k *= fract(t * 0.7 + d.ph) < 0.12 ? 1 : 0.08; }
+      _dp[0] = b.x + x * c + zz * s; _dp[1] = b.y + y; _dp[2] = z - x * s + zz * c;
+      r.glow(_dp, size, d.col, k);
+      continue;
+    }
+    // Culled one by one as well as by tower: a tower can be in view while
+    // the dunes at its foot are far below the frame.
+    _dp[0] = b.x + x * c + zz * s; _dp[1] = b.y + y; _dp[2] = z - x * s + zz * c;
+    if(!r.viewDepth(_dp, 1.6)) continue;
+    dressPut(r, d.g, _dp[0], _dp[1], _dp[2], rx, b.rot + ry, rz, d.sx, sy, d.sz, d.m, es);
+  }
+}
+
+const _bA = [0, 0, 0], _bB = [0, 0, 0];
+const BRIDGE_TUBE = { geo: 'w_tube', color: '#8a93a6', metallic: 0.85, roughness: 0.3, rim: 0.8 };
+const BRIDGE_LIT  = { color: '#7df9ff', emissive: '#7df9ff', emissiveStrength: 1.4, metallic: 0, roughness: 0.4, detail: 0 };
+function drawSet(r, t, list, sz, span, towers){
+  for(let i = 0; i < list.length; i++){
+    const d = list[i];
+    if(d.fixed){ dressPut(r, d.g, d.x, d.y, d.z, 0, d.ry || 0, 0, d.sx, d.sy, d.sz, d.m); continue; }
+    if(d.a === 'bridge'){
+      const A = towers[d.i], B = towers[d.j];
+      let za = (A.z + sz) % span; if(za > 30) za -= span;
+      let zb = (B.z + sz) % span; if(zb > 30) zb -= span;
+      if(Math.abs(za - zb) > 60) continue;                 // one end has wrapped round the city
+      _dp[0] = (A.x + B.x) / 2; _dp[1] = A.y + d.y; _dp[2] = (za + zb) / 2;
+      if(!r.viewDepth(_dp, 1.6)) continue;
+      _bA[0] = A.x; _bA[1] = A.y + d.y; _bA[2] = za;
+      _bB[0] = B.x; _bB[1] = B.y + d.y; _bB[2] = zb;
+      BRIDGE_TUBE.height = d.r * 2;
+      r.beam(_bA, _bB, d.r * 2, BRIDGE_TUBE);
+      // Its lit windows run along the flank that faces the camera (+Z), or the
+      // corridor when the tube itself runs toward the camera.
+      let px = -(zb - za), pz = (B.x - A.x);
+      const pl = Math.hypot(px, pz) || 1;
+      px /= pl; pz /= pl;
+      if(pz < 0 || (Math.abs(pz) < 0.2 && px * A.x > 0)){ px = -px; pz = -pz; }
+      const o = d.r * 0.92;
+      _bA[0] += px * o; _bA[2] += pz * o; _bB[0] += px * o; _bB[2] += pz * o;
+      r.beam(_bA, _bB, 0.28, BRIDGE_LIT);
+      continue;
+    }
+    if(d.a === 'fly'){
+      let z = ((d.z + sz + d.v * t) % span + span) % span;
+      if(z > 30) z -= span;
+      const ry = d.v < 0 ? 0 : Math.PI;
+      dressPut(r, d.g, d.x, d.y, z, 0, ry, 0, d.s, d.s, d.s, d.m);
+      _dp[0] = d.x; _dp[1] = d.y; _dp[2] = z + (d.v < 0 ? 0.62 : -0.62) * d.s;
+      r.glow(_dp, 1.1 * d.s, '#7df9ff', 0.9);
+      continue;
+    }
+    let z = ((d.z + sz) % span);
+    if(z > 30) z -= span;
+    if(d.a === 'jelly'){
+      const p = Math.sin(t * 2.2 + d.ph);
+      const y = d.y + Math.sin(t * 0.35 + d.ph) * 3;
+      dressPut(r, d.g, d.x, y, z, 0, t * 0.2 + d.ph, 0, d.s * (1 - 0.07 * p), d.s * (1 + 0.12 * p), d.s * (1 - 0.07 * p), d.m);
+    }else if(d.a === 'shaft'){
+      dressPut(r, d.g, d.x, d.y, z, 0, 0, d.rz + Math.sin(t * 0.2 + d.ph) * 0.04, d.sx, d.sy, d.sz, d.m,
+               d.m.es * (0.75 + 0.25 * Math.sin(t * 0.5 + d.ph)));
+    }
+  }
+}
+
+// ══════════════════════════════════════════════
+//  🌅🪐 THE HORIZON — the desert's sun and ranges, the deck's planets
+// ══════════════════════════════════════════════
+// These were painted into the sky at infinity, and that is exactly what made
+// them read as a picture pasted behind the game: nothing about them ever
+// changed while everything in front of them moved. They are geometry now,
+// drawn at the end of every frame (w.end) in every mission with an open sky,
+// lit by the scene's own key light, in the arcade's own idiom — faceted
+// forms, neon edges, bloom — and they MOVE: the desert's ranges and pyramids
+// rise out of the haze, stream in and part around the city while its sun
+// swells on the horizon; the deck's planets and black hole drift closer,
+// turning, until they pass overhead and another rises out of the far dark.
+//
+// ⚠️ They stand 200-850 units off, so they ignore the fog (a negative rim, a
+// negative glow size — see FS_MESH / VS_GLOW) and a look raises the camera's
+// far plane (w.begin). ⚠️ Every position is a pure function of the world clock
+// and the city's scroll — no state — so photo mode holds them perfectly still.
+// ⚠️ Nothing on the horizon may cross the play space: the desert's lanes run
+// well outside the city, and the deck's bodies are high and wide of centre.
+
+const wrapTo = (v, lo, span) => lo + (((v - lo) % span) + span) % span;
+// A hash per lap: a body that comes round again comes back somewhere else.
+const lapHash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+// Rotates (x, y, z) by X then Z — the order compose() applies when Y is 0 —
+// so the parts of a tilted system land where its own rot puts its axis.
+function tiltVec(x, y, z, ax, az, out){
+  const cx = Math.cos(ax), sx = Math.sin(ax), cz = Math.cos(az), sz = Math.sin(az);
+  const y1 = y * cx - z * sx, z1 = y * sx + z * cx;
+  out[0] = x * cz - y1 * sz; out[1] = x * sz + y1 * cz; out[2] = z1;
+  return out;
+}
+// The rot that turns a ring (axis +Y) to face from c toward e.
+function faceRot(c, e, out){
+  let vx = e[0] - c[0], vy = e[1] - c[1], vz = e[2] - c[2];
+  const l = Math.hypot(vx, vy, vz) || 1;
+  vx /= l; vy /= l; vz /= l;
+  out[0] = Math.acos(Math.max(-1, Math.min(1, vy))); out[1] = Math.atan2(vx, vz); out[2] = 0;
+  return out;
+}
+
+// Fog-free finishes: a negative rim is the flag (its size is still the rim).
+const glowMat = (c, es, extra) => Object.assign({ color: c, emissive: c, es, metallic: 0, roughness: 0.5, rim: -0.3, detail: 0 }, extra);
+const HZ_MAT = {
+  sun:     SUN_SLICES.map(s => glowMat(s[2], 1.75)),
+  mtn:     { color: '#1c0c2a', metallic: 0.15, roughness: 0.85, rim: 1.3, detail: 0 },
+  mtnFar:  { color: '#1c0c2a', metallic: 0.15, roughness: 0.85, rim: -1.3, detail: 0 },
+  mtnLine: { color: '#ff2a9d', emissive: '#ff2a9d', es: 1.8, metallic: 0, roughness: 0.5, rim: 0.5, detail: 0 },
+  mtnLineFar: glowMat('#ff2a9d', 1.8),
+  pyr:     { color: '#2a151a', metallic: 0.05, roughness: 0.9, rim: 0.9, detail: 0 },
+  pyrEdge: { color: '#ffb347', emissive: '#ffb347', es: 1.7, metallic: 0, roughness: 0.5, rim: 0.5, detail: 0 },
+  // Tan paint and dark-metal belts (TRIM, see geoPlanet). Every body carries a
+  // faint glow of its own colour: out here the only light is the mission's key
+  // light, which some missions keep dim, and an unlit face read as a hole.
+  giant:   { color: '#d8a46c', emissive: '#d8a46c', es: 0.16, metallic: 0.05, roughness: 0.72, rim: -1.1, detail: 0 },
+  equator: glowMat('#5ff4ff', 1.5),
+  storm:   { color: '#ff7a3a', emissive: '#ff5a2a', es: 0.55, metallic: 0, roughness: 0.6, rim: -0.8, detail: 0 },
+  rings:   [{ color: '#b98b62', emissive: '#b98b62', es: 0.12, metallic: 0.1, roughness: 0.6, rim: -0.6, detail: 0 },
+            { color: '#e7cfa2', emissive: '#e7cfa2', es: 0.16, metallic: 0.1, roughness: 0.6, rim: -0.6, detail: 0 },
+            glowMat('#ffd36e', 0.6), glowMat('#5ff4ff', 1.0)],
+  moonA:   { color: '#9fb2c8', emissive: '#9fb2c8', es: 0.14, metallic: 0.1, roughness: 0.8, rim: -0.9, detail: 0 },
+  moonB:   { color: '#c9a27a', emissive: '#c9a27a', es: 0.14, metallic: 0.1, roughness: 0.8, rim: -0.9, detail: 0 },
+  hole:    { color: '#000000', metallic: 0, roughness: 1, rim: -0.12, detail: 0 },
+  disk:    [['#fff4d6', 2.6], ['#ffe08a', 2.1], ['#ffb84a', 1.7], ['#ff8a33', 1.35], ['#ff6424', 1.05], ['#e0401c', 0.85], ['#a82612', 0.7]]
+             .map(([c, es]) => glowMat(c, es)),
+  photon:  glowMat('#fff6e0', 2.8),
+  halo:    glowMat('#ffc07a', 1.5),
+  halo2:   glowMat('#ff9a4a', 0.8),
+  jet:     glowMat('#8f7bff', 1.3),
+  ice:     { color: '#a6dcff', emissive: '#a6dcff', es: 0.12, metallic: 0.25, roughness: 0.3, rim: -1.2, detail: 0 },
+  iceWire: glowMat('#5ff4ff', 1.6),
+  rock:    { color: '#c24a30', emissive: '#c24a30', es: 0.2, metallic: 0.05, roughness: 0.9, rim: -0.8 },
+  rockMoon:{ color: '#8d8a86', emissive: '#8d8a86', es: 0.14, metallic: 0.05, roughness: 0.9, rim: -0.8 }
+};
+
+// ── 🏜️ The desert: two lanes of ranges and pyramids well outside the city,
+// scrolling in with the round, and a fixed range on the horizon the sun sets
+// behind. Planned once per world from its own seed.
+function planDesertHorizon(g){
+  const H = { ranges: [], pyramids: [] };
+  for(const side of [-1, 1]){
+    for(let k = 0; k < 5; k++){
+      H.ranges.push({ x: side * (215 + g() * 190), z: -900 + k * 138 + g() * 50, w: 230 + g() * 120, h: 70 + g() * 70,
+                      d: 130 + g() * 60, ry: (g() - 0.5) * 0.5, v: (g() * 3) | 0 });
+    }
+  }
+  for(let k = 0; k < 4; k++){
+    H.pyramids.push({ x: (k % 2 ? 1 : -1) * (150 + g() * 45), z: -900 + k * 172 + g() * 60, s: 85 + g() * 55, ry: Math.PI / 4 + (g() - 0.5) * 0.4 });
+  }
+  // The centre: low neon ranges that come in from under the sun and part as
+  // they near — the drive toward the sunset — then sink back into the plain
+  // hundreds of units before the city, so none can reach the play space.
+  // Fog-free, so the sun's foot is always cut by a crisp neon line.
+  H.centre = [];
+  for(let k = 0; k < 6; k++){
+    H.centre.push({ x: (k % 2 ? 1 : -1) * (60 + g() * 130), z: -820 + k * 73 + g() * 25, w: 260 + g() * 160,
+                    h: 34 + g() * 30, d: 110, ry: (g() - 0.5) * 0.3, v: (g() * 3) | 0 });
+  }
+  return H;
+}
+// ⚠️ Speeds were tuned on film: at 3-4 units a second a range took half a
+// minute to change visibly, and the horizon read as a still picture again.
+// ⚠️ Both lanes END (sunk flat) at z −220 or farther: the city's back row
+// stands at −180, and one mission spreads its towers 180 wide — a range
+// carried any nearer would sweep through them.
+const DESERT_LANE = { zFar: -900, span: 690, speed: 10, parallax: 0.6 };
+const CENTRE_LANE = { zFar: -820, span: 440, speed: 15, parallax: 0.35, part: 2.2 };
+// 0 → 1 → 0 along a lane: out of the plain over its first `a`, back into it
+// over its last `b`, smoothstepped both ways — nothing pops at the wrap.
+const lanePass = (u, a, b) => {
+  const up = u < a ? u / a : 1, dn = u > 1 - b ? Math.max(0, (1 - u) / b) : 1;
+  return up * up * (3 - 2 * up) * dn * dn * (3 - 2 * dn);
+};
+const MTN_GEO = ['w_mtnA', 'w_mtnB', 'w_mtnC'], MTN_GRID = ['w_mtnGA', 'w_mtnGB', 'w_mtnGC'];
+const MTN_GRID_LITE = ['w_mtnLA', 'w_mtnLB', 'w_mtnLC'];   // every other line: see geoMountainGrid
+// The sun stands behind everything, 870 units off, and SWELLS as the round
+// goes on — a quarter bigger in the first half minute, half as big again by
+// the end of a long round — about six degrees above a nominal eye line. It
+// grows rather than travels so the ranges that stream in front of it can
+// never pass through it.
+function sunPose(t){
+  const z = -870;
+  return { x: 0, y: 6 + Math.tan(0.105) * (14 - z), z, R: 100 + 60 * (1 - Math.exp(-t / 50)) };
+}
+
+// ── 🪐 The deck: four bodies on one slow lane, each coming round again from
+// the far dark somewhere a little different every lap.
+const ORBIT_BODIES = [
+  { kind: 'giant', x: -175, y: 118, jx: 40, jy: 22, R: 72, z: -520 },
+  { kind: 'hole',  x: 150,  y: 92,  jx: 30, jy: 18, R: 20, z: -760 },
+  { kind: 'ice',   x: 30,   y: 150, jx: 60, jy: 20, R: 30, z: -330 },
+  { kind: 'rock',  x: 268,  y: 172, jx: 50, jy: 28, R: 26, z: -640 }
+];
+const ORBIT_LANE = { zFar: -860, span: 660, speed: 6, parallax: 0.5 };
+function orbitPose(b, t, sz, out){
+  const raw = b.z - ORBIT_LANE.zFar + ORBIT_LANE.speed * t + ORBIT_LANE.parallax * sz;
+  const lap = Math.floor(raw / ORBIT_LANE.span);
+  const u = raw / ORBIT_LANE.span - lap;                    // 0 far → 1 near
+  out.x = b.x + (lapHash(lap * 7.3 + b.R) - 0.5) * 2 * b.jx;
+  out.y = b.y + (lapHash(lap * 3.1 + b.R * 1.7) - 0.5) * 2 * b.jy;
+  out.z = ORBIT_LANE.zFar + u * ORBIT_LANE.span;
+  // Grows out of the dark at the far end, and has always left the frame
+  // (high and wide) long before the near end, where it shrinks away unseen.
+  out.s = Math.min(1, u / 0.06) * Math.min(1, (1 - u) / 0.04);
+  return out;
+}
+
+// Scratch, so a frame of horizon allocates nothing.
+const _hp = [0, 0, 0], _hq = [0, 0, 0], _hr = [0, 0, 0], _pose = { x: 0, y: 0, z: 0, s: 0 };
+
+function drawDesertHorizon(r, t, sz, H, cull, eye){
+  const M = HZ_MAT;
+  // The sun: ten slices on one plane, facing down the line of sight, and a
+  // glow behind them. The glows are fog-free too (negative size).
+  const S = sunPose(t);
+  for(let i = 0; i < SUN_SLICES.length; i++){
+    dressPut(r, 'w_sun' + i, S.x, S.y, S.z, 0, 0, 0, S.R * 2, S.R * 2, S.R * 2, M.sun[i]);
+  }
+  _hp[0] = S.x; _hp[1] = S.y; _hp[2] = S.z + 4;
+  r.glow(_hp, -S.R * 4.4, '#ff5a3a', 0.32);
+  r.glow(_hp, -S.R * 2.7, '#ffc24a', 0.42);
+  cullPush(cull, eye, S.x, S.y, S.z, S.R * 1.3);
+  // The centre ranges streaming in under it: rising out of the plain at the
+  // far end, parting as they come, sinking again at the near end. Their neon
+  // powers up and down with them — a squashed grid left lit read as a flat
+  // magenta net lying on the sand.
+  const coff = CENTRE_LANE.speed * t + CENTRE_LANE.parallax * sz;
+  for(const c of H.centre){
+    const z = wrapTo(c.z + coff, CENTRE_LANE.zFar, CENTRE_LANE.span), u = (z - CENTRE_LANE.zFar) / CENTRE_LANE.span;
+    const f = lanePass(u, 0.1, 0.18), h = c.h * f;
+    if(h < 0.5) continue;
+    const x = c.x * (1 + CENTRE_LANE.part * u);
+    _hp[0] = x; _hp[1] = -30 + h * 0.5; _hp[2] = z;
+    if(!r.viewDepth(_hp, 1.8)) continue;
+    dressPut(r, MTN_GEO[c.v], x, _hp[1], z, 0, c.ry, 0, c.w, h, c.d, M.mtnFar);
+    dressPut(r, MTN_GRID[c.v], x, _hp[1], z, 0, c.ry, 0, c.w, h, c.d, M.mtnLineFar, M.mtnLineFar.es * f);
+  }
+  // The lanes, scrolling in: each range and pyramid RISES out of the ground
+  // as it comes in out of the haze (no pop at the far end of the lane), and
+  // sinks back into it behind the city (see DESERT_LANE), neon and all.
+  const off = DESERT_LANE.speed * t + DESERT_LANE.parallax * sz;
+  const rise = z => lanePass((z - DESERT_LANE.zFar) / DESERT_LANE.span, 0.12, 0.2);
+  for(const m of H.ranges){
+    const z = wrapTo(m.z + off, DESERT_LANE.zFar, DESERT_LANE.span), f = rise(z), h = m.h * f;
+    if(h < 0.5) continue;
+    _hp[0] = m.x; _hp[1] = -30 + h * 0.5; _hp[2] = z;
+    if(!r.viewDepth(_hp, 1.8)) continue;
+    dressPut(r, MTN_GEO[m.v], m.x, _hp[1], z, 0, m.ry, 0, m.w, h, m.d, M.mtn);
+    dressPut(r, MTN_GRID_LITE[m.v], m.x, _hp[1], z, 0, m.ry, 0, m.w, h, m.d, M.mtnLine, M.mtnLine.es * f);
+  }
+  for(const p of H.pyramids){
+    const z = wrapTo(p.z + off, DESERT_LANE.zFar, DESERT_LANE.span), f = rise(z), h = p.s * 0.66 * f;
+    if(h < 0.5) continue;
+    _hp[0] = p.x; _hp[1] = -30 + h * 0.5; _hp[2] = z;
+    if(!r.viewDepth(_hp, 1.8)) continue;
+    dressPut(r, 'w_pyramid', p.x, _hp[1], z, 0, p.ry, 0, p.s, h, p.s, M.pyr);
+    dressPut(r, 'w_pyredge', p.x, _hp[1], z, 0, p.ry, 0, p.s, h, p.s, M.pyrEdge, M.pyrEdge.es * f);
+  }
+}
+
+// Star-field billboards stand only ~200 units off — NEARER than these bodies —
+// so each body in view hides the ones behind it: [dir, cos(angular radius)].
+function cullPush(cull, eye, x, y, z, rad){
+  if(!cull) return;
+  let dx = x - eye[0], dy = y - eye[1], dz = z - eye[2];
+  const d = Math.hypot(dx, dy, dz) || 1;
+  cull.push([dx / d, dy / d, dz / d, Math.cos(Math.min(1.5, Math.atan(rad / d)))]);
+}
+
+function drawGiant(r, t, P, eye, cull){
+  const M = HZ_MAT, R = 72 * P.s;
+  if(R < 0.5) return;
+  const AX = 0.38, AZ = 0.3, spin = t * 0.05;
+  // The banded body, lit by the scene's key light like any hull in the arcade.
+  // ⚠️ Not spun through its rot: compose() tilts about X BEFORE it turns about
+  // Y, so a Y spin on a tilted planet precesses its bands instead of turning
+  // them. The bands are symmetric anyway; the storm eye below carries the spin.
+  dressPut(r, 'w_planet', P.x, P.y, P.z, AX, 0, AZ, R * 2, R * 2, R * 2, M.giant);
+  dressPut(r, 'w_wire', P.x, P.y, P.z, AX, 0, AZ, R * 2.024, R * 2.024, R * 2.024, M.equator);
+  // A storm eye in the southern belts, turning with the planet.
+  const lat = -0.45, lon = spin * 3 + 1.2;
+  tiltVec(R * Math.cos(lat) * Math.cos(lon), R * Math.sin(lat), R * Math.cos(lat) * Math.sin(lon), AX, AZ, _hq);
+  dressPut(r, 'sphere', P.x + _hq[0], P.y + _hq[1], P.z + _hq[2], 0, 0, 0, R * 0.2, R * 0.2, R * 0.2, M.storm);
+  // The ring system: four flat bands, the outer two lit neon.
+  const RS = R * 2.6 * 2;
+  for(let i = 0; i < 4; i++) dressPut(r, ['w_ringA', 'w_ringB', 'w_ringC', 'w_ringD'][i], P.x, P.y, P.z, AX, 0, AZ, RS, RS, RS, M.rings[i]);
+  // Two moons in the ring plane, on orbits you can watch.
+  for(const [orb, per, rad, mat, ph] of [[R * 3.1, 34, R * 0.11, M.moonA, 0.4], [R * 3.7, 55, R * 0.08, M.moonB, 2.6]]){
+    const a = ph + t * Math.PI * 2 / per;
+    tiltVec(Math.cos(a) * orb, 0, Math.sin(a) * orb, AX, AZ, _hq);
+    dressPut(r, 'sphere', P.x + _hq[0], P.y + _hq[1], P.z + _hq[2], 0, t * 0.2, 0, rad * 2, rad * 2, rad * 2, mat);
+  }
+  _hp[0] = P.x; _hp[1] = P.y; _hp[2] = P.z;
+  r.glow(_hp, -R * 3.4, '#ffcf8a', 0.16);
+  cullPush(cull, eye, P.x, P.y, P.z, R * 2.7);
+}
+
+// 🕳️ The black hole, built the way the films drew it but out of the arcade's
+// own parts: a black sphere, a flat accretion disc of glowing bands tilted a
+// little toward us, and two rings turned to face the camera — the photon ring
+// and the far side of the disc lensed over the top and under the bottom.
+// Clumps of hot gas orbit in the disc, the inner ones faster (Kepler), and two
+// thin jets leave along its axis. The sky pass bends the stars behind it.
+function drawHole(r, t, P, eye, cull){
+  const M = HZ_MAT, Rh = 20 * P.s;
+  if(Rh < 0.3) return null;
+  const AX = 0.2, AZ = 0.12;
+  dressPut(r, 'sphere', P.x, P.y, P.z, 0, 0, 0, Rh * 2, Rh * 2, Rh * 2, M.hole);
+  const DISK = [1.35, 1.7, 2.1, 2.55, 3.05, 3.6, 4.2];
+  for(let i = 0; i < DISK.length; i++){
+    const s = Rh * DISK[i] / 0.45;
+    dressPut(r, 'thintorus', P.x, P.y, P.z, AX, 0, AZ, s, s * 0.14, s, M.disk[i]);
+  }
+  _hp[0] = P.x; _hp[1] = P.y; _hp[2] = P.z;
+  faceRot(_hp, eye, _hr);
+  const sp = Rh * 1.08 / 0.45, sh = Rh * 1.45 / 0.45, sh2 = Rh * 1.85 / 0.45;
+  dressPut(r, 'thintorus', P.x, P.y, P.z, _hr[0], _hr[1], _hr[2], sp, sp * 0.35, sp, M.photon);
+  dressPut(r, 'thintorus', P.x, P.y, P.z, _hr[0], _hr[1], _hr[2], sh, sh * 0.8, sh, M.halo);
+  dressPut(r, 'thintorus', P.x, P.y, P.z, _hr[0], _hr[1], _hr[2], sh2, sh2 * 0.5, sh2, M.halo2);
+  // Hot clumps orbiting in the disc plane.
+  for(let k = 0; k < 14; k++){
+    const rr = Rh * (1.5 + (k % 7) * 0.42), w = 2.2 / Math.pow(rr / Rh, 1.5), a = k * 2.39 + t * w;
+    tiltVec(Math.cos(a) * rr, 0, Math.sin(a) * rr, AX, AZ, _hq);
+    _hp[0] = P.x + _hq[0]; _hp[1] = P.y + _hq[1]; _hp[2] = P.z + _hq[2];
+    r.glow(_hp, -Rh * (0.7 - (k % 7) * 0.05), k % 3 ? '#ffb45a' : '#fff0c8', 0.9);
+  }
+  // Jets along the axis, pulsing.
+  tiltVec(0, 1, 0, AX, AZ, _hq);
+  const L = Rh * 7, pulse = 0.75 + 0.25 * Math.sin(t * 2.3);
+  for(const sd of [1, -1]){
+    dressPut(r, 'cylinder', P.x + _hq[0] * sd * (Rh + L * 0.5), P.y + _hq[1] * sd * (Rh + L * 0.5), P.z + _hq[2] * sd * (Rh + L * 0.5),
+             AX, 0, AZ, Rh * 0.12, L, Rh * 0.12, M.jet, M.jet.es * pulse);
+  }
+  _hp[0] = P.x; _hp[1] = P.y; _hp[2] = P.z;
+  r.glow(_hp, -Rh * 11, '#ff9a4a', 0.22);
+  cullPush(cull, eye, P.x, P.y, P.z, Rh * 4.4);
+  // For the sky pass: where the hole is, and how big its shadow looks.
+  let dx = P.x - eye[0], dy = P.y - eye[1], dz = P.z - eye[2];
+  const d = Math.hypot(dx, dy, dz) || 1;
+  return [dx / d, dy / d, dz / d, Math.atan(Rh / d)];
+}
+
+// 🧊 An ice world wrapped in a neon grid — meridians and parallels, the same
+// idiom as the arcade's floors — turning slowly.
+function drawIce(r, t, P, eye, cull){
+  const M = HZ_MAT, R = 30 * P.s;
+  if(R < 0.3) return;
+  dressPut(r, 'sphere', P.x, P.y, P.z, 0, t * 0.08, 0, R * 2, R * 2, R * 2, M.ice);
+  const rw = (R * 1.02) * 2, spin = t * 0.08;
+  for(let k = 0; k < 6; k++) dressPut(r, 'w_wire', P.x, P.y, P.z, Math.PI / 2, spin + k * Math.PI / 6, 0, rw, rw, rw, M.iceWire);
+  for(const f of [-0.62, 0, 0.62]){
+    const rr = R * Math.cos(f) * 1.02 * 2;
+    dressPut(r, 'w_wire', P.x, P.y + R * Math.sin(f), P.z, 0, 0, 0, rr, rr, rr, M.iceWire);
+  }
+  _hp[0] = P.x; _hp[1] = P.y; _hp[2] = P.z;
+  r.glow(_hp, -R * 4.6, '#5ff4ff', 0.2);
+  cullPush(cull, eye, P.x, P.y, P.z, R * 1.2);
+}
+
+// 🪨 A cratered red world, tumbling, with its own small moon.
+function drawRockWorld(r, t, P, eye, cull){
+  const M = HZ_MAT, R = 26 * P.s;
+  if(R < 0.3) return;
+  dressPut(r, 'rock', P.x, P.y, P.z, t * 0.03, t * 0.06, 0, R * 2, R * 2, R * 2, M.rock);
+  const a = t * 0.3;
+  dressPut(r, 'rock2', P.x + Math.cos(a) * R * 2.4, P.y + Math.sin(a * 0.5) * R * 0.4, P.z + Math.sin(a) * R * 2.4,
+           t * 0.1, t * 0.13, 0, R * 0.5, R * 0.5, R * 0.5, M.rockMoon);
+  cullPush(cull, eye, P.x, P.y, P.z, R * 1.1);
+}
+
+// Returns the black hole's [dir, angular radius] for the sky pass, or null.
+function drawOrbitHorizon(r, t, sz, cull, eye){
+  let lens = null;
+  for(const b of ORBIT_BODIES){
+    orbitPose(b, t, sz, _pose);
+    if(_pose.s <= 0) continue;
+    _hp[0] = _pose.x; _hp[1] = _pose.y; _hp[2] = _pose.z;
+    // A body out of view is skipped whole (its own radius of slack).
+    if(!r.viewDepth(_hp, 2.2)) continue;
+    if(b.kind === 'giant') drawGiant(r, t, _pose, eye, cull);
+    else if(b.kind === 'hole') lens = drawHole(r, t, _pose, eye, cull);
+    else if(b.kind === 'ice') drawIce(r, t, _pose, eye, cull);
+    else drawRockWorld(r, t, _pose, eye, cull);
+  }
+  return lens;
+}
+
 function createWorld(cfg){
   cfg = cfg || {};
   const r = R;
@@ -25295,13 +26899,43 @@ function createWorld(cfg){
   // (COOLANT's enclosed shaft) turned it off for every 3D mission played after
   // it, until the page was reloaded: a flat fog-coloured void where the night
   // sky should be.
-  const env   = Object.assign({ zenith:'#050716', horizon:'#2a0838', ground:'#04060c', intensity: 1.0, sky: true, skyGain: 1 }, cfg.env);
+  // 🌍 theme / bodies / winMix are the world-look state, defaulted here for the
+  // same reason: a mission played after a themed one must get the house sky.
+  const env   = Object.assign({ zenith:'#050716', horizon:'#2a0838', ground:'#04060c', intensity: 1.0, sky: true, skyGain: 1,
+                                theme: 0, bodies: null, winMix: 0 }, cfg.env);
   const fog   = Object.assign({ color:'#0a0418', density: 0.011 }, cfg.fog);
   const sun   = Object.assign({ dir:[-0.45, -1, -0.4], color:'#5a6cff', intensity: 0.55 }, cfg.sun);
   const grade = Object.assign({}, cfg.grade);
   // 🎃 A running seasonal event tints every world toward its colours — a MIX
   // of the mission's own sky, fog and key light, never a swap. See § 14.
   try{ if(typeof worldTintNow === 'function') applyWorldTint(env, fog, sun, grade, worldTintNow()); }catch(e){}
+  // 🌍 The equipped world's LOOK (see WORLD LOOKS above): its sky, its window
+  // light, and the props the skyline below is dressed in. Read once per world,
+  // i.e. once per round, like the tint.
+  let look = null;
+  try{
+    const id = (typeof worldLook === 'function') ? worldLook() : null;
+    if(id && LOOKS[id]){
+      look = id;
+      const L = LOOKS[id];
+      env.theme = L.code; env.bodies = L.bodies; env.winTint = L.winTint; env.winMix = L.winMix;
+      ensureDressGeos(r);
+    }
+  }catch(e){ console.warn('World look unavailable:', e); look = null; env.theme = 0; env.bodies = null; env.winMix = 0; }
+  const LK = look ? LOOKS[look] : null;
+  // 🌅🪐 This world's horizon (THE HORIZON, above): planned once, drawn at the
+  // end of every frame. hzCull is what it hid of the star field last frame;
+  // eyeNow is the camera actually installed (photo orbit and shake included).
+  const HZ = look === 'desert' ? planDesertHorizon(seeded(0x5eed ^ 20260923)) : null;
+  const hzCull = [], eyeNow = [0, 4, 14];
+  w._sz = 0;
+  function horizonFrame(){
+    hzCull.length = 0;
+    try{
+      if(look === 'desert') drawDesertHorizon(r, w.t, w._sz, HZ, hzCull, eyeNow);
+      else if(look === 'orbit') r.environment({ bodies: [null, drawOrbitHorizon(r, w.t, w._sz, hzCull, eyeNow), null] });
+    }catch(e){ console.warn('Horizon failed:', e); }
+  }
 
   // ── PARTICLES ──
   // Drawn as additive billboards, so a burst is one instanced draw no matter
@@ -25420,14 +27054,57 @@ function createWorld(cfg){
         phase: g() * 6.28
       });
     }
-    w.city = { list, y0 };
+    // 🌍 Dress the towers for the equipped world — from a sequence of the
+    // look's OWN, after every tower is placed, so the layout above is the same
+    // city in every theme. A planner that throws costs that tower its props,
+    // never the round.
+    let set = null;
+    if(LK){
+      const g2 = seeded(((o.seed || 20260907) ^ 0x2c1b3c6d) >>> 0);
+      const plan = DRESS_PLAN[look];
+      for(const b of list){
+        b.neon = LK.neon[NEON.indexOf(b.neon)] || b.neon;
+        b.c = Math.cos(b.rot); b.s = Math.sin(b.rot);
+        const K = DRESS_KIND[b.kind] || DRESS_KIND.tower;
+        try{ b.dress = plan(b, g2, K, b.x > 0 ? -1 : 1); }catch(e){ b.dress = null; }
+      }
+      try{ set = planSet(look, o, seeded(((o.seed || 20260907) ^ 0x51ed270b) >>> 0), list); }catch(e){ set = null; }
+    }
+    w.city = { list, y0, set };
     return w.city;
   };
+
+  // 🌍 Whether a tower's props are worth drawing: 0 not in view, 1 in view but
+  // far (big props only), 2 near (everything). The engine does no culling of
+  // its own, so every instance submitted is vertex-shaded wherever it is, and
+  // a small prop far off is a sub-pixel sliver — the worst case for a GPU
+  // that shades every triangle in 2x2 quads. On an HD 520 the full Deep Net
+  // dressing, drawn for every tower, nearly doubled the frame. The base, the
+  // middle and the top are tried, because a tall tower can fill the view while
+  // its foot and its crown are both off it, with 60% of slack past each edge
+  // of the screen for the width of the tower and its props. viewDepth(), not
+  // project(): the latter reads the DOM and cost 2.5ms a frame here.
+  const DRESS_NEAR = 95;
+  const _pv = [0, 0, 0];
+  function dressView(b, z){
+    _pv[0] = b.x; _pv[2] = z;
+    for(let k = 0; k < 3; k++){
+      _pv[1] = b.y + b.h * k * 0.5;
+      const d = r.viewDepth(_pv, 1.6);
+      if(d) return d < DRESS_NEAR ? 2 : 1;
+    }
+    return 0;
+  }
 
   w.drawCity = function(scrollZ){
     if(!w.city) return;
     const sz = scrollZ || 0;
+    // The horizon scrolls in with the city, at a parallax of its own.
+    w._sz = sz;
     const span = 210;
+    // 🌍 A look refinishes the towers themselves: corroded green-black for the
+    // toxic sector, sand-scoured plum in the desert, and so on.
+    const T = LK ? LK.tower : null;
     for(let i = 0; i < w.city.list.length; i++){
       const b = w.city.list[i];
       // Wrapped in Z so a forward-moving game never runs out of city; the
@@ -25438,7 +27115,7 @@ function createWorld(cfg){
         pos: [b.x, b.y + b.h * 0.5, z],
         rot: [0, b.rot, 0],
         scale: [b.w, b.h, b.d],
-        color: '#0b0d18', metallic: 0.55, roughness: 0.52, rim: 0.9
+        color: T ? T.color : '#0b0d18', metallic: T ? T.metallic : 0.55, roughness: T ? T.roughness : 0.52, rim: 0.9
       });
       if(!b.lit) continue;
       // Two vertical light strips, breathing slightly out of phase.
@@ -25456,6 +27133,19 @@ function createWorld(cfg){
         color: b.neon, emissive: b.neon, emissiveStrength: 3.4 * pulse
       });
     }
+    // 🌍 The props, in a pass of their own AFTER every tower, so all four tower
+    // kinds are already queued when the first prop is (see w_slab).
+    if(LK){
+      for(let i = 0; i < w.city.list.length; i++){
+        const b = w.city.list[i];
+        if(!b.dress) continue;
+        let z = ((b.z + sz) % span);
+        if(z > 30) z -= span;
+        const v = dressView(b, z);
+        if(v) drawDress(r, w.t, b, z, b.dress, v === 2);
+      }
+    }
+    if(w.city.set) drawSet(r, w.t, w.city.set, sz, span, w.city.list);
   };
 
   w.buildStars = function(count, radius){
@@ -25483,8 +27173,33 @@ function createWorld(cfg){
 
   w.drawStars = function(){
     if(!w.stars) return;
+    // 🌊 No stars under the sea: the same points become marine snow instead,
+    // pulled into a nearer box behind the play space and drifting.
+    if(look === 'deep'){
+      for(let i = 0; i < w.stars.length; i++){
+        const s = w.stars[i];
+        r.glow([s.x * 0.42, 3 + (s.y - 12) * 0.22 + Math.sin(w.t * 0.35 + s.tw) * 1.6, -25 - Math.abs(s.z) * 0.5],
+               0.3 + s.s * 0.12, '#a8f4ff', 0.2 + 0.1 * Math.sin(w.t * 1.3 + s.tw));
+      }
+      return;
+    }
+    // 🌍 These billboards are drawn after the sky, so without this a star
+    // would shine straight through a planet or the black hole's shadow. The
+    // horizon's bodies move, so theirs is last frame's list (hzCull).
+    const cull = hzCull.length ? hzCull : (LK ? LK.cullDirs : null), e = eyeNow;
     for(let i = 0; i < w.stars.length; i++){
       const s = w.stars[i];
+      if(cull){
+        let dx = s.x - e[0], dy = s.y - e[1], dz = s.z - e[2];
+        const l = Math.hypot(dx, dy, dz) || 1;
+        dx /= l; dy /= l; dz /= l;
+        let hid = false;
+        for(let k = 0; k < cull.length; k++){
+          const c = cull[k];
+          if(dx * c[0] + dy * c[1] + dz * c[2] > c[3]){ hid = true; break; }
+        }
+        if(hid) continue;
+      }
       r.glow([s.x, s.y, s.z], s.s, s.c, 0.55 + 0.45 * Math.sin(w.t * 2.2 + s.tw));
     }
   };
@@ -25582,10 +27297,13 @@ function createWorld(cfg){
     // never WRITES w.cam, which is why resuming restores the exact pre-pause
     // pose instead of easing toward it.
     const pc = (typeof photoCam === 'function') ? photoCam(w.cam) : w.cam;
+    eyeNow[0] = pc.eye[0] + jx; eyeNow[1] = pc.eye[1] + jy; eyeNow[2] = pc.eye[2];
     r.camera({
       eye:    [pc.eye[0] + jx, pc.eye[1] + jy, pc.eye[2]],
       target: [pc.target[0] + jx * 0.4, pc.target[1] + jy * 0.4, pc.target[2]],
-      fov: pc.fov, near: 0.25, far: 500
+      // 🌍 A look's sun and planets stand up to ~800 units off; the house
+      // night keeps its exact old depth range.
+      fov: pc.fov, near: 0.25, far: LK ? 1000 : 500
     });
     r.environment(env);
     r.fog(fog);
@@ -25595,6 +27313,10 @@ function createWorld(cfg){
 
   // Closes the frame: particles as additive billboards, then submit.
   w.end = function(){
+    // 🌅🪐 The horizon is drawn here because this is the one call every mission
+    // makes, city or not — a world with a look has its sun and planets over
+    // every open sky. Enclosed sets (sky: false) have none.
+    if(LK && env.sky !== false) horizonFrame();
     for(let i = 0; i < w.parts.length; i++){
       const p = w.parts[i];
       const a = clamp(p.life / p.max, 0, 1);
@@ -25603,7 +27325,7 @@ function createWorld(cfg){
     r.render();
   };
 
-  w.env = env; w.fogCfg = fog; w.sunCfg = sun;
+  w.env = env; w.fogCfg = fog; w.sunCfg = sun; w.look = look;
   return w;
 }
 
@@ -38517,6 +40239,10 @@ function renderEventShelf(){
   if(tab){
     tab.hidden = !a;
     if(a) tab.textContent = `${a.ev.icon} Limited`;
+    // 🎒 The eight stock tabs fill the row to within 27px, so a ninth wraps it
+    // onto a second line. While the event tab shows, style.css tightens every
+    // tab's side padding just enough for all nine to share one line.
+    if(tab.parentElement) tab.parentElement.classList.toggle('has-event', !!a);
   }
   if(!grid) return;
   grid.innerHTML = '';
@@ -41056,21 +42782,26 @@ SHOP_ITEMS.worlds = [
   { id:'wld-rain',   name:'Rain City',    price:0,  emoji:'🌃', default:true,
     sky:['#04061a', '#3a1050'],
     desc:'The house look — a rain-black city night in violet and neon, every 3D mission exactly as built.' },
-  { id:'wld-toxic',  name:'Toxic Sector', price:12, emoji:'☣️',
+  // 🏙️ `look` names the city a theme BUILDS (WORLD LOOKS in § 2): the props on
+  // every tower, the window light and a sky of its own. The tint below it
+  // still sets the colour of the air.
+  { id:'wld-toxic',  name:'Toxic Sector', price:12, emoji:'☣️', look:'toxic',
     sky:['#021a06', '#1f7a12', '#041006'],
-    desc:'Radioactive green on black: the grid after a meltdown nobody reported. Every 3D mission.',
+    desc:'The grid after a meltdown nobody reported: towers overrun with glowing sludge, waste drums leaking on the roofs, green smog over a sick sun. Every 3D mission.',
     tint:{ zenith:'#021a06', horizon:'#39ff14', fog:'#0a2a10', sun:'#a8ff60', amount: 0.7, horizonAmount: 0.45, saturation: 1.08 } },
-  { id:'wld-desert', name:'Synth Desert', price:14, emoji:'🌅',
+  { id:'wld-desert', name:'Synth Desert', price:14, emoji:'🌅', look:'desert',
     sky:['#2a0b3d', '#ff4d6d', '#3a1030'],
-    desc:'A sunset that never finishes setting — hot pink horizon, purple sky, warm haze. Every 3D mission.',
-    tint:{ zenith:'#2a0b3d', horizon:'#ff4d6d', fog:'#3a1030', sun:'#ffb347', amount: 0.7, horizonAmount: 0.55, saturation: 1.08 } },
-  { id:'wld-deep',   name:'Deep Net',     price:16, emoji:'🌊',
+    desc:'Neon-trimmed towers half buried in dunes, palms on the rooftops, and wireframe mountains and pyramids rolling in toward a striped sun that never finishes setting. Every 3D mission.',
+    // Clear desert air (fog × 0.4): the ranges have to be seen coming in from
+    // four hundred units out.
+    tint:{ zenith:'#2a0b3d', horizon:'#ff4d6d', fog:'#3a1030', sun:'#ffb347', amount: 0.7, horizonAmount: 0.55, saturation: 1.08, fogDensity: 0.4 } },
+  { id:'wld-deep',   name:'Deep Net',     price:16, emoji:'🌊', look:'deep',
     sky:['#021a2a', '#00a6b8', '#03303a'],
-    desc:'An undersea server farm: teal light filtering down, deep blue above, a cold green haze. Every 3D mission.',
+    desc:'An undersea server farm: kelp swaying up the towers, coral on every ledge, jellyfish drifting between them and sunlight rippling down from the surface. Every 3D mission.',
     tint:{ zenith:'#021a2a', horizon:'#00a6b8', fog:'#04363f', sun:'#40e0d0', amount: 0.75, horizonAmount: 0.55, saturation: 1.05 } },
-  { id:'wld-orbit',  name:'Orbital Deck', price:20, emoji:'🪐',
+  { id:'wld-orbit',  name:'Orbital Deck', price:20, emoji:'🪐', look:'orbit',
     sky:['#000000', '#1a2250', '#02030a'],
-    desc:'Out past the atmosphere — a black sky, hard white starlight and no haze at all. Every 3D mission.',
+    desc:'The city as a space station — sky bridges, dishes, domes, solar wings and docking rings — while a ringed planet, an ice world and a black hole bending the starlight drift in overhead. Every 3D mission.',
     tint:{ zenith:'#05070c', horizon:'#1b2440', fog:'#05070d', sun:'#f0f4ff', amount: 0.85, horizonAmount: 0.8,
            lum:{ zenith: 0.25, horizon: 0.45, fog: 0.3 }, fogDensity: 0.3, saturation: 0.9 } }
 ];
@@ -41081,6 +42812,13 @@ function worldThemeTint(){
   const id = user && user.equipped && user.equipped.worlds;
   const item = id && findItem('worlds', id);
   return (item && item.tint) || null;
+}
+// The equipped theme's LOOK, or null for Rain City — read by createWorld() at
+// the start of every 3D round, beside the tint.
+function worldLook(){
+  const id = user && user.equipped && user.equipped.worlds;
+  const item = id && findItem('worlds', id);
+  return (item && item.look) || null;
 }
 
 // ══════════════════════════════════════════════════════════════════════
