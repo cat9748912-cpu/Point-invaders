@@ -16446,6 +16446,49 @@ async function exportReplay(){
   setTimeout(() => { if(btn) btn.textContent = '📋 Export Replay Code'; }, 2600);
 }
 
+// 📣 SHARE SCORE. The replay code above is for someone who already plays; this
+// is for someone who has never heard of the arcade — one line about the run
+// that just ended plus the site's link, which unfurls into the preview card
+// the og: tags in index.html describe. Both numbers are read off the card
+// itself, so the line always says what the player is looking at, whichever
+// mode (campaign, Boss Rush, a duel, a party) painted it.
+//
+// A phone gets its own share sheet. Anything with a mouse gets the clipboard
+// instead: Chrome on Windows has navigator.share too, but its flyout cannot
+// paste into the Discord tab the player actually wants. That is a question of
+// the PRIMARY pointer, not isTouchDevice — a touchscreen laptop has touch
+// events and is still driven by its trackpad.
+async function shareRun(){
+  const btn = document.getElementById('btn-share-run');
+  const name = (document.getElementById('res-gname')?.textContent || '').trim() || 'the arcade';
+  const pts = parseInt(document.getElementById('res-pts')?.textContent || '0', 10) || 0;
+  const url = document.querySelector('link[rel="canonical"]')?.href ||
+              location.href.replace(/[?#].*$/, '');
+  const text = pts > 0
+    ? `👾 I scored ${pts.toLocaleString()} in ${name} on Point Invaders. Think you can beat it?`
+    : `👾 Come play ${name} with me on Point Invaders — a free neon arcade, right in the browser.`;
+  const phone = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  if(navigator.share && phone){
+    try{ await navigator.share({ title: 'Point Invaders', text, url }); snd('coin'); return; }
+    catch(e){ if(e && e.name === 'AbortError') return; }   // closed the sheet: nothing to report
+  }
+  const line = text + ' ' + url;
+  try{
+    await navigator.clipboard.writeText(line);
+    if(btn) btn.textContent = '✔ Copied — paste it anywhere';
+    snd('coin');
+  }catch(e){
+    // The same way out as the replay code: the clipboard is blocked over plain
+    // http and inside several in-app browsers, and text on screen can still be
+    // copied by hand.
+    const out = document.getElementById('res-replay');
+    if(out) out.innerHTML = `<div class="replay-code">${esc(line)}</div>` +
+                            `<div class="replay-hint">Copy this and paste it anywhere.</div>`;
+    if(btn) btn.textContent = '📣 Copy it from below';
+  }
+  setTimeout(() => { if(btn) btn.textContent = '📣 Share Score'; }, 2600);
+}
+
 function loadReplay(){
   const input = document.getElementById('replay-input');
   const out = document.getElementById('replay-out');
@@ -16604,6 +16647,7 @@ document.getElementById('btn-daily-hack')?.addEventListener('click', () => start
 
 // ── REPLAY ──
 document.getElementById('btn-replay-export')?.addEventListener('click', () => exportReplay());
+document.getElementById('btn-share-run')?.addEventListener('click', () => shareRun());
 document.getElementById('replay-load')?.addEventListener('click', () => loadReplay());
 document.getElementById('replay-input')?.addEventListener('keydown', e => {
   if(e.key === 'Enter') loadReplay();

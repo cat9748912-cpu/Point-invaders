@@ -14,6 +14,29 @@
      removing it (even after verification succeeds) un-verifies the site. -->
 <meta name="google-site-verification" content="gBO49ZfNcbq1kjgn2h8YB7HPiRny8gYiDSEw3BddjGM" />
 <title>POINT INVADERS — Arcade Hub 🎮</title>
+<!-- 📣 LINK PREVIEWS. Discord, WhatsApp, iMessage, X, Reddit and Slack never
+     run app.js: they read these tags out of the served HTML and nothing else,
+     so everything a shared link shows has to be written here, in full.
+     og:image must be an ABSOLUTE URL to a real file (a data: URI is ignored),
+     which is why og.jpg is the one file the site serves beside the four.
+     1200x630 is the shape all of them draw uncropped; keep it under ~300KB
+     or WhatsApp drops the picture. The mission count is written by hand here,
+     in the manifest below and on og.jpg itself — bump it with a new mission.
+     The canonical link is also what 📣 Share Score sends (shareRun() in
+     app.js), so moving the site to a new address is one edit, here. -->
+<meta name="description" content="29 free arcade missions in 2D or full 3D: live duels, a 20-chapter campaign, Boss Rush and party mode. No download, no signup — play as a guest in seconds.">
+<link rel="canonical" href="https://cat9748912-cpu.github.io/Point-invaders/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Point Invaders">
+<meta property="og:url" content="https://cat9748912-cpu.github.io/Point-invaders/">
+<meta property="og:title" content="Point Invaders — a free neon arcade in your browser">
+<meta property="og:description" content="29 free arcade missions in 2D or full 3D: live duels, a 20-chapter campaign, Boss Rush and party mode. No download, no signup — play as a guest in seconds.">
+<meta property="og:image" content="https://cat9748912-cpu.github.io/Point-invaders/og.jpg">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Point Invaders — neon 3D arcade gameplay. 29 missions in 2D or 3D, live duels, free in the browser.">
+<meta name="twitter:card" content="summary_large_image">
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
 
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
@@ -25,7 +48,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=51">
+<link rel="stylesheet" href="style.css?v=52">
 </head>
 <body>
 
@@ -941,6 +964,10 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <div class="res-btns">
       <button class="btn btn-primary" id="btn-again">Play Again</button>
       <button class="btn btn-secondary" id="btn-hub">Hub</button>
+      <!-- 📣 The one button on this card meant for someone who has never
+           played: the score and the site's link, to a phone's share sheet or
+           the clipboard. See shareRun() in app.js. -->
+      <button class="btn btn-secondary" id="btn-share-run">📣 Share Score</button>
       <!-- 📋 The run, as a string. Sits with the two navigation buttons because
            it belongs to the run that just ended, not to the hub. -->
       <button class="btn btn-secondary" id="btn-replay-export">📋 Export Replay Code</button>
@@ -1380,7 +1407,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=51"></script>
+<script src="app.js?v=52"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker
@@ -1440,7 +1467,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
   const manifest = {
     name: 'Point Invaders — Arcade Hub',
     short_name: 'Point Invaders',
-    description: 'A neon arcade hub: 16 mini-games, head-to-head duels, and a live leaderboard.',
+    description: 'A neon arcade hub: 29 missions in 2D or 3D, head-to-head duels, a story campaign and a live leaderboard.',
     start_url: dir,
     scope: dir,
     display: 'fullscreen',
