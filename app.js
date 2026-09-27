@@ -348,6 +348,13 @@ const BANK = {
   // 🎃 NEON HAUNT (v42). A theremin is a sine that slides, so this is two
   // sines a few cents apart gliding down an octave — the beating between them
   // is the wobble — over a breath of band-passed noise.
+  // ❄️ COLD BOOT (v53): a rising run of glassy sines as the frost closes in,
+  // over a crackle of high band-passed noise, then the shatter — a bright
+  // burst with a falling tinkle.
+  freeze:    { gap: 600, fn:(t)=>{ seq(t,[88,91,95,100],{type:'sine',dur:0.5,vol:0.07,step:0.09});
+                                  noise(t,{dur:0.9,vol:0.04,filter:'bandpass',fc:5200,fc1:9000,q:2.5}); } },
+  shatter:   { gap: 400, fn:(t)=>{ noise(t,{dur:0.45,vol:0.16,filter:'highpass',fc:2400});
+                                  seq(t+0.02,[100,96,93,88,84],{type:'triangle',dur:0.22,vol:0.06,step:0.045}); } },
   haunt:     { gap: 400, fn:(t)=>{ tone(t,{type:'sine',f0:880,f1:440,dur:1.35,vol:0.09,attack:0.09});
                                   tone(t+0.02,{type:'sine',f0:887,f1:436,dur:1.3,vol:0.05,attack:0.12});
                                   noise(t,{dur:0.95,vol:0.035,filter:'bandpass',fc:700,fc1:180,q:3}); } }
@@ -408,6 +415,15 @@ const CHORD_SETS = {
     { root: 46, notes: [46, 50, 53, 58, 62, 65] },  // Bb
     { root: 38, notes: [38, 41, 45, 50, 53, 57] },  // Dm
     { root: 40, notes: [40, 44, 47, 50, 56, 59] }   // E7
+  ],
+  // ❄️ COLD BOOT (v53): Dmaj7–Bm7–Gmaj7–A7. Major sevenths are the sound of
+  // cold air — open, a little glassy — and the A7 turns it round home warmly,
+  // which is the whole joke of a server that will not stop running in the snow.
+  frost: [
+    { root: 38, notes: [38, 42, 45, 49, 54, 57] },  // Dmaj7
+    { root: 35, notes: [35, 38, 42, 45, 50, 54] },  // Bm7
+    { root: 43, notes: [43, 47, 50, 54, 59, 62] },  // Gmaj7
+    { root: 45, notes: [45, 49, 52, 55, 57, 61] }   // A7
   ],
   vapor: [                                          // Fmaj7–Em7–Dm7–Cmaj7 · drift
     { root: 41, notes: [41, 45, 48, 52, 57, 60] },
@@ -569,6 +585,9 @@ function setDrive(cfg){
   const set = CHORD_SETS[cfg.chords] || CHORD_SETS.classic;
   const voice = cfg.voice === 'square'   ? { pad:'square',   lead:'square',   bass:'square'   }
               : cfg.voice === 'triangle' ? { pad:'triangle', lead:'triangle', bass:'sine'     }
+              // 🔔 COLD BOOT's bells: pure sines under a triangle lead, so the
+              // arpeggio rings through the delay like struck glass.
+              : cfg.voice === 'bell'     ? { pad:'sine',     lead:'triangle', bass:'triangle' }
               :                            { pad:'sawtooth', lead:'square',   bass:'sawtooth' };
   const bpm = cfg.bpm || {};
   const retimed = (bpm.hub  && bpm.hub  !== TRACKS.hub.bpm) ||
@@ -1272,6 +1291,10 @@ function stopGame(){
   _clockSkip = 0;
   // ⏱️ A countdown still running belongs to the round being torn down — see countdown().
   cancelCountdown();
+  // 📊 Still open here means nothing closed it with a result: a quit (§ 23).
+  try{ if(typeof statsRoundEnd === 'function') statsRoundEnd('quit'); }catch(e){}
+  // 🎬 A clip still rolling here belongs to a round nobody finished (§ 27).
+  try{ if(typeof clipStop === 'function') clipStop({ discard: true }); }catch(e){}
   // 📸 A paused camera belongs to the round that was paused. Left armed it
   // would swallow the next round's input and hold its HUD hidden.
   if(typeof photoAbort === 'function') photoAbort();
@@ -1331,7 +1354,10 @@ function stopGame(){
 const META = {
   click: { name: 'CLICK FRENZY', emoji: '🖱️', maxPts: 500 },
   nebula: { name: 'NEON NEBULA', emoji: '🚀', maxPts: 1000 },
-  tetris: { name: 'CYBERPUNK TETRIS', emoji: '🧱', maxPts: 1500 },
+  // v53: renamed from CYBERPUNK TETRIS (trademark risk: a takedown notice
+  // would disable the whole repo, i.e. the whole site). The id stays `tetris`
+  // because every stored best, history, run and board is keyed by it.
+  tetris: { name: 'MATRIX DROP', emoji: '🧱', maxPts: 1500 },
   dodge: { name: 'DODGE CORES', emoji: '💥', maxPts: 800 },
   memory: { name: 'MEMORY MATCH', emoji: '🧠', maxPts: 600 },
   math: { name: 'MATH BLITZ', emoji: '🔢', maxPts: 750 },
@@ -1363,6 +1389,8 @@ const META = {
   lightcycle:{ name: 'LIGHT CYCLE', emoji: '🏍️', maxPts: 1200 },
   stack:  { name: 'SERVER STACK',  emoji: '🗄️', maxPts: 1000 },
   muncher:{ name: 'DATA MUNCHER',  emoji: '👾', maxPts: 1300 },
+  // ── § 26 · v53 — the one mission that is SPELLED ─────────────────────
+  cmdline:{ name: 'COMMAND LINE',  emoji: '⌨️', maxPts: 1200 },
   // Not a mission — the chained run. maxPts is the ceiling of the five biggest
   // caps, which is what clamps the combined award. DERIVED, not written down:
   // it was left at 6200 when Pulse Sync and Core Merge widened the cap table,
@@ -1375,7 +1403,7 @@ const META = {
 };
 // The ISO week a mission added after launch joins the SHARED weekly rotations
 // (the Weekly Anomaly). Anything not named here has always been in them.
-const MISSION_WEEK = { lightcycle: '2026-W40', stack: '2026-W40', muncher: '2026-W40' };
+const MISSION_WEEK = { lightcycle: '2026-W40', stack: '2026-W40', muncher: '2026-W40', cmdline: '2026-W41' };
 
 // One place that knows how to start each mission. prepGame() runs them behind a
 // countdown; a Network Arena score race runs the very same function behind a
@@ -1390,7 +1418,8 @@ const SOLO_START = {
   rhythm: startPulseSync, merge: startCoreMerge, uplink: startOrbitalUplink,
   cutter: startIceCutter, sorter: startPacketSort, trace: startSignalTrace,
   defrag: startDefrag,    coolant: startCoolant,
-  lightcycle: startLightCycle, stack: startServerStack, muncher: startDataMuncher
+  lightcycle: startLightCycle, stack: startServerStack, muncher: startDataMuncher,
+  cmdline: startCommandLine
 };
 
 // ══════════════════════════════════════════════
@@ -2063,7 +2092,7 @@ function fitCanvas(){
   // Blitz's answer field. All are siblings of the holder inside .g-area, and
   // all carry a 10px top margin.
   let deckH = 0;
-  for(const id of ['bb-deck', 'g-freq-ctl', 'g-math', 'g-sort-rule']){
+  for(const id of ['bb-deck', 'g-freq-ctl', 'g-math', 'g-sort-rule', 'g-type-keys']){
     const el = document.getElementById(id);
     if(el && getComputedStyle(el).display !== 'none'){
       deckH += el.getBoundingClientRect().height + 10;
@@ -2535,6 +2564,7 @@ async function loadUser(uid){
   if(live){
     // Stars earned offline (or under rules that do not name `campaign` yet) exist only in the mirror — carry them
     // over BEFORE cacheProfile() overwrites it with the server's copy. See campaignReconcile, § 21.
+    try{ if(typeof heatReconcile === 'function') heatReconcile(readCachedProfile(uid)); }catch(e){ console.warn('Heat reconcile failed:', e); }
     try{ if(typeof campaignReconcile === 'function') campaignReconcile(readCachedProfile(uid)); }
     catch(e){ console.warn('Campaign reconcile skipped:', e); }
     cacheProfile(user);
@@ -2648,6 +2678,8 @@ function enterHub(){
   if(typeof abortChallenge === 'function') abortChallenge();
   // 🎉 Reaching the hub ends a party, the same way it ends a rush (§ 19).
   if(typeof abortParty === 'function') abortParty();
+  // 🧱 …and a Brick Lab run (§ 25).
+  try{ if(typeof abortLab === 'function') abortLab(); }catch(e){}
   // 📖 And for a campaign chapter: walking away hands the borrowed stability
   // tier back (§ 21). Wrapped because § 21 loads long after this function.
   try{ if(typeof abortCampaign === 'function') abortCampaign(); }catch(e){ console.warn(e); }
@@ -2709,6 +2741,17 @@ function enterHub(){
     paintLoadoutRail();
     maybeOnboard();
   }catch(e){ console.warn('Hub panels failed to paint:', e); }
+  // 🔗 A challenge link waiting to be raced (§ 22). Its own try: a failure here
+  // must not take the hub's furniture down with it, or the other way round.
+  try{ if(typeof maybeLinkChallenge === 'function') setTimeout(() => maybeLinkChallenge(0), 450); }
+  catch(e){ console.warn('Challenge link check failed:', e); }
+  // 🧱 A wall that arrived by link, once nothing else is open (§ 25).
+  try{ if(typeof maybeLabInvite === 'function') setTimeout(() => maybeLabInvite(0), 900); }catch(e){}
+  // 📊 Devices per day, and the challenge-link funnel's first step (§ 23).
+  try{
+    if(typeof statsDay === 'function') statsDay();
+    if(typeof clPending === 'object' && clPending && !clPending.counted){ clPending.counted = true; statsEvent('_lk_arrive'); }
+  }catch(e){}
 }
 
 // Optional-chained: this file is one long top-level script, so a single missing
@@ -2743,6 +2786,9 @@ document.querySelectorAll('.game-card').forEach(card=>{
 });
 
 document.getElementById('btn-quit').onclick=()=>{
+  // 📊 Pressing Quit is walking away, even on the missions whose quit banks
+  // the board and shows a results card — so it is logged here, first (§ 23).
+  try{ if(typeof statsRoundEnd === 'function') statsRoundEnd('quit'); }catch(e){}
   if(onQuitGame){const fn=onQuitGame;onQuitGame=null;fn();return;}
   stopGame();
   setControls(null);
@@ -2769,6 +2815,8 @@ function resetGameStage(gid){
   // and would pay the player for it.
   chaos.last = null;
   chaos.lastStack = [];
+  // 🎬 The last round's clip belongs to the last round's card (§ 27).
+  try{ if(typeof clipReset === 'function') clipReset(); }catch(e){}
   // 🌳 Signal Filter's per-round allowance. Zeroed here and restocked by
   // prepGame(), so a round that does NOT go through prepGame — a duel, the
   // Daily Hack — cannot inherit a reroll the last mission left unspent.
@@ -2788,13 +2836,17 @@ function resetGameStage(gid){
   document.getElementById('tetris-lvl-pill').style.display='none';
   document.getElementById('bb-deck').style.display='none';
   document.getElementById('bb-ram-pill').style.display='none';
+  // ⌨️ COMMAND LINE's keypad (§ 26). Optional-chained: an older cached page has no such element.
+  { const tk = document.getElementById('g-type-keys'); if(tk) tk.style.display='none'; }
+  // …and there P is a letter, not the pause key (see pauseLettersOwned, § 13).
+  document.getElementById('btn-pause')?.setAttribute('title', gid === 'cmdline' ? 'Pause (Esc)' : 'Pause (Esc / P)');
   setControls(null);                 // every game re-declares its own pad
   document.getElementById('g-controls').textContent='';   // and its own hint
   // 🧊 A 3D round always plays on the board, including the missions whose 2D
   // build is pure DOM — so the landscape layout that parks the pad beside the
   // board has to know about them too.
   const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','breaker','arena','runner','meteor','battlebots','freq',
-                      'rhythm','merge','uplink','cutter','sorter','trace','defrag','coolant','lightcycle','stack','muncher'].includes(gid)
+                      'rhythm','merge','uplink','cutter','sorter','trace','defrag','coolant','lightcycle','stack','muncher','cmdline'].includes(gid)
                   || !!(window.PI3D && PI3D.has(gid));
   document.getElementById('game-screen').classList.toggle('canvas-game', canvasGame);
   // Whatever the last round left up comes down here, before the next one
@@ -2829,7 +2881,13 @@ function prepGame(gid, mod){
   // not a modifier, it is a loading screen. Boss Rush and the Network Arena
   // still pass their own in, and passing one always wins: those two have
   // reasons of their own for which modifier this round gets.
-  if(mod === undefined && chaosOptIn && !mp && !bossRush){
+  // 🔥 HEAT (§ 24) first: the player's own hazards replace the roll. Asked on
+  // every prep, so a round with no heat also clears the last one's record.
+  let heatArm = null;
+  try{ if(typeof heatArmFor === 'function') heatArm = heatArmFor(gid, mod === undefined); }catch(e){ heatArm = null; }
+  if(heatArm){
+    mod = heatArm;
+  }else if(mod === undefined && chaosOptIn && !mp && !bossRush){
     const rolled = chaosRollStack();
     mod = rolled.length ? rolled : null;
   }
@@ -2856,6 +2914,12 @@ function prepGame(gid, mod){
       ran = !!(window.PI3D && PI3D.startFor(gid));
       if(!ran) start();
     }));
+    // 📊 Counted here, AFTER the start: a 3D build that throws falls back to 2D
+    // inside chaosRun() by way of stopGame(), which would otherwise log the
+    // round it is about to replace as a quit (§ 23).
+    try{ if(typeof statsRoundStart === 'function') statsRoundStart(gid); }catch(e){}
+    // 🎬 …and the camera rolls (§ 27).
+    try{ if(typeof clipStart === 'function') clipStart(gid); }catch(e){ console.warn('Clip start failed:', e); }
     if(Ghost.pacing){
       const rv = Ghost.paceRival;
       toast(rv
@@ -2894,7 +2958,10 @@ const Ghost = (function(){
     rec = null; play = null;
     // A duel, a Boss Rush stage or a party turn is not the owner's solo run —
     // no ghost either way (a party guest must never overwrite the owner's best).
-    if(mp || bossRush || (typeof partyRunActive === 'function' && partyRunActive())) return;
+    // Nor a Brick Lab run (§ 25): a custom pit or course is a different board,
+    // so its trail would be a lie on the real one — and must never replace it.
+    if(mp || bossRush || (typeof partyRunActive === 'function' && partyRunActive()) ||
+       (typeof labActive === 'function' && labActive())) return;
     rec = { gid, frames: [] };
     try{
       const raw = localStorage.getItem(key(gid));
@@ -3347,6 +3414,10 @@ const setLive=n=>{
 //   again     — {label, fn} for the left button; hub — {label, fn} for the right
 function showResults(gid,pts,bd,opts){
   opts = opts || {};
+  // 📊 A round that reaches a result finished — a chained stage included (§ 23).
+  try{ if(typeof statsRoundEnd === 'function') statsRoundEnd('done'); }catch(e){}
+  // 🎬 …and its clip is closed with the score on its end card (§ 27).
+  try{ if(typeof clipStop === 'function') clipStop({ pts }); }catch(e){}
   // A game finishing inside a score race hasn't finished the ROUND — the rival
   // may still be playing. The race takes the score and puts up its own card
   // once both boards are done. `internal` is how the race shows that card
@@ -3385,6 +3456,10 @@ function showResultsCard(gid,pts,bd,opts){
   // exists: the curve has to survive the teardown to be compared against and
   // saved. Returns false when there was no personal best to race.
   const paceRes = opts.internal ? false : Ghost.finishPace(pts);
+  // 🔗 What a challenge LINK needs to know about this round (§ 22), read now:
+  // the Daily Hack stands down in the settle steps further down this function.
+  const clFlags = { internal: !!opts.internal, daily: !!dailyActive, mp: !!mp,
+                    party: typeof partyRunActive === 'function' && partyRunActive() };
   // 🌳 Echo Trace pays for beating the ghost rather than for having one, so it
   // is worth exactly as much as the run you are proud of and nothing on the
   // ones you are not.
@@ -3451,7 +3526,12 @@ function showResultsCard(gid,pts,bd,opts){
     Object.assign(bd, chalRes.rows);
     if(chalMult > 1) bd['⚔️ Takedown Bonus'] = `+${Math.round((chalMult-1)*100)}%`;
   }
-  if(chaos.lastStack && chaos.lastStack.length){
+  const heatN = (typeof heatWas === 'function') ? heatWas(gid) : 0;
+  if(chaos.lastStack && chaos.lastStack.length && heatN){
+    // 🔥 The same stack, named for what it was: hazards the player chose (§ 24).
+    bd['🔥 Heat ' + heatN] = chaosLabel(chaos.lastStack);
+    if(chaosMult > 1) bd['🔥 Heat Payout'] = `×${chaosMult.toFixed(2)}`;
+  }else if(chaos.lastStack && chaos.lastStack.length){
     bd['🌀 Chaos Modifier'] = chaosLabel(chaos.lastStack);
     if(chaosMult > 1) bd['🌀 Chaos Payout'] = `×${chaosMult.toFixed(2)}`;
   }else if(chaos.last){
@@ -3468,6 +3548,8 @@ function showResultsCard(gid,pts,bd,opts){
   // multiplier must not be able to buy one. See § 12.
   let medalOk = false;
   try{ medalOk = settleMedal(gid, pts, tier.key, opts); }catch(e){ console.warn('Medal settle failed:', e); }
+  // 🔥 A heat round's record, on the same raw score and the same eligibility (§ 24).
+  try{ if(typeof settleHeat === 'function') Object.assign(bd, settleHeat(gid, pts, tier.key, opts)); }catch(e){ console.warn('Heat settle failed:', e); }
   // 📋 The day's contracts, on the same raw score (§ 15).
   try{
     if(typeof settleContracts === 'function'){
@@ -3540,6 +3622,11 @@ function showResultsCard(gid,pts,bd,opts){
       postBtn.onclick = null;
     }
   }
+  // 🔗 Tells 📣 Share Score whether this run can travel as a challenge link.
+  try{ if(typeof clNoteRun === 'function') clNoteRun(gid, pts, tier.key, paceRes, clFlags, chalRes); }
+  catch(e){ console.warn('Challenge link note failed:', e); }
+  // 🎬 The clip's button — shown now if the clip is ready, or the moment it is (§ 27).
+  try{ if(typeof clipPaintButton === 'function') clipPaintButton(); }catch(e){}
 
   const againBtn=document.getElementById('btn-again');
   const hubBtn=document.getElementById('btn-hub');
@@ -3684,6 +3771,7 @@ async function flushPendingRuns(){
         const held = user;   // what this device knew, before the server's copy replaces it
         user = { uid: user.uid, ...ensureUserDefaults(snap.val() || {}) };
         user.isGuest = !!(auth && auth.currentUser && auth.currentUser.isAnonymous);
+        try{ if(typeof heatReconcile === 'function') heatReconcile(held); }catch(e){ console.warn('Heat reconcile failed:', e); }
         try{ if(typeof campaignReconcile === 'function') campaignReconcile(held); }
         catch(e){ console.warn('Campaign reconcile skipped:', e); }
         cacheProfile(user);
@@ -3752,12 +3840,17 @@ const ACHIEVEMENTS = [
   // the event's id, which is how the hub banner knows it has been earned.
   { id:'haunt',        icon:'🎃', name:'Haunted Operative',desc:'Finish 5 missions during NEON HAUNT (Oct 1 – Nov 1).', cr:6,
     test:(c)=>!!c.event && /^haunt-/.test(c.event.key || '') && (+c.event.runs || 0) >= 5 },
+  { id:'coldboot',     icon:'❄️', name:'Cold Booted',       desc:'Finish 5 missions during COLD BOOT (Dec 1 – Jan 1).', cr:6,
+    test:(c)=>!!c.event && /^coldboot-/.test(c.event.key || '') && (+c.event.runs || 0) >= 5 },
   // ── 📋 CONTRACTS (v43)
   { id:'contracts-all',icon:'📋', name:'Full Contract',    desc:'Clear all three daily contracts in one day.', cr:5,
     test:(c)=>!!c.contractsAll },
   // ── 📖 CAMPAIGN (v49) — read off the profile's star ledger, see recordRun().
   { id:'campaign-root',  icon:'👑', name:'Root Access',    desc:'Finish the campaign: beat THE GLITCH in chapter 20.', cr:30, test:(c)=>!!c.campaignRoot },
-  { id:'campaign-stars', icon:'⭐', name:'Star Operative', desc:'Earn all 60 campaign stars.', cr:50, test:(c)=>(c.campaignStars||0) >= 60 }
+  { id:'campaign-stars', icon:'⭐', name:'Star Operative', desc:'Earn all 60 campaign stars.', cr:50, test:(c)=>(c.campaignStars||0) >= 60 },
+  // ── 🔥 HEAT (v53) — cleared = a bronze-medal raw score under the heat, § 24.
+  { id:'heat-5',  icon:'🔥', name:'Turn Up The Heat', desc:'Clear any mission at HEAT 5 or hotter.', cr:8,  test:(c)=>(c.heatBest||0) >= 5 },
+  { id:'heat-13', icon:'🌋', name:'Inferno',          desc:'Clear any mission at HEAT 13 — all six hazards at once.', cr:25, test:(c)=>(c.heatBest||0) >= 13 }
 ];
 
 const achById = id => ACHIEVEMENTS.find(a => a.id === id);
@@ -4067,6 +4160,13 @@ function acceptChallenge(uid){
   const c = chalBoard.find(x => x.uid === uid);
   if(!c) return;
   if(!missionUnlocked(c.gid)) return;
+  beginChallenge(c);
+}
+
+// 🔗 The board's challenges and the challenge LINKS (§ 22) start the same way.
+// A link skips the clearance check on purpose: it is a visitor's first round,
+// and a friend's invitation that answered "locked" would be the whole visit.
+function beginChallenge(c){
   chalActive = c;
   // The tier is part of the challenge, not a preference: racing someone's
   // Meltdown run on Stable Core would be racing a different game. Borrowed for
@@ -4080,7 +4180,16 @@ function acceptChallenge(uid){
   showScreen('game-screen');
   snd('success');
   toast(`⚔️ CHALLENGE ACCEPTED — beat ${(c.pts || 0).toLocaleString()} on ${(DIFFICULTY_TIERS[c.tier] || {}).label || c.tier}`, 3600);
-  prepGame(c.gid);
+  // A link carries the modifiers its run was played under, and races under
+  // exactly those — `null` rather than undefined when there were none, so an
+  // armed CHAOS PROTOCOL cannot roll a stack the author never faced. The
+  // board's challenges have never carried modifiers and keep their old door.
+  if(c.link){
+    const mods = (c.mods || []).map(id => chaosById(id)).filter(Boolean);
+    prepGame(c.gid, mods.length ? mods : null);
+  }else{
+    prepGame(c.gid);
+  }
 }
 let chalPrevTier = null;
 
@@ -4101,6 +4210,13 @@ function settleChallenge(gid, pts){
   unlockDifficultySelector();
   if(c.gid !== gid) return null;                 // not the round that was accepted
   const won = pts > (c.pts || 0);
+  // 🔗 A LINK can be written by hand, so its bonus is gated (§ 22): never for
+  // racing your own, and once per mission per day for anyone else's.
+  let pays = won, note = null;
+  if(won && c.link){
+    if(typeof clIsOwn === 'function' && clIsOwn(c)){ pays = false; note = 'YOUR OWN LINK · NO BONUS'; }
+    else if(typeof clPayOnce === 'function' && !clPayOnce(gid)){ pays = false; note = 'BONUS ALREADY PAID TODAY'; }
+  }
   setTimeout(() => {
     snd(won ? 'victory' : 'results');
     toast(won
@@ -4108,14 +4224,12 @@ function settleChallenge(gid, pts){
       : `⚔️ CHALLENGE HELD — ${String(c.name || 'RIVAL').slice(0, 14)} keeps it by ${((c.pts || 0) - pts).toLocaleString()}`,
       3600);
   }, 1600);
-  return {
-    won,
-    mult: won ? 1 + CHAL_BONUS : 1,
-    rows: {
-      '⚔️ Rival Challenge': `${String(c.name || 'RIVAL').slice(0, 14)} · ${(c.pts || 0).toLocaleString()} PTS`,
-      '⚔️ Outcome': won ? 'TAKEN DOWN' : 'HELD'
-    }
+  const rows = {
+    [c.link ? '🔗 Challenge Link' : '⚔️ Rival Challenge']: `${esc(String(c.name || 'RIVAL').slice(0, 14))} · ${(c.pts || 0).toLocaleString()} PTS`,
+    '⚔️ Outcome': won ? 'TAKEN DOWN' : 'HELD'
   };
+  if(note) rows['⚔️ Takedown Bonus'] = note;
+  return { won, mult: pays ? 1 + CHAL_BONUS : 1, rows };
 }
 
 // Walking away from an accepted challenge must hand the borrowed tier back, or
@@ -4466,7 +4580,10 @@ function recordRun(gid, pts, ctx){
     // 📖 Straight off the profile, so nothing here depends on § 21 having loaded.
     // settleCampaign() has already written this round's stars into user.campaign.
     campaignRoot: !!(user.campaign && user.campaign.c20 >= 1),
-    campaignStars: Object.values(user.campaign || {}).reduce((a, v) => a + Math.max(0, Math.min(3, +v || 0)), 0)
+    campaignStars: Object.values(user.campaign || {}).reduce((a, v) => a + Math.max(0, Math.min(3, +v || 0)), 0),
+    // 🔥 The hottest heat this profile has cleared on any mission (§ 24), read
+    // off the profile so an offline replay sees it too.
+    heatBest: Object.values(user.heat || {}).reduce((a, v) => Math.max(a, Math.min(13, +v || 0)), 0)
   };
   // 🎖️ The season track pays for whatever tiers this round's points crossed,
   // folded into the same payout the streak and the achievements use. It stores
@@ -4554,7 +4671,7 @@ function announceStreak(count, bonus){
 // not for them.
 const MISSION_CLEARANCE = {
   // 1 — one rule each, readable in a single sentence.
-  click: 1, reaction: 1, memory: 1, math: 1, dodge: 1, nebula: 1, stack: 1,
+  click: 1, reaction: 1, memory: 1, math: 1, dodge: 1, nebula: 1, stack: 1, cmdline: 1,
   // 2 — one rule plus a control scheme to learn.
   pong: 2, snake: 2, flappy: 2, coolant: 2, muncher: 2,
   // 3 — a board that has state you have to plan against.
@@ -4752,7 +4869,9 @@ const SHOP_ITEMS = {
     { id:'col-matrix', name:'Matrix Cascade',price:14, color:'#00ff41' },
     // 🎃 NEON HAUNT stock — on sale only while the event runs (see § 14),
     // kept forever once bought.
-    { id:'col-pumpkin',name:'Pumpkin Glow',  price:10, color:'#ff7a1a', event:'haunt' }
+    { id:'col-pumpkin',name:'Pumpkin Glow',  price:10, color:'#ff7a1a', event:'haunt' },
+    // ❄️ COLD BOOT (v53)
+    { id:'col-frost',  name:'Frostbite',     price:10, color:'#9fe6ff', event:'coldboot' }
   ],
   cursors: [
     { id:'cur-default', name:'Standard Pointer', price:0,  emoji:'➤', default:true },
@@ -4762,7 +4881,8 @@ const SHOP_ITEMS = {
     { id:'cur-skull',   name:'Ghost Skull',       price:10, emoji:'💀' },
     { id:'cur-star',    name:'Nova Star',         price:12, emoji:'✨' },
     { id:'cur-wraith',  name:'Data Wraith',       price:16, emoji:'👁️' },
-    { id:'cur-jack',    name:"Jack-o'-Lantern",  price:12, emoji:'🎃', event:'haunt' }
+    { id:'cur-jack',    name:"Jack-o'-Lantern",  price:12, emoji:'🎃', event:'haunt' },
+    { id:'cur-flake',   name:'Snowflake',        price:12, emoji:'❄️', event:'coldboot' }
   ],
   skins: [
     { id:'skin-default', name:'Recruit',      price:0,  emoji:'🤖', default:true },
@@ -4774,7 +4894,8 @@ const SHOP_ITEMS = {
     { id:'skin-quantum', name:'Quantum Dragon',price:30, emoji:'🐉' },
     // Not for sale — granted by grantSeasonCrown() for topping a weekly season.
     { id:'skin-crown',   name:'Season Crown', price:0,  emoji:'👑', earned:true },
-    { id:'skin-vamp',    name:'Night Stalker',price:20, emoji:'🧛', event:'haunt' }
+    { id:'skin-vamp',    name:'Night Stalker',price:20, emoji:'🧛', event:'haunt' },
+    { id:'skin-snow',    name:'Snow Daemon',  price:20, emoji:'⛄', event:'coldboot' }
   ],
 
   // ── ⚡ CONSUMABLES ──
@@ -4811,7 +4932,10 @@ const SHOP_ITEMS = {
       bpm:{hub:68,game:108}, chords:'vapor',   voice:'triangle' },
     { id:'drv-haunt',     name:'Theremin Terror',   price:14, emoji:'🕸️', event:'haunt',
       desc:'Minor and wrong-footed — a Phrygian shudder and a dominant that never resolves. Best after dark.',
-      bpm:{hub:76,game:128}, chords:'haunt',   voice:'triangle' }
+      bpm:{hub:76,game:128}, chords:'haunt',   voice:'triangle' },
+    { id:'drv-frost',     name:'Silent Server',     price:14, emoji:'🔔', event:'coldboot',
+      desc:'Bell tones over a slow D-major turnaround — the one warm thing left running on a frozen grid.',
+      bpm:{hub:84,game:132}, chords:'frost',   voice:'bell' }
   ],
 
   // ── 💀 EXIT STATES ──
@@ -4833,7 +4957,9 @@ const SHOP_ITEMS = {
     { id:'exit-rewind',  name:'Tape Rewind',     price:20, emoji:'📼',
       desc:'The round spools backwards through tracking noise, the way a tape does.', fx:'rewind' },
     { id:'exit-grave',   name:'Graveyard Shift', price:16, emoji:'🪦', event:'haunt',
-      desc:'The board sinks into a moonlit graveyard — bats scatter, the stones rise, and your score gets a headstone.', fx:'grave' }
+      desc:'The board sinks into a moonlit graveyard — bats scatter, the stones rise, and your score gets a headstone.', fx:'grave' },
+    { id:'exit-freeze',  name:'Flash Freeze',    price:16, emoji:'🧊', event:'coldboot',
+      desc:'Frost races in from the edges, the board ices over and cracks — then shatters, and your score is left frozen in a block.', fx:'freeze' }
   ]
 };
 
@@ -5285,20 +5411,32 @@ async function handleShopAction(act, cat, id){
 function startClick(){
   document.getElementById('g-click').style.display='flex';
   let clicks=0,t=10,ended=false;
+  // 🧱 A BRICK LAB timeline (§ 25): each second's multiplier — GOLD ×2,
+  // SURGE ×3, a JAM pays nothing — shown on the button as it happens.
+  const FZ=(typeof labFrenzy==='function')?labFrenzy():null;
+  let earned=0;
+  const wrapEl=document.getElementById('g-click'), lblEl=wrapEl.querySelector('.click-label');
+  const fzShow=()=>{
+    const m=FZ?FZ[Math.max(0,Math.min(9,10-t))]:1;
+    wrapEl.classList.toggle('fz-gold',m===2); wrapEl.classList.toggle('fz-surge',m===3); wrapEl.classList.toggle('fz-jam',m===0);
+    if(lblEl) lblEl.textContent=m===2?'×2 GOLD SECOND':m===3?'×3 SURGE':m===0?'JAMMED — NO POINTS':'CLICKS';
+  };
+  fzShow();
   document.getElementById('click-count').textContent='0';
   document.getElementById('g-time').textContent='10';
   const btn=document.getElementById('click-btn');
   btn.disabled=false;
   // The blip climbs an octave over eight clicks and wraps, so a fast streak
   // sounds like it's accelerating even though the button is doing one thing.
-  btn.onclick=()=>{if(!ended){clicks++;snd('bounce',{semi:(clicks%8)*2});document.getElementById('click-count').textContent=clicks;setLive(Math.min(500,clicks*8))}};
+  btn.onclick=()=>{if(!ended){clicks++;const m=FZ?FZ[Math.max(0,Math.min(9,10-t))]:1;earned+=8*m;snd(m?'bounce':'deny',{semi:(clicks%8)*2});document.getElementById('click-count').textContent=clicks;setLive(Math.min(500,FZ?earned:clicks*8))}};
   gTimer=setInterval(()=>{
     t--;document.getElementById('g-time').textContent=t;
+    if(FZ&&t>0) fzShow();
     document.getElementById('prog-fill').style.width=`${t/10*100}%`;
     if(t<=3&&t>0) snd('tick');
     if(t<=0){
       clearInterval(gTimer);ended=true;btn.disabled=true;btn.onclick=null;
-      const pts=Math.min(500,clicks*8);
+      const pts=Math.min(500,FZ?earned:clicks*8);
       // ⚡ OVERCLOCKED wants the ceiling itself, not "close to it": 500 is the
       // cap and 63 clicks is what reaches it, so the flag is the clamp firing.
       const maxed=pts>=500;
@@ -5333,6 +5471,8 @@ function startNebula(){
   // Enemy attack arrays
   let projectiles = [], enemyProjectiles = [], enemies = [], powerups = [], particles = [], floatingTexts = [], backgroundStars = [];
   let enemySpawnTimer = 0, enemySpawnInterval = 1000, lastTime = performance.now();
+  const INVASION = (typeof labInvasion === 'function') ? labInvasion() : null;
+  let invasionAt = 0, invasionGap = 900;
   let shieldFlashTimer = 0; // red flash when hit
   // 🛡️ The absorb path. Nebula's death is a DEPLETED BAR rather than a single
   // fatal hit, so putting the player back at 1% would be a shield that bought
@@ -5961,7 +6101,20 @@ function startNebula(){
     if (shieldBubbleActive && shieldBubbleTimer > 0) shieldBubbleTimer--;
 
     enemySpawnTimer += dt;
-    if (enemySpawnTimer >= enemySpawnInterval) {
+    // 🧱 A BRICK LAB invasion (§ 25): one line of ships per row, bottom row
+    // first, a longer breath between loops. Nothing random comes with it.
+    if (INVASION) {
+      if (enemySpawnTimer >= invasionGap) {
+        enemySpawnTimer = 0;
+        INVASION[invasionAt++ % INVASION.length].forEach((v, c) => {
+          if (!v) return;
+          const e = new Enemy(LAB_NEB_2D[v]);
+          e.x = 10 + c * (BOARD_W - 60) / 9;
+          enemies.push(e);
+        });
+        invasionGap = (invasionAt % INVASION.length === 0 ? 1800 : 800) / diffMod;
+      }
+    } else if (enemySpawnTimer >= enemySpawnInterval) {
       let r = Math.random(), type = 'SCOUT';
       if (score > 150 && r > 0.75) type = 'BOMBER';
       else if (score > 60 && r > 0.4) type = 'FIGHTER';
@@ -6201,6 +6354,10 @@ function startTetris(){
   let score=0, level=1, linesCleared=0, time=startTime;
   const TET_COLS = Math.floor(BOARD_W / 40);   // 40 = cell width, so cells keep their shape
   let arena=createMatrix(TET_COLS,20), player={pos:{x:0,y:0}, matrix:null}, nextPiece=null;
+  // 🧱 A BRICK LAB stack (§ 25): the bottom rows arrive already filled, in the
+  // 2D palette's own colour indices.
+  { const LG=(typeof labGarbage==='function')?labGarbage():null;
+    if(LG) LG.forEach((row,r)=>{ arena[20-LG.length+r]=row.slice(0,TET_COLS).map(v=>v|0); }); }
   // ⚠️ DIVIDED by the tier, like the level-up formula below. This was `600 *
   // diffMod`, which opened Meltdown at HALF speed (1200ms) until the first
   // level-up re-derived it the right way round — and would have opened Safe
@@ -6523,6 +6680,12 @@ function startDodge(){
 
   let obstacleColors = ['#ff6600','#ff2442','#ffd700','#ff0090','#a855f7'];
   let frame = 0;
+  // 🧱 A BRICK LAB barrage (§ 25): each row falls as one straight line of
+  // cores, bottom row first, on a loop — and nothing random falls with it.
+  // Sized so a one-lane hole is a gate and two touching cores are a wall.
+  const BARRAGE = (typeof labBarrage === 'function') ? labBarrage() : null;
+  const BAR_T = [null, { r: 13, vy: 4.2, c: '#ff6600' }, { r: 18, vy: 2.9, c: '#ff2442' }, { r: 8, vy: 6.6, c: '#ffd700' }];
+  let barrageAt = 0, barrageT = 0;
 
   function loop(){
     if(isGameOver) return;
@@ -6562,7 +6725,16 @@ function startDodge(){
     drawSkinBadge(player.x, player.y - player.r - 10);
 
     // Spawn obstacles
-    if(Math.random() < .08 * (BOARD_W / 400)) {
+    if(BARRAGE){
+      if(--barrageT <= 0){
+        BARRAGE[barrageAt++ % BARRAGE.length].forEach((v, c) => {
+          if(!v) return;
+          const T = BAR_T[v];
+          obstacles.push({ x: 20 + c * (BOARD_W - 40) / 13, y: -20, vx: 0, vy: T.vy * safeEase(), r: T.r, color: T.c });
+        });
+        barrageT = barrageAt % BARRAGE.length === 0 ? 55 : 18;
+      }
+    } else if(Math.random() < .08 * (BOARD_W / 400)) {
       const col = obstacleColors[Math.floor(Math.random()*obstacleColors.length)];
       obstacles.push({
         x: Math.random()*(BOARD_W-20)+10, y: -10,
@@ -6628,6 +6800,16 @@ function startMemory(){
   const time0=time;   // 🔵 Safe Mode stretches the clock
   document.getElementById('g-time').textContent=time;
   icons.sort(()=>Math.random()-.5);
+  // 🧱 A BRICK LAB board (§ 25): the designer's squares and symbols, the
+  // pairs dealt afresh among the squares every round. A blank square keeps
+  // its place in the grid and holds no card.
+  const LB=(typeof labBoard==='function')?labBoard():null;
+  const PAIRS=LB?LB.pairs.length/2:8;
+  if(LB){
+    const deck=LB.pairs.map(k=>LAB_MEM_ICONS[k]).sort(()=>Math.random()-.5);
+    icons=new Array(16).fill(null);
+    LB.slots.forEach((slot,j)=>{ icons[slot]=deck[j]; });
+  }
 
   gTimer=setInterval(()=>{
     time--;document.getElementById('g-time').textContent=time;
@@ -6637,6 +6819,7 @@ function startMemory(){
   },1000);
 
   icons.forEach((icon,idx)=>{
+    if(!icon){ const hole=document.createElement('div'); hole.className='mem-card'; hole.style.visibility='hidden'; wrap.appendChild(hole); return; }
     const card=document.createElement('div');card.className='mem-card';card.dataset.val=icon;card.textContent='?';
     card.onclick=()=>{
       if(flipped.length<2&&!card.classList.contains('flipped')){
@@ -6644,7 +6827,7 @@ function startMemory(){
         if(flipped.length===2){
           // Each pair rings a step higher than the last, so the board sings its
           // way up as it empties.
-          if(flipped[0].dataset.val===flipped[1].dataset.val){score+=75;setLive(score);matched++;snd('match',{semi:matched*2});flipped=[];if(matched===8)end()}
+          if(flipped[0].dataset.val===flipped[1].dataset.val){score+=75;setLive(score);matched++;snd('match',{semi:matched*2});flipped=[];if(matched===PAIRS)end()}
           else{snd('wrong');setTimeout(()=>{flipped[0].classList.remove('flipped');flipped[0].textContent='?';flipped[1].classList.remove('flipped');flipped[1].textContent='?';flipped=[]},700)}
         }
       }
@@ -6664,7 +6847,16 @@ function startMath(){
   const time0=time;   // 🔵 Safe Mode stretches the clock
   document.getElementById('g-time').textContent=time;
 
+  // 🧱 A BRICK LAB quiz (§ 25): the kinds of sum the designer lit.
+  const QUIZ=(typeof labQuiz==='function')?labQuiz():null;
   function gen(){
+    if(QUIZ){
+      const q=QUIZ();
+      document.getElementById('math-question').textContent=q.text;
+      curAns=q.ans;
+      document.getElementById('math-answer').value='';document.getElementById('math-answer').focus();
+      return;
+    }
     // 📅 dailyRand() is an ordinary Math.random() outside a Daily Hack. Inside
     // one it is the day's seeded stream, which is what makes every operative on
     // the grid answer the SAME twenty questions in the same order.
@@ -6719,24 +6911,42 @@ function startReaction(){
   setControlHint('TAP THE INSTANT IT TURNS GREEN','CLICK THE INSTANT IT TURNS GREEN');
   const goLabel = isTouchDevice ? 'TAP NOW!' : 'CLICK NOW!';
 
-  let trigger=later(()=>{if(state==='wait'){state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=gNow()}},Math.random()*2500+1500);
+  // 🧱 A BRICK LAB script (§ 25): every wait in order, on a loop, and the
+  // FAKE reads — a decoy colour halfway through the wait. Striking on the
+  // decoy is striking early.
+  const LSIG=(typeof labSignals==='function')?labSignals():null;
+  let sigAt=0, fakeT=null;
+  const goNow=()=>{ if(state!=='wait'&&state!=='fake') return; state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=gNow(); };
+  function armRx(minMs,spread){
+    let wait=Math.random()*spread+minMs, fake=false;
+    if(LSIG){ const sg=LSIG[sigAt++%LSIG.length]; wait=sg.wait; fake=sg.fake; }
+    if(fake){
+      fakeT=later(()=>{
+        if(state!=='wait') return;
+        state='fake'; box.style.background='#6a2bbf'; txt.textContent='NOT YET…'; snd('flip');
+        later(()=>{ if(state==='fake'){ state='wait'; box.style.background='var(--rx-wait)'; txt.textContent='WAIT...'; } },450);
+      },wait*0.45);
+    }
+    return later(goNow,wait);
+  }
+  let trigger=armRx(1500,2500);
 
   // Timed on pointerdown, not click. A synthesised click doesn't land until
   // the finger lifts, which was quietly adding its own latency to every
   // reading — this game's whole score is that number.
   box.onpointerdown=e=>{
     e.preventDefault();
-    if(state==='wait'){gCancel(trigger);snd('wrong');txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--rx-early)';state='hold';later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=gNow()},Math.random()*2000+1000)}},1200)}
+    if(state==='wait'||state==='fake'){gCancel(trigger);if(fakeT)gCancel(fakeT);snd('wrong');txt.textContent='TOO FAST! RESETTING...';box.style.background='var(--rx-early)';state='hold';later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=armRx(1000,2000)}},1200)}
     else if(state==='go'){
       let diff=Math.round(gNow()-startT);   // ⏸️ round time
       let earned=Math.max(10,400-diff);score+=earned;setLive(score);
       // Faster reflex, higher chime — a 150ms tap is audibly better than 320ms.
       snd('score',{semi:Math.max(0,Math.round((400-diff)/40))});
       txt.textContent=`${diff}ms! REBOOTING...`;box.style.background='var(--rx-hit)';state='hold';
-      later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=later(()=>{state='go';box.style.background='var(--rx-go)';txt.textContent=goLabel;snd('go');startT=gNow()},Math.random()*2000+1000)}},1500);
+      later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=armRx(1000,2000)}},1500);
     }
   };
-  function end(){if(reactionEnded)return;reactionEnded=true;gCancel(trigger);box.onpointerdown=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
+  function end(){if(reactionEnded)return;reactionEnded=true;gCancel(trigger);if(fakeT)gCancel(fakeT);box.onpointerdown=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
 }
 
 // ════════════════════════════════════════════
@@ -6899,6 +7109,12 @@ function startPong(){
   let playerY=H/2-PAD_H/2, aiY=H/2-PAD_H/2;
   let ballX=W/2, ballY=H/2, ballVX=4*X_SCALE*(Math.random()<0.5?1:-1), ballVY=3*(Math.random()<0.5?1:-1);
   let aiSpeed=2.8*safeEase();   // 🔵 Safe Mode slows the opposing paddle
+  // 🧱 A BRICK LAB court (§ 25): bumpers across the middle of the court —
+  // twelve columns between the paddles, ten rows top to bottom. GLASS breaks
+  // on its first touch.
+  const COURT=(typeof labCourt==='function')?labCourt():null;
+  const CX0=80, CW=(W-160)/12, CH=H/10;
+  const bRect=b=>({x0:CX0+b.c*CW+2, y0:b.r*CH+3, x1:CX0+(b.c+1)*CW-2, y1:(b.r+1)*CH-3});
   let rallyCount = 0; // Track current rally length
   const updateScore = () => {
     const raw = (userScore - cpuScore) * 50;
@@ -6973,6 +7189,23 @@ function startPong(){
     const prevX=ballX;
     ballX+=ballVX; ballY+=ballVY;
 
+    // 🧱 Bumpers: the face the ball came through decides the bounce.
+    if(COURT){
+      for(const b of COURT.cells){
+        if(b.gone) continue;
+        const R=bRect(b);
+        const nx=Math.max(R.x0,Math.min(ballX,R.x1)), ny=Math.max(R.y0,Math.min(ballY,R.y1));
+        if((ballX-nx)*(ballX-nx)+(ballY-ny)*(ballY-ny)>=BALL_R*BALL_R) continue;
+        if(prevX<R.x0-BALL_R*0.5||prevX>R.x1+BALL_R*0.5){
+          ballVX=-ballVX; ballX=ballVX>0?R.x1+BALL_R:R.x0-BALL_R;
+        }else{
+          ballVY=-ballVY; ballY=ballVY>0?R.y1+BALL_R:R.y0-BALL_R;
+        }
+        if(b.v===2){ b.gone=true; snd('explode',{semi:6}); } else snd('bounceWall');
+        break;
+      }
+    }
+
     // Top/bottom wall bounce
     if(ballY-BALL_R<0){ballY=BALL_R;ballVY=Math.abs(ballVY);snd('bounceWall');}
     if(ballY+BALL_R>H){ballY=H-BALL_R;ballVY=-Math.abs(ballVY);snd('bounceWall');}
@@ -7040,6 +7273,21 @@ function startPong(){
     aCtx.beginPath();aCtx.moveTo(W/2,0);aCtx.lineTo(W/2,H);aCtx.stroke();
     aCtx.setLineDash([]);
 
+    // 🧱 The court's bumpers.
+    if(COURT){
+      aCtx.save();
+      for(const b of COURT.cells){
+        if(b.gone) continue;
+        const R=bRect(b);
+        aCtx.shadowBlur=14; aCtx.shadowColor=b.v===2?'#7df9ff':'#8fa6ff';
+        aCtx.fillStyle=b.v===2?'rgba(125,249,255,0.28)':'rgba(143,166,255,0.85)';
+        aCtx.beginPath(); aCtx.roundRect(R.x0,R.y0,R.x1-R.x0,R.y1-R.y0,4); aCtx.fill();
+        aCtx.strokeStyle=b.v===2?'rgba(200,255,255,0.9)':'rgba(255,255,255,0.55)'; aCtx.lineWidth=1.5;
+        aCtx.stroke();
+      }
+      aCtx.restore();
+    }
+
     // Player paddle (equipped color)
     const pongColor = getEquippedColorHex();
     aCtx.save();aCtx.shadowBlur=20;aCtx.shadowColor=pongColor;
@@ -7085,8 +7333,12 @@ function startSnake(){
 
   const W=BOARD_W,H=BOARD_H,CELL=20,COLS=W/CELL,ROWS=H/CELL;
   let score=0,time=adjustedTime,isOver=false;
-  let dir={x:1,y:0},nextDir={x:1,y:0};
-  let snake=[{x:10,y:12},{x:9,y:12},{x:8,y:12}];
+  // 🧱 A BRICK LAB pit (§ 25): walls that crash you like the edge does, and
+  // where the snake starts — coiled on one cell, heading down the longest
+  // open run, so a level never opens with a wall one step ahead.
+  const LW=(typeof labSnake==='function')?labSnake():null;
+  let dir=LW?{...LW.dir}:{x:1,y:0},nextDir={...dir};
+  let snake=LW?[0,1,2].map(()=>({x:LW.head.x,y:LW.head.y})):[{x:10,y:12},{x:9,y:12},{x:8,y:12}];
   let food=spawnFood(),speed=160 / diffMod,lastMoveTime=0,particles=[];
   let gTick=0;
 
@@ -7098,9 +7350,9 @@ function startSnake(){
   document.getElementById('prog-fill').style.width='100%';
 
   function spawnFood(){
-    let pos;
+    let pos,tries=0;
     do{pos={x:Math.floor(Math.random()*COLS),y:Math.floor(Math.random()*ROWS)}}
-    while(snake.some(s=>s.x===pos.x&&s.y===pos.y));
+    while((snake.some(s=>s.x===pos.x&&s.y===pos.y)||(LW&&LW.isWall(pos.x,pos.y)))&&++tries<5000);
     return pos;
   }
 
@@ -7172,8 +7424,8 @@ function startSnake(){
       dir={...nextDir};
       const head={x:snake[0].x+dir.x,y:snake[0].y+dir.y};
 
-      // Wall collision
-      const hitWall = head.x<0||head.x>=COLS||head.y<0||head.y>=ROWS;
+      // Wall collision — the board's edge, and a lab pit's walls
+      const hitWall = head.x<0||head.x>=COLS||head.y<0||head.y>=ROWS||(LW&&LW.isWall(head.x,head.y));
       // Self collision
       const hitSelf = !hitWall && snake.some(s=>s.x===head.x&&s.y===head.y);
       if(hitWall || hitSelf){
@@ -7220,6 +7472,19 @@ function startSnake(){
     aCtx.strokeStyle='rgba(57,255,20,0.05)';aCtx.lineWidth=1;
     for(let i=0;i<=COLS;i++){aCtx.beginPath();aCtx.moveTo(i*CELL,0);aCtx.lineTo(i*CELL,H);aCtx.stroke();}
     for(let i=0;i<=ROWS;i++){aCtx.beginPath();aCtx.moveTo(0,i*CELL);aCtx.lineTo(W,i*CELL);aCtx.stroke();}
+
+    // 🧱 A lab pit's walls: firewall blue, so they never read as the snake.
+    if(LW){
+      aCtx.save();
+      for(const R of LW.rects){
+        const x=R.x0*CELL,y=R.y0*CELL,w=(R.x1-R.x0)*CELL,h=(R.y1-R.y0)*CELL;
+        aCtx.fillStyle='#0c1838';aCtx.fillRect(x,y,w,h);
+        aCtx.shadowBlur=10;aCtx.shadowColor='#3d7bff';
+        aCtx.strokeStyle='rgba(61,123,255,0.85)';aCtx.lineWidth=2;
+        aCtx.strokeRect(x+1,y+1,w-2,h-2);
+      }
+      aCtx.restore();
+    }
 
     // Ghost head from your best run, under the live snake.
     const gh = Ghost.at(gTick);
@@ -7323,7 +7588,18 @@ function startFlappy(){
   // contact rather than waiting out the click synthesis.
   bindCanvasDrag({ onDown(){ hideTouchHint(); flap(); } });
 
+  // 🧱 A BRICK LAB course (§ 25): every firewall's gap and width, in order,
+  // on a loop — a breather column spawns nothing.
+  const COURSE=(typeof labCourse==='function')?labCourse():null;
+  let courseAt=0;
   function spawnPipe(){
+    if(COURSE){
+      const c=COURSE[courseAt++%COURSE.length];
+      if(!c) return;
+      const gap=Math.round(GAP*c.gap);
+      pipes.push({x:W,topH:40+c.pos*(H-gap-80),gap,scored:false});
+      return;
+    }
     const topH=Math.random()*(H-GAP-80)+40;
     pipes.push({x:W,topH,scored:false});
   }
@@ -7397,8 +7673,10 @@ function startFlappy(){
     // frame, so a skipped sample would shift the whole ghost out of step.
     Ghost.sample(droneY);
 
-    // Spawn pipes every ~90 frames -> adjusted by difficulty
-    if(frame%(90/diffMod)===0)spawnPipe();
+    // Spawn pipes every ~90 frames -> adjusted by difficulty. ROUNDED: 90/0.7
+    // (Safe Mode) and every Endless step are fractions, and frame % 128.57 is
+    // never 0 — those rounds only ever got the opening pipe.
+    if(frame%Math.max(1,Math.round(90/diffMod))===0)spawnPipe();
 
     // Move & score pipes
     for(let i=pipes.length-1;i>=0;i--){
@@ -7417,12 +7695,12 @@ function startFlappy(){
 
       // Collision: top pipe
       if(DRONE_X+DRONE_W/2>p.x&&DRONE_X-DRONE_W/2<p.x+PIPE_W){
-        if(droneY-DRONE_H/2<p.topH||droneY+DRONE_H/2>p.topH+GAP){
+        if(droneY-DRONE_H/2<p.topH||droneY+DRONE_H/2>p.topH+(p.gap||GAP)){
           // 🛡️ A shielded hit costs the shield and phases the drone through:
           // it is parked in the middle of the gap and its fall is cancelled, so
           // the save actually buys the column rather than a single frame of it.
           if(survivedFatal()){
-            droneY=p.topH+GAP/2; droneVY=0; p.shielded=true;
+            droneY=p.topH+(p.gap||GAP)/2; droneVY=0; p.shielded=true;
           }else{
             drawDrone(droneY,true);snd('bigExplode');end();return;
           }
@@ -7460,15 +7738,15 @@ function startFlappy(){
       aCtx.fillStyle='#ffd700';aCtx.fillRect(p.x-4,p.topH-16,PIPE_W+8,16);
       // Bottom pipe
       aCtx.fillStyle=grad;
-      aCtx.fillRect(p.x,p.topH+GAP,PIPE_W,H-(p.topH+GAP));
+      aCtx.fillRect(p.x,p.topH+(p.gap||GAP),PIPE_W,H-(p.topH+(p.gap||GAP)));
       // Cap
-      aCtx.fillStyle='#ffd700';aCtx.fillRect(p.x-4,p.topH+GAP,PIPE_W+8,16);
+      aCtx.fillStyle='#ffd700';aCtx.fillRect(p.x-4,p.topH+(p.gap||GAP),PIPE_W+8,16);
       aCtx.restore();
 
       // Circuit lines on pipes
       aCtx.strokeStyle='rgba(255,165,0,0.3)';aCtx.lineWidth=1;aCtx.setLineDash([4,6]);
       aCtx.beginPath();aCtx.moveTo(p.x+PIPE_W/2,0);aCtx.lineTo(p.x+PIPE_W/2,p.topH-16);aCtx.stroke();
-      aCtx.beginPath();aCtx.moveTo(p.x+PIPE_W/2,p.topH+GAP+16);aCtx.lineTo(p.x+PIPE_W/2,H);aCtx.stroke();
+      aCtx.beginPath();aCtx.moveTo(p.x+PIPE_W/2,p.topH+(p.gap||GAP)+16);aCtx.lineTo(p.x+PIPE_W/2,H);aCtx.stroke();
       aCtx.setLineDash([]);
     });
 
@@ -7515,8 +7793,13 @@ function startBreaker(){
 
   const diffMod = getDifficultyModifier();
   const W=BOARD_W, H=BOARD_H;
-  const ROWS=5, B_W=44, B_H=18, B_GAP=6, B_TOP=64;
-  const COLS=Math.floor((W+B_GAP)/(B_W+B_GAP));   // 8 at 400 wide, 11 at 560
+  // 🧱 A BRICK LAB wall (§ 25) is ten across and up to seven deep on every
+  // board, so its bricks narrow to fit instead of the column count changing.
+  const LAB = (typeof labWallNow === 'function') ? labWallNow() : null;
+  const B_H=18, B_GAP=6, B_TOP=64;
+  const ROWS = LAB ? LAB.rows : 5;
+  const COLS = LAB ? LAB.cols : Math.floor((W+B_GAP)/(44+B_GAP));   // 8 at 400 wide, 11 at 560
+  const B_W = LAB ? Math.floor((W - 16 - (COLS-1)*B_GAP) / COLS) : 44;
   const B_LEFT=(W-(COLS*B_W+(COLS-1)*B_GAP))/2;
   const PAD_H=11, PAD_Y=H-34, BALL_R=6;
 
@@ -7555,6 +7838,19 @@ function startBreaker(){
 
   const bricks=[];
   for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    if(LAB){
+      // 🧱 The designer's wall: ARMOUR takes two hits, CORE is gold and pays
+      // three times the row's points. Rows past the fifth reuse the palette.
+      const t = LAB.cells[r*LAB.cols + c] || 0;
+      if(!t) continue;
+      const hp = t === 2 ? 2 : 1;
+      bricks.push({
+        x:B_LEFT+c*(B_W+B_GAP), y:B_TOP+r*(B_H+B_GAP),
+        hp, maxHp:hp, color: t === 3 ? '#ffd700' : ROW_COLORS[r % 5], pts: ROW_PTS[r % 5] * (t === 3 ? 3 : 1),
+        core: t === 3, lab: true
+      });
+      continue;
+    }
     // Armoured ICE only appears once the core is unstable: the top row at
     // Overclock, the top two at Meltdown.
     const armour = (diffMod>=2 && r<2) || (diffMod>1 && r<1) ? 2 : 1;
@@ -7746,6 +8042,20 @@ function startBreaker(){
       aCtx.shadowBlur=0;
       aCtx.fillStyle='rgba(255,255,255,0.28)';
       aCtx.fillRect(b.x+3,b.y+3,B_W-6,2);        // bevel — slabs, not flat rectangles
+      // 🧱 A lab wall says what each brick IS before it is hit: ARMOUR wears a
+      // heavy dark frame with a lit inner edge (two hits), CORE a star — the
+      // fifth row's own colour is gold, so colour alone could not tell it apart.
+      if(b.lab && b.maxHp > 1 && !cracked){
+        aCtx.strokeStyle='rgba(8,10,24,0.72)'; aCtx.lineWidth=3;
+        aCtx.strokeRect(b.x+1.5,b.y+1.5,B_W-3,B_H-3);
+        aCtx.strokeStyle='rgba(255,255,255,0.5)'; aCtx.lineWidth=1;
+        aCtx.strokeRect(b.x+4.5,b.y+4.5,B_W-9,B_H-9);
+      }
+      if(b.core){
+        aCtx.fillStyle='rgba(40,24,0,0.85)';
+        aCtx.font='bold 12px Orbitron,monospace'; aCtx.textAlign='center'; aCtx.textBaseline='middle';
+        aCtx.fillText('★', b.x+B_W/2, b.y+B_H/2+1);
+      }
       if(cracked){
         aCtx.globalAlpha=1; aCtx.strokeStyle='rgba(0,0,0,0.55)'; aCtx.lineWidth=1.5;
         aCtx.beginPath();
@@ -8013,6 +8323,13 @@ function startArena() {
     {x:700,y:820,w:20,h:60},
   ];
   walls = wallDefs;
+  // 🧱 A BRICK LAB arena (§ 25): the designer's cover in place of the stock
+  // walls, the gates the bots break in at, and where you start.
+  const LAR = (typeof labCover === 'function') ? labCover() : null;
+  if (LAR) {
+    walls = LAR.walls.map(q => ({ x: q.u0 * ARENA_W, y: q.v0 * ARENA_H, w: (q.u1 - q.u0) * ARENA_W, h: (q.v1 - q.v0) * ARENA_H }));
+    player.x = LAR.start.u * ARENA_W; player.y = LAR.start.v * ARENA_H;
+  }
 
   // Initial data node scatter
   // Weighted node type pool — mostly plain DATA, with rarer utility/buff/ability nodes
@@ -8353,7 +8670,14 @@ function startArena() {
   function spawnBot() {
     // Pick a spawn point far from player
     let bx, by, attempts = 0;
-    do {
+    if (LAR && LAR.gates) {
+      // 🧱 A lab arena's bots break in at its gates — one far from you when
+      // there is one.
+      const far = LAR.gates.filter(g => Math.hypot(g.u * ARENA_W - player.x, g.v * ARENA_H - player.y) >= 200);
+      const pool = far.length ? far : LAR.gates;
+      const g = pool[Math.floor(Math.random() * pool.length)];
+      bx = g.u * ARENA_W + (Math.random() - 0.5) * 16; by = g.v * ARENA_H + (Math.random() - 0.5) * 16;
+    } else do {
       const edge = Math.floor(Math.random() * 4);
       if (edge === 0) { bx = Math.random() * ARENA_W; by = -20; }
       else if (edge === 1) { bx = ARENA_W + 20; by = Math.random() * ARENA_H; }
@@ -9295,7 +9619,17 @@ function startRunner(){
   // Every row leaves at least one clean lane, so no arrangement is unwinnable.
   // Spacing is measured in DISTANCE, not frames — the gap between rows stays
   // constant on the track while the time you get to read it shrinks with speed.
+  // 🧱 A BRICK LAB track (§ 25): the rows as drawn, bottom first, on a loop.
+  const TRACK=(typeof labTrack==='function')?labTrack():null;
+  let trackAt=0;
   function spawnRow(){
+    if(TRACK){
+      TRACK[trackAt++%TRACK.length].forEach((k,i)=>{
+        if(k==='cube') items.push({kind:'cube',lane:i,y:-26,spin:Math.random()*6});
+        else if(k) items.push({kind:k,lane:i,y:-32});
+      });
+      return;
+    }
     const safe=Math.floor(Math.random()*LANES);
     for(let i=0;i<LANES;i++){
       if(i===safe){
@@ -9468,7 +9802,7 @@ function startRunner(){
     Ghost.sample(visX);
 
     spawnCd-=speed;
-    if(spawnCd<=0){ spawnRow(); spawnCd=152+Math.random()*66; }
+    if(spawnCd<=0){ spawnRow(); spawnCd=TRACK?185:152+Math.random()*66; }
 
     // ── ITEMS & COLLISIONS ──
     for(let i=items.length-1;i>=0;i--){
@@ -9603,7 +9937,12 @@ function startHacker(){
     return n;
   });
 
-  function rnd(){ return Math.floor(Math.random()*16); }
+  // 🧱 A BRICK LAB sequence (§ 25): the designer's nodes in order — the first
+  // mainframe plays the first three, each after adds the next, looping back
+  // to the start once the sequence runs out.
+  const LN=(typeof labNodes==='function')?labNodes():null;
+  let lnAt=0;
+  function rnd(){ return LN ? LN[lnAt++%LN.length] : Math.floor(Math.random()*16); }
   function setStatus(txt,cls){ statusEl.className='hack-status'+(cls?' '+cls:''); statusEl.textContent=txt; }
   function paintPips(){
     seqEl.innerHTML='';
@@ -9788,7 +10127,11 @@ function startMeteor(){
     }
   }
 
-  function startWave(){ toSpawn=5+wave*2; spawnT=0; banner=120; }
+  // 🧱 A BRICK LAB storm (§ 25): every wave launches the designed salvos, one
+  // row at a time, bottom row first. HEAVY always splits, FAST comes in at
+  // half as fast again. No random launches with it.
+  const STORM=(typeof labStorm==='function')?labStorm():null;
+  function startWave(){ toSpawn=STORM?STORM.length:5+wave*2; spawnT=0; banner=120; }
   startWave();
 
   // allowSplit is strictly one generation deep. A child is born BELOW the
@@ -10213,7 +10556,17 @@ function startMeteor(){
     const interval=Math.max(360, 1150-wave*70)/diffMod;
     if(toSpawn>0 && spawnT>=interval && banner<=0){
       spawnT=0; toSpawn--;
-      spawnFrag(Math.random()*(W-40)+20, -16, null, true);
+      if(STORM){
+        STORM[STORM.length-1-toSpawn].forEach((v,c)=>{
+          if(!v) return;
+          spawnFrag(20+c*(W-40)/11, -16, null, false);
+          const f=frags[frags.length-1];
+          if(v===2) f.split=true;
+          if(v===3){ f.vx*=1.5; f.vy*=1.5; }
+        });
+      }else{
+        spawnFrag(Math.random()*(W-40)+20, -16, null, true);
+      }
     }
     if(toSpawn===0 && !frags.length && !missiles.length){
       const bonus=40+wave*20;
@@ -10614,6 +10967,9 @@ function startBattleBots(){
   // Hostiles a wave has called for but that have not found free ground yet, and
   // the countdown to the next attempt. See spawnWave() / drainQueue().
   let foeQueue = [], queueT = 0;
+  // 🧱 A BRICK LAB siege (§ 25): each wave is one of the designer's columns —
+  // its hostiles in order, an empty one a breather — looping.
+  const LWV = (typeof labWaves === 'function') ? labWaves() : null;
   let kills = 0, deployed = 0, empFired = 0, ended = false, outro = null;
   let hurtFlash = 0, hitFlash = 0, empFlash = 0, banner = null, scroll = 0, last = 0;
 
@@ -10834,8 +11190,11 @@ function startBattleBots(){
       return;
     }
     waveNo++;
+    if(LWV) LWV[(waveNo - 1) % LWV.length].forEach(k => foeQueue.push(BB.foes[k]));
+    else{
     const count = Math.min(3, 1 + Math.floor(elapsed / 70));
     for(let i = 0; i < count; i++) foeQueue.push(pickFoe());
+    }
     waveT = Math.max(BB.wave.floor, BB.wave.start - elapsed * BB.wave.tighten) / waveScale;
     if(waveNo % 5 === 0){
       snd('wave');
@@ -11363,7 +11722,10 @@ function startOverclockPath(){
   // shorter route is the compensation for having a third less time to find it.
   // Floored at Stable's 4: below 1 (🔵 Safe Mode) the formula gave 3, and
   // FEWER dead cells is a LONGER route to trace exactly once — harder.
-  const DEAD_COUNT=Math.min(9, 4+Math.max(0, Math.round((diffMod-1)*2)));   // 4 / 4 / 5 / 6
+  // 🧱 A BRICK LAB circuit (§ 25): the designer's dead code and node A. The
+  // lab only lets out a circuit it has found a route through.
+  const LBOARD=(typeof labCircuit==='function')?labCircuit():null;
+  const DEAD_COUNT=LBOARD?LBOARD.dead.length:Math.min(9, 4+Math.max(0, Math.round((diffMod-1)*2)));   // 4 / 4 / 5 / 6
   const OPEN=CELLS-DEAD_COUNT;
   // 15s is the brief's clock; the tier dial scales it like every other mission.
   // Floored, because 15 × 0.5 is a different game rather than a harder one.
@@ -11414,11 +11776,14 @@ function startOverclockPath(){
     return p.slice(0,OPEN);
   }
 
-  const solution=carve()||fallback();
+  const solution=LBOARD?null:(carve()||fallback());
   const dead=new Set();
-  for(let i=0;i<CELLS;i++) dead.add(i);
-  solution.forEach(i=>dead.delete(i));
-  const START=solution[0];
+  if(LBOARD) LBOARD.dead.forEach(i=>dead.add(i));
+  else{
+    for(let i=0;i<CELLS;i++) dead.add(i);
+    solution.forEach(i=>dead.delete(i));
+  }
+  const START=LBOARD?LBOARD.start:solution[0];
 
   // ── BOARD DOM ──
   // Rebuilt every round, which drops the previous round's nodes and anything
@@ -11737,12 +12102,29 @@ function startFrequencyModulator(){
   lenEl.oninput=()=>{ if(ended) return; hideTouchHint(); len=parseFloat(lenEl.value); syncConsole(); snd('move'); };
   syncConsole();
 
+  // 🧱 A BRICK LAB run (§ 25): the designer's signals in order, looping —
+  // waveform, amplitude and wavelength straight off the chart. The lab never
+  // lets two stages in a row share a square, so a stage cannot arrive already
+  // tuned — except the first, on the square the dials start on, or one a
+  // drifting target carried the dials to. Then the dials move off it.
+  const LS=(typeof labStages==='function')?labStages():null;
   function newStage(){
+    if(LS){
+      const s=LS[(stage-1)%LS.length];
+      form=FORMS[s.form]||FORMS[0];
+      tAmp=A_MIN+s.a*A_SPAN; tLen=L_MIN+s.l*L_SPAN;
+      if(Math.abs(tAmp-amp)<A_SPAN*0.08 && Math.abs(tLen-len)<L_SPAN*0.08){
+        amp=tAmp+(tAmp<(A_MIN+A_MAX)/2?1:-1)*A_SPAN*0.35;
+        len=tLen+(tLen<(L_MIN+L_MAX)/2?1:-1)*L_SPAN*0.35;
+        syncConsole();
+      }
+    }else{
     form=FORMS[(stage-1)%FORMS.length];
     // Held clear of where the dials already sit, so a stage can never arrive
     // pre-solved by whatever the last one happened to end on.
     do{ tAmp=A_MIN+Math.random()*A_SPAN; } while(Math.abs(tAmp-amp)<A_SPAN*0.2);
     do{ tLen=L_MIN+Math.random()*L_SPAN; } while(Math.abs(tLen-len)<L_SPAN*0.2);
+    }
     // Above STABLE the target will not hold still. A locked signal then has to
     // be TRACKED for its 1.5 seconds rather than dialled in once and released,
     // which is a fairer way to charge for the ×1.5 and ×2.0 than shaving the
@@ -12037,8 +12419,20 @@ function startPulseSync(){
   // eight eighth-notes with a density that climbs, so the round has an arc.
   let chartT = beat * 4;                // one bar of lead-in before the first note
   let bar = 0, lastLane = -1;
+  // 🧱 A BRICK LAB chart (§ 25): four bars of the designer's notes, bar by
+  // bar, on a loop — laid on the same beat grid the generated chart uses.
+  const CHART = (typeof labChart === 'function') ? labChart() : null;
   function chartAhead(until){
     while(chartT < until){
+      if(CHART){
+        for(let i = 0; i < 8; i++){
+          const at = chartT + i * beat / 2;
+          CHART[(bar * 8 + i) % CHART.length].forEach((v, lane) => { if(v) notes.push({ lane, at, hit: false, dead: false }); });
+        }
+        chartT += beat * 4;
+        bar++;
+        continue;
+      }
       const density = Math.min(0.82, 0.34 + bar * 0.045) * Math.min(1.25, diff);
       for(let i = 0; i < 8; i++){
         const at = chartT + i * beat / 2;
@@ -12313,6 +12707,10 @@ function startCoreMerge(){
 
   let grid = [];
   for(let i = 0; i < N * N; i++) grid.push(0);
+  // 🧱 A BRICK LAB lattice (§ 25): cores already in their sockets, and BLOCKS
+  // (-1) that never slide and never merge — every move routes round them.
+  const LAT = (typeof labLattice === 'function') ? labLattice() : null;
+  if(LAT) LAT.forEach((v, i) => { grid[i] = v; });
   let score = 0, best = 0, moves = 0, merges = 0, over = false;
   let time = Math.round(100 * getTimeModifier());
   const anims = [];
@@ -12348,7 +12746,7 @@ function startCoreMerge(){
     anims.push({ i, t: 1, delay: SLIDE, kind: 'spawn' });
     return true;
   }
-  spawn(); spawn();
+  if(!LAT || !LAT.some(v => v > 0)){ spawn(); spawn(); }
 
   document.getElementById('g-time').textContent = time;
 
@@ -12374,7 +12772,7 @@ function startCoreMerge(){
     const locked = new Set();
     for(const [r, c] of order){
       const v = at(r, c);
-      if(!v) continue;
+      if(!v || v < 0) continue;
       let rr = r, cc = c;
       while(true){
         const nr = rr + dr, nc = cc + dc;
@@ -12423,6 +12821,7 @@ function startCoreMerge(){
     if(freeCells().length) return true;
     for(let r = 0; r < N; r++) for(let c = 0; c < N; c++){
       const v = at(r, c);
+      if(v < 0) continue;
       if(r + 1 < N && at(r + 1, c) === v) return true;
       if(c + 1 < N && at(r, c + 1) === v) return true;
     }
@@ -12474,6 +12873,19 @@ function startCoreMerge(){
   // One core, drawn at an arbitrary position so the same routine serves a tile
   // sitting in its cell and a tile halfway between two.
   function drawTile(x, y, v, k){
+    if(v < 0){
+      // A lab BLOCK: a dead socket, crossed out.
+      aCtx.save();
+      aCtx.fillStyle = '#1a1422'; aCtx.strokeStyle = 'rgba(255,36,66,0.55)'; aCtx.lineWidth = 2;
+      aCtx.beginPath(); aCtx.roundRect(x + 2, y + 2, CELL - 4, CELL - 4, 9); aCtx.fill(); aCtx.stroke();
+      aCtx.strokeStyle = 'rgba(255,36,66,0.4)'; aCtx.lineWidth = 4; aCtx.lineCap = 'round';
+      aCtx.beginPath();
+      aCtx.moveTo(x + CELL * 0.3, y + CELL * 0.3); aCtx.lineTo(x + CELL * 0.7, y + CELL * 0.7);
+      aCtx.moveTo(x + CELL * 0.7, y + CELL * 0.3); aCtx.lineTo(x + CELL * 0.3, y + CELL * 0.7);
+      aCtx.stroke();
+      aCtx.restore();
+      return;
+    }
     const s = CELL * k, ox = (CELL - s) / 2;
     const col = tileCol(v);
     aCtx.save();
@@ -12639,7 +13051,18 @@ function startOrbitalUplink(){
   // A relay to hit, and a firewall slab between you and it. The slab is what
   // makes the mission about arcs rather than about aiming: a flat shot is
   // always wrong, so every shot has to go over something.
+  // 🧱 A BRICK LAB run (§ 25): the designer's fields in order, looping — the
+  // relay where it was tapped, the firewall and the wind its brush set.
+  const LU = (typeof labFields === 'function') ? labFields() : null;
+  let fieldAt = 0;
   function newField(){
+    if(LU){
+      const f = LU[fieldAt++ % LU.length];
+      barrier = { x: PAD_X + 118, w: 20, h: [70, 110, 150][f.wall] };
+      relays = [{ x: 300 + f.u * 216, y: GROUND - (48 + f.v * 160), r: 26, bob: 0 }];
+      wind = f.wind * 60 * Math.min(1.4, diff);
+      return;
+    }
     // The slab is placed FIRST and the relay is placed around it. The other way
     // round, a relay could land just behind a tall firewall — a field whose
     // only solution is an arc that clears the slab and drops inside a few
@@ -13052,13 +13475,24 @@ function startIceCutter(){
   const NEONC = getEquippedColorHex();
   const diff  = getDifficultyModifier();
   const time0 = Math.max(22, Math.round(62 * getTimeModifier()));
-  const CONES = Math.min(7, 3 + Math.round((diff - 1) * 2.2));
-  const NODES = 8;
+  // 🧱 A BRICK LAB floor (§ 25): the designer's nodes, lamps and way in. Each
+  // lamp sweeps about the middle of the floor; one in the middle turns right
+  // round, like a lighthouse.
+  const LF = (typeof labFloor === 'function') ? labFloor() : null;
+  const CONES = LF ? LF.lamps.length : Math.min(7, 3 + Math.round((diff - 1) * 2.2));
+  const NODES = LF ? LF.nodes.length : 8;
   const NODE_PTS = 92, CLEAR_BONUS = 280, PER_SEC = 7;
 
   let time = time0, score = 0, tagged = 0, expo = 0, lit = false;
   let spotted = 0, over = false, scored = false, calm = 0, gameT = 0;
   const player = { x: BOARD_W / 2, y: BOARD_H - 42, r: 8 };
+  // A design's rows fill the floor below a band kept clear for the exposure
+  // meter, so nothing a designer puts on the top row hides under it.
+  const fy = v => BOARD_H * (0.08 + v * 0.92);
+  if(LF && LF.start){
+    player.x = Math.max(player.r, Math.min(BOARD_W - player.r, LF.start.u * BOARD_W));
+    player.y = Math.max(player.r, Math.min(BOARD_H - player.r, fy(LF.start.v)));
+  }
 
   document.getElementById('g-time').textContent = time;
   document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--cyan),#8fa6ff)';
@@ -13069,7 +13503,12 @@ function startIceCutter(){
   // of elapsed time — nothing is rolled per frame — so the Daily Hack's seeded
   // layout plays out identically on every machine and in either renderer.
   const cones = [];
-  for(let i = 0; i < CONES; i++){
+  if(LF) for(const L of LF.lamps){
+    const x = L.u * BOARD_W, y = fy(L.v);
+    cones.push({ x, y, base: Math.atan2(fy(0.5) - y, BOARD_W / 2 - x), span: L.span, half: L.half,
+                 speed: L.speed * diff, phase: L.phase, len: L.len, spin: L.spin ? 1 : 0 });
+  }
+  for(let i = 0; i < (LF ? 0 : CONES); i++){
     const side = i % 4;
     const t = 0.18 + Math.random() * 0.64;
     const pos = side === 0 ? [BOARD_W * t, 0]
@@ -13090,8 +13529,8 @@ function startIceCutter(){
   // Nodes are kept off the walls, off each other, and away from the start
   // corner — a node sitting under the opening position is a free point that
   // teaches nothing about the mission.
-  const nodes = [];
-  for(let i = 0; i < NODES; i++){
+  const nodes = LF ? LF.nodes.map(n => ({ x: n.u * BOARD_W, y: fy(n.v), got: false, pulse: 0 })) : [];
+  for(let i = 0; i < (LF ? 0 : NODES); i++){
     let n = null;
     for(let tryN = 0; tryN < 60; tryN++){
       const c = { x: 46 + Math.random() * (BOARD_W - 92), y: 46 + Math.random() * (BOARD_H - 120), got: false, pulse: 0 };
@@ -13122,7 +13561,9 @@ function startIceCutter(){
     onUp(){ lastP = null; }
   });
 
-  const aimOf = c => c.base + Math.sin(gameT * c.speed + c.phase) * c.span;
+  // A lab lighthouse (c.spin) turns right round instead of sweeping.
+  const aimOf = c => c.spin ? c.base + c.spin * (gameT * c.speed + c.phase)
+                            : c.base + Math.sin(gameT * c.speed + c.phase) * c.span;
   const inCone = (c, px, py) => {
     const dx = px - c.x, dy = py - c.y;
     const d = Math.hypot(dx, dy);
@@ -13134,6 +13575,14 @@ function startIceCutter(){
     // of a cone is exactly where you get the least warning.
     return Math.abs(a) < c.half * (1 - 0.18 * (d / c.len));
   };
+  // 🧱 A lab floor never opens with you already in a beam: a lamp that would
+  // light the start swings to the far side of its sweep instead.
+  if(LF) for(const c of cones){
+    for(const ph of [c.phase, c.phase + Math.PI, Math.PI / 2, -Math.PI / 2]){
+      c.phase = ph;
+      if(!inCone(c, player.x, player.y)) break;
+    }
+  }
 
   // ⏳ The door a Time Dilator adds three seconds through.
   registerRoundClock(n => {
@@ -13416,12 +13865,32 @@ function startPacketSort(){
   const feed = built.feed, schedule = built.schedule;
   const live = [];
 
+  // 🧱 A BRICK LAB schedule (§ 25): the designer's phases in order, looping,
+  // each with its own length. Two phases in a row on one rule are one longer
+  // phase — the boundary between them is silent and is not a flip.
+  const LP = (typeof labSortPlan === 'function') ? labSortPlan() : null;
+  let ph = 0;
+  if(LP) ruleIdx = LP.rules[0];
+  const phaseMs = () => LP ? LP.ms[ph % LP.ms.length] : RULE_MS;
+  // Time to the next flip that CHANGES the rule — Infinity when none does.
+  function flipLeftMs(){
+    let ms = phaseMs() - ruleT * 1000;
+    if(!LP) return ms;
+    for(let k = 1; k < LP.rules.length; k++){
+      const j = (ph + k) % LP.rules.length;
+      if(LP.rules[j] !== ruleIdx) return ms;
+      ms += LP.ms[j];
+    }
+    return Infinity;                     // every phase runs this one rule
+  }
+
   function paintRule(pulse){
     const R = SORT_RULES[ruleIdx];
     document.getElementById('sr-tag').textContent = 'RULE ' + (flips + 1);
     document.getElementById('sr-txt').textContent = R.name;
-    const left = Math.max(0, Math.ceil((RULE_MS - ruleT * 1000) / 1000));
-    document.getElementById('sr-next').textContent = 'FLIP IN ' + left + 's';
+    const leftMs = flipLeftMs();
+    const left = Math.max(0, Math.ceil(leftMs / 1000));
+    document.getElementById('sr-next').textContent = isFinite(leftMs) ? 'FLIP IN ' + left + 's' : 'NO FLIPS';
     strip.classList.toggle('warn', left <= 3);
     if(pulse){
       strip.classList.add('flip');
@@ -13529,12 +13998,19 @@ function startPacketSort(){
     gameT += sec; ruleT += sec;
     if(flash > 0) flash = Math.max(0, flash - sec * 2);
 
-    if(ruleT * 1000 >= RULE_MS){
-      ruleT = 0; flips++;
-      ruleIdx = schedule[flips % schedule.length];
-      snd('alarm');
-      toast('🗂️ SORT RULE ' + (flips + 1) + ' — ' + SORT_RULES[ruleIdx].name + ' · ' + SORT_RULES[ruleIdx].hint, 3200);
-      paintRule(true);
+    if(ruleT * 1000 >= phaseMs()){
+      ruleT = 0;
+      const was = ruleIdx;
+      if(LP){ ph++; ruleIdx = LP.rules[ph % LP.rules.length]; }
+      else ruleIdx = schedule[(flips + 1) % schedule.length];
+      if(ruleIdx !== was || !LP){
+        flips++;
+        snd('alarm');
+        toast('🗂️ SORT RULE ' + (flips + 1) + ' — ' + SORT_RULES[ruleIdx].name + ' · ' + SORT_RULES[ruleIdx].hint, 3200);
+        paintRule(true);
+      }else{
+        paintRule(false);
+      }
     }else{
       paintRule(false);
     }
@@ -13722,11 +14198,18 @@ function startSignalTrace(){
   const SEND = { x: BOARD_W - 78, y: PAL_Y + 62, w: 128, h: 40 };
   const CLR  = { x: 78,           y: PAL_Y + 62, w: 118, h: 40 };
 
+  // 🧱 A BRICK LAB run (§ 25): the designer's ciphers in order, looping — a
+  // burned one moves on like a fresh one would — and the alphabet fixed at
+  // the symbols they use (six at least). It never widens.
+  const LCI = (typeof labCiphers === 'function') ? labCiphers() : null;
+  let ciAt = 0;
+  if(LCI) symCount = LCI.syms;
   function newCipher(){
     // Repeats are allowed and are the whole difficulty of the later ciphers —
     // the peg tally above is what makes them fair rather than cruel.
     code = [];
-    for(let i = 0; i < SLOTS; i++) code.push(Math.floor(Math.random() * symCount));
+    if(LCI) code = LCI.codes[ciAt++ % LCI.codes.length].slice();
+    else for(let i = 0; i < SLOTS; i++) code.push(Math.floor(Math.random() * symCount));
     entry = [];
     history = [];
     attempts = 0;
@@ -13780,7 +14263,7 @@ function startSignalTrace(){
       snd('victory');
       // Each crack widens the alphabet, up to the table's length. That is the
       // escalation: the board never moves faster, the space just gets bigger.
-      symCount = Math.min(TRACE_SYMS.length, symCount + (cracked % 2 === 0 ? 1 : 0));
+      if(!LCI) symCount = Math.min(TRACE_SYMS.length, symCount + (cracked % 2 === 0 ? 1 : 0));
       gLater(() => { if(!over){ newCipher(); } }, 700);
       return;
     }
@@ -13987,7 +14470,10 @@ function startDefrag(){
   const diff  = getDifficultyModifier();
   const time0 = Math.max(34, Math.round(95 * getTimeModifier()));
   const COLS = 12, ROWS = 9, CELL = 42, OX = 28, OY = 92;
-  const CORRUPT = Math.min(30, Math.round(18 * diff));
+  // 🧱 A BRICK LAB drive (§ 25): the same corruption every time it mounts,
+  // and the HUD counts the designer's sectors, not the tier's.
+  const LVOL = (typeof labVolume === 'function') ? labVolume() : null;
+  const CORRUPT = LVOL ? LVOL.mines.size : Math.min(30, Math.round(18 * diff));
   // Tuned by playing it: a flood fill routinely opens sixty sectors in one tap,
   // so a generous per-sector rate put a full 1,050 on the board inside the first
   // volume and made the remaining eighty seconds decoration. At five a point a
@@ -14013,6 +14499,12 @@ function startDefrag(){
   function newVolume(){
     grid = [];
     for(let i = 0; i < COLS * ROWS; i++) grid.push({ bad: false, open: false, flag: false, n: 0, lit: 0 });
+    if(LVOL){
+      LVOL.mines.forEach(i => { grid[i].bad = true; });
+      for(let i = 0; i < grid.length; i++) grid[i].n = around(i).filter(j => grid[j].bad).length;
+      if(LVOL.start >= 0) open(LVOL.start, true);
+      return;
+    }
     // A safe opening region, picked BEFORE the mines so it is part of the seed
     // rather than part of the player's first tap.
     const sc = 1 + Math.floor(Math.random() * (COLS - 2));
@@ -14335,7 +14827,10 @@ function startCoolant(){
   const HEAT_UP = 0.46, HEAT_DN = 0.60, VENT = 0.42;
   const CRAFT_X = 148, RAD = 11;
 
-  const shaft = coolBuildShaft(SPD * (time0 + 8) + 2400, diff);
+  // 🧱 A BRICK LAB shaft (§ 25): the designer's tunnel, looping, in the same
+  // shape of object as the generated one — nothing below it changes.
+  const LSH = (typeof labShaft === 'function') ? labShaft(SPD * (time0 + 8) + 2400, diff) : null;
+  const shaft = LSH || coolBuildShaft(SPD * (time0 + 8) + 2400, diff);
   let time = time0, score = 0, dist = 0, heat = 0, vy = 0, y = BOARD_H / 2;
   let burning = false, over = false, scored = false, grace = 0, crashes = 0, vented = 0;
   let acc = 0, shakeT = 0, trail = [];
@@ -14814,7 +15309,12 @@ function chaosAnnounce(mod){
   el.className = 'big' + (allBoon ? ' chaos-boon' : ' chaos-hazard');
   snd(allBoon ? 'powerup' : 'alarm');
   const pay = chaosPayMult(list);
-  toast(`${allBoon ? '🎁 WINDFALL' : '🌀 CHAOS'} — ${chaosLabel(list)} · ×${pay.toFixed(2)} PAY`, 3000);
+  // 🔥 A HEAT round's list carries its level (§ 24): the player chose it, so
+  // the banner names it rather than presenting it as a roll of the dice.
+  const heatN = (Array.isArray(mod) && mod.heat) || 0;
+  el.classList.toggle('chaos-heat', !!heatN);
+  toast(heatN ? `🔥 HEAT ${heatN} — ${chaosLabel(list)} · ×${pay.toFixed(2)} PAY`
+              : `${allBoon ? '🎁 WINDFALL' : '🌀 CHAOS'} — ${chaosLabel(list)} · ×${pay.toFixed(2)} PAY`, 3000);
   chaosRerollBtn(list);
   // Shrinks to a chip rather than disappearing: mid-round is exactly when a
   // player looks up wondering why the controls feel wrong.
@@ -14834,7 +15334,7 @@ function chaosRerollBtn(list){
   // room record and every client reads that id — a local reroll would leave the
   // two boards running different games while both believed the duel was fair.
   // (The perk is not wasted there: mp rounds do not consume the reroll either.)
-  if(!list || mp || !hasPerk('perk-filter') || chaosRerollLeft <= 0){ if(btn) btn.remove(); return; }
+  if(!list || list.heat || mp || !hasPerk('perk-filter') || chaosRerollLeft <= 0){ if(btn) btn.remove(); return; }
   if(!btn){
     btn = document.createElement('button');
     btn.id = 'chaos-reroll';
@@ -14938,6 +15438,8 @@ function survivedFatal(){
   // 🎉 A party turn is someone else playing on the owner's device: it must
   // never spend a Shield Overlay out of the owner's kit (§ 19).
   if(typeof partyRunActive === 'function' && partyRunActive()) return false;
+  // 🧱 Nor a Brick Lab run: it is practice, and pays nothing back (§ 25).
+  if(typeof labActive === 'function' && labActive()) return false;
   return chaosAbsorb() || powerConsume('pu-shield', 'SHIELD ABSORBED');
 }
 
@@ -15207,6 +15709,10 @@ function paintChaosToggle(){
       : currentDifficultyTier === CHAOS_STACK_TIER
         ? `Rolling ${Math.round(CHAOS_ODDS * 100)}% of rounds · MELTDOWN STACKS TWO · up to ×2.6 pay`
         : `Rolling ${Math.round(CHAOS_ODDS * 100)}% of rounds · ${CHAOS_HAZARDS.length} handicaps, ${CHAOS_BOONS.length} windfalls`;
+    // 🔥 HEAT picks the hazards instead of the dice while it is on (§ 24).
+    if(chaosOptIn && typeof heatLevel === 'function' && heatLevel() > 0){
+      note.textContent = 'On hold while HEAT is on — your own hazards replace the roll.';
+    }
   }
 }
 
@@ -16133,7 +16639,7 @@ function renderAchievementMatrix(){
 // hard timeout calls it too — a cosmetic that failed to finish must never be
 // the reason a player never sees their score.
 const EXIT_MS = { bsod: 2200, matrix: 1500, static: 900,
-                  glitch: 1200, purge: 1300, rewind: 1500, grave: 1800 };
+                  glitch: 1200, purge: 1300, rewind: 1500, grave: 1800, freeze: 1900 };
 
 function playExitFx(gid, pts, opts, done){
   const stage = document.getElementById('exit-fx');
@@ -16257,6 +16763,29 @@ function playExitFx(gid, pts, opts, done){
                      `<div class="gv-hill"></div><div class="gv-stones">${stones}</div>`;
     snd('haunt');
     setTimeout(finish, EXIT_MS.grave);
+  }
+  else if(fx === 'freeze'){
+    // ❄️ COLD BOOT's exit. Frost closes in from every edge, cracks run across
+    // the ice, and at the peak it shatters outward — leaving the run's score
+    // frozen in a block. Pure CSS on stacked elements, like the others; the
+    // shards are clip-path triangles flung along their own vectors.
+    let cracks = '', shards = '';
+    for(let i = 0; i < 7; i++){
+      cracks += `<i class="fz-crack" style="--a:${(i * 51 + Math.random() * 30).toFixed(0)}deg;` +
+                `--l:${(26 + Math.random() * 22).toFixed(0)}vmax;animation-delay:${(0.42 + i * 0.05).toFixed(2)}s"></i>`;
+    }
+    for(let i = 0; i < 16; i++){
+      const a = (i / 16) * Math.PI * 2 + Math.random() * 0.4, d = 55 + Math.random() * 45;
+      shards += `<i class="fz-shard" style="--x:${(Math.cos(a) * d).toFixed(1)}vmax;--y:${(Math.sin(a) * d).toFixed(1)}vmax;` +
+                `--r:${((Math.random() * 2 - 1) * 540).toFixed(0)}deg;--s:${(0.6 + Math.random() * 0.9).toFixed(2)};` +
+                `left:${(50 + Math.cos(a) * 12).toFixed(1)}%;top:${(50 + Math.sin(a) * 12).toFixed(1)}%"></i>`;
+    }
+    body.innerHTML =
+      `<div class="fz-frost"></div><div class="fz-cracks">${cracks}</div><div class="fz-shards">${shards}</div>` +
+      `<div class="fz-block"><b>FROZEN AT</b><em>${Math.max(0, Math.round(+pts || 0)).toLocaleString()}</em><i>PTS</i></div>`;
+    snd('freeze');
+    setTimeout(() => { if(!settled) snd('shatter'); }, 1050);
+    setTimeout(finish, EXIT_MS.freeze);
   }
   else finish();
 
@@ -16462,11 +16991,25 @@ async function shareRun(){
   const btn = document.getElementById('btn-share-run');
   const name = (document.getElementById('res-gname')?.textContent || '').trim() || 'the arcade';
   const pts = parseInt(document.getElementById('res-pts')?.textContent || '0', 10) || 0;
-  const url = document.querySelector('link[rel="canonical"]')?.href ||
-              location.href.replace(/[?#].*$/, '');
-  const text = pts > 0
+  // 🔗 A raceable run shares a CHALLENGE LINK (§ 22) rather than the home page:
+  // the link carries the run, and opening it starts the race. Its number is the
+  // RAW score, because that is the one the friend's race is settled against —
+  // the card's total includes this player's own tier, perk and chip bonuses.
+  const run = (typeof clLastRun === 'object') ? clLastRun : null;
+  let url = document.querySelector('link[rel="canonical"]')?.href ||
+            location.href.replace(/[?#].*$/, '');
+  let text = pts > 0
     ? `👾 I scored ${pts.toLocaleString()} in ${name} on Point Invaders. Think you can beat it?`
     : `👾 Come play ${name} with me on Point Invaders — a free neon arcade, right in the browser.`;
+  if(run && META[run.gid]){
+    try{
+      url = clUrl(run);
+      text = `⚔️ I scored ${run.pts.toLocaleString()} in ${META[run.gid].name} on Point Invaders. ` +
+             `Tap to race my run — think you can beat it?`;
+    }catch(e){ console.warn('Challenge link failed — sharing the plain link:', e); }
+  }
+  const base = (btn && btn.dataset.base) || '📣 Share Score';
+  try{ if(typeof statsEvent === 'function') statsEvent(run ? '_share_lk' : '_share'); }catch(e){}
   const phone = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
   if(navigator.share && phone){
     try{ await navigator.share({ title: 'Point Invaders', text, url }); snd('coin'); return; }
@@ -16486,7 +17029,7 @@ async function shareRun(){
                             `<div class="replay-hint">Copy this and paste it anywhere.</div>`;
     if(btn) btn.textContent = '📣 Copy it from below';
   }
-  setTimeout(() => { if(btn) btn.textContent = '📣 Share Score'; }, 2600);
+  setTimeout(() => { if(btn) btn.textContent = base; }, 2600);
 }
 
 function loadReplay(){
@@ -17307,6 +17850,11 @@ const MP_MODES = {
     gid:'muncher', icon:'👾', name:'MAZE RACE', seconds:120, kind:'race',
     desc:'Two mazes, two sets of daemons. Eat more of the grid than your rival does before the clock — or the daemons — stop you.',
     meta:'UP TO 1300 PTS · HIGH SCORE WINS'
+  },
+  cmdrace: {
+    gid:'cmdline', icon:'⌨️', name:'KEYSTROKE RACE', seconds:100, kind:'race',
+    desc:'Two terminals, the same stream of commands. Type cleaner and faster than your rival before the clock runs out.',
+    meta:'UP TO 1200 PTS · HIGH SCORE WINS'
   }
 };
 // Every race row runs the same engine, so it is filled in here rather than
@@ -19867,6 +20415,7 @@ const VS_BOT_PROFILE = {
   lightcycle: { q:10,  dur:[35,62],  step:10, band:[260, 1050] },   // 10 a second, 100 a rider
   stack:      { q:20,  dur:[25,75],  step:20, band:[200, 900]  },   // 20 a floor, perfects on top
   muncher:    { q:5,   dur:[45,92],  step:5,  band:[300, 1150] },   // 5 a bit, daemons on top
+  cmdline:    { q:3,   dur:[80,92],  step:3,  band:[260, 1120] },   // ~3 a letter, words on top
   nebula:     { q:20,  dur:[55,110], step:20, band:[140, 940]  },   // 20 an alien
   tetris:     { q:30,  dur:[60,140], step:10, band:[70, 1120]  },   // 10/30/70/150 a clear
   memory:     { q:75,  dur:[16,24],  step:75, band:[300, 600]  },   // 75 a pair, 8 pairs, 25s
@@ -26967,6 +27516,57 @@ function createWorld(cfg){
     }
   }catch(e){ console.warn('World look unavailable:', e); look = null; env.theme = 0; env.bodies = null; env.winMix = 0; }
   const LK = look ? LOOKS[look] : null;
+
+  // ❄️ SNOWFALL — a running event that snows (COLD BOOT, § 14). Real points in
+  // the scene, falling through the city around the play space, never over it:
+  // every flake stays at |x| ≥ 18, clear of the corridor the skyline itself
+  // leaves open (buildCity's hole), so no board and no hazard is ever behind
+  // one. Positions are a pure function of w.t and the city scroll, so photo
+  // mode holds the storm still with the round. Count rides Q.props like the
+  // stars, because each flake is blended overdraw on a phone's GPU.
+  let snow = null;
+  try{
+    const a = (typeof activeEvent === 'function') ? activeEvent() : null;
+    if(a && a.ev.snow && env.sky !== false){
+      const g = seeded(0x5a0f1a4e);
+      snow = [];
+      const n = Math.max(48, Math.round(300 * Q.props));
+      for(let i = 0; i < n; i++){
+        // Three bands. NEAR: beside the play space, among the closest towers.
+        // FAR: out over the rest of the city. SKY: the one band allowed over
+        // the corridor's line, and only far down it and high above it
+        // (z ≤ −70, y ≥ 16) — out of reach of a top-down camera's view and
+        // well over anything a forward-running mission puts on its road.
+        const roll = g();
+        const band = roll < 0.3 ? 0 : roll < 0.78 ? 1 : 2;
+        const side = g() < 0.5 ? -1 : 1;
+        snow.push({
+          x: band === 2 ? (g() * 2 - 1) * 26 : side * (band === 0 ? 18 + g() * 40 : 18 + g() * 132),
+          z: band === 0 ? -50 + g() * 62 : band === 1 ? -190 + g() * 140 : -200 + g() * 130,
+          band,
+          y0: g() * 60, v: 1.1 + g() * 1.9, a: 0.4 + g() * 1.5, f: 0.25 + g() * 0.6, ph: g() * 6.283,
+          s: band === 0 ? 0.2 + g() * 0.25 : 0.6 + g() * 0.7,
+          k: 0.5 + g() * 0.35
+        });
+      }
+    }
+  }catch(e){ snow = null; }
+  function snowFrame(){
+    const sz = w._sz || 0, t = w.t;
+    for(let i = 0; i < snow.length; i++){
+      const f = snow[i];
+      // The sky band falls through its own 16–60 slab and wraps back to the
+      // top of it, so it never drops toward the road.
+      const y = f.band === 2 ? 60 - ((f.y0 + f.v * t) % 44) : 52 - ((f.y0 + f.v * t) % 62);
+      const x = f.x + f.a * Math.sin(t * f.f + f.ph);
+      // Wrapped inside its own band as the city scrolls past, the way drawCity
+      // wraps the towers, so a running mission runs on through the storm.
+      const z = f.band === 0 ? -50 + ((((f.z + 50 + sz) % 62) + 62) % 62)
+              : f.band === 1 ? -190 + ((((f.z + 190 + sz) % 140) + 140) % 140)
+              :                -200 + ((((f.z + 200 + sz) % 130) + 130) % 130);
+      r.glow([x, y, z], f.s, '#e6f6ff', f.k);
+    }
+  }
   // 🌅🪐 This world's horizon (THE HORIZON, above): planned once, drawn at the
   // end of every frame. hzCull is what it hid of the star field last frame;
   // eyeNow is the camera actually installed (photo orbit and shake included).
@@ -27361,6 +27961,8 @@ function createWorld(cfg){
     // makes, city or not — a world with a look has its sun and planets over
     // every open sky. Enclosed sets (sky: false) have none.
     if(LK && env.sky !== false) horizonFrame();
+    // ❄️ The event's snow, over every open sky (see SNOWFALL above).
+    if(snow) snowFrame();
     for(let i = 0; i < w.parts.length; i++){
       const p = w.parts[i];
       const a = clamp(p.life / p.max, 0, 1);
@@ -27451,6 +28053,9 @@ function runLoop(fn){
     const frozen = (typeof photoActive === 'function') && photoActive();
     // A game returns false on its last frame.
     if(fn(frozen ? 0 : dt) === false){ loopLive = false; return; }
+    // 🎬 A clip frame, taken in the SAME turn as the render (see § 27): this
+    // canvas has no preserveDrawingBuffer, so a later callback would copy black.
+    if(!frozen && typeof clipGrab3D === 'function') clipGrab3D();
     // The capture has to happen in the SAME javascript turn as the render that
     // just produced the frame: this canvas has no preserveDrawingBuffer, so a
     // toDataURL() split into its own callback returns a blank image.
@@ -27856,6 +28461,8 @@ P.games.nebula = function(){
     { key:'heavy', hp: 3, r: 1.7,  spd: 13, pts: 110,col:'#a855f7', geo:'raider', sc: 2.3, fire: 0.9 }
   ];
 
+  const INVASION = (typeof labInvasion === 'function') ? labInvasion() : null;
+  let invasionAt = 0;
   function spawn(){
     const roll = Math.random();
     const t = roll < 0.6 ? TYPES[0] : roll < 0.85 ? TYPES[1] : TYPES[2];
@@ -27937,7 +28544,22 @@ P.games.nebula = function(){
 
     // Spawning tightens over the run and with the tier.
     spawnT -= dt;
-    if(spawnT <= 0){
+    if(INVASION){
+      // 🧱 A BRICK LAB invasion (§ 25): each row flies in as one line across
+      // the tunnel at a shared height — SCOUT a dart, FIGHTER a grunt,
+      // BOMBER a heavy — bottom row first, on a loop.
+      if(spawnT <= 0){
+        const yy = rnd(-YL * 0.5, YL * 0.5);
+        INVASION[invasionAt++ % INVASION.length].forEach((v, c) => {
+          if(!v) return;
+          const t = TYPES[[0, 1, 0, 2][v]];
+          foes.push({ t, hp: t.hp, x: -XL + (c + 0.5) * (XL * 2 / 10), y: yy, z: -132,
+                      vx: rnd(-0.6, 0.6), vy: rnd(-0.4, 0.4),
+                      spd: t.spd * diff, spin: rnd(0, 6.28), fireT: rnd(0.6, 2.4) });
+        });
+        spawnT = (invasionAt % INVASION.length === 0 ? 1.8 : 0.8) / diff;
+      }
+    }else if(spawnT <= 0){
       spawn();
       spawnGap = Math.max(0.28, spawnGap * 0.985);
       spawnT = spawnGap / diff;
@@ -28163,6 +28785,9 @@ P.games.dodge = function(){
   let score = 0, time = 30, over = false, ended = false, scroll = 0, spawnT = 0, frame = 0;
   const me = { x: 0, z: -1, r: 0.85, bob: 0 };
   const cores = [];
+  const BARRAGE = (typeof labBarrage === 'function') ? labBarrage() : null;
+  const BAR_T = [null, { r: 0.8, vz: 30, c: '#ff6600' }, { r: 1.3, vz: 22, c: '#ff2442' }, { r: 0.55, vz: 44, c: '#ffd700' }];
+  let barrageAt = 0;
 
   Ghost.begin('dodge');
   if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
@@ -28224,7 +28849,19 @@ P.games.dodge = function(){
     Ghost.sample((me.x / XL * 0.5 + 0.5) * BOARD_W, (1 - (me.z - ZF) / (ZN - ZF)) * BOARD_H);
 
     spawnT -= dt;
-    if(spawnT <= 0){
+    if(BARRAGE){
+      // 🧱 A BRICK LAB barrage (§ 25) — the same lines the 2D build drops, on
+      // the deck's fourteen lanes, at the player's own height.
+      if(spawnT <= 0){
+        BARRAGE[barrageAt++ % BARRAGE.length].forEach((v, c) => {
+          if(!v) return;
+          const T = BAR_T[v];
+          cores.push({ x: -XL + (c + 0.5) * (XL * 2 / 14), y: 1.0, z: -78, vx: 0, vz: T.vz * diff, r: T.r, col: T.c,
+                       sx: rnd(0, 6.3), sy: rnd(0, 6.3), spin: rnd(1.4, 3.6), geo: Math.random() < 0.5 ? 'rock' : 'rock2' });
+        });
+        spawnT = (barrageAt % BARRAGE.length === 0 ? 0.95 : 0.3) / diff;
+      }
+    }else if(spawnT <= 0){
       spawnT = rnd(0.10, 0.20) / diff;
       const col = NEON[(Math.random() * NEON.length) | 0];
       cores.push({
@@ -28389,6 +29026,13 @@ P.games.tetris = function(){
 
   const grid = [];
   for(let y = 0; y < ROWS; y++) grid.push(new Array(COLS).fill(null));
+  // 🧱 A BRICK LAB stack (§ 25), in this well's neon.
+  { const LG = (typeof labGarbage === 'function') ? labGarbage() : null;
+    if(LG) LG.forEach((row, r) => {
+      // Cells are { c, born } like a locked piece's; born long ago, so the
+      // garbage does not flare as if it had just landed.
+      grid[ROWS - LG.length + r] = row.slice(0, COLS).map(v => v ? { c: LAB_TET_3D[v] || '#8892a6', born: -9 } : null);
+    }); }
 
   let piece = null, next = null;
 
@@ -28744,6 +29388,12 @@ P.games.pong = function(){
   let vx = rnd(-5, 5), vz = 17 * (Math.random() < 0.5 ? 1 : -1);
   let myScore = 0, cpuScore = 0, time = 45, over = false, rally = 0, spin = 0, flash = 0;
 
+  // 🧱 A BRICK LAB court (§ 25). The design is drawn with YOUR end on the
+  // left; here your end is the near one, so its columns run away from the
+  // camera and its rows run left to right.
+  const COURT = (typeof labCourt === 'function') ? labCourt() : null;
+  const BZ0 = ZP - 3, BDZ = (BZ0 - (ZA + 3)) / 12, BDX = XL * 2 / 10;
+  const bBox = b => ({ x: -XL + (b.r + 0.5) * BDX, z: BZ0 - (b.c + 0.5) * BDZ, hx: BDX * 0.42, hz: BDZ * 0.42 });
   const paint = () => setLive(Math.max(0, (myScore - cpuScore) * 50));
   paint();
   document.getElementById('g-time').textContent = Math.ceil(time);
@@ -28793,6 +29443,21 @@ P.games.pong = function(){
     // three dimensions instead of sliding along a plane.
     ballY = 0.75 + Math.abs(Math.sin(w.t * 5.5)) * 0.35;
 
+    // 🧱 Bumpers: the shallower overlap is the face the ball came through.
+    if(COURT){
+      for(const b of COURT.cells){
+        if(b.gone) continue;
+        const B = bBox(b), dx = ballX - B.x, dz = ballZ - B.z;
+        const px = B.hx + 0.45 - Math.abs(dx), pz = B.hz + 0.45 - Math.abs(dz);
+        if(px <= 0 || pz <= 0) continue;
+        if(px < pz){ vx = dx > 0 ? Math.abs(vx) : -Math.abs(vx); ballX = B.x + Math.sign(dx || 1) * (B.hx + 0.46); }
+        else{ vz = dz > 0 ? Math.abs(vz) : -Math.abs(vz); ballZ = B.z + Math.sign(dz || 1) * (B.hz + 0.46); }
+        if(b.v === 2){ b.gone = true; snd('explode', { semi: 6 }); w.burst([B.x, 0.8, B.z], '#7df9ff', 22, { speed: 9, life: 0.6 }); }
+        else snd('bounceWall');
+        w.kick(0.25);
+        break;
+      }
+    }
     if(ballX < -XL + 0.45){ ballX = -XL + 0.45; vx = -vx; snd('bounceWall'); w.kick(0.3); }
     if(ballX >  XL - 0.45){ ballX =  XL - 0.45; vx = -vx; snd('bounceWall'); w.kick(0.3); }
 
@@ -28864,6 +29529,21 @@ P.games.pong = function(){
     r.beam([-XL, 0.07, ZA], [XL, 0.07, ZA], 0.16, { color:'#ff2442', emissive:'#ff2442', emissiveStrength: 2.6, height: 0.16 });
     r.beam([-XL, 0.07, ZP], [XL, 0.07, ZP], 0.16, { color: colour, emissive: colour, emissiveStrength: 2.6, height: 0.16 });
 
+    // 🧱 The court's bumpers: solid blocks, and glass you can see through.
+    if(COURT){
+      for(const b of COURT.cells){
+        if(b.gone) continue;
+        const B = bBox(b);
+        if(b.v === 2){
+          r.draw('cube', { pos:[B.x, 0.6, B.z], scale:[B.hx * 2, 1.2, B.hz * 2], color:'#bff8ff', alpha: 0.35,
+                           emissive:'#7df9ff', emissiveStrength: 1.1, metallic: 0.2, roughness: 0.1 });
+        }else{
+          r.draw('techblock', { pos:[B.x, 0.6, B.z], scale:[B.hx * 2, 1.2, B.hz * 2], color:'#1a2250',
+                                metallic: 0.8, roughness: 0.3, rim: 1.3, emissive:'#8fa6ff', emissiveStrength: 0.55 });
+        }
+      }
+    }
+
     // ── PADDLES ──
     r.draw('paddle', { pos:[me, 0.62, ZP], scale:[0.8, 1.05, PAD_W], rot:[0, Math.PI / 2, 0],
                        color:'#c3cee2', metallic: 0.72, roughness: 0.28, rim: 1.5 });
@@ -28926,17 +29606,20 @@ P.games.snake = function(){
   const CELL = 20, COLS = BOARD_W / CELL, ROWS = BOARD_H / CELL;   // 28 × 25, as in 2D
   const startTime = 60 / diff;
   let score = 0, time = startTime, over = false, tick = 0, orbit = 0;
-  let dir = { x: 1, y: 0 }, nextDir = { x: 1, y: 0 };
-  let snake = [{ x: 10, y: 12 }, { x: 9, y: 12 }, { x: 8, y: 12 }];
+  // 🧱 A BRICK LAB pit (§ 25) — the same walls and start the 2D build reads.
+  const LW = (typeof labSnake === 'function') ? labSnake() : null;
+  let dir = LW ? { ...LW.dir } : { x: 1, y: 0 }, nextDir = { ...dir };
+  let snake = LW ? [0, 1, 2].map(() => ({ x: LW.head.x, y: LW.head.y }))
+                 : [{ x: 10, y: 12 }, { x: 9, y: 12 }, { x: 8, y: 12 }];
   let stepEvery = 0.16 / diff, acc = 0, eaten = 0, lastEat = -9;
 
   const wx = cx => cx - COLS / 2 + 0.5;
   const wz = cy => cy - ROWS / 2 + 0.5;
 
   function spawnFood(){
-    let p;
+    let p, tries = 0;
     do{ p = { x: (Math.random() * COLS) | 0, y: (Math.random() * ROWS) | 0 }; }
-    while(snake.some(s => s.x === p.x && s.y === p.y));
+    while((snake.some(s => s.x === p.x && s.y === p.y) || (LW && LW.isWall(p.x, p.y))) && ++tries < 5000);
     return p;
   }
   let food = spawnFood();
@@ -28998,6 +29681,7 @@ P.games.snake = function(){
       dir = nextDir;
       const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
       if(head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS
+         || (LW && LW.isWall(head.x, head.y))
          || snake.some(s => s.x === head.x && s.y === head.y)){
         // 🛡️ The absorb has to leave a state the very next tick can survive,
         // and there is exactly one arrangement that is valid whatever killed
@@ -29071,6 +29755,19 @@ P.games.snake = function(){
                        color:'#101626', metallic: 0.85, roughness: 0.3, rim: 1.4 });
       r.draw('cube', { pos:[0, 0.05, s * (ROWS / 2 + 0.55)], scale:[COLS + 2.2, 0.7, 1.0],
                        color:'#101626', metallic: 0.85, roughness: 0.3, rim: 1.4 });
+    }
+    // 🧱 A lab pit's walls: raised firewall blocks with a lit cap, the kerb's
+    // body in the 2D build's blue — solid, and nothing like the snake.
+    if(LW){
+      for(const R of LW.rects){
+        const cx = (R.x0 + R.x1 - 1) / 2, cz = (R.y0 + R.y1 - 1) / 2;
+        const sx = R.x1 - R.x0, sz = R.y1 - R.y0;
+        r.draw('techblock', { pos:[wx(cx), 0.45, wz(cz)], scale:[sx * 0.96, 1.1, sz * 0.96],
+                              color:'#0f1c44', metallic: 0.8, roughness: 0.32, rim: 1.2,
+                              emissive:'#3d7bff', emissiveStrength: 0.45 });
+        r.draw('cube', { pos:[wx(cx), 1.02, wz(cz)], scale:[sx * 0.9, 0.05, sz * 0.9],
+                         color:'#ffffff', emissive:'#3d7bff', emissiveStrength: 1.6 });
+      }
     }
     r.light({ pos:[-12,  16, -12], color:'#4f7dff', intensity: 340, range: 55 });
     r.light({ pos:[ 12,  16,  12], color:'#ff3fa0', intensity: 260, range: 55 });
@@ -29176,6 +29873,7 @@ P.games.flappy = function(){
   const GRAV = 42 * gravMod;
   const FLAP = -13.0 * Math.pow(gravMod, 0.65);
   const YL = 7.2, GAP = 4.4, SPEED = 26 * diff, SPACING = 30;
+  const GAP0 = GAP;   // a lab course gives each gate its own (g.gap)
 
   let score = 0, over = false, y = 0, vy = 0, tilt = 0, dist = 0, best = 0;
   const gates = [];
@@ -29187,7 +29885,19 @@ P.games.flappy = function(){
   document.getElementById('prog-fill').style.width = '100%';
   document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--gold),var(--orange))';
 
+  // 🧱 A BRICK LAB course (§ 25): every gate's gap and width, in order, on a
+  // loop. A breather is a gate that isn't there — it keeps the spacing.
+  const COURSE = (typeof labCourse === 'function') ? labCourse() : null;
+  let courseAt = 0;
   function addGate(z){
+    if(COURSE){
+      const c = COURSE[courseAt++ % COURSE.length];
+      if(!c){ gates.push({ z, none: true, scored: true, cy: 0, col: '#000' }); return; }
+      const gap = GAP * c.gap, lim = YL - gap * 0.8;
+      gates.push({ z, cy: lim - c.pos * 2 * lim, gap, scored: false,
+                   col: NEON[(Math.random() * NEON.length) | 0] });
+      return;
+    }
     gates.push({ z, cy: rnd(-YL + GAP * 0.8, YL - GAP * 0.8), scored: false,
                  col: NEON[(Math.random() * NEON.length) | 0] });
   }
@@ -29240,7 +29950,7 @@ P.games.flappy = function(){
         w.pop([0, y + 2.2, -2], '+50', g.col, { size: 18 });
         w.kick(0.25);
       }
-      if(Math.abs(g.z) < 1.4 && Math.abs(y - g.cy) > GAP / 2 - 0.55){ die(); return false; }
+      if(!g.none && Math.abs(g.z) < 1.4 && Math.abs(y - g.cy) > (g.gap || GAP0) / 2 - 0.55){ die(); return false; }
     }
 
     // Chase cam, just behind and level with the drone but lagging its vertical
@@ -29265,6 +29975,8 @@ P.games.flappy = function(){
     // Two slabs and a lit rim around the opening. The rim is the read: it is the
     // only part that is bright, so the eye goes straight to the hole.
     for(const g of gates){
+      if(g.none) continue;
+      const GAP = g.gap || GAP0;
       const topH = (YL - (g.cy + GAP / 2));
       const botH = ((g.cy - GAP / 2) + YL);
       const fade = clamp(1 + g.z / 130, 0.25, 1);
@@ -29378,13 +30090,19 @@ P.games.breaker = function(){
   let pad = 0, ballX = 0, ballZ = ZP - 2, bvx = rnd(-6, 6), bvz = -15 * diff, stuck = true;
 
   const bricks = [];
-  for(let ry = 0; ry < ROWS; ry++){
+  // 🧱 A BRICK LAB wall (§ 25): ten across like this deck, up to seven deep.
+  const LAB = (typeof labWallNow === 'function') ? labWallNow() : null;
+  const rows = LAB ? LAB.rows : ROWS;
+  for(let ry = 0; ry < rows; ry++){
     for(let cx = 0; cx < COLS; cx++){
+      const t = LAB ? (LAB.cells[ry * LAB.cols + cx] || 0) : (ry < 1 ? 2 : 1);
+      if(!t) continue;
       bricks.push({
         x: (cx - COLS / 2 + 0.5) * (BW + 0.14),
         z: ZBACK + ry * (BD + 0.2) + 1,
-        hp: ry < 1 ? 2 : 1,
-        col: NEON[ry % NEON.length],
+        hp: t === 2 ? 2 : 1,
+        col: t === 3 ? '#ffd700' : NEON[ry % NEON.length],
+        core: t === 3,
         alive: true, hit: -9
       });
     }
@@ -29440,7 +30158,8 @@ P.games.breaker = function(){
     broken++;
     combo++;
     bestCombo = Math.max(bestCombo, combo);
-    score += 15 + Math.min(combo, 10) * 2;
+    // A 🧱 lab wall's gold CORE pays three times a brick's base.
+    score += (b.core ? 45 : 15) + Math.min(combo, 10) * 2;
     setLive(Math.min(1100, score + shields * 40));
     snd('brick', { semi: Math.min(combo, 12) });
     w.burst([b.x, 0.75, b.z], b.col, 18, { speed: 9, life: 0.6, size: 0.32 });
@@ -29535,6 +30254,9 @@ P.games.breaker = function(){
       // A brighter cap so the top face reads from a low camera.
       r.draw('box', { pos:[b.x, 1.22, b.z], scale:[BW * 0.8, 0.06, BD * 0.8],
                       color:'#ffffff', emissive: b.col, emissiveStrength: 1.6 + lit * 3 });
+      // 🧱 A lab wall's gold CORE (§ 25) floats a pulsing light over itself, so
+      // it reads as a prize from the far end of the deck and not as a gold row.
+      if(b.core) r.glow([b.x, 1.75, b.z], 0.8 + 0.18 * Math.sin(w.t * 5 + b.x), '#ffe066', 1.3);
     }
 
     // ── DEFLECTOR + BALL ──
@@ -29650,7 +30372,14 @@ P.games.runner = function(){
 
   gTimer = setInterval(() => { if(!over){ elapsed++; document.getElementById('g-time').textContent = elapsed; } }, 1000);
 
+  // 🧱 A BRICK LAB track (§ 25) — the rows the 2D build reads, the same order.
+  const TRACK = (typeof labTrack === 'function') ? labTrack() : null;
+  let trackAt = 0;
   function spawnRow(z){
+    if(TRACK){
+      TRACK[trackAt++ % TRACK.length].forEach((k, i) => { if(k) items.push({ kind: k, lane: i, z, spin: rnd(0, 6.3) }); });
+      return;
+    }
     // Every row leaves at least one clean lane, so no arrangement is unwinnable.
     const free = (Math.random() * 3) | 0;
     for(let i = 0; i < 3; i++){
@@ -29690,7 +30419,7 @@ P.games.runner = function(){
 
     // Rows are spaced by DISTANCE, so a faster run does not become a denser one.
     spawnZ += speed * dt;
-    if(spawnZ > 0){ spawnRow(-150); spawnZ -= rnd(15, 24); }
+    if(spawnZ > 0){ spawnRow(-150); spawnZ -= TRACK ? 19.5 : rnd(15, 24); }
 
     for(let i = items.length - 1; i >= 0; i--){
       const it = items[i];
@@ -30007,6 +30736,25 @@ P.games.meteor = function(){
     w.kick(0.15);
   }
 
+  // 🧱 A BRICK LAB storm (§ 25): one salvo per row, straight down, bottom row
+  // first, on a loop. HEAVY is the big two-hit rock, FAST half as fast again.
+  const STORM = (typeof labStorm === 'function') ? labStorm() : null;
+  let stormAt = 0;
+  function spawnSalvo(){
+    STORM[stormAt++ % STORM.length].forEach((v, c) => {
+      if(!v) return;
+      const big = v === 2, fast = v === 3;
+      rocks.push({
+        x: -XL + (c + 0.5) * (XL * 2 / 12), y: TOP + 2, z: 0,
+        vy: -4.7 * diff * (big ? 0.72 : fast ? 1.5 : 1), vx: 0,
+        r: big ? 1.5 : fast ? 0.8 : 0.95, hp: big ? 2 : 1,
+        sx: rnd(0, 6.3), sy: rnd(0, 6.3), spin: rnd(0.8, 2.2),
+        geo: Math.random() < 0.5 ? 'rock' : 'rock2',
+        col: big ? '#a855f7' : fast ? '#ff2442' : '#ff8a00'
+      });
+    });
+    return (stormAt % STORM.length === 0 ? 2.2 : Math.max(0.5, 1.0 - wave * 0.05)) / diff;
+  }
   function spawn(){
     const big = Math.random() < 0.22;
     rocks.push({
@@ -30067,7 +30815,10 @@ P.games.meteor = function(){
     if(waveT > 12){ waveT = 0; wave++; w.pop([0, 14, 0], 'WAVE ' + wave, '#ffd700', { size: 24, life: 1.6 }); snd('wave'); }
 
     spawnT -= dt;
-    if(spawnT <= 0){ spawn(); spawnT = Math.max(0.22, (0.95 - wave * 0.06)) / diff; }
+    if(spawnT <= 0){
+      if(STORM) spawnT = spawnSalvo();
+      else{ spawn(); spawnT = Math.max(0.22, (0.95 - wave * 0.06)) / diff; }
+    }
 
     // Fragments move BEFORE the bolts and keep where they were, so the sweep
     // below can test the two paths against each other rather than their end
@@ -30273,17 +31024,22 @@ P.games.click = function(){
 
   const colour = mine();
   let clicks = 0, t = 10, over = false, punch = 0, spinRate = 1, heat = 0;
+  // 🧱 A BRICK LAB timeline (§ 25): each second's multiplier, worn by the core.
+  const FZ = (typeof labFrenzy === 'function') ? labFrenzy() : null;
+  const fzNow = () => FZ ? FZ[Math.max(0, Math.min(9, 10 - t))] : 1;
+  let earned = 0;
 
   document.getElementById('g-time').textContent = '10';
 
   function strike(){
     if(over) return;
     clicks++;
+    earned += 8 * fzNow();
     punch = 1;
     heat = Math.min(1, heat + 0.045);
     spinRate = 1 + heat * 5;
     snd('bounce', { semi: (clicks % 8) * 2 });
-    setLive(Math.min(500, clicks * 8));
+    setLive(Math.min(500, FZ ? earned : clicks * 8));
     w.kick(0.55 + heat * 0.7);
     w.burst([0, 1.2, 0], heat > 0.7 ? '#ff2442' : colour, 10 + (heat * 14) | 0,
             { speed: 9 + heat * 8, life: 0.5, size: 0.3 });
@@ -30299,10 +31055,14 @@ P.games.click = function(){
     document.getElementById('g-time').textContent = t;
     document.getElementById('prog-fill').style.width = `${t / 10 * 100}%`;
     if(t <= 3 && t > 0) snd('tick');
+    if(FZ && t > 0){
+      const m = fzNow();
+      if(m !== 1) w.pop([0, 4.6, 0], m === 2 ? '×2 GOLD' : m === 3 ? '×3 SURGE' : 'JAMMED', m === 2 ? '#ffd700' : m === 3 ? '#ff0090' : '#8a90a8', { size: 22, life: 0.9 });
+    }
     if(t <= 0){
       clearInterval(gTimer); gTimer = null;
       over = true;
-      const pts = Math.min(500, clicks * 8);
+      const pts = Math.min(500, FZ ? earned : clicks * 8);
       w.burst([0, 1.2, 0], '#ffffff', 60, { speed: 20, life: 1.1, size: 0.55 });
       w.kick(4);
       snd('bigExplode');
@@ -30348,7 +31108,9 @@ P.games.click = function(){
 
     // ── THE CORE ──
     const hot = heat > 0.6;
-    const coreCol = hot ? '#ff2442' : (heat > 0.3 ? '#ff8a00' : colour);
+    const fzm = fzNow();
+    const coreCol = FZ && fzm !== 1 ? (fzm === 2 ? '#ffd700' : fzm === 3 ? '#ff0090' : '#555a70')
+                  : hot ? '#ff2442' : (heat > 0.3 ? '#ff8a00' : colour);
     const scale = 2.0 + Math.sin(w.t * 3) * 0.06 + punch * 0.5;
     r.draw('sphere', { pos:[0, 1.2, 0], scale,
                        color: coreCol, emissive: coreCol,
@@ -30395,6 +31157,7 @@ P.games.reaction = function(){
   const GO_COL = cbSafe ? '#f0e442' : '#39ff88';
   const WAIT_COL = cbSafe ? '#0072b2' : '#ff2442';
   const EARLY_COL = '#ff6600';
+  const FAKE_COL = '#a855f7';       // 🧱 a lab script's decoy (§ 25)
   const goWord = cbSafe ? 'YELLOW' : 'GREEN';
 
   setControls({ action: isTouchDevice ? 'STRIKE' : 'STRIKE' });
@@ -30409,23 +31172,38 @@ P.games.reaction = function(){
   // running, one of these repaints the chamber under the NEXT round.
   const later = (fn, ms) => gLater(() => { if(!over) fn(); }, ms);
 
+  // 🧱 A BRICK LAB script (§ 25): every wait in order, on a loop, and the
+  // FAKE reads — the chamber flashes a decoy colour halfway through.
+  const LSIG = (typeof labSignals === 'function') ? labSignals() : null;
+  let sigAt = 0, fakeT = null;
   function arm(minMs, spread){
+    let wait = Math.random() * spread + minMs, fake = false;
+    if(LSIG){ const sg = LSIG[sigAt++ % LSIG.length]; wait = sg.wait; fake = sg.fake; }
+    if(fake){
+      fakeT = later(() => {
+        if(state !== 'wait') return;
+        state = 'fake'; flash = 0.6; snd('flip');
+        w.pop([0, 4.2, 0], 'NOT YET', FAKE_COL, { size: 18, life: 0.6 });
+        later(() => { if(state === 'fake') state = 'wait'; }, 450);
+      }, wait * 0.45);
+    }
     trigger = later(() => {
-      if(state !== 'wait') return;
+      if(state !== 'wait' && state !== 'fake') return;
       state = 'go';
       // ⏸️ Round time, both ends: a read that spans a photo-mode pause is
       // timed on the milliseconds actually played, not the pause.
       startT = gNow();
       flash = 1;
       snd('go');
-    }, Math.random() * spread + minMs);
+    }, wait);
   }
   arm(1500, 2500);
 
   function strike(){
     if(over) return;
-    if(state === 'wait'){
+    if(state === 'wait' || state === 'fake'){
       gCancel(trigger);
+      if(fakeT) gCancel(fakeT);
       state = 'hold';
       snd('wrong');
       w.kick(1.2);
@@ -30462,7 +31240,7 @@ P.games.reaction = function(){
     flash = Math.max(0, flash - dt * 2.2);
     spin += dt * (state === 'go' ? 5 : 0.8);
 
-    const col = state === 'go' ? GO_COL : state === 'hold' ? EARLY_COL : WAIT_COL;
+    const col = state === 'go' ? GO_COL : state === 'hold' ? EARLY_COL : state === 'fake' ? FAKE_COL : WAIT_COL;
 
     w.goal.eye[0] = Math.sin(w.t * 0.3) * 0.9;
     w.goal.eye[1] = 2.6;
@@ -30506,6 +31284,7 @@ P.games.reaction = function(){
     if(over) return;
     over = true;
     gCancel(trigger);
+    if(fakeT) gCancel(fakeT);
     clearCanvasDrag();
     const pts = Math.min(400, score);
     showResults('reaction', pts, {
@@ -30860,11 +31639,21 @@ P.games.memory = function(){
     const t = deck[i]; deck[i] = deck[j]; deck[j] = t;
   }
 
+  // 🧱 A BRICK LAB board (§ 25): the designer's pairs dealt afresh among
+  // their squares; a blank square is a slab that is already gone.
+  const LB = (typeof labBoard === 'function') ? labBoard() : null;
+  const PAIRS = LB ? LB.pairs.length / 2 : 8;
+  if(LB){
+    const d2 = LB.pairs.slice();
+    for(let i = d2.length - 1; i > 0; i--){ const j = (Math.random() * (i + 1)) | 0; const t = d2[i]; d2[i] = d2[j]; d2[j] = t; }
+    deck.fill(-1);
+    LB.slots.forEach((slot, j) => { deck[slot] = d2[j]; });
+  }
   const cards = deck.map((tok, i) => {
     const cx = (i % COLS - (COLS - 1) / 2) * GAPX;
     const cz = ((i / COLS) | 0) - (ROWS - 1) / 2;
     return {
-      tok, i,
+      tok: tok < 0 ? 0 : tok, i, hole: tok < 0,
       // The rows step UP as they recede. Sixteen upright slabs on one flat
       // plane hide each other; raked like seating, every card in the far rows
       // is visible over the shoulders of the near ones, and the rake itself is
@@ -30872,8 +31661,8 @@ P.games.memory = function(){
       pos: [cx, 0.4 + (1.5 - cz) * 0.9, cz * GAPZ],
       turn: 0,        // 0 = face down, 1 = face up (drives the Y rotation)
       goal: 0,
-      gone: 0,        // 1 = matched and dissolving
-      lift: 0, glow: 0, wob: Math.random() * 6.28
+      gone: tok < 0 ? 1 : 0,        // 1 = matched and dissolving (or a lab board's blank square)
+      lift: tok < 0 ? 1 : 0, glow: 0, wob: Math.random() * 6.28
     };
   });
   const centres = cards.map(c => c.pos);
@@ -30909,10 +31698,10 @@ P.games.memory = function(){
         c.gone = 1;
         w.burst([c.pos[0], c.pos[1] + 1.6, c.pos[2]], T.col, 26, { speed: 10, life: 0.9, size: 0.32 });
       });
-      w.pop([0, 6.4, 0], `PAIR ${matched} / 8 · +75`, T.col, { size: 20, life: 1.1 });
+      w.pop([0, 6.4, 0], `PAIR ${matched} / ${PAIRS} · +75`, T.col, { size: 20, life: 1.1 });
       flipped = [];
       busy = false;
-      if(matched === 8){
+      if(matched === PAIRS){
         w.kick(2.4);
         snd('victory');
         gLater(() => end(), 900);
@@ -31104,7 +31893,20 @@ P.games.math = function(){
   let qStr = '', shatter = 0, assemble = 1, pulse = 0, ended = false;
   document.getElementById('g-time').textContent = time;
 
+  // 🧱 A BRICK LAB quiz (§ 25) — the 2D build's question maker. The board's
+  // type has + - * / and no × ÷, so the plate says it the keyboard way.
+  const QUIZ = (typeof labQuiz === 'function') ? labQuiz() : null;
   function gen(){
+    if(QUIZ){
+      const q = QUIZ();
+      qStr = q.plain;
+      qEl.textContent = q.text;
+      curAns = q.ans;
+      ansEl.value = '';
+      ansEl.focus();
+      assemble = 0;
+      return;
+    }
     const a = Math.floor(dailyRand() * 12) + 2;
     const b = Math.floor(dailyRand() * 12) + 2;
     const ops = ['+', '-', '*'];
@@ -31314,7 +32116,10 @@ P.games.hacker = function(){
   document.getElementById('prog-fill').style.width = '100%';
   document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--lime),var(--cyan))';
 
-  const rndIdx = () => Math.floor(Math.random() * 16);
+  // 🧱 A BRICK LAB sequence (§ 25) — the same nodes in the same order as 2D.
+  const LN = (typeof labNodes === 'function') ? labNodes() : null;
+  let lnAt = 0;
+  const rndIdx = () => LN ? LN[lnAt++ % LN.length] : Math.floor(Math.random() * 16);
   function setStatus(txt, col){ status.set(txt, col || '#cfe4ff', 15); }
 
   function flash(i, ms){
@@ -31573,7 +32378,9 @@ P.games.path = function(){
   const diffMod = getDifficultyModifier();
   const N = 5, CELLS = N * N;
   // Floored at 4 for 🔵 Safe Mode — see the 2D build.
-  const DEAD_COUNT = Math.min(9, 4 + Math.max(0, Math.round((diffMod - 1) * 2)));
+  // 🧱 A BRICK LAB circuit (§ 25) — the board the 2D build lays down.
+  const LBOARD = (typeof labCircuit === 'function') ? labCircuit() : null;
+  const DEAD_COUNT = LBOARD ? LBOARD.dead.length : Math.min(9, 4 + Math.max(0, Math.round((diffMod - 1) * 2)));
   const OPEN = CELLS - DEAD_COUNT;
   const time0 = Math.max(10, Math.round(15 * getTimeModifier()));
   const ROUTE_PTS = 700, CLEAR_BONUS = 250, SPEED_PTS = 15;
@@ -31612,11 +32419,14 @@ P.games.path = function(){
     for(let row = 0; row < N; row++) for(let k = 0; k < N; k++) p.push(row * N + (row % 2 ? N - 1 - k : k));
     return p.slice(0, OPEN);
   }
-  const solution = carve() || fallback();
+  const solution = LBOARD ? null : (carve() || fallback());
   const dead = new Set();
-  for(let i = 0; i < CELLS; i++) dead.add(i);
-  solution.forEach(i => dead.delete(i));
-  const START = solution[0];
+  if(LBOARD) LBOARD.dead.forEach(i => dead.add(i));
+  else{
+    for(let i = 0; i < CELLS; i++) dead.add(i);
+    solution.forEach(i => dead.delete(i));
+  }
+  const START = LBOARD ? LBOARD.start : solution[0];
 
   const SPAN = 2.9;
   const world = [];
@@ -31971,10 +32781,23 @@ P.games.freq = function(){
   lenEl.oninput = () => { if(ended) return; hideTouchHint(); len = parseFloat(lenEl.value); syncConsole(); snd('move'); };
   syncConsole();
 
+  // 🧱 A BRICK LAB run (§ 25) — the same signals in the same order as 2D.
+  const LS = (typeof labStages === 'function') ? labStages() : null;
   function newStage(){
+    if(LS){
+      const s = LS[(stage - 1) % LS.length];
+      form = FORMS[s.form] || FORMS[0];
+      tAmp = A_MIN + s.a * A_SPAN; tLen = L_MIN + s.l * L_SPAN;
+      if(Math.abs(tAmp - amp) < A_SPAN * 0.08 && Math.abs(tLen - len) < L_SPAN * 0.08){
+        amp = tAmp + (tAmp < (A_MIN + A_MAX) / 2 ? 1 : -1) * A_SPAN * 0.35;
+        len = tLen + (tLen < (L_MIN + L_MAX) / 2 ? 1 : -1) * L_SPAN * 0.35;
+        syncConsole();
+      }
+    }else{
     form = FORMS[(stage - 1) % FORMS.length];
     do{ tAmp = A_MIN + Math.random() * A_SPAN; } while(Math.abs(tAmp - amp) < A_SPAN * 0.2);
     do{ tLen = L_MIN + Math.random() * L_SPAN; } while(Math.abs(tLen - len) < L_SPAN * 0.2);
+    }
     const wander = Math.max(0, (diffMod - 1) * 0.6);   // 🔵 see the 2D build
     drift = { a:(Math.random() < .5 ? -1 : 1) * wander * 3.2, l:(Math.random() < .5 ? -1 : 1) * wander * 3.6 };
     held = 0; stageT = 0;
@@ -32328,6 +33151,32 @@ P.games.arena = function(){
     return out;
   })();
 
+  // 🧱 A BRICK LAB arena (§ 25): the designer's cover as walled blocks that
+  // really do stop you and the bots — the stock pillars are scenery, and stand
+  // aside for it — plus its gates and your start. The design fills the square
+  // inside the round pit, in the 2D arena's proportions; each block is drawn
+  // a hair inside its square so a one-square gap stays one you can get through.
+  const LAR = (typeof labCover === 'function') ? labCover() : null;
+  const AHX = 19, AHZ = 19 * 900 / 800;
+  const lwalls = LAR ? LAR.walls.map(q => ({
+    x0: (q.u0 * 2 - 1) * AHX + 0.15, x1: (q.u1 * 2 - 1) * AHX - 0.15,
+    z0: (q.v0 * 2 - 1) * AHZ + 0.15, z1: (q.v1 * 2 - 1) * AHZ - 0.15
+  })) : [];
+  if(LAR){ player.x = (LAR.start.u * 2 - 1) * AHX; player.z = (LAR.start.v * 2 - 1) * AHZ; }
+  // Out of every lab wall along the shallowest axis, as the 2D arena does it.
+  function pushOut(o, rad){
+    for(const q of lwalls){
+      if(o.x + rad <= q.x0 || o.x - rad >= q.x1 || o.z + rad <= q.z0 || o.z - rad >= q.z1) continue;
+      const L = o.x + rad - q.x0, Rt = q.x1 - (o.x - rad), T = o.z + rad - q.z0, B = q.z1 - (o.z - rad);
+      const m = Math.min(L, Rt, T, B);
+      if(m === L){ o.x -= L; o.vx = Math.min(0, o.vx); }
+      else if(m === Rt){ o.x += Rt; o.vx = Math.max(0, o.vx); }
+      else if(m === T){ o.z -= T; o.vz = Math.min(0, o.vz); }
+      else { o.z += B; o.vz = Math.max(0, o.vz); }
+    }
+  }
+  const inWall = (x, z, m) => lwalls.some(q => x > q.x0 - m && x < q.x1 + m && z > q.z0 - m && z < q.z1 + m);
+
   const hpBar = () => {
     document.getElementById('prog-fill').style.width = `${Math.max(0, player.hp / player.maxHp) * 100}%`;
   };
@@ -32349,15 +33198,24 @@ P.games.arena = function(){
     const a = Math.random() * Math.PI * 2;
     const d = 12 + Math.random() * (R_ARENA - 14);
     const hpS = 1 + (wave - 1) * 0.16;
+    let bx = Math.cos(a) * d, bz = Math.sin(a) * d;
+    if(LAR && LAR.gates){
+      const g = LAR.gates[(Math.random() * LAR.gates.length) | 0];
+      bx = (g.u * 2 - 1) * AHX + (Math.random() - 0.5) * 0.8; bz = (g.v * 2 - 1) * AHZ + (Math.random() - 0.5) * 0.8;
+    }
     bots.push({
-      k, x: Math.cos(a) * d, z: Math.sin(a) * d,
+      k, x: bx, z: bz,
       vx: 0, vz: 0, ang: 0,
       hp: k.hp * hpS * diffMod, max: k.hp * hpS * diffMod,
       hit: 0, stun: 0, dead: 0, bob: Math.random() * 6.28
     });
   }
   function spawnNode(){
-    const a = Math.random() * Math.PI * 2, d = Math.random() * (R_ARENA - 6);
+    let a = Math.random() * Math.PI * 2, d = Math.random() * (R_ARENA - 6);
+    // 🧱 Never inside a lab wall.
+    for(let n = 0; LAR && n < 12 && inWall(Math.cos(a) * d, Math.sin(a) * d, 1); n++){
+      a = Math.random() * Math.PI * 2; d = Math.random() * (R_ARENA - 6);
+    }
     const core = Math.random() < 0.28;
     nodes.push({ x: Math.cos(a) * d, z: Math.sin(a) * d, core, spin: Math.random() * 6.28, t: 0 });
   }
@@ -32701,6 +33559,7 @@ P.games.arena = function(){
       player.x *= k; player.z *= k;
       player.vx *= 0.4; player.vz *= 0.4;
     }
+    if(LAR) pushOut(player, Math.min(player.r, 0.9));
     if(dashing) w.spark([player.x, 0.6, player.z], colour, 0.4, 0.4, [0, 1, 0]);
 
     // ── WAVES ──
@@ -32738,6 +33597,7 @@ P.games.arena = function(){
       b.x += b.vx * dt; b.z += b.vz * dt;
       const bd = Math.hypot(b.x, b.z);
       if(bd > R_ARENA - 1){ const k = (R_ARENA - 1) / bd; b.x *= k; b.z *= k; }
+      if(LAR) pushOut(b, Math.min(b.k.sc, 0.9));
       // Contact damage.
       if(d < b.k.sc + player.r + 0.4) hurt(Math.round(b.k.dmg * diffMod));
     }
@@ -32817,7 +33677,18 @@ P.games.arena = function(){
       r.draw('box', { pos:[px * 0.96, 0.16, pz * 0.96], rot:[0, -a, 0], scale:[4.4, 0.1, 0.14],
                       color: c, emissive: c, emissiveStrength: 1.5 });
     }
-    for(const p of pillars){
+    // 🧱 A lab arena's walls: dark blocks with a neon rim round the top, as
+    // the 2D walls are drawn — and low enough that the camera sees over them.
+    const rimOf = () => ({ color:'#a855f7', emissive:'#a855f7', emissiveStrength: 1.9, height: 0.08 });
+    for(const q of lwalls){
+      const cx = (q.x0 + q.x1) / 2, cz = (q.z0 + q.z1) / 2, sx = q.x1 - q.x0, sz = q.z1 - q.z0, ty = 1.93;
+      r.draw('cube', { pos:[cx, 0.95, cz], scale:[sx, 1.9, sz], color:'#140c2a', metallic: 0.82, roughness: 0.32, rim: 1.5 });
+      r.beam([q.x0, ty, q.z0], [q.x1, ty, q.z0], 0.09, rimOf());
+      r.beam([q.x0, ty, q.z1], [q.x1, ty, q.z1], 0.09, rimOf());
+      r.beam([q.x0, ty, q.z0], [q.x0, ty, q.z1], 0.09, rimOf());
+      r.beam([q.x1, ty, q.z0], [q.x1, ty, q.z1], 0.09, rimOf());
+    }
+    for(const p of (LAR ? [] : pillars)){
       r.draw('cube', { pos:[p.x, p.h / 2, p.z], scale:[p.w, p.h, p.w],
                        color:'#0b0e1c', metallic: 0.86, roughness: 0.3, rim: 1.3 });
       for(const f of [[0, p.w * 0.52], [0, -p.w * 0.52]]){
@@ -33045,6 +33916,8 @@ P.games.battlebots = function(){
   // Hostiles a wave has called for but that have not found free ground yet, and
   // the countdown to the next attempt. See the wave block in the frame loop.
   let foeQueue = [], queueT = 0;
+  // 🧱 A BRICK LAB siege (§ 25) — the same waves as 2D.
+  const LWV = (typeof labWaves === 'function') ? labWaves() : null;
   let kills = 0, deployed = 0, empFired = 0, ended = false, scored = false;
   let hurtFlash = 0, hitFlash = 0, empFlash = 0, outro = null;
 
@@ -33379,6 +34252,8 @@ P.games.battlebots = function(){
           waveT = 400;                  // shelf busy — look again, don't bank a pile-up
         } else {
           waveNo++;
+          if(LWV) LWV[(waveNo - 1) % LWV.length].forEach(k => foeQueue.push(BB.foes[k]));
+          else{
           const pool = Object.values(BB.foes).filter(f => elapsed >= f.from);
           // ⚠️ THE WAVE MODEL IS THE 2D BUILD'S, NOT A PORT OF ITS SHAPE. This
           // block used to count off WAVE NUMBER rather than the clock, cap at
@@ -33401,6 +34276,7 @@ P.games.battlebots = function(){
             let x = Math.random() * tot, pick = pool[0];
             for(let j = 0; j < pool.length; j++){ if((x -= wts[j]) <= 0){ pick = pool[j]; break; } }
             foeQueue.push(pick);
+          }
           }
           waveT = Math.max(BB.wave.floor, BB.wave.start - elapsed * BB.wave.tighten) / waveScale;
           if(waveNo % 5 === 0){
@@ -34302,8 +35178,20 @@ P.games.rhythm = function(){
   // Same generator as the 2D build, same seeded stream, so the Daily Hack deals
   // both renderers the identical chart.
   let chartT = beat * 4, bar = 0, lastLane = -1;
+  // 🧱 A BRICK LAB chart (§ 25): four bars of the designer's notes, bar by
+  // bar, on a loop — laid on the same beat grid the generated chart uses.
+  const CHART = (typeof labChart === 'function') ? labChart() : null;
   function chartAhead(until){
     while(chartT < until){
+      if(CHART){
+        for(let i = 0; i < 8; i++){
+          const at = chartT + i * beat / 2;
+          CHART[(bar * 8 + i) % CHART.length].forEach((v, lane) => { if(v) notes.push({ lane, at, hit: false, dead: false }); });
+        }
+        chartT += beat * 4;
+        bar++;
+        continue;
+      }
       const density = Math.min(0.82, 0.34 + bar * 0.045) * Math.min(1.25, diff);
       for(let i = 0; i < 8; i++){
         const at = chartT + i * beat / 2;
@@ -34536,6 +35424,9 @@ P.games.merge = function(){
   const tileH = v => 0.5 + Math.log2(v) * 0.62;
 
   let grid = new Array(N * N).fill(0);
+  // 🧱 A BRICK LAB lattice (§ 25) — the 2D build's cores and blocks (-1).
+  const LAT = (typeof labLattice === 'function') ? labLattice() : null;
+  if(LAT) LAT.forEach((v, i) => { grid[i] = v; });
   let score = 0, best = 0, moves = 0, merges = 0, over = false;
   let time = Math.round(100 * getTimeModifier());
   const anims = [];
@@ -34571,7 +35462,7 @@ P.games.merge = function(){
     anims.push({ i, t: 1, delay: SLIDE, kind: 'spawn' });
     return true;
   }
-  spawn(); spawn();
+  if(!LAT || !LAT.some(v => v > 0)){ spawn(); spawn(); }
 
   document.getElementById('g-time').textContent = time;
   setControls({ left: '◀', action: '▲', drop: '▼', right: '▶' });
@@ -34593,7 +35484,7 @@ P.games.merge = function(){
     const locked = new Set();
     for(const [rr, c] of order){
       const v = at(rr, c);
-      if(!v) continue;
+      if(!v || v < 0) continue;
       let cr = rr, cc = c;
       while(true){
         const nr = cr + dr, nc = cc + dc;
@@ -34646,6 +35537,7 @@ P.games.merge = function(){
     if(freeCells().length) return true;
     for(let rr = 0; rr < N; rr++) for(let c = 0; c < N; c++){
       const v = at(rr, c);
+      if(v < 0) continue;
       if(rr + 1 < N && at(rr + 1, c) === v) return true;
       if(c + 1 < N && at(rr, c + 1) === v) return true;
     }
@@ -34756,6 +35648,15 @@ P.games.merge = function(){
     // sixteen emitters would silently drop most of them anyway.
     const lit = [];
     function drawCore(x, z, v, k){
+      if(v < 0){
+        // A lab BLOCK: a squat dead socket with a red warning cap.
+        r.draw('techblock', { pos:[x, 0.05, z], scale:[STEP * 0.84, 0.7, STEP * 0.84],
+                              color:'#1a1422', metallic: 0.6, roughness: 0.4, rim: 1.1,
+                              emissive:'#ff2442', emissiveStrength: 0.25 });
+        r.draw('box', { pos:[x, 0.42, z], scale:[STEP * 0.5, 0.06, STEP * 0.5],
+                        color:'#ff2442', emissive:'#ff2442', emissiveStrength: 1.4 });
+        return;
+      }
       const h = tileH(v) * k;
       const col = tileCol(v);
       const em = v >= 64 ? 0.9 + Math.min(0.6, Math.log2(v / 64) * 0.14) : 0.2;
@@ -34875,7 +35776,17 @@ P.games.uplink = function(){
                  'DRAG BACKWARDS ANYWHERE AND RELEASE — the pull is the power');
   showTouchHint('DRAG BACKWARDS ANYWHERE TO LOB');
 
+  // 🧱 A BRICK LAB run (§ 25) — the same fields as 2D, in world units.
+  const LU = (typeof labFields === 'function') ? labFields() : null;
+  let fieldAt = 0;
   function newField(){
+    if(LU){
+      const f = LU[fieldAt++ % LU.length];
+      barrier = { x: PAD[0] + 9, h: [5, 8, 11][f.wall] };
+      relay = { x: -1.5 + f.u * 18.5, y: 3.6 + f.v * 11.4, r: 2.0, bob: 0 };
+      wind = f.wind * 3.6 * Math.min(1.4, diff);
+      return;
+    }
     // Slab first, relay placed around it — an arc has to exist before the
     // player is asked to find it.
     barrier = { x: PAD[0] + rnd(6, 12), h: rnd(5, 5 + 7 * Math.min(1.3, diff)) };
@@ -35263,8 +36174,10 @@ P.games.cutter = function(){
   const NEONC = mine();
   const diff  = getDifficultyModifier();
   const time0 = Math.max(22, Math.round(62 * getTimeModifier()));
-  const CONES = Math.min(7, 3 + Math.round((diff - 1) * 2.2));
-  const NODES = 8;
+  // 🧱 A BRICK LAB floor (§ 25) — the same floor as 2D, in world units.
+  const LF = (typeof labFloor === 'function') ? labFloor() : null;
+  const CONES = LF ? LF.lamps.length : Math.min(7, 3 + Math.round((diff - 1) * 2.2));
+  const NODES = LF ? LF.nodes.length : 8;
   const NODE_PTS = 92, CLEAR_BONUS = 280, PER_SEC = 7;
 
   // The floor, in world units, sized so a fixed top-down camera holds ALL of
@@ -35276,12 +36189,26 @@ P.games.cutter = function(){
   let time = time0, score = 0, tagged = 0, expo = 0, litNow = false;
   let spotted = 0, over = false, scored = false, calm = 0, gameT = 0;
   const me = { x: 0, z: HZ - 3.6 };
+  // As in 2D, the design fills the floor below a band kept for the exposure
+  // rail along the far edge.
+  const fz = v => -HZ + 2 * HZ * (0.08 + v * 0.92);
+  if(LF && LF.start){ me.x = (LF.start.u * 2 - 1) * HX; me.z = fz(LF.start.v); }
 
   document.getElementById('g-time').textContent = time;
   document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--cyan),#8fa6ff)';
 
   const cones = [];
-  for(let i = 0; i < CONES; i++){
+  // A lab lamp: 2D pixels to world units at the ratio of the two builds'
+  // stock beams (250–430 px ≈ 13–22 u), its half-angle narrowed the way the
+  // stock 3D beams are, and its sweep mirrored — atan2(x, z) turns the other
+  // way round the screen from 2D's atan2(y, x) — so both renderers sweep alike.
+  if(LF) LF.lamps.forEach((L, i) => {
+    const x = (L.u * 2 - 1) * HX, z = fz(L.v);
+    cones.push({ x, z, base: Math.atan2(-x, fz(0.5) - z), span: -L.span, half: L.half * 0.78,
+                 speed: L.speed * diff, phase: L.phase, len: L.len * 0.052, spin: L.spin ? -1 : 0,
+                 neon: ['#5fa8ff', '#8fa6ff', '#6fd8ff'][i % 3] });
+  });
+  for(let i = 0; i < (LF ? 0 : CONES); i++){
     const side = i % 4;
     const t = 0.18 + Math.random() * 0.64;
     const pos = side === 0 ? [-HX + 2 * HX * t, -HZ]
@@ -35304,8 +36231,8 @@ P.games.cutter = function(){
     });
   }
 
-  const nodes = [];
-  for(let i = 0; i < NODES; i++){
+  const nodes = LF ? LF.nodes.map(n => ({ x: (n.u * 2 - 1) * HX, z: fz(n.v), got: false, pulse: 0 })) : [];
+  for(let i = 0; i < (LF ? 0 : NODES); i++){
     let n = null;
     for(let tryN = 0; tryN < 60; tryN++){
       const c = { x: (Math.random() * 2 - 1) * (HX - 2.6), z: (Math.random() * 2 - 1) * (HZ - 3.4), got: false, pulse: 0 };
@@ -35341,7 +36268,8 @@ P.games.cutter = function(){
     onUp(){ lastG = null; }
   });
 
-  const aimOf = c => c.base + Math.sin(gameT * c.speed + c.phase) * c.span;
+  const aimOf = c => c.spin ? c.base + c.spin * (gameT * c.speed + c.phase)
+                            : c.base + Math.sin(gameT * c.speed + c.phase) * c.span;
   const inCone = (c, px, pz) => {
     const dx = px - c.x, dz = pz - c.z;
     const d = Math.hypot(dx, dz);
@@ -35351,6 +36279,13 @@ P.games.cutter = function(){
     while(a < -Math.PI) a += Math.PI * 2;
     return Math.abs(a) < c.half * (1 - 0.18 * (d / c.len));
   };
+  // 🧱 As in 2D: no lamp lights the start of a lab floor at t = 0.
+  if(LF) for(const c of cones){
+    for(const ph of [c.phase, c.phase + Math.PI, Math.PI / 2, -Math.PI / 2]){
+      c.phase = ph;
+      if(!inCone(c, me.x, me.z)) break;
+    }
+  }
 
   registerRoundClock(n => {
     time += n;
@@ -35612,12 +36547,29 @@ P.games.sorter = function(){
   const live = [];
   const portPts = ports.map(q => [q.x, 1.1, PORT_Z]);
 
+  // 🧱 A BRICK LAB schedule (§ 25) — the same phases as 2D.
+  const LP = (typeof labSortPlan === 'function') ? labSortPlan() : null;
+  let ph = 0;
+  if(LP) ruleIdx = LP.rules[0];
+  const phaseMs = () => LP ? LP.ms[ph % LP.ms.length] : RULE_MS;
+  function flipLeftMs(){
+    let ms = phaseMs() - ruleT * 1000;
+    if(!LP) return ms;
+    for(let k = 1; k < LP.rules.length; k++){
+      const j = (ph + k) % LP.rules.length;
+      if(LP.rules[j] !== ruleIdx) return ms;
+      ms += LP.ms[j];
+    }
+    return Infinity;
+  }
+
   function paintRule(pulse){
     const R = SORT_RULES[ruleIdx];
     document.getElementById('sr-tag').textContent = 'RULE ' + (flips + 1);
     document.getElementById('sr-txt').textContent = R.name;
-    const left = Math.max(0, Math.ceil((RULE_MS - ruleT * 1000) / 1000));
-    document.getElementById('sr-next').textContent = 'FLIP IN ' + left + 's';
+    const leftMs = flipLeftMs();
+    const left = Math.max(0, Math.ceil(leftMs / 1000));
+    document.getElementById('sr-next').textContent = isFinite(leftMs) ? 'FLIP IN ' + left + 's' : 'NO FLIPS';
     strip.classList.toggle('warn', left <= 3);
     if(pulse){ strip.classList.add('flip'); gLater(() => strip.classList.remove('flip'), 900); }
   }
@@ -35738,12 +36690,17 @@ P.games.sorter = function(){
     hurt = Math.max(0, hurt - dt * 2);
 
     if(!over){
-      if(ruleT * 1000 >= RULE_MS){
-        ruleT = 0; flips++;
-        ruleIdx = schedule[flips % schedule.length];
-        snd('alarm');
-        toast('🗂️ SORT RULE ' + (flips + 1) + ' — ' + SORT_RULES[ruleIdx].name + ' · ' + SORT_RULES[ruleIdx].hint, 3200);
-        paintRule(true);
+      if(ruleT * 1000 >= phaseMs()){
+        ruleT = 0;
+        const was = ruleIdx;
+        if(LP){ ph++; ruleIdx = LP.rules[ph % LP.rules.length]; }
+        else ruleIdx = schedule[(flips + 1) % schedule.length];
+        if(ruleIdx !== was || !LP){
+          flips++;
+          snd('alarm');
+          toast('🗂️ SORT RULE ' + (flips + 1) + ' — ' + SORT_RULES[ruleIdx].name + ' · ' + SORT_RULES[ruleIdx].hint, 3200);
+          paintRule(true);
+        }else paintRule(false);
       }else paintRule(false);
 
       while(nextIdx < feed.length && feed[nextIdx].at <= gameT){
@@ -35938,9 +36895,14 @@ P.games.trace = function(){
   // than for the bench.
   const BTN_CELL = 0.10;
 
+  // 🧱 A BRICK LAB run (§ 25) — the same ciphers and alphabet as 2D.
+  const LCI = (typeof labCiphers === 'function') ? labCiphers() : null;
+  let ciAt = 0;
+  if(LCI) symCount = LCI.syms;
   function newCipher(){
     code = [];
-    for(let i = 0; i < SLOTS; i++) code.push(Math.floor(Math.random() * symCount));
+    if(LCI) code = LCI.codes[ciAt++ % LCI.codes.length].slice();
+    else for(let i = 0; i < SLOTS; i++) code.push(Math.floor(Math.random() * symCount));
     entry = []; history = []; attempts = 0;
   }
   newCipher();
@@ -35984,7 +36946,7 @@ P.games.trace = function(){
       score += SOLVE_BASE + left * 26;
       setLive(Math.min(900, score));
       snd('victory'); w.kick(2);
-      symCount = Math.min(TRACE_SYMS.length, symCount + (cracked % 2 === 0 ? 1 : 0));
+      if(!LCI) symCount = Math.min(TRACE_SYMS.length, symCount + (cracked % 2 === 0 ? 1 : 0));
       gLater(() => { if(!over) newCipher(); }, 700);
       return;
     }
@@ -36213,7 +37175,9 @@ P.games.defrag = function(){
   const diff  = getDifficultyModifier();
   const time0 = Math.max(34, Math.round(95 * getTimeModifier()));
   const COLS = 12, ROWS = 9, SP = 2.12;
-  const CORRUPT = Math.min(30, Math.round(18 * diff));
+  // 🧱 A BRICK LAB drive (§ 25) — the corruption the 2D build lays.
+  const LVOL = (typeof labVolume === 'function') ? labVolume() : null;
+  const CORRUPT = LVOL ? LVOL.mines.size : Math.min(30, Math.round(18 * diff));
   const SECTOR_PTS = 5, VOLUME_BONUS = 180;
 
   let time = time0, score = 0, cleared = 0, volumes = 0, hits = 0, absorbed = 0;
@@ -36238,6 +37202,12 @@ P.games.defrag = function(){
   function newVolume(){
     grid = [];
     for(let i = 0; i < COLS * ROWS; i++) grid.push({ bad: false, open: false, flag: false, n: 0, lit: 0, drop: 0 });
+    if(LVOL){
+      LVOL.mines.forEach(i => { grid[i].bad = true; });
+      for(let i = 0; i < grid.length; i++) grid[i].n = around(i).filter(j => grid[j].bad).length;
+      if(LVOL.start >= 0) open(LVOL.start, true);
+      return;
+    }
     const sc = 1 + Math.floor(Math.random() * (COLS - 2));
     const sr = 1 + Math.floor(Math.random() * (ROWS - 2));
     const safe = new Set([idx(sc, sr)].concat(around(idx(sc, sr))));
@@ -36525,7 +37495,10 @@ P.games.coolant = function(){
   const SC = 0.052;
   const wy = by => (BOARD_H / 2 - by) * SC;
 
-  const shaft = coolBuildShaft(SPD * (time0 + 8) + 2400, diff);
+  // 🧱 A BRICK LAB shaft (§ 25): the designer's tunnel, looping, in the same
+  // shape of object as the generated one — nothing below it changes.
+  const LSH = (typeof labShaft === 'function') ? labShaft(SPD * (time0 + 8) + 2400, diff) : null;
+  const shaft = LSH || coolBuildShaft(SPD * (time0 + 8) + 2400, diff);
   let time = time0, score = 0, dist = 0, heat = 0, vy = 0, y = BOARD_H / 2;
   let burning = false, over = false, scored = false, grace = 0, crashes = 0, vented = 0;
   let acc = 0, gameT = 0;
@@ -37920,6 +38893,7 @@ const MISSION_HOW = {
   lightcycle: 'Your cycle lays a wall of light behind it, and so do theirs. Touch any wall and you are derezzed — box the droid riders in before they box you in.',
   stack:   'Tap to drop the sliding slab onto the tower. Whatever hangs over the edge is cut off; a perfect drop cuts nothing, and three in a row grows it back. Miss the tower and it is over.',
   muncher: 'Eat every data bit in the maze while four security daemons hunt you. Eat a power core and, for a few seconds, they run from you — and you can eat them.',
+  cmdline: 'Viruses fall toward your shell, each carrying a command. Type a word to delete its virus — the first letter locks on. A typo breaks your clean run; a virus that lands costs integrity.',
 };
 
 // ══════════════════════════════════════════════
@@ -37993,6 +38967,8 @@ const MISSION_KEYS = {
                 keys:  "ARROW KEYS or WASD to turn · a quick double tap makes a U-turn" },
   stack:      { touch: "Tap anywhere on the board (or DROP) to drop the slab",
                 keys:  "SPACE, ENTER or ↓ to drop the slab" },
+  cmdline:    { touch: "Tap the letters on the keypad under the board · ⌫ lets go of a word",
+                keys:  "Just type · the first letter locks on · BACKSPACE or ESC lets go" },
   muncher:    { touch: "Swipe the way you want to go · or tap the arrow pad",
                 keys:  "ARROW KEYS or WASD · press a turn early and it happens at the next corner" },
 };
@@ -38311,6 +39287,18 @@ const MISSION_BRIEF = {
       "A perfect drop cuts nothing and pays a bonus. Three perfects in a row grow the slab back a little.",
       "It speeds up as you climb. Slow is fine — a clean drop beats a fast one every time.",
     ] },
+  cmdline: {
+    steps: [
+      "Viruses fall down the terminal toward your shell at the bottom. Each one carries a command word.",
+      "Type the FIRST letter of a word and you lock onto the virus nearest your shell that starts with it.",
+      "Type the rest of the word. Every correct letter fires a bolt; the last one deletes the virus.",
+      "A virus that reaches the shell costs a point of integrity — three and the session is over. The clock ends the run.",
+    ],
+    tips: [
+      "Clear the one closest to the shell first. The first letter always locks the nearest match, so read from the bottom up.",
+      "Accuracy beats speed. A typo breaks your clean run, and the multiplier climbs every four clean words — up to ×2.",
+      "The gold HEAVY PROCESS is a long word worth 40 extra, and costs two integrity if it lands. Start it early.",
+    ] },
   muncher: {
     steps: [
       "You are the muncher at the bottom of the maze. Every data bit you pass over is eaten: 5 points each.",
@@ -38514,9 +39502,9 @@ document.addEventListener('keydown', e => {
 // hub), not a game.
 const ONBOARD_STEPS = [
   { icon:'🎮', title:'WELCOME TO THE GRID',
-    body:'Twenty-six missions, a live leaderboard, and a market that sells the colour of your own dot. Thirty seconds and you will have played one.' },
+    body:'Thirty missions, a live leaderboard, and a market that sells the colour of your own dot. Thirty seconds and you will have played one.' },
   { icon:'⚡', title:'PICK A MISSION',
-    body:'Every card in the grid is a round. Tap the ⓘ on any card to read its rules without starting it — that badge is on all twenty-six, forever.' },
+    body:'Every card in the grid is a round. Tap the ⓘ on any card to read its rules without starting it — that badge is on all thirty, forever.' },
   { icon:'⚙️', title:'SET THE STABILITY',
     body:'The dial at the top scales the whole arcade: OVERCLOCK and MELTDOWN make every mission faster and shorter, and pay ×1.5 and ×2 for it.' },
   { icon:'🎯', title:'LET US RUN ONE',
@@ -38526,6 +39514,10 @@ let onboardStep = 0, onboardRunning = false;
 
 function maybeOnboard(){
   if(onboardDone() || onboardRunning) return;
+  // 🔗 A visitor who arrived on a challenge link came to race, and the race
+  // is their tutorial — the tour would open over the invitation (§ 22).
+  if(typeof clPending === 'object' && clPending) return;
+  if(typeof labPending === 'object' && labPending) return;
   // A profile that has already played is not new, whatever the flag says — an
   // established player landing on a fresh browser should not be taught to click.
   if(user && (user.gamesPlayed || 0) > 0){ markOnboard(); return; }
@@ -39519,7 +40511,9 @@ function paintCardMedals(){
       `<div class="gm-row"><span class="gm-ico">${cur ? cur.icon : '◌'}</span>` +
       `<span class="gm-bar"><i style="width:${Math.round(pr.frac * 100)}%"></i></span>` +
       `<span class="gm-next">${nxt ? nxt.icon + ' ' + t[pr.next].toLocaleString() : 'MAXED'}</span></div>` +
-      (rec ? `<div class="gm-rec">🏆 ${rec.pts.toLocaleString()} · ${rec.uid === user.uid ? 'YOU' : esc(rec.name)}</div>` : '');
+      (rec ? `<div class="gm-rec">🏆 ${rec.pts.toLocaleString()} · ${rec.uid === user.uid ? 'YOU' : esc(rec.name)}</div>` : '') +
+      // 🔥 The hottest heat cleared on this mission (§ 24).
+      ((typeof heatBest === 'function' && heatBest(gid) > 0) ? `<div class="gm-heat">🔥 HEAT ${heatBest(gid)} CLEARED</div>` : '');
     card.dataset.medal = cur ? cur.key : 'none';
   });
   applyGridView();
@@ -39542,7 +40536,7 @@ const MISSION_KINDS = {
   rhythm:['reflex'], merge:['puzzle', 'strategy'], uplink:['strategy'],
   cutter:['patience'], sorter:['patience'], trace:['patience', 'puzzle'],
   defrag:['patience', 'puzzle'], coolant:['patience'],
-  lightcycle:['reflex', 'strategy'], stack:['reflex'], muncher:['reflex', 'strategy']
+  lightcycle:['reflex', 'strategy'], stack:['reflex'], muncher:['reflex', 'strategy'], cmdline:['reflex']
 };
 const GRID_FILTERS = [
   { id:'all',      label:'ALL' },
@@ -39857,6 +40851,7 @@ function pauseCanRestart(){
   return !!(curGame && SOLO_START[curGame] && !mp && !bossRush && !dailyActive &&
             !anomalyActive && !chalActive && !endless &&
             !(typeof partyRunActive === 'function' && partyRunActive()) &&
+            !(typeof labActive === 'function' && labActive()) &&
             !(typeof campaignRunActive === 'function' && campaignRunActive()));
 }
 
@@ -39883,6 +40878,10 @@ function paintPauseMenu(){
   if(rs) rs.style.display = pauseCanRestart() ? '' : 'none';
   const qb = document.getElementById('pause-quit');
   if(qb) qb.textContent = bossRush ? '✕ ABANDON THE RUSH' : '✕ QUIT TO HUB';
+  // ⌨️ In a typed mission P is a letter, so the menu must not promise it.
+  const hint = document.querySelector('#pause-overlay .pause-hint');
+  if(hint) hint.textContent = pauseLettersOwned() ? 'Esc to resume · START on a controller'
+                                                  : 'Esc or P to resume · START on a controller';
   paintPauseAudio();
 }
 function paintPauseAudio(){
@@ -39932,12 +40931,23 @@ if(typeof registerOverlayCloser === 'function') registerOverlayCloser('pause-ove
 // photo mode's capture listener, which is bound later. While photo mode is up
 // this one refuses and lets the key through, so Escape leaves photo mode
 // without also pausing the round it hands back.
+//
+// ⌨️ A SPELLED mission owns every letter on the keyboard. COMMAND LINE (§ 26)
+// is typed on window.onkeydown, which this capture listener runs BEFORE — so
+// P used to pause the round in the middle of "ping", "pipe" or "payload", and
+// every word with a P in it could not be typed at all. There P is a letter,
+// whether the round is running or already held; Esc, the ⏸ button and START
+// still pause it.
+function pauseLettersOwned(){
+  return curGame === 'cmdline' && !!document.getElementById('game-screen')?.classList.contains('active');
+}
 window.addEventListener('keydown', e => {
   if(e.key !== 'Escape' && e.key !== 'p' && e.key !== 'P') return;
   if(e.repeat) return;
   const t = e.target;
   const typing = t && (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && t.type !== 'number' && t.type !== 'range'));
   if(typing && e.key !== 'Escape') return;
+  if(e.key !== 'Escape' && pauseLettersOwned()) return;
   if(PauseCtl.on){ e.preventDefault(); e.stopPropagation(); resumeRound(); return; }
   if(!pauseRefusal()){
     e.preventDefault(); e.stopPropagation();
@@ -39981,7 +40991,20 @@ const EVENTS = [
     // Every 3D world leans toward these for the whole window — see
     // applyWorldTint(), called from createWorld().
     tint:{ zenith:'#1a0636', horizon:'#ff5a00', fog:'#2b0b4d', sun:'#ff7a2a',
-           amount: 0.5, horizonAmount: 0.28, saturation: 1.06 } }
+           amount: 0.5, horizonAmount: 0.28, saturation: 1.06 } },
+  // ❄️ COLD BOOT (v53). The first window that crosses New Year — Dec 1 to
+  // Jan 1 inclusive, one key (coldboot-<year it opened>) for the whole run,
+  // which eventWindow() already handles. The tint is a HUE move toward ice
+  // blue, luminance kept (evMixKeep), and a touch less saturation: a frozen
+  // city is a quieter one. 3D worlds also get snowfall — see createWorld().
+  { id:'coldboot', name:'COLD BOOT', icon:'❄️', board:'FROST BOARD',
+    from:[12, 1], to:[1, 1],             // Dec 1 – Jan 1 inclusive, UTC
+    tease: 7,
+    blurb:'The grid is frozen solid',
+    goalRuns: 5,
+    snow: true,
+    tint:{ zenith:'#081a36', horizon:'#6fd3ff', fog:'#0e2644', sun:'#cfefff',
+           amount: 0.46, horizonAmount: 0.26, saturation: 0.9 } }
 ];
 
 const eventById = id => EVENTS.find(e => e.id === id) || null;
@@ -40074,26 +41097,41 @@ function applyEventTheme(){
   const a = activeEvent();
   EVENTS.forEach(ev => document.body.classList.toggle('ev-' + ev.id, !!(a && a.ev.id === ev.id)));
   let deco = document.getElementById('ev-deco');
-  if(a && a.ev.id === 'haunt'){
-    if(!deco){
-      deco = document.createElement('div');
-      deco.id = 'ev-deco';
-      deco.setAttribute('aria-hidden', 'true');
-      // Bats cross the top of the screen at their own heights and speeds;
-      // two pumpkins and a ghost bob in the lower corners.
-      let html = '';
-      for(let i = 0; i < 6; i++){
-        html += `<span class="evd-bat" style="top:${(4 + i * 7 + Math.random() * 5).toFixed(1)}%;` +
-                `animation-duration:${(14 + Math.random() * 12).toFixed(1)}s;animation-delay:-${(Math.random() * 20).toFixed(1)}s;` +
-                `font-size:${(0.9 + Math.random() * 0.9).toFixed(2)}rem">🦇</span>`;
-      }
-      html += '<span class="evd-float evd-l">🎃</span><span class="evd-float evd-r">🎃</span><span class="evd-float evd-g">👻</span>';
-      deco.innerHTML = html;
-      document.body.appendChild(deco);
+  // One layer, built for whichever event is running and rebuilt if that
+  // changes — `data-ev` says which event the current one was built for.
+  if(deco && (!a || deco.dataset.ev !== a.ev.id)){ deco.remove(); deco = null; }
+  if(!a || deco) return;
+  let html = '';
+  if(a.ev.id === 'haunt'){
+    // Bats cross the top of the screen at their own heights and speeds;
+    // two pumpkins and a ghost bob in the lower corners.
+    for(let i = 0; i < 6; i++){
+      html += `<span class="evd-bat" style="top:${(4 + i * 7 + Math.random() * 5).toFixed(1)}%;` +
+              `animation-duration:${(14 + Math.random() * 12).toFixed(1)}s;animation-delay:-${(Math.random() * 20).toFixed(1)}s;` +
+              `font-size:${(0.9 + Math.random() * 0.9).toFixed(2)}rem">🦇</span>`;
     }
-  }else if(deco){
-    deco.remove();
+    html += '<span class="evd-float evd-l">🎃</span><span class="evd-float evd-r">🎃</span><span class="evd-float evd-g">👻</span>';
+  }else if(a.ev.id === 'coldboot'){
+    // ❄️ Snow down the whole hub: flakes at their own sizes, speeds and sway,
+    // started at random points in their fall so the first frame is already
+    // mid-storm rather than a curtain dropping in from the top.
+    for(let i = 0; i < 26; i++){
+      const d = 11 + Math.random() * 13;
+      html += `<span class="evd-snow" style="left:${(Math.random() * 100).toFixed(1)}%;` +
+              `animation-duration:${d.toFixed(1)}s,${(3 + Math.random() * 3).toFixed(1)}s;` +
+              `animation-delay:-${(Math.random() * d).toFixed(1)}s,-${(Math.random() * 3).toFixed(1)}s;` +
+              `font-size:${(0.55 + Math.random() * 0.9).toFixed(2)}rem;opacity:${(0.25 + Math.random() * 0.4).toFixed(2)}">❄</span>`;
+    }
+    html += '<span class="evd-float evd-l">⛄</span><span class="evd-float evd-r">❄️</span>';
+  }else{
+    return;
   }
+  deco = document.createElement('div');
+  deco.id = 'ev-deco';
+  deco.dataset.ev = a.ev.id;
+  deco.setAttribute('aria-hidden', 'true');
+  deco.innerHTML = html;
+  document.body.appendChild(deco);
 }
 
 // The 3D worlds: a mix of each mission's own sky, fog and key light toward the
@@ -40182,12 +41220,20 @@ function paintEventBanner(){
       `<button class="btn btn-primary" id="btn-ev-shop" type="button">${ev.icon} LIMITED STOCK</button>`;
     anchor.parentNode.insertBefore(el, anchor);
     el.querySelector('#btn-ev-shop').addEventListener('click', () => {
-      if(!activeEvent()){ snd('deny'); toast(`${ev.icon} The stock arrives with the event.`, 2400); return; }
+      if(!activeEvent()){ snd('deny'); toast(`${(eventTeaser() || { ev }).ev.icon} The stock arrives with the event.`, 2400); return; }
       openMarket();
       switchMarketTab('event');
     });
   }
   el.classList.toggle('ev-tease', !a);
+  // Coloured per event (style.css keys off evb-<id>), and the icon and the
+  // shop button re-stamped, because the element outlives the event it was
+  // built for when a teaser turns into a different event's window.
+  EVENTS.forEach(e => el.classList.toggle('evb-' + e.id, e.id === ev.id));
+  const ico = el.querySelector('.mp-banner-icon');
+  if(ico) ico.textContent = ev.icon;
+  const shopBtn = el.querySelector('#btn-ev-shop');
+  if(shopBtn) shopBtn.textContent = `${ev.icon} LIMITED STOCK`;
   const title = el.querySelector('#ev-banner-title');
   const sub = el.querySelector('#ev-banner-sub');
   const prog = el.querySelector('#ev-prog');
@@ -40198,7 +41244,7 @@ function paintEventBanner(){
     title.textContent = `${ev.name} · ${evLeftLabel(left)} LEFT`;
     const got = user && user.achievements && user.achievements[ev.id];
     sub.textContent = `${ev.blurb} until ${EV_MONTHS[ev.to[0] - 1]} ${ev.to[1]}. ` +
-      (got ? `Badge earned — ${(+mine.pts || 0).toLocaleString()} haunt points banked.`
+      (got ? `Badge earned — ${(+mine.pts || 0).toLocaleString()} points banked on the ${ev.board.toLowerCase()}.`
            : `Finish ${ev.goalRuns} missions for the badge: ${Math.min(ev.goalRuns, +mine.runs || 0)}/${ev.goalRuns} · ${(+mine.pts || 0).toLocaleString()} pts on the ${ev.board.toLowerCase()}.`);
     prog.style.display = '';
     prog.firstChild.style.width = Math.min(100, ((+mine.runs || 0) / ev.goalRuns) * 100) + '%';
@@ -40718,7 +41764,11 @@ function lcSim(opts){
   const grid = new Int16Array(COLS * ROWS);         // 0 open, else rider id + 1
   const at = (x, y) => y * COLS + x;
   const inside = (x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS;
-  const open = (x, y) => inside(x, y) && grid[at(x, y)] === 0;
+  // 🧱 A BRICK LAB arena (§ 25): solid blocks, kept apart from the trail grid
+  // so a cleared wave's grid.fill(0) never takes them down.
+  const ARENA = opts.arena || null;
+  const solid = (x, y) => !!(ARENA && ARENA.blocked[at(x, y)]);
+  const open = (x, y) => inside(x, y) && grid[at(x, y)] === 0 && !solid(x, y);
 
   const S = {
     riders: [], wave: 0, kills: 0, waves: 0, score: 0, secs: 0,
@@ -40727,6 +41777,7 @@ function lcSim(opts){
   };
   const player = { id: 0, player: true, x: 6, y: (ROWS / 2) | 0, dir: { x: 1, y: 0 },
                    queue: [], alive: true, trail: [], color: opts.color || '#00f5ff' };
+  if(ARENA && ARENA.start){ player.x = ARENA.start.x; player.y = ARENA.start.y; player.dir = { ...ARENA.start.dir }; }
 
   function occupy(r, x, y){ grid[at(x, y)] = r.id + 1; r.trail.push([x, y]); r.x = x; r.y = y; }
   function wipe(r, keepHead){
@@ -40741,15 +41792,20 @@ function lcSim(opts){
   function spawnWave(){
     const spec = LC.WAVES[Math.min(S.wave, LC.WAVES.length - 1)];
     const mx = COLS >> 1, my = ROWS >> 1;
-    const starts = [
+    const ready = list => list.filter(s => open(s.x, s.y) && open(s.x + s.d.x, s.y + s.d.y))
+     .map(s => ({ ...s, far: Math.abs(s.x - player.x) + Math.abs(s.y - player.y) }))
+     .sort((a, b) => b.far - a.far);
+    const stock = [
       { x: COLS - 3, y: 2, d: { x: -1, y: 0 } },        { x: COLS - 3, y: ROWS - 3, d: { x: -1, y: 0 } },
       { x: 2, y: 2, d: { x: 0, y: 1 } },                 { x: 2, y: ROWS - 3, d: { x: 0, y: -1 } },
       { x: mx, y: 1, d: { x: 0, y: 1 } },                { x: mx, y: ROWS - 2, d: { x: 0, y: -1 } },
       { x: COLS - 2, y: my, d: { x: -1, y: 0 } },        { x: 1, y: my, d: { x: 1, y: 0 } }
-    ].filter(s => open(s.x, s.y) && open(s.x + s.d.x, s.y + s.d.y))
-     .map(s => ({ ...s, far: Math.abs(s.x - player.x) + Math.abs(s.y - player.y) }))
-     .sort((a, b) => b.far - a.far);
+    ];
+    // 🧱 A lab arena's own spawn points first; the stock eight if none is free.
+    let starts = ARENA && ARENA.spawns ? ready(ARENA.spawns) : [];
+    if(!starts.length) starts = ready(stock);
     const n = Math.min(spec.n, starts.length);
+    S.lastN = n;
     for(let i = 0; i < n; i++){
       const s = starts[i];
       const id = S.nextId++;
@@ -40776,7 +41832,7 @@ function lcSim(opts){
       const cx = q[h++], cy = q[h++]; n++;
       for(const [dx, dy] of LC_DIRS){
         const nx = cx + dx, ny = cy + dy;
-        if(inside(nx, ny) && !grid[at(nx, ny)] && !seen[at(nx, ny)]){ seen[at(nx, ny)] = 1; q.push(nx, ny); }
+        if(inside(nx, ny) && !grid[at(nx, ny)] && !solid(nx, ny) && !seen[at(nx, ny)]){ seen[at(nx, ny)] = 1; q.push(nx, ny); }
       }
     }
     return n;
@@ -40873,6 +41929,9 @@ function lcSim(opts){
       if(r.player && r.stuck){ r.stuck = false; continue; }
       occupy(r, r.nx, r.ny);
     }
+    // 🧱 A wave that found nowhere to spawn (a lab arena with every spawn
+    // walled in) was never a wave: no clear bonus — try again shortly.
+    if(S.nextWaveIn < 0 && S.lastN === 0){ S.nextWaveIn = 3; return; }
     // Wave cleared: the walls come down and the next wave rides in shortly.
     if(S.nextWaveIn < 0 && !S.riders.some(r => !r.player && r.alive)){
       S.waves++;
@@ -40886,7 +41945,7 @@ function lcSim(opts){
   }
 
   return {
-    S, player, open,
+    S, player, open, arena: ARENA,
     start(){ spawnWave(); },
     turn(x, y){
       if(!player.alive) return;
@@ -40919,7 +41978,8 @@ let lcLast = null;
 // the renderer's; it gets the sim and the events of the frame.
 function lcRound(o){
   const diff = getDifficultyModifier();
-  const sim = lcSim({ diff, color: getEquippedColorHex(), absorb: () => survivedFatal() });
+  const sim = lcSim({ diff, color: getEquippedColorHex(), absorb: () => survivedFatal(),
+                      arena: (typeof labArena === 'function') ? labArena() : null });
   const S = sim.S;
   const time0 = Math.round(LC.CLOCK * getTimeModifier());
   let time = time0, ended = false;
@@ -41073,6 +42133,19 @@ function startLightCycle(){
     aCtx.shadowBlur = 14; aCtx.shadowColor = '#00f5ff';
     aCtx.strokeRect(1.5, 1.5, W - 3, H - 3);
     aCtx.restore();
+
+    // 🧱 A lab arena's blocks (§ 25): solid for every rider.
+    if(round.sim.arena){
+      aCtx.save();
+      for(const R of round.sim.arena.rects){
+        const x = R.x0 * CELL, y = R.y0 * CELL, w = (R.x1 - R.x0) * CELL, h = (R.y1 - R.y0) * CELL;
+        aCtx.fillStyle = '#0c1838'; aCtx.fillRect(x, y, w, h);
+        aCtx.shadowBlur = 10; aCtx.shadowColor = '#3d7bff';
+        aCtx.strokeStyle = 'rgba(61,123,255,0.85)'; aCtx.lineWidth = 2;
+        aCtx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+      }
+      aCtx.restore();
+    }
 
     // Derezzed walls fade out where they stood.
     for(let i = fades.length - 1; i >= 0; i--){
@@ -41280,6 +42353,20 @@ P.games.lightcycle = function(){
     r.light({ pos:[-12, 16, -12], color:'#4f7dff', intensity: 320, range: 55 });
     r.light({ pos:[ 12, 16,  12], color:'#ff6a3a', intensity: 220, range: 55 });
 
+    // 🧱 A lab arena's blocks (§ 25): taller than a wall of light, so a pocket
+    // they make reads as a pocket from the camera.
+    if(round.sim.arena){
+      for(const R of round.sim.arena.rects){
+        const cx = (R.x0 + R.x1 - 1) / 2, cz = (R.y0 + R.y1 - 1) / 2;
+        const sx = R.x1 - R.x0, sz = R.y1 - R.y0;
+        r.draw('techblock', { pos:[wx(cx), 0.6, wz(cz)], scale:[sx * 0.96, 1.2, sz * 0.96],
+                              color:'#0f1c44', metallic: 0.8, roughness: 0.32, rim: 1.2,
+                              emissive:'#3d7bff', emissiveStrength: 0.45 });
+        r.draw('cube', { pos:[wx(cx), 1.22, wz(cz)], scale:[sx * 0.9, 0.05, sz * 0.9],
+                         color:'#ffffff', emissive:'#3d7bff', emissiveStrength: 1.6 });
+      }
+    }
+
     // ── WALLS OF THE DEREZZED, going out ──
     for(let i = fades.length - 1; i >= 0; i--){
       const f = fades[i];
@@ -41349,17 +42436,25 @@ function stackSim(opts){
     over: false, placed: 0
   };
   const top = () => S.slabs[S.slabs.length - 1];
+  // 🧱 A BRICK LAB schedule (§ 25): each floor's own speed and motion, a
+  // little faster every lap — or null.
+  const plan = opts.plan || null;
 
   function spawn(){
     const t = top();
     const axis = axes[S.lvl % axes.length];
     const side = (S.lvl % 2 === 0) ? -1 : 1;
+    const fl = plan ? plan[S.lvl % plan.length] : null;
     S.cur = {
       axis, x: t.x, z: t.z, w: t.w, d: t.d, y: t.y + SK.H, lvl: S.lvl + 1,
       dir: -side,
-      speed: SK.SPEED * diff * Math.min(SK.SPEED_MAX, 1 + S.lvl * SK.SPEED_UP)
+      speed: fl ? SK.SPEED * diff * fl.mult * Math.min(SK.SPEED_MAX, 1 + Math.floor(S.lvl / plan.length) * 0.15)
+                : SK.SPEED * diff * Math.min(SK.SPEED_MAX, 1 + S.lvl * SK.SPEED_UP)
     };
     S.cur[axis] = (axis === 'x' ? t.x : t.z) + side * SK.RANGE;
+    // A SWING slab rides a sine from the same end: slow at the ends, the
+    // floor's full speed through the middle.
+    if(fl && fl.swing){ S.cur.swing = true; S.cur.ph = side * Math.PI / 2; }
   }
   spawn();
 
@@ -41424,10 +42519,15 @@ function stackSim(opts){
       if(c && !S.over){
         const a = c.axis;
         const t = top();
+        if(c.swing){
+          c.ph += c.speed / SK.RANGE * dt;
+          c[a] = (a === 'x' ? t.x : t.z) + SK.RANGE * Math.sin(c.ph);
+        }else{
         c[a] += c.dir * c.speed * dt;
         const base = a === 'x' ? t.x : t.z;
         if(c[a] > base + SK.RANGE){ c[a] = base + SK.RANGE; c.dir = -1; }
         if(c[a] < base - SK.RANGE){ c[a] = base - SK.RANGE; c.dir = 1; }
+        }
       }
       for(let i = S.falling.length - 1; i >= 0; i--){
         const f = S.falling[i];
@@ -41443,7 +42543,8 @@ let stackLast = null;          // the last round, for the console
 function stackRound(o){
   o = o || {};
   const diff = getDifficultyModifier();
-  const sim = stackSim({ axes: o.axes, diff });
+  const LT = (typeof labTower === 'function') ? labTower() : null;
+  const sim = stackSim({ axes: o.axes, diff, plan: LT });
   const S = sim.S;
   let ended = false;
 
@@ -41764,7 +42865,11 @@ const DM_DIRS = [{ x: 0, y: -1 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 0 
 
 function dmSim(opts){
   opts = opts || {};
-  const { COLS, ROWS, MAZE } = DM;
+  const { COLS, ROWS } = DM;
+  // 🧱 A BRICK LAB maze (§ 25) arrives in the same strings, with the house
+  // copied in untouched — so both renderers and the daemons' AI read it
+  // exactly as they read the classic one, and a cleared level refills it.
+  const MAZE = opts.maze || DM.MAZE;
   const diff = opts.diff || 1;
   const cell = (x, y) => (x < 0 || y < 0 || x >= COLS || y >= ROWS) ? '#' : MAZE[y][x];
   const walkable = (x, y) => { const c = cell(x, y); return c !== '#' && c !== '-' && c !== 'G'; };
@@ -41984,7 +43089,8 @@ function dmSim(opts){
 let dmLast = null;             // the last round, for the console
 function dmRound(){
   const diff = getDifficultyModifier();
-  const sim = dmSim({ diff, absorb: () => survivedFatal() });
+  const sim = dmSim({ diff, absorb: () => survivedFatal(),
+                      maze: (typeof labMaze === 'function') ? labMaze() : null });
   const S = sim.S;
   const time0 = Math.round(DM.CLOCK * getTimeModifier());
   let time = time0, ended = false;
@@ -42354,7 +43460,7 @@ var party = null;             // var, not let: partyRunActive() is asked from co
 const PARTY_MIN = 2, PARTY_MAX = 6, PARTY_ROUNDS = 3;
 const PARTY_COLORS = ['#00f5ff', '#ff0090', '#39ff14', '#ffd700', '#a855f7', '#ff6600'];
 const PARTY_EXCLUDE = ['arena', 'battlebots'];   // no finish line / a long economy round
-const PARTY_SAME_BOARD = ['math', 'path', 'trace', 'defrag', 'cutter', 'sorter', 'coolant', 'memory'];
+const PARTY_SAME_BOARD = ['math', 'path', 'trace', 'defrag', 'cutter', 'sorter', 'coolant', 'memory', 'cmdline'];
 const LS_PARTY = 'pi_party_names';
 
 function partyRunActive(){ return !!(party && party.stage === 'play'); }
@@ -43169,3 +44275,4323 @@ document.getElementById('campaign-overlay')?.addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if(e.key === 'Escape' && document.getElementById('campaign-overlay')?.classList.contains('show')) closeOverlay('campaign-overlay');
 });
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 22 · v53 — 🔗 CHALLENGE LINKS
+// ══════════════════════════════════════════════════════════════════════
+// 📣 Share Score used to hand out the home page. A share is the one moment a
+// stranger is about to meet the arcade, and it met them with a sign-in form
+// and a grid of cards with nothing to say which one their friend had played.
+// Now a raceable run shares a link that CARRIES the run — mission, raw score,
+// stability tier, the modifiers it was played under and a thinned pace curve —
+// and opening it drops the visitor straight into that mission, racing that
+// curve on the same HUD the rival challenges use.
+//
+// THE RUN RIDES IN THE LINK, not in the database, on purpose:
+//   · nothing new to store and no rules to teach, so a visitor who has not
+//     even signed in yet can read it — and it works offline;
+//   · it cannot go stale. The board's challenge is ONE slot per profile, so a
+//     link that pointed at it would change under everyone holding it the next
+//     time its author posted something else.
+// The price is that anyone can write a link by hand. So a link can be raced by
+// anyone, but the takedown bonus it pays is gated: never for your own link,
+// and once per mission per day (clPayOnce).
+//
+// FORMAT — every character URL-unreserved, so no platform re-escapes it:
+//   1.<gid>.<pts b36>.<tier>.<name b64url>.<mods>.<curve>.<tag>.<sum>
+//   mods  = one letter per chaos modifier the run was armed with, or 0
+//   curve = "dt~dv_dt~dv…" in base36: deciseconds and points, each a delta
+//   tag   = 4 base36 chars of a hash of the author's uid (spots your own link)
+//   sum   = a hash of everything before it, so a link cut short fails loudly
+//
+// ⚠️ LOAD ORDER: this section runs after every function that hooks into it
+// (showResultsCard, shareRun, enterHub, maybeOnboard, settleChallenge), so
+// everything they can reach is a `var` or a function declaration — see § 21.
+var CL_PARAM = 'vs';
+var CL_STORE = 'pi_cl';
+var CL_PAID_KEY = 'pi_cl_paid';
+var CL_CURVE_N = 12;
+var CL_TIER = { safe:'a', stable:'s', overclocked:'o', meltdown:'m' };
+var CL_MOD = { inverse:'i', double:'d', blind:'b', packet:'p', lowband:'l', drift:'r',
+               surge:'S', surplus:'U', bulwark:'B' };
+var clPending = null;        // a decoded link waiting for the player to take it
+var clLastRun = null;        // the last results card's run, if it can be raced
+
+function clTag(uid){ return (hashStr('cl:' + String(uid || '')) % 1679616).toString(36).padStart(4, '0'); }
+function clB64(s){ return b64enc(s).replace(/\+/g, '-').replace(/\//g, '_'); }
+function clUnB64(s){ return b64dec(String(s).replace(/-/g, '+').replace(/_/g, '/')); }
+
+// Evenly spaced in TIME, not in samples: the pace curve records a point every
+// time the score moves, so thinning by index would spend the budget wherever
+// the scoring happened to be dense and leave the quiet stretches unmarked. The
+// ghost interpolates linearly between whatever it is given, so resampling on
+// the same rule loses nothing it would have drawn.
+function clResample(pts, n){
+  const src = (Array.isArray(pts) ? pts : [])
+    .filter(p => Array.isArray(p) && Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
+    .map(p => [+p[0], +p[1]]).sort((a, b) => a[0] - b[0]);
+  if(src.length <= n) return src;
+  const T = src[src.length - 1][0];
+  const at = ms => {
+    let lo = 0;
+    while(lo < src.length - 2 && src[lo + 1][0] <= ms) lo++;
+    const [t0, v0] = src[lo], [t1, v1] = src[Math.min(lo + 1, src.length - 1)];
+    return t1 === t0 ? v1 : v0 + (v1 - v0) * Math.min(1, Math.max(0, (ms - t0) / (t1 - t0)));
+  };
+  const out = [];
+  for(let i = 0; i < n - 1; i++){ const ms = T * i / (n - 1); out.push([ms, at(ms)]); }
+  out.push(src[src.length - 1]);        // the finish exactly as it happened
+  return out;
+}
+
+function clEncode(r){
+  let pt = 0, pv = 0;
+  const cv = clResample(r.curve, CL_CURVE_N).map(([ms, s]) => {
+    const t = Math.max(pt, Math.round(ms / 100)), v = Math.round(s);
+    const seg = (t - pt).toString(36) + '~' + (v - pv).toString(36);
+    pt = t; pv = v;
+    return seg;
+  }).join('_');
+  const mods = [...new Set((r.mods || []).map(id => CL_MOD[id]).filter(Boolean))].join('') || '0';
+  const body = ['1', r.gid, Math.max(1, Math.round(r.pts)).toString(36), CL_TIER[r.tier] || 's',
+                clB64(String(r.name || 'OPERATIVE').slice(0, 20)), mods, cv, r.tag || '0000'].join('.');
+  return body + '.' + hashStr(body).toString(36);
+}
+
+// Returns null for anything it cannot vouch for. A link is typed, pasted and
+// truncated by strangers' apps, so every field is checked on the way in.
+function clDecode(raw){
+  const parts = String(raw || '').trim().split('.');
+  if(parts.length !== 9 || parts[0] !== '1') return null;
+  const body = parts.slice(0, 8).join('.');
+  if(hashStr(body).toString(36) !== parts[8]) return null;
+  const [, gid, p36, t1, nm, mods, cv, tag] = parts;
+  if(!META[gid] || !SOLO_START[gid]) return null;
+  const pts = parseInt(p36, 36);
+  if(!(pts > 0) || pts > (META[gid].maxPts || 1000) * 3) return null;
+  const tier = Object.keys(CL_TIER).find(k => CL_TIER[k] === t1);
+  if(!tier || !DIFFICULTY_TIERS[tier]) return null;
+  let name = 'RIVAL';
+  try{ name = clUnB64(nm).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 20) || 'RIVAL'; }catch(e){}
+  const ids = mods === '0' ? [] : [...mods].map(ch => Object.keys(CL_MOD).find(k => CL_MOD[k] === ch));
+  if(ids.some(id => !id || !chaosById(id))) return null;
+  const curve = [];
+  let t = 0, v = 0;
+  for(const seg of cv.split('_')){
+    const ab = seg.split('~');
+    if(ab.length !== 2) return null;
+    const dt = parseInt(ab[0], 36), dv = parseInt(ab[1], 36);
+    if(!Number.isFinite(dt) || !Number.isFinite(dv) || dt < 0) return null;
+    t += dt; v += dv;
+    curve.push([t * 100, v]);
+  }
+  if(curve.length < 2 || curve.length > 64) return null;
+  return { gid, pts, tier, name, mods: [...new Set(ids)], curve, tag: String(tag || ''), link: true };
+}
+
+function clUrl(r){
+  const base = document.querySelector('link[rel="canonical"]')?.href || location.href.replace(/[?#].*$/, '');
+  return base + (base.includes('?') ? '&' : '?') + CL_PARAM + '=' + clEncode(r);
+}
+
+// Once per mission per day, and never for your own link. Kept on the device:
+// the bonus is small, the link is forgeable either way, and a server-side
+// ledger would need a node the rules do not have.
+function clPayOnce(gid){
+  try{
+    const day = dayKey();
+    let o = JSON.parse(localStorage.getItem(CL_PAID_KEY) || 'null');
+    if(!o || o.day !== day || !Array.isArray(o.g)) o = { day, g: [] };
+    if(o.g.includes(gid)) return false;
+    o.g.push(gid);
+    localStorage.setItem(CL_PAID_KEY, JSON.stringify(o));
+    return true;
+  }catch(e){ return false; }
+}
+function clIsOwn(c){ return !!(c && c.link && user && c.tag === clTag(user.uid)); }
+
+// Called from showResultsCard with facts gathered BEFORE the card's settle
+// steps ran — the Daily Hack and the Weekly Anomaly both stand down inside
+// them, so reading their flags afterwards would say "neither was running".
+function clNoteRun(gid, pts, tierKey, paceRes, flags, chalRes){
+  const curve = paceRes && paceRes.curve;
+  const ok = !flags.internal && !flags.daily && !flags.party && !flags.mp && !!SOLO_START[gid] &&
+             pts > 0 && Array.isArray(curve) && curve.length > 1 && !!user;
+  clLastRun = ok ? {
+    gid, pts: Math.round(pts), tier: tierKey, curve,
+    // The modifiers ride along, so the friend races the run that was played,
+    // not an easier one. A random CHAOS PROTOCOL roll included: it was part of
+    // the round whether or not anyone chose it.
+    mods: (chaos.lastStack || []).map(m => m && m.id).filter(Boolean),
+    name: user.username || 'OPERATIVE', tag: clTag(user.uid)
+  } : null;
+  const btn = document.getElementById('btn-share-run');
+  if(btn){
+    btn.dataset.base = (chalRes && clLastRun) ? '📣 Challenge Back' : '📣 Share Score';
+    btn.textContent = btn.dataset.base;
+  }
+}
+
+// ── ARRIVING WITH A LINK ──
+function clBoot(){
+  let held = '';
+  try{
+    const q = new URLSearchParams(location.search).get(CL_PARAM);
+    if(q){
+      sessionStorage.setItem(CL_STORE, q);
+      // Out of the address bar straight away: a visitor who copies the URL to
+      // share the ARCADE must not hand on somebody else's challenge by accident.
+      const u = new URL(location.href);
+      u.searchParams.delete(CL_PARAM);
+      history.replaceState(history.state, '', u.pathname + u.search + u.hash);
+    }
+    held = sessionStorage.getItem(CL_STORE) || '';
+  }catch(e){ held = ''; }
+  clPending = held ? clDecode(held) : null;
+  if(held && !clPending){
+    try{ sessionStorage.removeItem(CL_STORE); }catch(e){}
+    setTimeout(() => toast('⚠️ That challenge link could not be read — it may have been cut short. Ask for it again.', 4200), 900);
+  }
+  paintClAuth();
+}
+
+function paintClAuth(){
+  const el = document.getElementById('cl-auth');
+  if(!el) return;
+  const c = clPending;
+  if(!c){ el.style.display = 'none'; el.innerHTML = ''; return; }
+  const m = META[c.gid];
+  el.innerHTML =
+    `<div class="cl-auth-top">⚔️ ${esc(c.name.toUpperCase())} CHALLENGED YOU</div>` +
+    `<div class="cl-auth-mid"><span class="cl-auth-ico">${m.emoji}</span> ${esc(m.name)} · ` +
+    `<strong>${c.pts.toLocaleString()}</strong> to beat</div>` +
+    `<div class="cl-auth-sub">Pick how to play below and the race starts straight after.</div>`;
+  el.style.display = '';
+}
+
+// From enterHub. Waits for whatever else the hub opened on arrival (a streak,
+// an event teaser) rather than stacking a second modal over it.
+function maybeLinkChallenge(tries){
+  if(!clPending || !user) return;
+  tries = tries || 0;
+  if(!document.getElementById('hub-screen')?.classList.contains('active')) return;
+  if(document.querySelector('.fb-overlay.show')){
+    if(tries < 24) setTimeout(() => maybeLinkChallenge(tries + 1), 500);
+    return;
+  }
+  openClOverlay();
+}
+
+function clModsLine(ids){
+  const list = (ids || []).map(id => chaosById(id)).filter(Boolean);
+  return list.length ? list.map(x => `${x.icon} ${x.name}`).join(' · ') : '';
+}
+
+function openClOverlay(){
+  const c = clPending;
+  const body = document.getElementById('cl-body');
+  if(!c || !body) return;
+  const m = META[c.gid];
+  const tier = DIFFICULTY_TIERS[c.tier] || DIFFICULTY_TIERS.stable;
+  const locked = !missionUnlocked(c.gid);
+  const mods = clModsLine(c.mods);
+  const how = (typeof MISSION_HOW === 'object' && MISSION_HOW[c.gid]) || '';
+  const own = clIsOwn(c);
+  body.innerHTML =
+    `<div class="cl-card">` +
+      `<div class="cl-ico">${m.emoji}</div>` +
+      `<div class="cl-mission">${esc(m.name)}</div>` +
+      `<div class="cl-by">${own ? 'YOUR OWN LINK' : esc(c.name.toUpperCase()) + ' SCORED'}</div>` +
+      `<div class="cl-pts">${c.pts.toLocaleString()}<em>PTS</em></div>` +
+      `<div class="cl-tier">${tier.icon} ${esc(tier.label)}</div>` +
+    `</div>` +
+    (how ? `<div class="cl-how">${esc(how)}</div>` : '') +
+    (mods ? `<div class="cl-note">🌀 Played under ${esc(mods)} — you race under the same rules.</div>` : '') +
+    (locked ? `<div class="cl-note">🔓 This mission is normally locked until CLEARANCE ${missionClearance(c.gid)}. The challenge gets you in for this race.</div>` : '') +
+    `<div class="cl-note dim">Their pace runs beside yours on the HUD — ▲ means you are ahead.` +
+      (own ? ' Racing your own link pays no takedown bonus.' : '') + `</div>` +
+    `<div class="cl-btns">` +
+      `<button class="btn btn-secondary" id="cl-later" type="button">NOT NOW</button>` +
+      `<button class="btn btn-primary" id="cl-go" type="button">⚔️ ACCEPT &amp; RACE</button>` +
+    `</div>`;
+  document.getElementById('cl-go').onclick = () => clAccept();
+  document.getElementById('cl-later').onclick = () => clDismiss();
+  openOverlay('cl-overlay');
+}
+
+function clForget(){
+  clPending = null;
+  try{ sessionStorage.removeItem(CL_STORE); }catch(e){}
+  paintClAuth();
+}
+function clAccept(){
+  const c = clPending;
+  if(!c) return;
+  clForget();
+  closeOverlay('cl-overlay');
+  try{ if(typeof statsEvent === 'function') statsEvent('_lk_race'); }catch(e){}
+  beginChallenge(c);
+}
+function clDismiss(){
+  clForget();
+  closeOverlay('cl-overlay');
+  toast('⚔️ Challenge set aside — open the link again any time to race it.', 3000);
+}
+
+try{
+  document.getElementById('cl-close')?.addEventListener('click', () => clDismiss());
+  document.getElementById('cl-overlay')?.addEventListener('click', e => {
+    if(e.target.id === 'cl-overlay') clDismiss();
+  });
+  // Escape and the gamepad's B close through the dispatcher; walking away that
+  // way is the same "not now" as the button, minus the toast.
+  registerOverlayCloser('cl-overlay', () => {
+    const ov = document.getElementById('cl-overlay');
+    if(ov){ ov.classList.remove('show'); ov.setAttribute('aria-hidden', 'true'); }
+    clForget();
+  });
+  clBoot();
+}catch(e){ console.warn('Challenge links failed to boot:', e); }
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 23 · v53 — 📊 PLAY COUNTERS
+// ══════════════════════════════════════════════════════════════════════
+// Anonymous totals, so the arcade can say which of its missions people
+// actually play, how long for, and which ones they walk out of in the first
+// ten seconds. NOTHING here identifies anybody: no uid, no name, no device id
+// leaves the browser — only counters, incremented on the server.
+//
+//   stats/m/<gid>/plays  rounds started (after the countdown, so a quit during
+//                        the countdown is not a play)
+//                 done   rounds that reached a results card (a chained stage
+//                        counts: the stage did finish)
+//                 quit   rounds walked away from        early  …inside 10 s
+//                 secs   round time played, pause excluded (gNow)
+//                 d3 / touch   of the plays: in 3D / on a touch device
+//   stats/d/<YYYY-MM-DD>/<gid>   plays that day
+//                        _dev    devices that reached the hub that day
+//                        _new    …of which never seen on this device before
+//                        _ln_<lane>  plays by lane (grid, daily, chal, camp…)
+//                        _lk_arrive / _lk_race   challenge-link visits / races
+//                        _share / _share_lk      📣 presses / …with a link
+//
+// ⚠️ `stats` is a NEW TOP-LEVEL NODE, and the database refuses every node its
+// rules do not name ([[firebase-rtdb-rules-allowlist]] in the notes). Until the
+// rule is added the first write is refused and counting switches itself off
+// for the session — one quiet console line, no retry storm, nothing a player
+// sees. A local session writes nothing at all (the rules would refuse its uid).
+//
+// Everything a hook reaches is a `var` or a function declaration — see § 21's
+// LOAD ORDER note.
+var ST_ON = true;
+var stRound = null;
+var ST_DAY_KEY = 'pi_st_day', ST_SEEN_KEY = 'pi_st_seen';
+
+function stCanWrite(){
+  return ST_ON && !!db && !offlineMode && !!user && !isLocalSession() &&
+         typeof firebase === 'object' && !!(firebase.database && firebase.database.ServerValue &&
+                                            firebase.database.ServerValue.increment);
+}
+function stInc(n){ return firebase.database.ServerValue.increment(n); }
+function stKey(s){ return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 16) || 'x'; }
+
+function stSend(patch){
+  if(!stCanWrite() || !patch || !Object.keys(patch).length) return;
+  try{
+    db.ref('stats').update(patch).catch(e => {
+      if(!ST_ON) return;
+      ST_ON = false;
+      console.info('📊 Play counters are off for this session (' + ((e && e.code) || e) +
+                   ') — the database rules probably do not name `stats` yet.');
+    });
+  }catch(e){ ST_ON = false; }
+}
+
+// Which door the round came through. Read at the START, while the lane's own
+// flags are still up.
+function stLane(){
+  try{
+    if(typeof partyRunActive === 'function' && partyRunActive()) return 'party';
+    if(typeof campaignActive !== 'undefined' && campaignActive) return 'camp';
+    if(bossRush) return 'rush';
+    if(typeof endless !== 'undefined' && endless) return 'endless';
+    if(dailyActive) return 'daily';
+    if(typeof anomalyActive !== 'undefined' && anomalyActive) return 'anom';
+    if(chalActive) return chalActive.link ? 'link' : 'chal';
+    if(typeof labActive === 'function' && labActive()) return 'lab';
+    if(typeof heatRoundActive === 'function' && heatRoundActive()) return 'heat';
+  }catch(e){}
+  return 'grid';
+}
+
+// From prepGame's countdown callback — the moment the round really begins.
+function statsRoundStart(gid){
+  if(stRound) statsRoundEnd('done');
+  if(!META[gid] || !SOLO_START[gid]) return;
+  stRound = { gid, t0: gNow() };
+  const g = stKey(gid), day = dayKey();
+  const p = {};
+  p['m/' + g + '/plays'] = stInc(1);
+  if(document.body.classList.contains('mode-3d')) p['m/' + g + '/d3'] = stInc(1);
+  if(isTouchDevice) p['m/' + g + '/touch'] = stInc(1);
+  p['d/' + day + '/' + g] = stInc(1);
+  p['d/' + day + '/_ln_' + stLane()] = stInc(1);
+  stSend(p);
+}
+
+// 'done' from showResults (a stage of a chain included — it finished), 'quit'
+// from stopGame when no results card closed the round first.
+function statsRoundEnd(how){
+  const r = stRound;
+  if(!r) return;
+  stRound = null;
+  const secs = Math.max(0, Math.min(900, Math.round((gNow() - r.t0) / 1000)));
+  const g = stKey(r.gid);
+  const p = {};
+  if(secs > 0) p['m/' + g + '/secs'] = stInc(secs);
+  p['m/' + g + '/' + (how === 'done' ? 'done' : 'quit')] = stInc(1);
+  if(how !== 'done' && secs < 10) p['m/' + g + '/early'] = stInc(1);
+  stSend(p);
+}
+
+// Once per device per day, from enterHub.
+function statsDay(){
+  const day = dayKey();
+  let seen = null, last = null;
+  try{ seen = localStorage.getItem(ST_SEEN_KEY); last = localStorage.getItem(ST_DAY_KEY); }catch(e){ return; }
+  if(last === day || !stCanWrite()) return;
+  const p = {};
+  p['d/' + day + '/_dev'] = stInc(1);
+  if(!seen) p['d/' + day + '/_new'] = stInc(1);
+  try{ localStorage.setItem(ST_DAY_KEY, day); localStorage.setItem(ST_SEEN_KEY, '1'); }catch(e){}
+  stSend(p);
+}
+
+// The funnel's other steps: a link arriving, a link raced, a share pressed.
+function statsEvent(key){
+  if(!/^_[a-z_]{1,14}$/.test(String(key))) return;
+  stSend({ ['d/' + dayKey() + '/' + key]: stInc(1) });
+}
+
+// ── 📊 THE TELEMETRY PANEL — add ?stats to the address ──
+// The counters above are only worth having if someone can read them, and the
+// person who needs to is the one who runs the arcade — on a phone as often as
+// at a desk. So the dashboard lives INSIDE the game, behind ?stats, reading the
+// same database the game already talks to: nothing extra to deploy, live while
+// it is open, and it opens on the sign-in screen with no account needed.
+//
+// What it shows is anonymous totals and nothing else, so it is not a secret —
+// but it is not linked from anywhere either. The rule this section asks for
+// makes `stats` readable by anyone; see ST_RULE for how to lock it to one uid.
+var stDash = { data: null, err: null, range: 30, ref: null, busy: false };
+var ST_LANES = [
+  ['grid', 'Mission grid'], ['daily', 'Daily Hack'], ['chal', 'Rival challenges'], ['link', 'Challenge links'],
+  ['camp', 'Campaign'], ['anom', 'Weekly Anomaly'], ['endless', 'Endless'], ['rush', 'Boss Rush'],
+  ['party', 'Party mode'], ['heat', 'Heat runs'], ['lab', 'Brick Lab']
+];
+// The rule the Console needs, exactly as it should be pasted: inside "rules",
+// beside "players". Writes: signed-in (a guest counts), never a delete, a
+// counter only ever steps up by one (seconds by up to fifteen minutes), keys
+// shaped like the ones this code writes. Reads: open — every number here is
+// anonymous. To keep the panel to yourself, swap ".read": true for
+// ".read": "auth != null && auth.uid === '<your uid>'".
+var ST_RULE = `"stats": {
+  ".read": true,
+  "m": {
+    "$gid": {
+      ".validate": "$gid.length <= 16 && $gid.matches(/^[a-z0-9]+$/)",
+      "secs": {
+        ".write": "auth != null && newData.exists()",
+        ".validate": "newData.isNumber() && newData.val() >= (data.exists() ? data.val() : 0) && newData.val() <= (data.exists() ? data.val() : 0) + 900"
+      },
+      "$k": {
+        ".write": "auth != null && newData.exists()",
+        ".validate": "$k.length <= 8 && $k.matches(/^[a-z0-9]+$/) && newData.isNumber() && newData.val() === (data.exists() ? data.val() : 0) + 1"
+      }
+    }
+  },
+  "d": {
+    "$day": {
+      ".validate": "$day.matches(/^20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/)",
+      "$k": {
+        ".write": "auth != null && newData.exists()",
+        ".validate": "$k.length <= 16 && $k.matches(/^[a-z0-9_]+$/) && newData.isNumber() && newData.val() === (data.exists() ? data.val() : 0) + 1"
+      }
+    }
+  }
+},`;
+
+function stDashOpen(){
+  const ov = document.getElementById('stats-overlay');
+  if(!ov) return;
+  ov.classList.add('show');
+  ov.setAttribute('aria-hidden', 'false');
+  stDashRender();
+  stDashListen();
+}
+function stDashClose(){
+  const ov = document.getElementById('stats-overlay');
+  if(ov){ ov.classList.remove('show'); ov.setAttribute('aria-hidden', 'true'); }
+  try{ if(stDash.ref) stDash.ref.off(); }catch(e){}
+  stDash.ref = null;
+}
+
+// Live through the SDK when it loaded; one REST read when it did not (the
+// panel must still work on a page whose Firebase scripts were blocked).
+function stDashListen(){
+  if(stDash.ref || stDash.busy) return;
+  stDash.err = null;
+  if(db){
+    try{
+      stDash.ref = db.ref('stats');
+      stDash.ref.on('value', snap => {
+        stDash.data = snap.val() || {};
+        stDash.err = null;
+        stDashRender();
+      }, err => {
+        stDash.err = (err && err.code) || String(err && err.message || err);
+        stDash.ref = null;
+        stDashRender();
+      });
+      return;
+    }catch(e){ stDash.ref = null; }
+  }
+  stDash.busy = true;
+  fetch(FB.databaseURL + '/stats.json', { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : Promise.reject({ code: r.status === 401 ? 'PERMISSION_DENIED' : 'HTTP ' + r.status }))
+    .then(j => { stDash.data = j || {}; stDash.err = null; })
+    .catch(e => { stDash.err = (e && e.code) || 'NETWORK'; })
+    .finally(() => { stDash.busy = false; stDashRender(); });
+}
+
+function stN(n){ return +n || 0; }
+function stFmt(n){ n = Math.round(stN(n)); return n >= 10000 ? (n / 1000).toFixed(n >= 100000 ? 0 : 1) + 'K' : n.toLocaleString(); }
+function stPct(a, b){ return b > 0 ? Math.round(100 * a / b) : null; }
+
+function stDaysBack(range, allKeys){
+  if(!range){
+    const first = allKeys.length ? allKeys[0] : dayKey();
+    const out = [];
+    const d = new Date(first + 'T00:00:00Z'), end = new Date(dayKey() + 'T00:00:00Z');
+    while(d <= end && out.length < 400){ out.push(d.toISOString().slice(0, 10)); d.setUTCDate(d.getUTCDate() + 1); }
+    return out;
+  }
+  const out = [];
+  const d = new Date(dayKey() + 'T00:00:00Z');
+  for(let i = range - 1; i >= 0; i--){
+    const x = new Date(d); x.setUTCDate(x.getUTCDate() - i);
+    out.push(x.toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+function stSummary(data, range){
+  const D = (data && data.d) || {}, M = (data && data.m) || {};
+  const days = stDaysBack(range, Object.keys(D).sort());
+  const perDay = days.map(k => {
+    const row = D[k] || {};
+    let plays = 0;
+    for(const g in row) if(g[0] !== '_') plays += stN(row[g]);
+    return { day: k, plays, dev: stN(row._dev) };
+  });
+  const sum = key => days.reduce((a, k) => a + stN((D[k] || {})[key]), 0);
+  const gids = Object.keys(SOLO_START);
+  const missions = gids.map(g => {
+    const m = M[g] || {};
+    const ended = stN(m.done) + stN(m.quit);
+    return {
+      gid: g, plays: sum(g), all: stN(m.plays),
+      finish: stPct(stN(m.done), ended), early: stPct(stN(m.early), stN(m.plays)),
+      avg: ended > 0 ? Math.round(stN(m.secs) / ended) : null,
+      d3: stPct(stN(m.d3), stN(m.plays)), touch: stPct(stN(m.touch), stN(m.plays))
+    };
+  }).sort((a, b) => b.plays - a.plays || b.all - a.all || META[a.gid].name.localeCompare(META[b.gid].name));
+  let done = 0, quit = 0, secs = 0;
+  for(const g in M){ done += stN(M[g].done); quit += stN(M[g].quit); secs += stN(M[g].secs); }
+  const lanes = ST_LANES.map(([k, label]) => ({ k, label, n: sum('_ln_' + k) }));
+  const liveDays = perDay.filter(p => p.dev > 0).length;
+  return {
+    days: perDay, missions, lanes,
+    plays: perDay.reduce((a, p) => a + p.plays, 0),
+    dev: sum('_dev'), devAvg: liveDays ? Math.round(sum('_dev') / (range || liveDays)) : 0,
+    fresh: sum('_new'),
+    finish: stPct(done, done + quit), avg: (done + quit) > 0 ? Math.round(secs / (done + quit)) : null,
+    lkArrive: sum('_lk_arrive'), lkRace: sum('_lk_race'), share: sum('_share') + sum('_share_lk'), shareLk: sum('_share_lk'),
+    wallShare: sum('_share_wall'), wallArrive: sum('_wall_arrive'), wallPlay: sum('_wall_play'),
+    empty: !Object.keys(D).length && !Object.keys(M).length
+  };
+}
+
+// One series, one hue: the arcade's cyan. Bars capped at 24px, 4px rounded
+// data-end, square at the baseline, a 2px gap between neighbours; one hairline
+// grid at a clean tick; the axis labels in text tokens, never the bar colour.
+function stChart(days, width){
+  const n = days.length;
+  const max = Math.max(1, ...days.map(d => d.plays));
+  const step = (() => { const raw = max / 2, mag = Math.pow(10, Math.floor(Math.log10(raw))); const f = raw / mag;
+                        return Math.max(1, (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * mag); })();
+  const top = Math.max(step, Math.ceil(max / step) * step);
+  // Drawn at the width it is shown at, one unit to one CSS pixel, so the axis
+  // type stays 10px on a phone instead of shrinking with a scaled viewBox.
+  const W = Math.max(280, Math.round(width || 640)), H = 170, L = 34, R = 6, T = 10, B = 22;
+  const band = (W - L - R) / n, bw = Math.max(2, Math.min(24, band - 2));
+  const y = v => T + (H - T - B) * (1 - v / top);
+  const ticks = [];
+  for(let v = 0; v <= top + 1e-9; v += step) ticks.push(v);
+  let g = '';
+  ticks.forEach(v => {
+    g += `<line class="st-grid" x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/>` +
+         `<text class="st-axis" x="${L - 6}" y="${(y(v) + 3.5).toFixed(1)}" text-anchor="end">${stFmt(v)}</text>`;
+  });
+  days.forEach((d, i) => {
+    const x = L + band * i + (band - bw) / 2, y0 = y(0), y1 = y(d.plays), h = y0 - y1;
+    const r = Math.min(4, bw / 2, h);
+    if(d.plays > 0){
+      g += `<path class="st-bar" d="M${x.toFixed(1)},${y0.toFixed(1)} V${(y1 + r).toFixed(1)} Q${x.toFixed(1)},${y1.toFixed(1)} ${(x + r).toFixed(1)},${y1.toFixed(1)} ` +
+           `H${(x + bw - r).toFixed(1)} Q${(x + bw).toFixed(1)},${y1.toFixed(1)} ${(x + bw).toFixed(1)},${(y1 + r).toFixed(1)} V${y0.toFixed(1)} Z"/>`;
+    }
+    // The hit target is the whole band, full height — far bigger than the bar.
+    g += `<rect class="st-hit" x="${(L + band * i).toFixed(1)}" y="${T}" width="${band.toFixed(1)}" height="${H - T - B}" ` +
+         `data-i="${i}"><title>${d.day}: ${d.plays} plays</title></rect>`;
+  });
+  const lab = i => days[i].day.slice(5).replace('-', '/');
+  const every = Math.max(1, Math.ceil(n / Math.max(3, Math.floor(W / 90))));
+  for(let i = n - 1; i >= 0; i -= every){
+    // The newest day's label hangs off its bar's right edge, not its centre —
+    // centred, the last one runs out of the drawing.
+    const last = i === n - 1;
+    g += `<text class="st-axis" x="${(L + band * i + (last ? band : band / 2)).toFixed(1)}" y="${H - 6}" ` +
+         `text-anchor="${last ? 'end' : 'middle'}">${lab(i)}</text>`;
+  }
+  return `<svg class="st-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Plays per day">${g}</svg>`;
+}
+
+function stDashRender(){
+  const body = document.getElementById('st-body');
+  if(!body) return;
+  document.querySelectorAll('#stats-overlay .st-rg').forEach(b =>
+    b.classList.toggle('on', +b.dataset.r === stDash.range));
+  if(stDash.err){
+    const denied = /PERMISSION|permission|401/.test(stDash.err);
+    body.innerHTML =
+      `<div class="st-setup">` +
+        `<div class="st-setup-h">${denied ? '🔒 The database is refusing <code>stats</code>' : '📡 Could not reach the database'}</div>` +
+        (denied
+          ? `<p>The counters need one rule before they can be stored or read. In the Firebase Console open <strong>Realtime Database → Rules</strong>, paste this inside <code>"rules"</code> next to <code>"players"</code>, press <strong>Publish</strong>, then reload this page.</p>` +
+            `<pre class="st-rule" id="st-rule">${esc(ST_RULE)}</pre>` +
+            `<button class="btn btn-secondary btn-sm" id="st-copy" type="button">📋 Copy the rule</button>`
+          : `<p>${esc(stDash.err)} — check the connection and reopen the panel.</p>`) +
+      `</div>`;
+    const cp = document.getElementById('st-copy');
+    if(cp) cp.onclick = async () => {
+      try{ await navigator.clipboard.writeText(ST_RULE); cp.textContent = '✔ Copied'; }
+      catch(e){ const r = document.createRange(); r.selectNodeContents(document.getElementById('st-rule'));
+                const s = getSelection(); s.removeAllRanges(); s.addRange(r); cp.textContent = 'Selected — copy it by hand'; }
+    };
+    return;
+  }
+  if(!stDash.data){ body.innerHTML = `<div class="lb-empty">Reading the counters…</div>`; return; }
+  const S = stSummary(stDash.data, stDash.range);
+  const span = stDash.range ? `last ${stDash.range} days` : 'all time';
+  const tile = (label, value, note) =>
+    `<div class="st-tile"><div class="st-tl">${label}</div><div class="st-tv">${value}</div>${note ? `<div class="st-tn">${note}</div>` : ''}</div>`;
+  const pct = v => v == null ? '—' : v + '%';
+  const secs = v => v == null ? '—' : v >= 90 ? (v / 60).toFixed(1) + ' min' : v + ' s';
+  // A mission most people walk out of inside ten seconds is the one worth a
+  // look first, so it wears a chip — an icon and a word, never colour alone.
+  const earlyChip = v => v == null ? '—'
+    : v >= 35 ? `<span class="st-chip bad">▲ ${v}%</span>` : v >= 20 ? `<span class="st-chip warn">● ${v}%</span>` : `${v}%`;
+  const mMax = Math.max(1, ...S.missions.map(m => m.plays));
+  const laneMax = Math.max(1, ...S.lanes.map(l => l.n));
+  body.innerHTML =
+    (S.empty ? `<div class="st-note">No rounds counted yet. The first ones appear here the moment someone signed in (a guest counts) finishes the countdown on any mission.</div>` : '') +
+    `<div class="st-tiles">` +
+      tile('Rounds played', stFmt(S.plays), span) +
+      tile('Devices a day', stFmt(S.devAvg), stFmt(S.dev) + ' device-days') +
+      tile('New devices', stFmt(S.fresh), span) +
+      tile('Rounds finished', pct(S.finish), 'all time, of rounds that ended') +
+      tile('Average round', secs(S.avg), 'all time') +
+    `</div>` +
+    `<div class="st-sec"><div class="st-h">Rounds per day <span>${span} · UTC</span></div>` +
+      `<div class="st-chart-wrap" id="st-chart-wrap">${stChart(S.days)}<div class="st-tip" id="st-tip" hidden></div></div></div>` +
+    `<div class="st-sec"><div class="st-h">Missions <span>rounds in the ${span}; rates are all time</span></div>` +
+      `<div class="st-table-wrap"><table class="st-table"><thead><tr>` +
+        `<th scope="col">Mission</th><th scope="col" class="n">Rounds</th><th scope="col" class="n">Finished</th>` +
+        `<th scope="col" class="n">Quit &lt;10 s</th><th scope="col" class="n">Avg round</th><th scope="col" class="n">3D</th><th scope="col" class="n">Touch</th>` +
+      `</tr></thead><tbody>` +
+      S.missions.map(m =>
+        `<tr${m.plays || m.all ? '' : ' class="idle"'}><th scope="row"><span class="st-em">${META[m.gid].emoji}</span>${esc(META[m.gid].name)}</th>` +
+        `<td class="n"><span class="st-mbar" style="--w:${(100 * m.plays / mMax).toFixed(1)}%"></span>${m.plays.toLocaleString()}</td>` +
+        `<td class="n">${pct(m.finish)}</td><td class="n">${earlyChip(m.early)}</td><td class="n">${secs(m.avg)}</td>` +
+        `<td class="n">${pct(m.d3)}</td><td class="n">${pct(m.touch)}</td></tr>`).join('') +
+      `</tbody></table></div></div>` +
+    `<div class="st-cols">` +
+      `<div class="st-sec"><div class="st-h">Where rounds start <span>${span}</span></div>` +
+        S.lanes.map(l => `<div class="st-lane"><span class="st-ll">${l.label}</span>` +
+          `<span class="st-lt"><span class="st-lb" style="--w:${(100 * l.n / laneMax).toFixed(1)}%"></span></span>` +
+          `<span class="st-lv">${l.n.toLocaleString()}</span></div>`).join('') +
+      `</div>` +
+      `<div class="st-sec"><div class="st-h">Sharing <span>${span}</span></div>` +
+        `<div class="st-fun"><div><strong>${stFmt(S.share)}</strong> share presses</div><div>${stFmt(S.shareLk)} of them carried a challenge link</div></div>` +
+        `<div class="st-fun"><div><strong>${stFmt(S.lkArrive)}</strong> visits arrived on a challenge link</div>` +
+        `<div>${stFmt(S.lkRace)} raced it${S.lkArrive ? ' · ' + pct(stPct(S.lkRace, S.lkArrive)) : ''}</div></div>` +
+        `<div class="st-fun"><div><strong>${stFmt(S.wallShare)}</strong> Brick Lab walls shared</div>` +
+        `<div>${stFmt(S.wallArrive)} arrived by link · ${stFmt(S.wallPlay)} played</div></div>` +
+      `</div>` +
+    `</div>` +
+    `<div class="st-foot">Anonymous counters only: no names, no accounts, no device ids. Local play and offline rounds are not counted.</div>`;
+  // Hover: one tooltip for the chart, fed from the bar under the pointer.
+  const wrap = document.getElementById('st-chart-wrap'), tip = document.getElementById('st-tip');
+  if(wrap && wrap.clientWidth){
+    const svg = wrap.querySelector('svg');
+    if(svg) svg.outerHTML = stChart(S.days, wrap.clientWidth);
+  }
+  if(wrap && tip){
+    wrap.querySelectorAll('.st-hit').forEach(h => {
+      const show = () => {
+        const d = S.days[+h.dataset.i];
+        tip.innerHTML = `<strong>${d.plays.toLocaleString()}</strong> rounds<br><span>${d.day}${d.dev ? ' · ' + d.dev + ' devices' : ''}</span>`;
+        tip.hidden = false;
+        const wr = wrap.getBoundingClientRect(), hr = h.getBoundingClientRect();
+        const x = Math.min(wr.width - tip.offsetWidth - 4, Math.max(4, hr.left - wr.left + hr.width / 2 - tip.offsetWidth / 2));
+        tip.style.left = x + 'px';
+        wrap.querySelectorAll('.st-hit.on').forEach(o => o.classList.remove('on'));
+        h.classList.add('on');
+      };
+      h.addEventListener('mouseenter', show);
+      h.addEventListener('click', show);
+    });
+    wrap.addEventListener('mouseleave', () => { tip.hidden = true; wrap.querySelectorAll('.st-hit.on').forEach(o => o.classList.remove('on')); });
+  }
+}
+
+try{
+  document.querySelectorAll('#stats-overlay .st-rg').forEach(b => b.addEventListener('click', () => {
+    stDash.range = +b.dataset.r;
+    try{ localStorage.setItem('pi_st_range', String(stDash.range)); }catch(e){}
+    stDashRender();
+  }));
+  try{ const r = localStorage.getItem('pi_st_range'); if(r !== null && [0, 7, 30].includes(+r)) stDash.range = +r; }catch(e){}
+  document.getElementById('st-close')?.addEventListener('click', () => stDashClose());
+  document.getElementById('stats-overlay')?.addEventListener('click', e => { if(e.target.id === 'stats-overlay') stDashClose(); });
+  registerOverlayCloser('stats-overlay', () => stDashClose());
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Escape' && document.getElementById('stats-overlay')?.classList.contains('show')) stDashClose();
+  });
+  let stResize = 0;
+  window.addEventListener('resize', () => {
+    clearTimeout(stResize);
+    stResize = setTimeout(() => {
+      if(document.getElementById('stats-overlay')?.classList.contains('show') && stDash.data && !stDash.err) stDashRender();
+    }, 180);
+  });
+  if(new URLSearchParams(location.search).has('stats')) setTimeout(() => stDashOpen(), 300);
+}catch(e){ console.warn('Telemetry panel failed to wire:', e); }
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 24 · v53 — 🔥 HEAT
+// ══════════════════════════════════════════════════════════════════════
+// CHAOS PROTOCOL is a gamble: the dice pick the modifier. HEAT is the other
+// appetite — the player picks the hazards, stacks as many as they dare, and
+// every mission keeps a record of the hottest run that still made a medal.
+//
+// Nothing here is a new modifier. The six hazards are CHAOS_MODS' own, armed
+// through prepGame()'s `mod` door exactly as Boss Rush, the Weekly Anomaly and
+// the campaign arm theirs, so each one behaves identically in both renderers.
+// And nothing here is a new payout: a hazard pays what it always has, through
+// chaosPayMult() (clamped at ×2.6), whether the dice or the player chose it.
+//
+//   HEAT      each hazard's weight, from what it already pays: ×1.2 → 1,
+//             ×1.25 → 2, ×1.3 → 3. All six together = HEAT 13.
+//   CLEARED   the round's RAW score reached the mission's bronze medal line —
+//             the same raw-score rule the medals use, so no multiplier can buy
+//             one — on any tier but Safe Mode.
+//   RECORD    the highest heat cleared, per mission, on the card and profile.
+//
+// WHERE IT APPLIES: an ordinary round off the mission grid, and Play Again /
+// Restart from one. Never the Daily Hack, the Weekly Anomaly, the campaign,
+// Boss Rush, Endless, a challenge (a link carries its own modifiers), a party
+// turn or a duel — each of those already decides its own rules. While Heat is
+// on it replaces Chaos Protocol's roll: one round, one set of hazards.
+//
+// ⚠️ LOAD ORDER — hooks reach this section from prepGame, chaosAnnounce,
+// showResultsCard, paintCardMedals, recordRun and the sign-in path, so every
+// name they touch is a `var` or a function declaration (see § 21).
+var HEAT_KEY = 'pi_heat';
+var HEAT_POINTS = { lowband: 1, inverse: 2, double: 2, blind: 2, packet: 3, drift: 3 };
+var HEAT_ORDER = ['lowband', 'blind', 'inverse', 'double', 'packet', 'drift'];
+var HEAT_MAX = 13;
+var heatSel = [];
+var heatLast = null;          // { gid, level, ids } — what the current round armed
+try{
+  const a = JSON.parse(localStorage.getItem(HEAT_KEY) || '[]');
+  heatSel = Array.isArray(a) ? HEAT_ORDER.filter(id => a.includes(id)) : [];
+}catch(e){ heatSel = []; }
+
+function heatLevelOf(ids){ return (ids || []).reduce((a, id) => a + (HEAT_POINTS[id] || 0), 0); }
+function heatLevel(){ return heatLevelOf(heatSel); }
+function heatBest(gid){ return Math.max(0, Math.min(HEAT_MAX, Math.floor(+((user && user.heat) || {})[gid] || 0))); }
+function heatBestAny(){ return Object.keys(SOLO_START).reduce((a, g) => Math.max(a, heatBest(g)), 0); }
+function heatBand(n){
+  return n <= 0 ? 'OFF' : n <= 4 ? 'WARM' : n <= 8 ? 'HOT' : n <= 12 ? 'SCORCHING' : 'INFERNO';
+}
+function heatSave(){
+  try{ localStorage.setItem(HEAT_KEY, JSON.stringify(heatSel)); }catch(e){}
+  paintHeatRow();
+  try{ paintChaosToggle(); }catch(e){}
+}
+
+// The round's other lanes, read at prep time — each already sets its own
+// rules, so Heat stands aside for all of them.
+function heatAppliesNow(){
+  if(heatLevel() <= 0) return false;
+  try{
+    if(mp || bossRush || dailyActive || chalActive) return false;
+    if(typeof anomalyActive !== 'undefined' && anomalyActive) return false;
+    if(typeof endless !== 'undefined' && endless) return false;
+    if(typeof campaignActive !== 'undefined' && campaignActive) return false;
+    if(typeof partyRunActive === 'function' && partyRunActive()) return false;
+  }catch(e){ return false; }
+  return true;
+}
+
+// From prepGame, EVERY prep: it also clears the last round's heat when this one
+// has none, so a results card can never credit a record to the wrong round.
+// The returned list carries `.heat` so chaosAnnounce() can name it as HEAT.
+function heatArmFor(gid, mayApply){
+  if(!mayApply || !heatAppliesNow()){ heatLast = null; return null; }
+  const ids = heatSel.slice();
+  const list = ids.map(id => chaosById(id)).filter(Boolean);
+  if(!list.length){ heatLast = null; return null; }
+  heatLast = { gid, level: heatLevelOf(ids), ids };
+  list.heat = heatLast.level;
+  return list;
+}
+function heatRoundActive(){ return !!heatLast && heatLast.gid === curGame; }
+function heatWas(gid){ return heatLast && heatLast.gid === gid ? heatLast.level : 0; }
+
+// On the results card, after the medal. Rows for the card; the record is kept
+// on the mirror at once and written to the profile on its own (a new child key
+// under players/$uid, which the rules allow — and a refusal costs only this).
+function settleHeat(gid, raw, tierKey, opts){
+  const h = heatLast;
+  heatLast = null;
+  if(!h || h.gid !== gid || !user) return {};
+  raw = Math.max(0, Math.round(+raw || 0));
+  const eligible = typeof medalEligible === 'function' ? medalEligible(gid, opts, tierKey) : false;
+  if(!eligible) return tierKey === 'safe' ? { '🔥 Heat Record': 'not on Safe Mode' } : {};
+  const need = medalThresholds(gid)[0];
+  const prev = heatBest(gid);
+  if(raw < need) return { '🔥 Heat Cleared': `not yet · ${need.toLocaleString()} raw clears it (🥉)` };
+  if(h.level <= prev) return { '🔥 Heat Cleared': `HEAT ${h.level} · your record ${prev}` };
+  user.heat = Object.assign({}, user.heat || {}, { [gid]: h.level });
+  try{ cacheProfile(user); }catch(e){}
+  saveProfilePatch({ ['heat/' + gid]: h.level });
+  setTimeout(() => { snd('levelUp'); toast(`🔥 HEAT RECORD — ${META[gid].name} cleared at HEAT ${h.level}`, 3200); }, 900);
+  try{ paintCardMedals(); }catch(e){}
+  return { '🔥 Heat Record': `NEW · HEAT ${h.level}` + (prev ? ` (was ${prev})` : '') };
+}
+
+// The server copy replaces `user` at sign-in and after an offline flush; a
+// record earned on this device while that copy lagged is merged back (max per
+// mission) — the same repair campaignReconcile() makes for stars.
+function heatReconcile(held){
+  const mine = held && held.heat;
+  if(!user || !mine || typeof mine !== 'object') return;
+  const send = {};
+  Object.keys(SOLO_START).forEach(g => {
+    const kept = Math.max(0, Math.min(HEAT_MAX, Math.floor(+mine[g] || 0)));
+    if(kept > heatBest(g)){
+      user.heat = Object.assign({}, user.heat || {}, { [g]: kept });
+      send['heat/' + g] = kept;
+    }
+  });
+  if(Object.keys(send).length) saveProfilePatch(send);
+}
+
+// ── THE HUB ROW ──
+function paintHeatRow(){
+  const btn = document.getElementById('btn-heat');
+  const sel = document.getElementById('heat-selector');
+  const note = document.getElementById('heat-note');
+  if(!btn) return;
+  const n = heatLevel();
+  const pay = n ? chaosPayMult(heatSel.map(id => chaosById(id)).filter(Boolean)) : 1;
+  btn.textContent = n ? `HEAT ${n} · ×${pay.toFixed(2)}` : 'OFF · SET HEAT';
+  btn.setAttribute('aria-label', n ? `Heat ${n}, pays times ${pay.toFixed(2)}. Change heat` : 'Heat is off. Set heat');
+  sel?.classList.toggle('armed', n > 0);
+  sel?.setAttribute('data-band', heatBand(n).toLowerCase());
+  if(note){
+    note.textContent = n
+      ? `${heatSel.map(id => chaosById(id).icon).join(' ')}  ${heatBand(n)} · every grid mission, until you turn it off`
+      : 'Pick your own hazards — more heat, more pay, and a heat record on every mission.';
+  }
+}
+
+// ── THE PANEL ──
+function openHeat(){
+  if(!user) return;
+  renderHeat();
+  openOverlay('heat-overlay');
+}
+function renderHeat(){
+  const body = document.getElementById('heat-body');
+  if(!body) return;
+  const n = heatLevel();
+  const pay = n ? chaosPayMult(heatSel.map(id => chaosById(id)).filter(Boolean)) : 1;
+  const recs = Object.keys(SOLO_START).map(g => ({ g, h: heatBest(g) })).filter(r => r.h > 0)
+    .sort((a, b) => b.h - a.h || META[a.g].name.localeCompare(META[b.g].name));
+  // One ramp, gold to hot pink, stepped by each segment's place in the bar.
+  const ramp = k => { const a = [255, 196, 0], b = [255, 31, 90];
+                      return 'rgb(' + a.map((v, j) => Math.round(v + (b[j] - v) * k)).join(',') + ')'; };
+  let segs = '';
+  for(let i = 1; i <= HEAT_MAX; i++){
+    const c = ramp((i - 1) / (HEAT_MAX - 1));
+    segs += i <= n ? `<i class="on" style="background:${c};box-shadow:0 0 8px ${c}"></i>` : '<i></i>';
+  }
+  body.innerHTML =
+    `<div class="heat-gauge" data-band="${heatBand(n).toLowerCase()}">` +
+      `<div class="hg-top"><span class="hg-n">${n}</span><span class="hg-of">/ ${HEAT_MAX}</span>` +
+        `<span class="hg-band">${heatBand(n)}</span><span class="hg-pay">×${pay.toFixed(2)} PAY</span></div>` +
+      `<div class="hg-segs" aria-hidden="true">${segs}</div>` +
+    `</div>` +
+    `<div class="heat-grid">` +
+      HEAT_ORDER.map(id => {
+        const m = chaosById(id), on = heatSel.includes(id);
+        return `<button class="heat-card${on ? ' on' : ''}" type="button" data-id="${id}" aria-pressed="${on}">` +
+          `<span class="hc-ico">${m.icon}</span>` +
+          `<span class="hc-txt"><span class="hc-name">${esc(m.name)}</span><span class="hc-desc">${esc(m.desc)}</span></span>` +
+          `<span class="hc-pts">+${HEAT_POINTS[id]}<em>×${m.pay.toFixed(2)}</em></span></button>`;
+      }).join('') +
+    `</div>` +
+    `<div class="heat-rules">Clear a mission = a 🥉 bronze-medal score or better, counted on the raw score before any bonus, on any tier but Safe Mode. ` +
+      `Heat replaces Chaos Protocol while it is on, and stands aside for the Daily Hack, the Weekly Anomaly, the campaign, Boss Rush, Endless, challenges, party turns and duels. Pay is capped at ×2.60.</div>` +
+    `<div class="heat-recs"><div class="hr-h">🔥 YOUR HEAT RECORDS</div>` +
+      (recs.length
+        ? recs.slice(0, 12).map(r => `<span class="hr-chip">${META[r.g].emoji} ${esc(META[r.g].name)} <b>${r.h}</b></span>`).join('')
+        : `<div class="hr-empty">None yet. Set some heat and clear any mission.</div>`) +
+    `</div>` +
+    `<div class="heat-btns">` +
+      `<button class="btn btn-secondary" id="heat-clear" type="button"${n ? '' : ' disabled'}>TURN HEAT OFF</button>` +
+      `<button class="btn btn-primary" id="heat-done" type="button">DONE</button>` +
+    `</div>`;
+  body.querySelectorAll('.heat-card').forEach(b => b.onclick = () => {
+    const id = b.dataset.id;
+    heatSel = heatSel.includes(id) ? heatSel.filter(x => x !== id) : HEAT_ORDER.filter(x => x === id || heatSel.includes(x));
+    snd(heatSel.includes(id) ? 'alarm' : 'click');
+    heatSave();
+    renderHeat();
+    body.querySelector(`.heat-card[data-id="${id}"]`)?.focus({ preventScroll: true });
+  });
+  document.getElementById('heat-clear').onclick = () => { heatSel = []; snd('click'); heatSave(); renderHeat(); };
+  document.getElementById('heat-done').onclick = () => {
+    closeOverlay('heat-overlay');
+    const lvl = heatLevel();
+    if(lvl) toast(`🔥 HEAT ${lvl} ARMED — every grid mission plays hot`, 2600);
+  };
+}
+
+try{
+  document.getElementById('btn-heat')?.addEventListener('click', () => openHeat());
+  document.getElementById('heat-close')?.addEventListener('click', () => closeOverlay('heat-overlay'));
+  document.getElementById('heat-overlay')?.addEventListener('click', e => {
+    if(e.target.id === 'heat-overlay') closeOverlay('heat-overlay');
+  });
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Escape' && document.getElementById('heat-overlay')?.classList.contains('show')) closeOverlay('heat-overlay');
+  });
+  paintHeatRow();
+  paintChaosToggle();
+}catch(e){ console.warn('Heat failed to wire:', e); }
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 25 · v53 → v54 — 🧱 BRICK LAB · a level for every mission
+// ══════════════════════════════════════════════════════════════════════
+// v53 shipped the lab for one mission: design an ICE BREAKER wall, play it,
+// and hand it to someone as a code or a link. v54 opens it to all thirty.
+// Every mission has ONE thing that makes a round that round — a wall, a maze,
+// a course, a formation, a chart, a word list — and the lab lets the player
+// draw it. Three kinds of editor cover the lot:
+//
+//   GRID   a board of cells painted from a palette: walls, mazes, garbage,
+//          formations, courses, charts. A `fall` grid arrives BOTTOM ROW
+//          FIRST, because that is how its board scrolls toward the player; a
+//          `oneper` grid holds one painted cell per column (a firewall's gap,
+//          a round's wait).
+//   SEQ    an ordered list of taps on a grid (Node Hacker's sequence).
+//   WORDS  a word list (COMMAND LINE).
+//
+// A LAB RUN IS PRACTICE (as in v53). A design can be one brick or seventy,
+// so a lab score says nothing a leaderboard could compare. A lab round starts
+// through the side door a party turn uses (resetGameStage → countdown →
+// runMissionStart, never prepGame): no chaos roll, no heat, no pace ghost, no
+// power dock, and its result is taken at showResults() by vsResultTap before
+// the results card, saveScore() or recordRun() are ever reached. It never
+// spends a consumable (survivedFatal asks labActive()), never records over a
+// position ghost (Ghost.begin asks too), and the best on each design is kept
+// on the device.
+//
+// Each mission's two builds ask for their design through ONE call — a helper
+// in this section (labWallNow(), labSnake(), labMaze()…) that parses
+// labDesign(gid) into what that mission already uses — and get null outside a
+// lab run, so an ordinary round never changes.
+//
+// CODE: PIL1.<gid>.<data>.<name>.<author>.<sum> — the data base64url (a grid
+// run-length coded, four bits a cell), the names base64url, and a hash of the
+// rest so a pasted code that lost a character fails loudly. A link is
+// ?lab=<code>. v53's Ice Breaker walls (PIW1…, ?wall=) still load.
+//
+// ⚠️ LOAD ORDER — hooks reach this section from the mission builds,
+// survivedFatal, Ghost, pauseCanRestart, enterHub, maybeOnboard, the stats
+// lane and the clip recorder, so every name they touch is a `var` or a
+// function declaration (see § 21).
+var LAB_COLS = 10, LAB_ROWS = 7, LAB_CELLS = 70;             // Ice Breaker's wall
+var LAB_KEY = 'pi_lab_draft', LAB_BEST_KEY = 'pi_lab_best', LAB_STORE = 'pi_wall', LAB_GID_KEY = 'pi_lab_gid';
+var LAB_TYPES = [
+  { id:0, key:'erase',  name:'ERASE',  icon:'⌫' },
+  { id:1, key:'ice',    name:'ICE',    icon:'🧊', note:'1 hit' },
+  { id:2, key:'armour', name:'ARMOUR', icon:'🛡️', note:'2 hits' },
+  { id:3, key:'core',   name:'CORE',   icon:'💛', note:'×3 pts' }
+];
+// Presets as pictures: . empty · I ice · A armour · C core. Rows past the
+// picture are empty.
+var LAB_PRESETS = [
+  { id:'classic',  name:'CLASSIC',  rows:['AAAAAAAAAA', 'IIIIIIIIII', 'IIIIIIIIII', 'IIIIIIIIII', 'IIIIIIIIII'] },
+  { id:'invader',  name:'INVADER',  rows:['..I....I..', '...I..I...', '..IIIIII..', '.II.II.II.', 'AAAAAAAAAA', 'I.IIIIII.I', 'I.I....I.I'] },
+  { id:'fortress', name:'FORTRESS', rows:['AAAAAAAAAA', 'A........A', 'A.IIIIII.A', 'A.I.CC.I.A', 'A.IIIIII.A', 'A........A', 'AAAA..AAAA'] },
+  { id:'pyramid',  name:'PYRAMID',  rows:['....CC....', '...IIII...', '..IIIIII..', '.IIIIIIII.', 'AAAAAAAAAA'] },
+  { id:'checker',  name:'CHECKER',  rows:['I.I.I.I.I.', '.A.A.A.A.A', 'I.I.C.I.I.', '.A.A.A.A.A', 'I.I.I.I.I.', '.I.I.I.I.I'] }
+];
+
+// ── THE LABS — one row per mission ─────────────────────────────────────
+// A def: { what, kind, cols, rows, aspect, tools:[{id,name,note,color,glyph,one}],
+// chars (preset picture alphabet, index = cell value), presets, starter,
+// fall, oneper, locked(i), lockFace(i), blankFace, check(d), hint, count,
+// min, maxw }. Registered by labDef() further down; the per-mission helpers
+// the builds call sit beside each row.
+var LAB_DEFS = Object.create(null);
+function labDef(gid, d){
+  d.gid = gid;
+  d.kind = d.kind || 'grid';
+  d.tools = d.tools || [];
+  LAB_DEFS[gid] = d;
+  return d;
+}
+
+var labDrafts = Object.create(null);  // gid → the design the editor holds, kept on the device
+var labRun = null;                    // { gid, design, key, wall } while a lab round is being played
+var labGid = 'breaker';               // the mission the editor is showing
+var labTool = 1;
+var labView = 'edit';                 // 'missions' | 'edit' | 'result' | 'incoming'
+var labResult = null;                 // the last lab round, for the result view
+var labPending = null;                // a decoded ?lab= link waiting for the hub
+var labPaintDown = false, labPaintLast = -1, labPaintWith = 1;
+
+function labActive(){ return !!labRun; }
+// The design being played, for `gid`'s builds — null in every ordinary round.
+function labDesign(gid){ return (labRun && labRun.gid === gid) ? labRun.design : null; }
+// Read by BOTH Ice Breaker builds at start-up: the wall to lay down, or null.
+function labWallNow(){ return (labRun && labRun.gid === 'breaker') ? labRun.wall : null; }
+
+try{ const g = localStorage.getItem(LAB_GID_KEY); if(g) labGid = g; }catch(e){}
+
+// ── CELLS ──────────────────────────────────────────────────────────────
+function labN(def){ return def.cols * def.rows; }
+function labBlankOf(def){ return new Array(labN(def)).fill(0); }
+function labBlank(){ return new Array(LAB_CELLS).fill(0); }       // v53's name, kept for the wall
+function labToolIds(def){ return def.tools.map(t => t.id); }
+function labFromPic(def, rows){
+  const cells = labBlankOf(def);
+  const chars = def.chars || '.';
+  (rows || []).slice(0, def.rows).forEach((row, r) => {
+    for(let c = 0; c < def.cols; c++){
+      const v = chars.indexOf(row[c] || '.');
+      cells[r * def.cols + c] = v > 0 ? v : 0;
+    }
+  });
+  if(def.locked) cells.forEach((v, i) => { if(def.locked(i)) cells[i] = 0; });
+  return cells;
+}
+function labFromRows(rows){ return labFromPic(LAB_DEFS.breaker, rows); }  // v53's name
+function labIsLocked(def, i){ return !!(def.locked && def.locked(i)); }
+
+// How much of a design there is: painted cells, steps, or words.
+function labCount(d){
+  // v53 called this with a bare cell array (the wall); still answers that.
+  if(Array.isArray(d)) return d.reduce((a, v) => a + (v ? 1 : 0), 0);
+  const def = d && LAB_DEFS[d.gid];
+  if(!def) return 0;
+  if(def.kind === 'words') return (d.words || []).length;
+  if(def.kind === 'seq') return (d.seq || []).length;
+  if(def.countFn) return def.countFn(d);
+  return (d.cells || []).reduce((a, v, i) => a + (v && !labIsLocked(def, i) ? 1 : 0), 0);
+}
+
+// A word list is lower-case a–z, 2 to 14 letters, no repeats.
+function labParseWords(txt, def){
+  const max = (def && def.maxWords) || 80;
+  const seen = new Set(), out = [];
+  for(const raw of String(txt || '').toLowerCase().split(/[^a-z]+/)){
+    if(raw.length < 2 || raw.length > 14 || seen.has(raw)) continue;
+    seen.add(raw); out.push(raw);
+    if(out.length >= max) break;
+  }
+  return out;
+}
+
+// Everything a design is allowed to hold, whatever arrived in a code or a
+// draft: sizes fixed, values clamped to the palette, one-per-column and
+// one-of tools honoured. Returns a fresh object.
+function labNorm(d){
+  const def = d && LAB_DEFS[d.gid];
+  if(!def) return null;
+  const out = { gid: d.gid, name: String(d.name || '').slice(0, 16), by: String(d.by || '').slice(0, 14) };
+  if(def.kind === 'words'){
+    out.words = labParseWords((d.words || []).join(' '), def);
+    return out;
+  }
+  const ids = new Set(labToolIds(def));
+  if(def.kind === 'seq'){
+    const N = labN(def), max = def.maxSeq || 24;
+    out.seq = (Array.isArray(d.seq) ? d.seq : [])
+      .map(s => ({ i: s.i | 0, t: ids.has(s.t | 0) ? s.t | 0 : def.tools[0].id }))
+      .filter(s => s.i >= 0 && s.i < N && !labIsLocked(def, s.i)).slice(0, max);
+    return out;
+  }
+  const N = labN(def);
+  const src = Array.isArray(d.cells) ? d.cells : [];
+  const cells = [];
+  for(let i = 0; i < N; i++){
+    const v = src[i] | 0;
+    cells.push(labIsLocked(def, i) ? 0 : (ids.has(v) ? v : 0));
+  }
+  // One-of tools (a START) keep their first cell only.
+  def.tools.filter(t => t.one).forEach(t => {
+    let seen = false;
+    for(let i = 0; i < N; i++) if(cells[i] === t.id){ if(seen) cells[i] = 0; seen = true; }
+  });
+  if(def.oneper === 'col'){
+    for(let c = 0; c < def.cols; c++){
+      let seen = false;
+      for(let r = 0; r < def.rows; r++){
+        const i = r * def.cols + c;
+        if(cells[i]){ if(seen) cells[i] = 0; seen = true; }
+      }
+    }
+  }
+  out.cells = cells;
+  return out;
+}
+
+// Rows in the order they ARRIVE: a `fall` grid is read bottom row first,
+// and the empty rows before the first and after the last painted one are
+// trimmed so the pattern starts at once and loops without dead air. Empty
+// rows in the middle stay — they are the breathers the designer drew.
+function labArrivalRows(d){
+  const def = LAB_DEFS[d.gid];
+  const rows = [];
+  for(let r = def.rows - 1; r >= 0; r--) rows.push(d.cells.slice(r * def.cols, (r + 1) * def.cols));
+  while(rows.length && !rows[0].some(v => v)) rows.shift();
+  while(rows.length && !rows[rows.length - 1].some(v => v)) rows.pop();
+  return rows;
+}
+// Columns left to right, for the `oneper` grids: [{c, r, v}] per painted column.
+function labColumns(d){
+  const def = LAB_DEFS[d.gid], out = [];
+  for(let c = 0; c < def.cols; c++){
+    let hit = null;
+    for(let r = 0; r < def.rows; r++){ const v = d.cells[r * def.cols + c]; if(v){ hit = { c, r, v }; break; } }
+    out.push(hit);
+  }
+  while(out.length && !out[out.length - 1]) out.pop();
+  return out;
+}
+
+// ── THE CODE ───────────────────────────────────────────────────────────
+function labB64(bytes){
+  let s = '';
+  for(const b of bytes) s += String.fromCharCode(b & 255);
+  return btoa(s).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+function labUnB64(s){
+  const bin = atob(String(s).replace(/-/g, '+').replace(/_/g, '/'));
+  const out = [];
+  for(let i = 0; i < bin.length; i++) out.push(bin.charCodeAt(i));
+  return out;
+}
+// Four bits of value and four of run length a byte: a 700-cell maze that is
+// mostly corridor packs into a few dozen bytes.
+function labRle(cells){
+  const out = [];
+  let i = 0;
+  while(i < cells.length){
+    const v = cells[i] & 15;
+    let n = 1;
+    while(i + n < cells.length && (cells[i + n] & 15) === v && n < 16) n++;
+    out.push((v << 4) | (n - 1));
+    i += n;
+  }
+  return out;
+}
+function labUnRle(bytes, N){
+  const cells = [];
+  for(const b of bytes){
+    const v = b >> 4, n = (b & 15) + 1;
+    for(let k = 0; k < n; k++) cells.push(v);
+    if(cells.length > N) return null;
+  }
+  return cells.length === N ? cells : null;
+}
+function labPackData(def, d){
+  if(def.kind === 'words') return clB64((d.words || []).join(' '));
+  if(def.kind === 'seq') return labB64((d.seq || []).flatMap(s => [s.i, s.t]));
+  return labB64(labRle(d.cells));
+}
+function labUnpackData(def, s){
+  try{
+    if(def.kind === 'words') return { words: labParseWords(clUnB64(s), def) };
+    if(def.kind === 'seq'){
+      const b = labUnB64(s);
+      if(b.length % 2) return null;
+      const seq = [];
+      for(let i = 0; i < b.length; i += 2) seq.push({ i: b[i], t: b[i + 1] });
+      return { seq };
+    }
+    const cells = labUnRle(labUnB64(s), labN(def));
+    return cells ? { cells } : null;
+  }catch(e){ return null; }
+}
+// v53's wall packing (two bits a cell), kept so a PIW1 code still loads and
+// a wall's best still lives under the key it was saved with.
+function labPack(cells){
+  const bytes = new Array(Math.ceil(LAB_CELLS / 4)).fill(0);
+  for(let i = 0; i < LAB_CELLS; i++) bytes[i >> 2] |= (cells[i] & 3) << ((i & 3) * 2);
+  return btoa(String.fromCharCode.apply(null, bytes)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+function labUnpack(s){
+  let bin;
+  try{ bin = atob(String(s).replace(/-/g, '+').replace(/_/g, '/')); }catch(e){ return null; }
+  if(bin.length !== Math.ceil(LAB_CELLS / 4)) return null;
+  const cells = [];
+  for(let i = 0; i < LAB_CELLS; i++) cells.push((bin.charCodeAt(i >> 2) >> ((i & 3) * 2)) & 3);
+  return cells;
+}
+
+function labEncode(d){
+  // v53 encoded a bare wall ({cells, name, by}); a design with no mission is one.
+  const gid = LAB_DEFS[d.gid] ? d.gid : 'breaker';
+  const def = LAB_DEFS[gid];
+  const body = ['PIL1', gid, labPackData(def, d), clB64(String(d.name || '').slice(0, 16)),
+                clB64(String(d.by || '').slice(0, 14))].join('.');
+  return body + '.' + hashStr(body).toString(36);
+}
+// Takes a bare code or a whole link with ?lab= (or v53's ?wall=) in it; null
+// for anything else, or for a design with nothing in it.
+function labDecode(raw){
+  let s = String(raw || '').trim();
+  const m = s.match(/[?&](?:lab|wall)=([^&\s#]+)/);
+  if(m) s = m[1];
+  try{ s = decodeURIComponent(s); }catch(e){}
+  const parts = s.split('.');
+  const txt = v => { try{ return v ? clUnB64(v).replace(/[\u0000-\u001f\u007f]/g, '').trim() : ''; }catch(e){ return ''; } };
+  let d = null;
+  if(parts[0] === 'PIW1' && parts.length === 5){
+    if(hashStr(parts.slice(0, 4).join('.')).toString(36) !== parts[4]) return null;
+    const cells = labUnpack(parts[1]);
+    if(!cells) return null;
+    d = { gid: 'breaker', cells, name: txt(parts[2]), by: txt(parts[3]) };
+  }else if(parts[0] === 'PIL1' && parts.length === 6){
+    if(hashStr(parts.slice(0, 5).join('.')).toString(36) !== parts[5]) return null;
+    const def = LAB_DEFS[parts[1]];
+    if(!def || !SOLO_START[parts[1]]) return null;
+    const data = labUnpackData(def, parts[2]);
+    if(!data) return null;
+    d = Object.assign({ gid: parts[1], name: txt(parts[3]), by: txt(parts[4]) }, data);
+  }else return null;
+  d = labNorm(d);
+  return d && !labIsEmpty(d) ? d : null;
+}
+// Nothing painted, tapped or typed at all. (A circuit with no dead code still
+// has its node A — "zero" on a lab's own count is not the same as empty.)
+function labIsEmpty(d){
+  if(d.words) return !d.words.length;
+  if(d.seq) return !d.seq.length;
+  return !(d.cells || []).some(v => v);
+}
+function labUrl(d){
+  const base = document.querySelector('link[rel="canonical"]')?.href || location.href.replace(/[?#].*$/, '');
+  return base + (base.includes('?') ? '&' : '?') + 'lab=' + labEncode(d);
+}
+// The key a design's best is kept under. A wall keeps v53's.
+function labKey(d){
+  if(d.gid === 'breaker') return hashStr('wall:' + labPack(d.cells)).toString(36);
+  return hashStr('lab:' + d.gid + ':' + labPackData(LAB_DEFS[d.gid], d)).toString(36);
+}
+function labWallKey(cells){ return labKey({ gid: 'breaker', cells }); }   // v53's name
+
+// ── DRAFTS AND BESTS ───────────────────────────────────────────────────
+function labDraftKey(gid){ return gid === 'breaker' ? LAB_KEY : 'pi_lab_d_' + gid; }
+function labStarter(gid){
+  const def = LAB_DEFS[gid];
+  const name = def.starterName || ('MY FIRST ' + (def.what || 'LEVEL')).slice(0, 16);
+  if(def.kind === 'words') return { gid, name, words: (def.starterWords || []).slice() };
+  if(def.kind === 'seq') return { gid, name, seq: (def.starterSeq || []).map(s => ({ ...s })) };
+  const pre = (def.presets || []).find(p => p.id === def.starter);
+  return { gid, name, cells: pre ? labFromPic(def, pre.rows) : labBlankOf(def) };
+}
+function labHasDraft(gid){
+  try{ return !!localStorage.getItem(labDraftKey(gid)); }catch(e){ return false; }
+}
+function labLoadDraft(gid){
+  gid = gid || labGid;
+  if(!LAB_DEFS[gid]) gid = 'breaker';
+  if(labDrafts[gid]) return labDrafts[gid];
+  let d = null;
+  try{
+    const o = JSON.parse(localStorage.getItem(labDraftKey(gid)) || 'null');
+    if(o) d = labNorm(Object.assign({}, o, { gid }));
+  }catch(e){ d = null; }
+  if(!d) d = labNorm(labStarter(gid));
+  labDrafts[gid] = d;
+  return d;
+}
+function labSaveDraft(gid){
+  gid = gid || labGid;
+  const d = labDrafts[gid];
+  if(!d) return;
+  const o = { name: d.name };
+  if(d.cells) o.cells = d.cells;
+  if(d.seq) o.seq = d.seq;
+  if(d.words) o.words = d.words;
+  try{ localStorage.setItem(labDraftKey(gid), JSON.stringify(o)); }catch(e){}
+}
+function labBests(){ try{ return JSON.parse(localStorage.getItem(LAB_BEST_KEY) || '{}') || {}; }catch(e){ return {}; } }
+function labBestOf(key){ return Math.max(0, +labBests()[key] || 0); }
+function labSetBest(key, pts){
+  try{
+    const o = labBests();
+    o[key] = Math.max(+o[key] || 0, Math.round(pts));
+    // Kept to the 120 most recent designs: a record per design, not a database.
+    const keys = Object.keys(o);
+    if(keys.length > 120) delete o[keys[0]];
+    localStorage.setItem(LAB_BEST_KEY, JSON.stringify(o));
+  }catch(e){}
+}
+
+// Can this design be played? { block } stops TEST RUN and SHARE; { warn }
+// only says something. A mission's own check runs after the generic one.
+function labCheck(d){
+  const def = d && LAB_DEFS[d.gid];
+  if(!def) return { block: 'Unknown mission.' };
+  const n = labCount(d);
+  if(def.kind === 'words'){
+    const min = def.minWords || 3;
+    if(n < min) return { block: `Add at least ${min} words (2–14 letters, a–z).` };
+  }else if(def.kind === 'seq'){
+    const min = def.minSeq || 1;
+    if(n < min) return { block: `Tap at least ${min} steps.` };
+  }else if(n < (def.min != null ? def.min : 1)){
+    return { block: def.minMsg || 'Paint something first.' };
+  }
+  return def.check ? (def.check(d) || null) : null;
+}
+
+// ── PLAYING A DESIGN ───────────────────────────────────────────────────
+function labPlay(d){
+  const def = d && LAB_DEFS[d.gid];
+  if(!user || !def || !SOLO_START[d.gid] || !META[d.gid]){ snd('deny'); return; }
+  const chk = labCheck(d);
+  if(chk && chk.block){ snd('deny'); toast('🧱 ' + chk.block, 3200); return; }
+  if(mp || bossRush || endless || dailyActive || anomalyActive || chalActive ||
+     (typeof partyRunActive === 'function' && partyRunActive()) ||
+     (typeof campaignActive !== 'undefined' && campaignActive)){
+    snd('deny'); toast('🧱 Finish what is running first.', 2400); return;
+  }
+  closeOverlay('lab-overlay');
+  const gid = d.gid;
+  const design = labNorm(d);
+  labRun = { gid, design, key: labKey(design),
+             wall: gid === 'breaker' ? { cells: design.cells.slice(), name: design.name || '', by: design.by || '',
+                                         rows: LAB_ROWS, cols: LAB_COLS } : null };
+  curGame = gid;
+  resetGameStage(gid);
+  document.getElementById('g-title').textContent = '🧱 LAB · ' + (design.name || META[gid].name);
+  showScreen('game-screen');
+  // Set AFTER resetGameStage(), which clears onQuitGame. Quitting a lab run
+  // goes back to the lab rather than to the hub.
+  vsResultTap = labTap;
+  onQuitGame = () => { stopGame(); setControls(null); document.getElementById('game-screen').classList.remove('canvas-game'); labFinish(null); };
+  snd('success');
+  countdown(() => {
+    if(!labRun) return;
+    runMissionStart(() => {
+      if(!(window.PI3D && PI3D.startFor(gid))) SOLO_START[gid]();
+    });
+    try{ if(typeof statsRoundStart === 'function') statsRoundStart(gid); }catch(e){}
+  });
+}
+
+function labTap(gid, pts, bd){
+  if(!labRun || gid !== labRun.gid) return false;
+  // The tap short-circuits showResults(), so the round is still running its
+  // loop — stop it here, the way a party turn does.
+  stopGame();
+  setControls(null);
+  document.getElementById('game-screen').classList.remove('canvas-game');
+  labFinish({ pts: Math.max(0, Math.round(+pts || 0)), bd: bd || {} });
+  return true;
+}
+
+function labFinish(res){
+  const run = labRun;
+  labRun = null;
+  if(vsResultTap === labTap) vsResultTap = null;
+  onQuitGame = null;
+  if(!run) return;
+  labGid = run.gid;
+  const before = labBestOf(run.key);
+  if(res && res.pts > before) labSetBest(run.key, res.pts);
+  labResult = res ? { pts: res.pts, bd: res.bd, best: Math.max(before, res.pts), isBest: res.pts > before && before > 0,
+                      first: before === 0 && res.pts > 0, design: run.design, wall: run.design } : null;
+  labView = res ? 'result' : 'edit';
+  if(res) snd(res.pts > before ? 'victory' : 'results');
+  enterHub();
+  openLab();
+}
+
+// From enterHub — the one door every "I'm done" path goes through.
+function abortLab(){
+  if(!labRun) return;
+  labRun = null;
+  if(vsResultTap === labTap) vsResultTap = null;
+}
+
+// ── THE PANEL ──────────────────────────────────────────────────────────
+function openLab(){
+  if(!user) return;
+  if(!LAB_DEFS[labGid]) labGid = 'breaker';
+  labLoadDraft(labGid);
+  renderLab();
+  openOverlay('lab-overlay');
+}
+function labSetGid(gid){
+  if(!LAB_DEFS[gid]) return;
+  labGid = gid;
+  try{ localStorage.setItem(LAB_GID_KEY, gid); }catch(e){}
+  const def = LAB_DEFS[gid];
+  if(!labToolIds(def).includes(labTool)) labTool = def.tools.length ? def.tools[0].id : 0;
+}
+
+// One cell's look: a class, a style and a glyph. The wall keeps v53's faces
+// (the mission's row colours, ARMOUR's frame, CORE's star); every other lab
+// paints each tool in its own colour.
+function labFace(def, v, i, d){
+  const f = labFace0(def, v, i, d);
+  // A lab whose cells are labelled (Math Blitz's "+10", Click Frenzy's
+  // seconds) prints the label whatever the cell holds; the colour says the
+  // rest. It is handed the value too (Battle Bots prints a count on a painted
+  // cell and the hostile's icon on an empty one).
+  if(def.cellText) f.txt = def.cellText(i, v);
+  // A per-row class (the chart's beat and bar lines) rides on every face.
+  if(def.rowClass){ const rc = def.rowClass(Math.floor(i / def.cols)); if(rc) f.cls += ' ' + rc; }
+  return f;
+}
+function labFace0(def, v, i, d){
+  if(def.style === 'wall') return { cls: 't' + v, style: `--row:${Math.floor(i / def.cols)}`, txt: '' };
+  if(labIsLocked(def, i)){
+    const f = def.lockFace ? def.lockFace(i) : null;
+    return { cls: 'lv lk', style: f && f.color ? `--c:${f.color}` : '', txt: f ? (f.glyph || '') : '' };
+  }
+  const t = v ? def.tools.find(x => x.id === v) : null;
+  if(t) return { cls: 'lv on', style: `--c:${t.color || '#00f5ff'}`, txt: t.glyph || '' };
+  // A course column with its gap painted draws the rest of itself as wall, so
+  // the editor looks like the firewalls it makes.
+  if(def.colFace && d && d.cells){
+    const c = i % def.cols;
+    for(let r = 0; r < def.rows; r++) if(d.cells[r * def.cols + c]) return { cls: 'lv cf', style: `--c:${def.colFace.color}`, txt: '' };
+  }
+  const b = def.blankFace;
+  return { cls: 'lv' + (b ? ' bf' : ''), style: b && b.color ? `--c:${b.color}` : '', txt: b ? (b.glyph || '') : '' };
+}
+function labToolName(def, v){
+  const t = def.tools.find(x => x.id === v);
+  return t ? t.name : (def.blankName || 'empty');
+}
+function labGridStyle(def){
+  const fs = def.cols <= 10 ? 13 : def.cols <= 16 ? 10 : 7;
+  const gap = def.gap != null ? def.gap : def.cols <= 10 ? 4 : def.cols <= 16 ? 3 : 1;
+  return `--cols:${def.cols};--ar:${def.aspect || 1};--gap:${gap}px;font-size:${fs}px` +
+         (def.maxw ? `;max-width:${def.maxw}px` : '');
+}
+
+// A grid, editable or not. A `seq` grid shows the step numbers on each cell.
+function labGridHTML(def, d, editable){
+  // v53's signature was (cells, editable) for the wall.
+  if(Array.isArray(def)){ const cells = def; editable = d; def = LAB_DEFS.breaker; d = { gid: 'breaker', cells }; }
+  const cls = 'lab-grid' + (editable ? ' edit' : '') + (def.style === 'wall' ? ' wall' : '') + (def.kind === 'seq' ? ' seq' : '') +
+              (def.cols > 16 ? ' dense' : '');
+  const N = labN(def);
+  let steps = null;
+  if(def.kind === 'seq'){
+    steps = new Array(N).fill(null).map(() => []);
+    (d.seq || []).forEach((s, k) => { if(steps[s.i]) steps[s.i].push({ k: k + 1, t: s.t }); });
+  }
+  let h = `<div class="${cls}" data-g="${def.gid}" style="${labGridStyle(def)}" role="${editable ? 'grid' : 'img'}"` +
+          (editable ? ` id="lab-grid" aria-label="${esc(META[def.gid] ? META[def.gid].name : '')} editor, ${def.cols} columns by ${def.rows} rows"`
+                    : ` aria-label="A design of ${labCount(d)} pieces"`) + '>';
+  for(let i = 0; i < N; i++){
+    const r = Math.floor(i / def.cols), c = i % def.cols;
+    let f;
+    if(steps){
+      const st = steps[i];
+      const last = st.length ? st[st.length - 1] : null;
+      const t = last ? def.tools.find(x => x.id === last.t) : null;
+      f = { cls: 'lv' + (st.length ? ' on' : '') + (labIsLocked(def, i) ? ' lk' : '') + (def.rowClass ? ' ' + def.rowClass(r) : ''), style: t ? `--c:${t.color}` : (def.seqColor ? `--c:${def.seqColor}` : ''),
+            txt: st.length ? st.map(s => s.k).join('·') : (def.seqFace ? def.seqFace(i) : '') };
+    }else{
+      f = labFace(def, d.cells[i] || 0, i, d);
+    }
+    const label = steps ? `Row ${r + 1} column ${c + 1}${steps[i].length ? ': step ' + steps[i].map(s => s.k).join(', ') : ''}`
+                        : `Row ${r + 1} column ${c + 1}: ${labToolName(def, d.cells[i] || 0)}`;
+    h += editable
+      ? `<button class="lab-cell ${f.cls}" type="button" data-i="${i}" style="${f.style}" aria-label="${label}"${labIsLocked(def, i) ? ' disabled' : ''}>${f.txt}</button>`
+      : `<i class="lab-cell ${f.cls}" style="${f.style}">${f.txt}</i>`;
+  }
+  return h + '</div>';
+}
+
+// What a design looks like on a result or an incoming card.
+function labPreviewHTML(d){
+  const def = LAB_DEFS[d.gid];
+  if(def.kind === 'words'){
+    return `<div class="lab-words-prev">` + d.words.map(w => `<span>${esc(w)}</span>`).join('') + `</div>`;
+  }
+  return labGridHTML(def, d, false);
+}
+
+function labMissionChip(gid){
+  const m = META[gid], def = LAB_DEFS[gid];
+  return `<button class="lab-mbtn" id="lab-mission" type="button" aria-label="Change mission — now ${esc(m.name)}">` +
+         `<span class="lm-emoji">${m.emoji}</span><span class="lm-txt"><b>${esc(m.name)}</b><em>${esc(def.what || 'LEVEL')}</em></span>` +
+         `<span class="lm-chg">CHANGE ▾</span></button>`;
+}
+
+function renderLab(){
+  const body = document.getElementById('lab-body');
+  const sub = document.getElementById('lab-sub');
+  if(!body) return;
+  if(labView === 'missions') return labRenderMissions(body, sub);
+  if(labView === 'result' && labResult) return labRenderResult(body, sub);
+  if(labView === 'incoming' && labPending) return labRenderIncoming(body, sub);
+  labView = 'edit';
+  labRenderEditor(body, sub);
+}
+
+// The mission picker: every mission, what you design in it, and a dot where
+// you have a draft.
+function labRenderMissions(body, sub){
+  if(sub) sub.textContent = 'Pick a mission · build its level · send it to a friend';
+  const gids = Object.keys(SOLO_START).filter(g => LAB_DEFS[g] && META[g]);
+  body.innerHTML =
+    `<div class="lab-picks" role="list">` +
+    gids.map(g => {
+      const m = META[g], def = LAB_DEFS[g];
+      return `<button class="lab-pick${g === labGid ? ' on' : ''}" type="button" data-g="${g}" role="listitem">` +
+             `<span class="lp-emoji">${m.emoji}</span><span class="lp-name">${esc(m.name)}</span>` +
+             `<span class="lp-what">${esc(def.what || 'LEVEL')}</span>${labHasDraft(g) ? '<i class="lp-dot" title="You have a draft"></i>' : ''}</button>`;
+    }).join('') +
+    `</div>` +
+    `<div class="lab-load">` +
+      `<input class="input" id="lab-code" placeholder="Paste a level code or link" autocomplete="off" spellcheck="false">` +
+      `<button class="btn btn-secondary btn-sm" id="lab-load" type="button">LOAD</button>` +
+    `</div>` +
+    `<div class="lab-out" id="lab-out"></div>`;
+  body.querySelectorAll('.lab-pick').forEach(b => b.onclick = () => {
+    labSetGid(b.dataset.g); labLoadDraft(labGid); labView = 'edit'; snd('tab'); renderLab();
+    document.querySelector('#lab-overlay .fb-modal')?.scrollTo?.(0, 0);
+  });
+  labWireLoad();
+}
+
+function labRenderResult(body, sub){
+  const R = labResult, d = R.design, def = LAB_DEFS[d.gid];
+  if(sub) sub.textContent = 'Practice run · nothing banked';
+  body.innerHTML =
+    `<div class="lab-res">` +
+      `<div class="lab-res-mission">${META[d.gid].emoji} ${esc(META[d.gid].name)}</div>` +
+      `<div class="lab-res-name">${esc(d.name || 'CUSTOM ' + (def.what || 'LEVEL'))}${d.by ? ` <em>by ${esc(d.by)}</em>` : ''}</div>` +
+      `<div class="lab-res-pts">${R.pts.toLocaleString()}<span>PTS</span></div>` +
+      `<div class="lab-res-best">${R.first ? '🏁 FIRST RUN ON THIS LEVEL' : R.isBest ? '🏆 NEW BEST ON THIS LEVEL' : 'Your best on this level: ' + R.best.toLocaleString()}</div>` +
+      `<div class="lab-res-rows">` +
+        Object.entries(R.bd || {}).filter(([k]) => !/Score Accumulation|Final Score/.test(k))
+          .map(([k, v]) => `<div class="res-row"><span>${esc(k)}</span><span class="rv">${esc(String(v))}</span></div>`).join('') +
+      `</div>` +
+      labPreviewHTML(d) +
+    `</div>` +
+    `<div class="lab-note">Lab runs are practice: they pay no points, credits or XP and never touch your records or the leaderboard.</div>` +
+    `<div class="lab-btns">` +
+      `<button class="btn btn-primary" id="lab-again" type="button">▶ RUN IT AGAIN</button>` +
+      `<button class="btn btn-secondary" id="lab-share" type="button">🔗 SHARE THIS LEVEL</button>` +
+      `<button class="btn btn-secondary" id="lab-edit" type="button">✏️ EDIT</button>` +
+    `</div>` +
+    `<div class="lab-out" id="lab-out"></div>`;
+  document.getElementById('lab-again').onclick = () => labPlay(d);
+  document.getElementById('lab-share').onclick = e => labShare(d, e.currentTarget);
+  document.getElementById('lab-edit').onclick = () => {
+    // Editing a design someone sent you works on a COPY in your own draft.
+    labSetGid(d.gid);
+    if(labCount(d)){ labDrafts[d.gid] = labNorm(Object.assign({}, d, { by: '' })); labSaveDraft(d.gid); }
+    labView = 'edit'; snd('tab'); renderLab();
+  };
+}
+
+function labRenderIncoming(body, sub){
+  const d = labPending, def = LAB_DEFS[d.gid];
+  const best = labBestOf(labKey(d));
+  if(sub) sub.textContent = 'Someone sent you a level';
+  body.innerHTML =
+    `<div class="lab-res">` +
+      `<div class="lab-res-mission">${META[d.gid].emoji} ${esc(META[d.gid].name)}</div>` +
+      `<div class="lab-res-name">${esc(d.name || 'CUSTOM ' + (def.what || 'LEVEL'))}${d.by ? ` <em>by ${esc(d.by)}</em>` : ''}</div>` +
+      `<div class="lab-res-best">${labCount(d)} ${esc(def.count || 'PIECES')}${best ? ' · your best ' + best.toLocaleString() : ''}</div>` +
+      labPreviewHTML(d) +
+    `</div>` +
+    `<div class="lab-note">A practice run — beat it, then send your own level back.</div>` +
+    `<div class="lab-btns">` +
+      `<button class="btn btn-primary" id="lab-play-in" type="button">▶ PLAY THIS LEVEL</button>` +
+      `<button class="btn btn-secondary" id="lab-copy-in" type="button">✏️ EDIT A COPY</button>` +
+      `<button class="btn btn-secondary" id="lab-mine" type="button">🧱 MY LAB</button>` +
+    `</div>`;
+  document.getElementById('lab-play-in').onclick = () => { const x = labPending; labPending = null; try{ statsEvent('_wall_play'); }catch(e){} labPlay(x); };
+  document.getElementById('lab-copy-in').onclick = () => {
+    labSetGid(d.gid);
+    labDrafts[d.gid] = labNorm(Object.assign({}, d, { by: '' }));
+    labSaveDraft(d.gid); labPending = null; labView = 'edit'; snd('tab'); renderLab();
+  };
+  document.getElementById('lab-mine').onclick = () => { labPending = null; labView = 'edit'; snd('tab'); renderLab(); };
+}
+
+function labToolsHTML(def){
+  if(def.kind === 'words') return '';
+  const list = def.kind === 'seq' ? def.tools : def.tools.concat([{ id: 0, name: def.eraseName || 'ERASE', erase: true }]);
+  if(def.kind === 'seq' && list.length < 2) return '';
+  return `<div class="lab-tools${list.length > 4 ? ' many' : ''}" role="group" aria-label="What to paint">` +
+    list.map(t => {
+      const sw = def.style === 'wall' ? `<span class="lt-sw t${t.id}"></span>`
+               : t.erase ? `<span class="lt-sw t0"></span>`
+               : `<span class="lt-sw lv" style="--c:${t.color || '#00f5ff'}">${t.glyph || ''}</span>`;
+      return `<button class="lab-tool${labTool === t.id ? ' on' : ''}" type="button" data-t="${t.id}" aria-pressed="${labTool === t.id}">` +
+             `${sw}${esc(t.name)}${t.note ? `<em>${esc(t.note)}</em>` : ''}</button>`;
+    }).join('') + `</div>`;
+}
+
+function labRenderEditor(body, sub){
+  const def = LAB_DEFS[labGid];
+  const d = labLoadDraft(labGid);
+  if(!labToolIds(def).includes(labTool) && !(labTool === 0 && def.kind === 'grid')) labTool = def.tools.length ? def.tools[0].id : 0;
+  const n = labCount(d);
+  const best = n ? labBestOf(labKey(d)) : 0;
+  if(sub) sub.textContent = def.sub || `Build a ${META[labGid].name} level · share it as a code`;
+  let editor = '';
+  if(def.kind === 'words'){
+    editor =
+      `<textarea class="input lab-words" id="lab-words" rows="5" spellcheck="false" autocomplete="off" placeholder="${esc(def.placeholder || 'Type words, separated by spaces')}">${esc(d.words.join(' '))}</textarea>` +
+      `<div class="lab-words-prev" id="lab-words-prev">${d.words.map(w => `<span>${esc(w)}</span>`).join('')}</div>`;
+  }else{
+    editor = (def.fall ? `<div class="lab-arrow">${esc(def.fallTop || '▼ ARRIVES LAST')}</div>` : '') +
+             labGridHTML(def, d, true) +
+             (def.fall ? `<div class="lab-arrow">${esc(def.fallBottom || '▲ THIS ROW ARRIVES FIRST')}</div>` : '');
+  }
+  const presets = def.presets || [];
+  const extra = def.kind === 'seq'
+    ? `<button class="lab-pre" type="button" data-p="undo">↶ UNDO</button><button class="lab-pre" type="button" data-p="clear">CLEAR</button>`
+    : def.kind === 'words'
+    ? `<button class="lab-pre" type="button" data-p="clear">CLEAR</button>`
+    : (def.noMirror ? '' : `<button class="lab-pre" type="button" data-p="mirror">⇋ MIRROR</button>`) +
+      `<button class="lab-pre" type="button" data-p="clear">CLEAR</button>`;
+  const total = def.kind === 'grid' && def.style === 'wall' ? `/${labN(def)}` : '';
+  body.innerHTML =
+    labMissionChip(labGid) +
+    `<div class="lab-top">` +
+      `<label class="lab-name-l" for="lab-name">NAME</label>` +
+      `<input class="input lab-name" id="lab-name" maxlength="16" value="${esc(d.name).replace(/"/g, '&quot;')}" placeholder="NAME YOUR ${esc(def.what || 'LEVEL')}" autocomplete="off">` +
+      `<span class="lab-count" id="lab-count">${n}${total} ${esc(def.count || 'PIECES')}</span>` +
+    `</div>` +
+    labToolsHTML(def) +
+    editor +
+    `<div class="lab-hint">${esc(def.hint || 'Tap a cell to paint it — or drag across the grid. Tap a painted cell with the same brush to clear it.')}</div>` +
+    `<div class="lab-check" id="lab-check" aria-live="polite"></div>` +
+    `<div class="lab-presets"><span>${presets.length ? 'START FROM' : 'TOOLS'}</span>` +
+      presets.map(p => `<button class="lab-pre" type="button" data-p="${p.id}">${esc(p.name)}</button>`).join('') +
+      extra +
+    `</div>` +
+    `<div class="lab-btns">` +
+      `<button class="btn btn-primary" id="lab-test" type="button">▶ TEST RUN</button>` +
+      `<button class="btn btn-secondary" id="lab-share" type="button">🔗 SHARE ${esc(def.what || 'LEVEL')}</button>` +
+    `</div>` +
+    `<div class="lab-load">` +
+      `<input class="input" id="lab-code" placeholder="Paste a level code or link" autocomplete="off" spellcheck="false">` +
+      `<button class="btn btn-secondary btn-sm" id="lab-load" type="button">LOAD</button>` +
+    `</div>` +
+    `<div class="lab-out" id="lab-out"></div>` +
+    `<div class="lab-note" id="lab-note">${best ? 'Your best on this level: <b>' + best.toLocaleString() + '</b> · ' : ''}Lab runs are practice — no points, credits or records.</div>`;
+  labWireEditor();
+  labRefreshCounts();
+}
+
+// ── EDITING ────────────────────────────────────────────────────────────
+function labPaintCell(i, v){
+  const def = LAB_DEFS[labGid], d = labLoadDraft(labGid);
+  if(!(i >= 0 && i < labN(def)) || labIsLocked(def, i)) return;
+  if(v === undefined) v = labTool;
+  const touched = new Set([i]);
+  if(v){
+    const t = def.tools.find(x => x.id === v);
+    // A one-of tool (a START) moves rather than multiplies.
+    if(t && t.one) d.cells.forEach((x, k) => { if(x === v && k !== i){ d.cells[k] = 0; touched.add(k); } });
+    if(def.oneper === 'col'){
+      const c = i % def.cols;
+      for(let r = 0; r < def.rows; r++){ const k = r * def.cols + c; if(k !== i && d.cells[k]){ d.cells[k] = 0; touched.add(k); } }
+    }
+  }
+  d.cells[i] = v;
+  // A one-per-column grid repaints its whole column: the column's own look
+  // (colFace) depends on whether anything in it is painted.
+  if(def.oneper === 'col'){ const c = i % def.cols; for(let r = 0; r < def.rows; r++) touched.add(r * def.cols + c); }
+  touched.forEach(k => labRepaintCell(def, d, k));
+}
+function labRepaintCell(def, d, i){
+  const el = document.querySelector(`#lab-grid .lab-cell[data-i="${i}"]`);
+  if(!el) return;
+  const f = labFace(def, d.cells[i] || 0, i, d);
+  el.className = 'lab-cell ' + f.cls;
+  el.setAttribute('style', f.style);
+  el.textContent = f.txt;
+  const r = Math.floor(i / def.cols), c = i % def.cols;
+  el.setAttribute('aria-label', `Row ${r + 1} column ${c + 1}: ${labToolName(def, d.cells[i] || 0)}`);
+}
+function labRefreshCounts(){
+  const def = LAB_DEFS[labGid], d = labLoadDraft(labGid), n = labCount(d);
+  const cnt = document.getElementById('lab-count');
+  const total = def.kind === 'grid' && def.style === 'wall' ? `/${labN(def)}` : '';
+  if(cnt) cnt.textContent = `${n}${total} ${def.count || 'PIECES'}`;
+  const chk = labCheck(d);
+  const box = document.getElementById('lab-check');
+  if(box){
+    box.className = 'lab-check' + (chk && chk.block ? ' block' : chk && chk.warn ? ' warn' : '');
+    box.textContent = chk ? '⚠️ ' + (chk.block || chk.warn) : '';
+  }
+  const t = document.getElementById('lab-test'), s = document.getElementById('lab-share');
+  const off = !!(chk && chk.block);
+  if(t) t.disabled = off;
+  if(s) s.disabled = off;
+}
+
+function labWireLoad(){
+  const btn = document.getElementById('lab-load');
+  if(!btn) return;
+  btn.onclick = () => {
+    const inp = document.getElementById('lab-code'), out = document.getElementById('lab-out');
+    const w = labDecode(inp.value);
+    if(!w){ snd('error'); if(out) out.innerHTML = `<div class="replay-err">⚠️ That is not a level code — or it lost a character on the way.</div>`; return; }
+    labPending = w; labView = 'incoming'; snd('success'); renderLab();
+  };
+}
+
+function labWireEditor(){
+  const def = LAB_DEFS[labGid];
+  const d = labLoadDraft(labGid);
+  const grid = document.getElementById('lab-grid');
+  document.querySelectorAll('.lab-tool').forEach(b => b.onclick = () => {
+    labTool = +b.dataset.t; snd('tab');
+    document.querySelectorAll('.lab-tool').forEach(x => { const on = +x.dataset.t === labTool; x.classList.toggle('on', on); x.setAttribute('aria-pressed', String(on)); });
+  });
+  document.getElementById('lab-mission').onclick = () => { labView = 'missions'; snd('tab'); renderLab(); };
+  if(grid && def.kind === 'seq'){
+    // A sequence is TAPPED, one step at a time — no drag, or a finger resting
+    // on a cell would add it twice.
+    grid.addEventListener('click', e => {
+      const cell = e.target.closest && e.target.closest('#lab-grid .lab-cell');
+      if(!cell || cell.disabled) return;
+      const max = def.maxSeq || 24;
+      if(d.seq.length >= max){ snd('deny'); toast(`🧱 ${max} steps is the most a sequence can hold.`, 2000); return; }
+      d.seq.push({ i: +cell.dataset.i, t: labToolIds(def).includes(labTool) ? labTool : def.tools[0].id });
+      snd('flip'); labSaveDraft(labGid); labRedrawGrid();
+    });
+  }else if(grid){
+    // Painting follows the finger across cells: on touch the pointer is
+    // captured by the first cell, so the cell under it is found by hit-test
+    // rather than by which element hears the move. The release is heard once,
+    // on window, by labPaintUp() (wired at load — not per render).
+    const at = e => { const el = document.elementFromPoint(e.clientX, e.clientY); return el && el.closest ? el.closest('#lab-grid .lab-cell') : null; };
+    grid.addEventListener('pointerdown', e => {
+      const cell = at(e);
+      if(!cell || cell.disabled) return;
+      e.preventDefault();
+      const i = +cell.dataset.i;
+      // Tapping a cell that already holds the brush you are painting with
+      // clears it, so one tool can both draw and fix a slip.
+      labPaintWith = d.cells[i] === labTool && labTool !== 0 ? 0 : labTool;
+      labPaintDown = true; labPaintLast = i;
+      labPaintCell(i, labPaintWith);
+      snd('flip');
+    });
+    grid.addEventListener('pointermove', e => {
+      if(!labPaintDown) return;
+      const cell = at(e);
+      if(!cell || cell.disabled) return;
+      const i = +cell.dataset.i;
+      if(i === labPaintLast) return;
+      labPaintLast = i;
+      // A one-of tool is placed, not dragged: a drag would chase it across the grid.
+      const t = def.tools.find(x => x.id === labPaintWith);
+      if(t && t.one) return;
+      labPaintCell(i, labPaintWith);
+    });
+    // Keyboard: Enter/Space on a focused cell paints it.
+    grid.addEventListener('keydown', e => {
+      const cell = e.target.closest && e.target.closest('.lab-cell');
+      if(!cell || (e.key !== 'Enter' && e.key !== ' ')) return;
+      e.preventDefault();
+      const i = +cell.dataset.i;
+      labPaintCell(i, d.cells[i] === labTool && labTool !== 0 ? 0 : labTool);
+      labSaveDraft(labGid); labRefreshCounts();
+    });
+  }
+  const words = document.getElementById('lab-words');
+  if(words) words.oninput = () => {
+    d.words = labParseWords(words.value, def);
+    const prev = document.getElementById('lab-words-prev');
+    if(prev) prev.innerHTML = d.words.map(w => `<span>${esc(w)}</span>`).join('');
+    labSaveDraft(labGid); labRefreshCounts();
+  };
+  const name = document.getElementById('lab-name');
+  if(name) name.oninput = () => { d.name = name.value.slice(0, 16); labSaveDraft(labGid); };
+  document.querySelectorAll('.lab-pre').forEach(b => b.onclick = () => {
+    const p = b.dataset.p;
+    if(p === 'clear'){
+      if(def.kind === 'words') d.words = [];
+      else if(def.kind === 'seq') d.seq = [];
+      else d.cells = labBlankOf(def);
+    }else if(p === 'undo'){
+      if(d.seq && d.seq.length) d.seq.pop();
+    }else if(p === 'mirror'){
+      // The left half, reflected onto the right — the quickest way from a
+      // doodle to something that looks designed.
+      for(let r = 0; r < def.rows; r++) for(let c = 0; c < Math.floor(def.cols / 2); c++){
+        const a = r * def.cols + c, z = r * def.cols + (def.cols - 1 - c);
+        if(labIsLocked(def, a) || labIsLocked(def, z)) continue;
+        const t = def.tools.find(x => x.id === d.cells[a]);
+        d.cells[z] = t && t.one ? 0 : d.cells[a];
+      }
+      Object.assign(d, labNorm(d));
+    }else{
+      const pre = (def.presets || []).find(x => x.id === p);
+      if(pre){
+        if(def.kind === 'words') d.words = labParseWords(pre.words || '', def);
+        else if(def.kind === 'seq') d.seq = (pre.seq || []).map(s => ({ ...s }));
+        else d.cells = labFromPic(def, pre.rows);
+        Object.assign(d, labNorm(d));
+        const isStock = !d.name || (def.presets || []).some(x => x.name === d.name) || /^MY FIRST /.test(d.name);
+        if(isStock) d.name = pre.name;
+      }
+    }
+    labSaveDraft(labGid); snd('tab'); renderLab();
+  });
+  document.getElementById('lab-test').onclick = () => labPlay(d);
+  document.getElementById('lab-share').onclick = e => labShare(d, e.currentTarget);
+  labWireLoad();
+}
+// A sequence redraws its whole grid (every step number can move).
+function labRedrawGrid(){
+  const def = LAB_DEFS[labGid], d = labLoadDraft(labGid);
+  const grid = document.getElementById('lab-grid');
+  if(!grid) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = labGridHTML(def, d, true);
+  grid.innerHTML = tmp.firstChild.innerHTML;
+  labRefreshCounts();
+}
+
+async function labShare(d, btn){
+  const def = LAB_DEFS[d.gid];
+  const w = Object.assign({}, d, { by: (user && user.username) || '' });
+  const url = labUrl(w);
+  const mname = META[d.gid].name;
+  const text = d.gid === 'breaker'
+    ? `🧱 I built an ICE BREAKER wall on Point Invaders${w.name ? ' — “' + w.name + '”' : ''}. Can you clear it?`
+    : `🧱 I built a ${mname} ${String(def.what || 'LEVEL').toLowerCase()} on Point Invaders${w.name ? ' — “' + w.name + '”' : ''}. Can you beat it?`;
+  try{ if(typeof statsEvent === 'function') statsEvent('_share_wall'); }catch(e){}
+  const phone = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  if(navigator.share && phone){
+    try{ await navigator.share({ title: 'Point Invaders · Brick Lab', text, url }); snd('coin'); return; }
+    catch(e){ if(e && e.name === 'AbortError') return; }
+  }
+  const out = document.getElementById('lab-out');
+  try{
+    await navigator.clipboard.writeText(text + ' ' + url);
+    snd('coin');
+    if(btn){ const was = btn.textContent; btn.textContent = '✔ Link copied'; setTimeout(() => { btn.textContent = was; }, 2400); }
+    if(out) out.innerHTML = `<div class="replay-hint">Level code: <span class="replay-code">${esc(labEncode(w))}</span></div>`;
+  }catch(e){
+    if(out) out.innerHTML = `<div class="replay-code">${esc(text + ' ' + url)}</div><div class="replay-hint">Copy this and paste it anywhere.</div>`;
+    else toast('🧱 Copy blocked — ' + labEncode(w), 5000);
+  }
+}
+
+// ── ARRIVING WITH A LEVEL LINK ─────────────────────────────────────────
+function labBoot(){
+  let held = '';
+  try{
+    const q = new URLSearchParams(location.search);
+    const v = q.get('lab') || q.get('wall');
+    if(v){
+      sessionStorage.setItem(LAB_STORE, v);
+      const u = new URL(location.href);
+      u.searchParams.delete('lab'); u.searchParams.delete('wall');
+      history.replaceState(history.state, '', u.pathname + u.search + u.hash);
+    }
+    held = sessionStorage.getItem(LAB_STORE) || '';
+  }catch(e){ held = ''; }
+  labPending = held ? labDecode(held) : null;
+  if(held){ try{ sessionStorage.removeItem(LAB_STORE); }catch(e){} }
+  if(held && !labPending) setTimeout(() => toast('⚠️ That level link could not be read — it may have been cut short.', 4200), 1000);
+  paintLabAuth();
+}
+// The sign-in screen's invitation, sharing the challenge link's slot — a
+// challenge link wins the slot if a visitor somehow arrives with both.
+function paintLabAuth(){
+  const el = document.getElementById('cl-auth');
+  if(!el || !labPending || (typeof clPending === 'object' && clPending)) return;
+  const d = labPending, def = LAB_DEFS[d.gid], m = META[d.gid];
+  const what = d.gid === 'breaker' ? 'WALL' : (m.name + ' ' + (def.what || 'LEVEL'));
+  el.innerHTML =
+    `<div class="cl-auth-top">🧱 ${d.by ? esc(d.by.toUpperCase()) + ' SENT YOU A ' + esc(what) : 'SOMEONE SENT YOU A ' + esc(what)}</div>` +
+    `<div class="cl-auth-mid"><span class="cl-auth-ico">${m.emoji}</span> ${esc(d.name || 'CUSTOM ' + (def.what || 'LEVEL'))} · <strong>${labCount(d)}</strong> ${esc(String(def.count || 'pieces').toLowerCase())}</div>` +
+    `<div class="cl-auth-sub">Pick how to play below and it opens straight after.</div>`;
+  el.style.display = '';
+}
+function maybeLabInvite(tries){
+  if(!labPending || !user) return;
+  tries = tries || 0;
+  if(!document.getElementById('hub-screen')?.classList.contains('active')) return;
+  if(document.querySelector('.fb-overlay.show')){
+    if(tries < 30) setTimeout(() => maybeLabInvite(tries + 1), 600);
+    return;
+  }
+  try{ if(typeof statsEvent === 'function') statsEvent('_wall_arrive'); }catch(e){}
+  labView = 'incoming';
+  openLab();
+}
+
+function labPaintUp(){
+  if(!labPaintDown) return;
+  labPaintDown = false; labPaintLast = -1;
+  labSaveDraft(labGid); labRefreshCounts();
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  THE LABS, MISSION BY MISSION — each row, and the helper its builds call
+// ══════════════════════════════════════════════════════════════════════
+// ── 🧊 ICE BREAKER — the wall (v53's lab, unchanged) ───────────────────
+labDef('breaker', {
+  what: 'WALL', cols: LAB_COLS, rows: LAB_ROWS, aspect: 1.7, style: 'wall', count: 'BRICKS',
+  tools: [ { id:1, name:'ICE', note:'1 hit' }, { id:2, name:'ARMOUR', note:'2 hits' }, { id:3, name:'CORE', note:'×3 pts' } ],
+  chars: '.IAC', presets: LAB_PRESETS, starter: 'invader', starterName: 'MY FIRST WALL',
+  sub: 'Design an Ice Breaker wall · share it as a code',
+  hint: 'Tap a cell to paint it — or drag across the grid. Tap a painted cell with the same brick to clear it.',
+  minMsg: 'Paint at least one brick.'
+});
+
+// ── BLOCK LABS: Grid Snake and Light Cycle ─────────────────────────────
+// Both boards are 28 × 25 cells. The editor paints them in 2 × 2 blocks —
+// 14 × 12, the bottom block row three cells deep — which keeps every cell a
+// finger can hit on a phone and every corridor at least two cells wide, so a
+// level can be tight without being a coin toss.
+var LAB_BLK = { cols: 14, rows: 12, W: 28, H: 25 };
+function labBlockRect(r, c){
+  const y0 = r * 2, y1 = r === LAB_BLK.rows - 1 ? LAB_BLK.H : r * 2 + 2;
+  return { x0: c * 2, x1: c * 2 + 2, y0, y1 };
+}
+// { blocked: Uint8Array(28*25), rects:[{x0,x1,y0,y1}] } for the cells holding `id`.
+function labBlocksOf(d, id){
+  const def = LAB_DEFS[d.gid];
+  const blocked = new Uint8Array(LAB_BLK.W * LAB_BLK.H), rects = [];
+  for(let r = 0; r < def.rows; r++) for(let c = 0; c < def.cols; c++){
+    if(d.cells[r * def.cols + c] !== id) continue;
+    const R = labBlockRect(r, c);
+    rects.push(R);
+    for(let y = R.y0; y < R.y1; y++) for(let x = R.x0; x < R.x1; x++) blocked[y * LAB_BLK.W + x] = 1;
+  }
+  return { blocked, rects };
+}
+// The straight run of open cells from (x, y) heading `dir`.
+function labRunLen(blocked, x, y, dir){
+  let n = 0;
+  for(let k = 1; k < 40; k++){
+    const nx = x + dir.x * k, ny = y + dir.y * k;
+    if(nx < 0 || ny < 0 || nx >= LAB_BLK.W || ny >= LAB_BLK.H || blocked[ny * LAB_BLK.W + nx]) break;
+    n++;
+  }
+  return n;
+}
+// A start cell and the heading with the longest run ahead of it — a level
+// must never open with a wall one step in front of the player. `blk` is a
+// START block (or null: the open cell nearest `pref`).
+function labStartFrom(blocked, blk, pref){
+  let x, y;
+  if(blk){ x = blk.x0; y = blk.y0; }
+  else{
+    let best = null, bd = Infinity;
+    for(let yy = 0; yy < LAB_BLK.H; yy++) for(let xx = 0; xx < LAB_BLK.W; xx++){
+      if(blocked[yy * LAB_BLK.W + xx]) continue;
+      const dd = (xx - pref.x) ** 2 + (yy - pref.y) ** 2;
+      if(dd < bd){ bd = dd; best = { x: xx, y: yy }; }
+    }
+    if(!best) return null;
+    x = best.x; y = best.y;
+  }
+  const dirs = [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }];
+  let dir = dirs[0], len = -1;
+  for(const dd of dirs){
+    // From the block's top-left cell, heading into the block counts its
+    // second cell too; the run is what matters.
+    const n = labRunLen(blocked, x, y, dd);
+    if(n > len){ len = n; dir = dd; }
+  }
+  return { x, y, dir, run: len };
+}
+function labBlockCheck(d, wallId, startId, extra){
+  const def = LAB_DEFS[d.gid];
+  const W = labBlocksOf(d, wallId);
+  let free = 0;
+  for(let i = 0; i < W.blocked.length; i++) if(!W.blocked[i]) free++;
+  if(free < 40) return { block: 'Leave more open floor — there is nowhere to go.' };
+  const s = d.cells.indexOf(startId);
+  if(s < 0) return extra ? extra(W) : null;
+  const st = labStartFrom(W.blocked, labBlockRect(Math.floor(s / def.cols), s % def.cols), null);
+  if(!st || st.run < 3) return { warn: 'Your START is boxed in — you will crash almost at once.' };
+  return extra ? extra(W) : null;
+}
+
+// ── 🐍 GRID SNAKE — the pit ────────────────────────────────────────────
+labDef('snake', {
+  what: 'PIT', cols: 14, rows: 12, aspect: 1, count: 'BLOCKS',
+  tools: [ { id:1, name:'WALL', note:'crash', color:'#3d7bff' },
+           { id:2, name:'START', note:'your head', color:'#39ff14', glyph:'▶', one:true } ],
+  chars: '.#S',
+  sub: 'Build a Grid Snake pit · walls you must never touch',
+  hint: 'Paint walls in 2 × 2 blocks — drag to draw. START is where your head sits; you set off along the longest open run. Nodes never spawn inside a wall.',
+  starter: 'box', min: 1, minMsg: 'Paint at least one wall.',
+  presets: [
+    { id:'box',     name:'THE BOX', rows:['##############', '#............#', '#............#', '#............#', '#............#', '#.....S......#', '#............#', '#............#', '#............#', '#............#', '#............#', '##############'] },
+    { id:'pillars', name:'PILLARS', rows:['..............', '..............', '..#...#...#...', '..............', '..............', '....#...#...#.', 'S.............', '..............', '..#...#...#...', '..............', '..............', '..............'] },
+    { id:'cross',   name:'CROSSROADS', rows:['......##......', '......##......', '......##......', '......##......', '..............', '####..S...####', '####......####', '..............', '......##......', '......##......', '......##......', '......##......'] },
+    { id:'tunnels', name:'TUNNELS', rows:['..............', '.############.', '..............', '..............', '############..', '..............', 'S.............', '..############', '..............', '..............', '.############.', '..............'] },
+    { id:'spiral',  name:'SPIRAL', rows:['##############', '#.............', '#.##########..', '#.#.........#.', '#.#.#######.#.', '#.#.#S....#.#.', '#.#.#.....#.#.', '#.#.#######.#.', '#.#.........#.', '#.###########.', '#.............', '##############'] }
+  ],
+  check: d => labBlockCheck(d, 1, 2)
+});
+// What the two Snake builds read: blocked cells, the wall rectangles to draw,
+// and where and which way the snake starts.
+function labSnake(){
+  const d = labDesign('snake');
+  if(!d) return null;
+  const def = LAB_DEFS.snake;
+  const W = labBlocksOf(d, 1);
+  const s = d.cells.indexOf(2);
+  const st = labStartFrom(W.blocked, s >= 0 ? labBlockRect(Math.floor(s / def.cols), s % def.cols) : null, { x: 10, y: 12 })
+          || { x: 10, y: 12, dir: { x: 1, y: 0 } };
+  return { blocked: W.blocked, rects: W.rects, head: { x: st.x, y: st.y }, dir: st.dir,
+           isWall: (x, y) => x >= 0 && y >= 0 && x < LAB_BLK.W && y < LAB_BLK.H && !!W.blocked[y * LAB_BLK.W + x] };
+}
+
+// ── 🏍️ LIGHT CYCLE — the arena ─────────────────────────────────────────
+labDef('lightcycle', {
+  what: 'ARENA', cols: 14, rows: 12, aspect: 1, count: 'BLOCKS',
+  tools: [ { id:1, name:'BLOCK', note:'solid', color:'#3d7bff' },
+           { id:2, name:'YOU', note:'your start', color:'#00f5ff', glyph:'▶', one:true },
+           { id:3, name:'DROID', note:'spawn point', color:'#ff7a1a', glyph:'◆' } ],
+  chars: '.#YD',
+  sub: 'Build a Light Cycle arena · blocks, your start, where the droids ride in',
+  hint: 'Blocks are solid for everyone — use them to make corridors to trap droids in. YOU is your start; each DROID square is a spawn point (none = the usual corners).',
+  starter: 'pillars', min: 1, minMsg: 'Paint at least one block.',
+  presets: [
+    { id:'pillars', name:'PILLARS', rows:['D............D', '..............', '...##....##...', '...##....##...', '..............', '..Y...........', '..............', '...##....##...', '...##....##...', '..............', '..............', 'D............D'] },
+    { id:'box',     name:'CAGE', rows:['D.....D......D', '..............', '..##########..', '..#........#..', '..#........#..', '..#...Y.......', '..#........#..', '..#........#..', '..##########..', '..............', '..............', 'D.....D......D'] },
+    { id:'lanes',   name:'LANES', rows:['.............D', '..............', '############..', '..............', '..............', 'Y.............', '..............', '..############', '..............', '..............', '############..', '.............D'] },
+    { id:'ring',    name:'RING', rows:['D............D', '..............', '.....####.....', '....#....#....', '...#......#...', '..Y#......#...', '...#......#...', '....#....#....', '.....####.....', '..............', '..............', 'D............D'] }
+  ],
+  check: d => labBlockCheck(d, 1, 2, W => {
+    const def = LAB_DEFS.lightcycle;
+    const spots = d.cells.map((v, i) => v === 3 ? i : -1).filter(i => i >= 0);
+    if(spots.length && !spots.some(i => {
+      const R = labBlockRect(Math.floor(i / def.cols), i % def.cols);
+      const st = labStartFrom(W.blocked, R, null);
+      return st && st.run >= 2;
+    })) return { warn: 'Every DROID spawn is boxed in — no droids will ride.' };
+    return null;
+  })
+});
+// What lcSim reads: blocked cells, block rectangles to draw, your start and
+// heading, and the droid spawn points (null = the arena's usual eight).
+function labArena(){
+  const d = labDesign('lightcycle');
+  if(!d) return null;
+  const def = LAB_DEFS.lightcycle;
+  const W = labBlocksOf(d, 1);
+  const s = d.cells.indexOf(2);
+  const me = labStartFrom(W.blocked, s >= 0 ? labBlockRect(Math.floor(s / def.cols), s % def.cols) : null, { x: 6, y: 12 })
+          || { x: 6, y: 12, dir: { x: 1, y: 0 } };
+  const spots = [];
+  d.cells.forEach((v, i) => {
+    if(v !== 3) return;
+    const R = labBlockRect(Math.floor(i / def.cols), i % def.cols);
+    const st = labStartFrom(W.blocked, R, null);
+    if(st && st.run >= 1) spots.push({ x: st.x, y: st.y, d: st.dir });
+  });
+  return { blocked: W.blocked, rects: W.rects, start: me, spawns: spots.length ? spots : null };
+}
+
+// ── 👾 DATA MUNCHER — the maze ─────────────────────────────────────────
+// Painted at full size, 21 × 19, over a floor of data bits (an unpainted cell
+// IS a corridor with a bit in it). The daemon house in the middle and the
+// cell above its door are fixed: the daemons' AI leaves and re-enters by
+// them, so they are drawn locked on the grid.
+var LAB_DM_HOUSE = i => { const r = Math.floor(i / 21), c = i % 21; return (r >= 8 && r <= 10 && c >= 8 && c <= 12) || (r === 7 && c === 10); };
+labDef('muncher', {
+  what: 'MAZE', cols: 21, rows: 19, aspect: 1, count: 'WALLS', gap: 1,
+  tools: [ { id:1, name:'WALL', color:'#2b5bff' },
+           { id:2, name:'EMPTY', note:'no bit', color:'#141a2c' },
+           { id:3, name:'CORE', note:'power-up', color:'#ffd700', glyph:'●' },
+           { id:4, name:'START', note:'you', color:'#ffe600', glyph:'◉', one:true } ],
+  eraseName: 'DATA BIT', blankName: 'data bit', blankFace: { glyph:'·' },
+  chars: '.#_oP',
+  locked: LAB_DM_HOUSE,
+  lockFace: i => {
+    const r = Math.floor(i / 21), c = i % 21;
+    if(r === 7) return { glyph: '·' };
+    if(r === 8 && c === 10) return { color: '#ff5ad8', glyph: '═' };
+    if(r === 9 && c >= 9 && c <= 11) return { color: '#1b1030', glyph: '👾' };
+    return { color: '#2b5bff' };
+  },
+  countFn: d => d.cells.filter(v => v === 1).length,
+  sub: 'Draw a Data Muncher maze · the daemons hunt you through it',
+  hint: 'Every unpainted square is a corridor with a data bit. Paint WALLS to shape the maze, CORES to turn the hunt around, EMPTY for a bare corridor. The daemon house is fixed.',
+  starter: 'classic', min: 1, minMsg: 'Paint at least one wall.',
+  presets: [
+    { id:'classic', name:'CLASSIC', rows: null },
+    { id:'open',    name:'OPEN FLOOR', rows:['#####################', '#o.................o#', '#...................#', '#..###.........###..#', '#..#.............#..#', '#...................#', '#...................#', '#...................#', '#......#.....#......#', '#......#.....#......#', '#......#######......#', '#...................#', '#...................#', '#..#.............#..#', '#..###....P....###..#', '#...................#', '#...................#', '#o.................o#', '#####################'] },
+    { id:'rooms',   name:'ROOMS', rows:['#####################', '#o....#.......#....o#', '#.###.#.#####.#.###.#', '#.#.....#...#.....#.#', '#.#.###.#.#.#.###.#.#', '#.......#.#.#.......#', '###.###.......###.###', '#.....#.##.##.#.....#', '#.###.#.#...#.#.###.#', '#...#...#...#...#...#', '#.#.#.#.#####.#.#.#.#', '#.#...#.......#...#.#', '#.#####.#.#.#.#####.#', '#.......#.#.#.......#', '#.#####.#.P.#.#####.#', '#o....#.......#....o#', '#.###.#.#####.#.###.#', '#...................#', '#####################'] }
+  ],
+  check: d => {
+    const M = labMazeRows(d);
+    const res = labMazeReach(M);
+    if(!res.exit) return { block: 'The daemon house is walled off from your start — open a path to the door.' };
+    if(!res.bits) return { block: 'Leave some data bits the muncher can reach.' };
+    if(res.lost) return { warn: `${res.lost} data bit${res.lost > 1 ? 's are' : ' is'} walled off — this maze can never be cleared.` };
+    return null;
+  }
+});
+// The classic maze IS a preset: read from DM.MAZE once DM exists (§ 18 is
+// earlier in the file than this section, so it does).
+try{
+  const pre = LAB_DEFS.muncher.presets[0];
+  pre.rows = DM.MAZE.map(row => row.replace(/[-G]/g, '#').replace(/ /g, '_'));
+}catch(e){}
+// Design → the sim's maze strings. The house comes from DM.MAZE untouched; a
+// maze with no START puts one on the open cell nearest the classic start.
+function labMazeRows(d){
+  const rows = [];
+  for(let y = 0; y < 19; y++){
+    let s = '';
+    for(let x = 0; x < 21; x++){
+      const i = y * 21 + x;
+      if(LAB_DM_HOUSE(i)){ s += DM.MAZE[y][x]; continue; }
+      const v = d.cells[i];
+      s += v === 1 ? '#' : v === 2 ? ' ' : v === 3 ? 'o' : v === 4 ? 'P' : '.';
+    }
+    rows.push(s);
+  }
+  if(!rows.some(r => r.includes('P'))){
+    let best = null, bd = Infinity;
+    for(let y = 0; y < 19; y++) for(let x = 0; x < 21; x++){
+      if(LAB_DM_HOUSE(y * 21 + x) || rows[y][x] === '#') continue;
+      const dd = (x - 10) ** 2 + (y - 15) ** 2;
+      if(dd < bd){ bd = dd; best = [x, y]; }
+    }
+    if(best) rows[best[1]] = rows[best[1]].slice(0, best[0]) + 'P' + rows[best[1]].slice(best[0] + 1);
+  }
+  return rows;
+}
+// Flood from the start: can it reach the house door, how many bits can it
+// reach, and how many are cut off?
+function labMazeReach(M){
+  const open = (x, y) => x >= 0 && y >= 0 && x < 21 && y < 19 && M[y][x] !== '#' && M[y][x] !== '-' && M[y][x] !== 'G';
+  let sx = -1, sy = -1;
+  M.forEach((row, y) => { const x = row.indexOf('P'); if(x >= 0){ sx = x; sy = y; } });
+  if(sx < 0) return { exit: false, bits: 0, lost: 0 };
+  const seen = new Uint8Array(21 * 19), q = [[sx, sy]];
+  seen[sy * 21 + sx] = 1;
+  while(q.length){
+    const [x, y] = q.pop();
+    for(const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]){
+      const nx = x + dx, ny = y + dy;
+      if(open(nx, ny) && !seen[ny * 21 + nx]){ seen[ny * 21 + nx] = 1; q.push([nx, ny]); }
+    }
+  }
+  let bits = 0, lost = 0;
+  for(let y = 0; y < 19; y++) for(let x = 0; x < 21; x++){
+    const ch = M[y][x];
+    if(ch !== '.' && ch !== 'o') continue;
+    if(seen[y * 21 + x]) bits++; else lost++;
+  }
+  return { exit: !!seen[7 * 21 + 10], bits, lost };
+}
+// What dmSim reads: the maze strings, or null for the classic one.
+function labMaze(){
+  const d = labDesign('muncher');
+  return d ? labMazeRows(d) : null;
+}
+
+// ── 🧱 MATRIX DROP — the garbage ───────────────────────────────────────
+// The bottom twelve rows of the fourteen-wide well, pre-filled. Colours are
+// the 2D palette's indices, so the 2D arena takes them as they are; the 3D
+// well maps them onto its own neon.
+var LAB_TET_3D = { 1: '#ff2e88', 2: '#00f5ff', 3: '#ffd700', 5: '#39ff88' };
+labDef('tetris', {
+  what: 'STACK', cols: 14, rows: 12, aspect: 1.6, count: 'BLOCKS',
+  tools: [ { id:1, name:'PINK', color:'#ff007f' }, { id:2, name:'CYAN', color:'#00f0ff' },
+           { id:3, name:'GOLD', color:'#ffbc00' }, { id:5, name:'LIME', color:'#39ff14' } ],
+  chars: '.PCGxL',
+  sub: 'Build a Matrix Drop stack · the well starts full of your garbage',
+  hint: 'The bottom twelve rows of the well, filled before the first piece falls. Leave holes to dig for — a row with no hole clears on the very first drop.',
+  starter: 'well', min: 1, minMsg: 'Paint at least one block.',
+  presets: [
+    { id:'well',    name:'THE WELL', rows:['', '', '', '', '', '', 'PPPPPPPPPPPPP.', 'CCCCCCCCCCCCC.', 'GGGGGGGGGGGGG.', 'LLLLLLLLLLLLL.', 'PPPPPPPPPPPPP.', 'CCCCCCCCCCCCC.'] },
+    { id:'stairs',  name:'STAIRS', rows:['', '', '', '', '', '', 'P.............', 'PC............', 'PCG...........', 'PCGL..........', 'PCGLP.........', 'PCGLPC........'] },
+    { id:'checker', name:'CHECKER', rows:['', '', '', '', '', '', '', 'P.P.P.P.P.P.P.', '.C.C.C.C.C.C.C', 'G.G.G.G.G.G.G.', '.L.L.L.L.L.L.L', 'P.P.P.P.P.P.P.'] },
+    { id:'towers',  name:'TOWERS', rows:['', '', '', 'G............G', 'G.....LL.....G', 'G.....LL.....G', 'GC....LL....CG', 'GC....LL....CG', 'GCP...LL...PCG', 'GCP...LL...PCG', 'GCPP..LL..PPCG', 'GCPP..LL..PPCG'] },
+    { id:'smile',   name:'SMILE', rows:['', '', '', '', '', '...GG....GG...', '...GG....GG...', '..............', '.L..........L.', '..L........L..', '...LLLLLLLL...', '..............'] }
+  ],
+  check: d => {
+    const def = LAB_DEFS.tetris;
+    for(let r = 0; r < def.rows; r++){
+      if(d.cells.slice(r * def.cols, (r + 1) * def.cols).every(v => v)) return { warn: 'A row with no hole clears on the first drop.' };
+    }
+    return null;
+  }
+});
+// The well's bottom twelve rows as the 2D arena holds them (colour indices,
+// 0 empty) — or null.
+function labGarbage(){
+  const d = labDesign('tetris');
+  if(!d) return null;
+  const def = LAB_DEFS.tetris, rows = [];
+  for(let r = 0; r < def.rows; r++) rows.push(d.cells.slice(r * def.cols, (r + 1) * def.cols));
+  return rows;
+}
+
+// ── ⌨️ COMMAND LINE — the word list ────────────────────────────────────
+// A spelling list, a vocabulary set, a team's in-jokes: whatever you type is
+// what falls. Words are sorted into the mission's four length tiers, so the
+// short ones still come first and the longest still arrive as the HEAVY
+// PROCESS.
+labDef('cmdline', {
+  what: 'WORD LIST', kind: 'words', count: 'WORDS', minWords: 5, maxWords: 80,
+  sub: 'Write a COMMAND LINE word list · spelling lists welcome',
+  hint: 'Type or paste words, separated by spaces or new lines. Letters a–z only, 2 to 14 letters each, up to 80 words. The longest ones arrive as the heavy boss processes.',
+  placeholder: 'moon star comet orbit rocket planet galaxy …',
+  starter: 'space', starterName: 'MY WORD LIST',
+  presets: [
+    { id:'space',   name:'SPACE',   words:'moon star sun comet orbit rocket planet galaxy nebula meteor quasar pulsar eclipse gravity asteroid satellite telescope astronaut spaceship' },
+    { id:'animals', name:'ANIMALS', words:'cat dog fox owl bat bee ant cow pig hen duck frog lion bear wolf deer goat mouse tiger zebra horse snake eagle shark whale panda koala rabbit monkey parrot turtle giraffe dolphin penguin kangaroo elephant' },
+    { id:'food',    name:'FOOD',    words:'egg jam pie tea bun rice soup cake taco pizza bread apple lemon mango pasta salad bagel donut cookie waffle cheese banana noodle burger pancake sandwich spaghetti' },
+    { id:'school',  name:'SCHOOL',  words:'pen ink book desk quiz test math read write paper ruler chalk class lunch recess pencil eraser teacher library science history spelling homework calculator' },
+    { id:'hacker',  name:'HACKER',  words:'bit bug byte ping port root sudo hack grep kill admin cache debug patch proxy shell stack token virus buffer cipher kernel packet reboot script socket firewall malware payload protocol rootkit encryption algorithm' }
+  ]
+});
+LAB_DEFS.cmdline.starterWords = labParseWords(LAB_DEFS.cmdline.presets[0].words, LAB_DEFS.cmdline);
+// The mission's four tiers built from the design's words — or null.
+function labCmdWords(){
+  const d = labDesign('cmdline');
+  if(!d || !d.words.length) return null;
+  const t = [[], [], [], []];
+  d.words.forEach(w => t[w.length <= 4 ? 0 : w.length <= 6 ? 1 : w.length <= 9 ? 2 : 3].push(w));
+  // A tier the list left empty borrows its nearest neighbour, so a list of
+  // only short words still has a "boss" (its longest words).
+  if(!t[3].length){
+    const all = d.words.slice().sort((a, b) => b.length - a.length);
+    t[3] = all.slice(0, Math.max(1, Math.ceil(all.length / 5)));
+  }
+  for(let k = 0; k < 4; k++){
+    if(t[k].length) continue;
+    for(let dd = 1; dd < 4; dd++){
+      if(t[k - dd] && t[k - dd].length){ t[k] = t[k - dd]; break; }
+      if(t[k + dd] && t[k + dd].length){ t[k] = t[k + dd]; break; }
+    }
+  }
+  return t;
+}
+
+// ── 🚁 FLAPPY DRONE — the course ───────────────────────────────────────
+// One column per firewall, left to right; the painted cell is where its gap
+// sits and the brush says how wide it is. An empty column is a breather. The
+// course loops for as long as the drone stays up.
+var LAB_FLAP_GAP = { 1: 1.25, 2: 1, 3: 0.8 };           // gap width, times the mission's own
+labDef('flappy', {
+  what: 'COURSE', cols: 12, rows: 7, aspect: 0.8, count: 'FIREWALLS', oneper: 'col',
+  tools: [ { id:1, name:'WIDE', note:'easy gap', color:'#39ff14', glyph:'⇕' },
+           { id:2, name:'GAP', note:'normal', color:'#ffd700', glyph:'⇕' },
+           { id:3, name:'TIGHT', note:'narrow', color:'#ff6600', glyph:'⇕' } ],
+  colFace: { color: '#3a1230' },
+  chars: '.WGT',
+  sub: 'Build a Flappy Drone course · where every gap sits',
+  hint: 'Each column is one firewall, flown left to right: tap where its gap goes, and pick how wide. An empty column is a breather. The course loops.',
+  starter: 'wave', min: 2, minMsg: 'Place at least two firewalls.',
+  presets: [
+    { id:'wave',    name:'THE WAVE', rows:['...G.....G..', '..G.G...G.G.', '.G...G.G...G', 'G.....G.....', '............', '............', '............'] },
+    { id:'stairs',  name:'STAIRS', rows:['......G.....', '.....G.G....', '....G...G...', '...G.....G..', '..G.......G.', '.G.........G', 'G...........'] },
+    { id:'zigzag',  name:'ZIGZAG', rows:['T.T.T.T.T.T.', '............', '............', '............', '............', '............', '.T.T.T.T.T.T'] },
+    { id:'breathe', name:'EASY RIDE', rows:['', '', 'W..W..W..W..', '.W..W..W..W.', '', '', ''] }
+  ]
+});
+// The course as the builds read it: [{ pos 0 (top) … 1 (bottom), gap }] per
+// column — null for a breather — or null outside a lab run.
+function labCourse(){
+  const d = labDesign('flappy');
+  if(!d) return null;
+  const def = LAB_DEFS.flappy;
+  return labColumns(d).map(c => c ? { pos: c.r / (def.rows - 1), gap: LAB_FLAP_GAP[c.v] || 1 } : null);
+}
+
+// ── 🌌 CYBER RUNNER — the track ────────────────────────────────────────
+labDef('runner', {
+  what: 'TRACK', cols: 3, rows: 20, aspect: 3.4, count: 'PIECES', fall: true, maxw: 300, noMirror: true,
+  fallTop: '▼ FAR END — ARRIVES LAST', fallBottom: '▲ THIS ROW REACHES YOU FIRST',
+  tools: [ { id:1, name:'WALL', note:'change lane', color:'#ff2442', glyph:'▮' },
+           { id:2, name:'SPIKE', note:'jump it', color:'#ff6600', glyph:'▲' },
+           { id:3, name:'CUBE', note:'+30', color:'#00f5ff', glyph:'◆' } ],
+  chars: '.WSC',
+  sub: 'Build a Cyber Runner track · walls to dodge, spikes to jump',
+  hint: 'Three lanes; the bottom row reaches you first. WALLS must be dodged, SPIKES jumped, CUBES collected. Empty rows are breathers. The track loops, faster every lap.',
+  starter: 'slalom', min: 1, minMsg: 'Place at least one piece.',
+  presets: [
+    { id:'slalom',   name:'SLALOM', rows:['W.W', '...', '.WW', '...', 'WW.', '...', '.WW', '...', 'WW.', '...', 'W.W', '...', '.C.', 'C.C', '...', 'W..', '.W.', '..W', '...', 'CCC'] },
+    { id:'jumps',    name:'HURDLES', rows:['SSS', '...', '...', 'SSS', '...', '...', 'SSS', '...', '.C.', 'SSS', '...', '...', 'SSS', '...', '...', 'SSS', '...', 'C.C', '...', 'SSS'] },
+    { id:'cubes',    name:'CUBE RUN', rows:['C..', '.C.', '..C', '.C.', 'C..', 'W.W', '.C.', '.C.', 'W.W', 'C..', '.C.', '..C', 'WS.', '...', '.SW', '...', 'C.C', '...', 'CCC', '...'] },
+    { id:'gauntlet', name:'GAUNTLET', rows:['WSW', '...', 'SWW', '...', 'WWS', '...', 'SWS', '...', 'WSW', '.C.', 'SWS', '...', 'WWS', '...', 'SWW', '...', 'WSW', '...', 'S.S', '...'] }
+  ],
+  check: d => {
+    const def = LAB_DEFS.runner;
+    for(let r = 0; r < def.rows; r++){
+      if([0, 1, 2].every(c => d.cells[r * 3 + c] === 1)) return { block: `A row of three walls can't be passed — leave a lane open (row ${def.rows - r} from the bottom).` };
+    }
+    return null;
+  }
+});
+// Rows in arrival order: [[kind|null ×3]] — or null.
+function labTrack(){
+  const d = labDesign('runner');
+  if(!d) return null;
+  const K = [null, 'wall', 'spike', 'cube'];
+  return labArrivalRows(d).map(row => row.map(v => K[v] || null));
+}
+
+// ── 🚀 NEON NEBULA — the invasion ──────────────────────────────────────
+// Ten lanes across; each row of the picture comes down as one line of ships,
+// bottom row first. The invasion loops until the clock runs out.
+labDef('nebula', {
+  what: 'INVASION', cols: 10, rows: 12, aspect: 1.2, count: 'SHIPS', fall: true,
+  fallTop: '▼ ARRIVES LAST', fallBottom: '▲ THIS LINE ATTACKS FIRST',
+  tools: [ { id:1, name:'SCOUT', note:'fast diver', color:'#ff0090', glyph:'▼' },
+           { id:2, name:'FIGHTER', note:'shoots', color:'#a855f7', glyph:'✦' },
+           { id:3, name:'BOMBER', note:'3 hits', color:'#ff6600', glyph:'◆' } ],
+  chars: '.SFB',
+  sub: 'Plan a Neon Nebula invasion · every line of ships in order',
+  hint: 'Ten lanes across. Each row comes down as one line of ships, the bottom row first; empty rows are breathers. The invasion loops until the clock runs out.',
+  starter: 'invader', min: 1, minMsg: 'Place at least one ship.',
+  presets: [
+    { id:'invader', name:'INVADER', rows:['..F....F..', '...F..F...', '..FFFFFF..', '.FF.FF.FF.', 'FFFFFFFFFF', 'F.FFFFFF.F', 'F.F....F.F', '...F..F...', '', '', '', ''] },
+    { id:'vee',     name:'VEE', rows:['S........S', '.S......S.', '..S....S..', '...S..S...', '....SS....', '', 'B........B', '.F......F.', '..F....F..', '...F..F...', '....BB....', ''] },
+    { id:'rain',    name:'SCOUT RAIN', rows:['S.S.S.S.S.', '.S.S.S.S.S', '', 'S.S.S.S.S.', '.S.S.S.S.S', '', 'S.S.S.S.S.', '.S.S.S.S.S', '', 'BBBBBBBBBB', '', ''] },
+    { id:'wall',    name:'BOMBER WALL', rows:['', '', '', 'BBBB..BBBB', '', 'F..FFFF..F', '', 'SSSSSSSSSS', '', '', '', ''] }
+  ]
+});
+var LAB_NEB_2D = [null, 'SCOUT', 'FIGHTER', 'BOMBER'];
+// Rows in arrival order: [[type index 1–3 | 0 ×10]] — or null.
+function labInvasion(){
+  const d = labDesign('nebula');
+  return d ? labArrivalRows(d) : null;
+}
+
+// ── 💥 DODGE CORES — the barrage ───────────────────────────────────────
+// Fourteen lanes across; each row falls as one line of cores, bottom row
+// first — a line with a hole in it is a gate you have to find. No random
+// cores in a lab run: what you drew is exactly what falls, on a loop.
+labDef('dodge', {
+  what: 'BARRAGE', cols: 14, rows: 16, aspect: 1, count: 'CORES', fall: true,
+  fallTop: '▼ FALLS LAST', fallBottom: '▲ THIS LINE FALLS FIRST',
+  tools: [ { id:1, name:'CORE', note:'normal', color:'#ff6600', glyph:'●' },
+           { id:2, name:'BIG', note:'slow, wide', color:'#ff2442', glyph:'⬤' },
+           { id:3, name:'FAST', note:'small, quick', color:'#ffd700', glyph:'•' } ],
+  chars: '.CBF',
+  sub: 'Draw a Dodge Cores barrage · the lines of cores that rain down',
+  hint: 'Fourteen lanes across. Each row falls as one line, the bottom row first — leave holes to slip through. The barrage loops until the clock runs out.',
+  starter: 'gates', min: 1, minMsg: 'Place at least one core.',
+  presets: [
+    { id:'gates',  name:'GATES', rows:['CCCCCC..CCCCCC', '', '', 'CC..CCCCCCCCCC', '', '', 'CCCCCCCCCC..CC', '', '', 'CCCC..CCCCCCCC', '', '', 'CCCCCCCC..CCCC', '', '', ''] },
+    { id:'zigzag', name:'ZIGZAG', rows:['F.............', '.F............', '..F...........', '...F..........', '....F.........', '.....F........', '......F.......', '.......F......', '........F.....', '.........F....', '..........F...', '...........F..', '............F.', '.............F', '', ''] },
+    { id:'boulders', name:'BOULDERS', rows:['B...B...B...B.', '', '', '..B...B...B...', '', '', 'B...B...B...B.', '', '', '..B...B...B...', '', '', '', '', '', ''] },
+    { id:'rain',   name:'RAIN', rows:['C.C.C.C.C.C.C.', '', '.F.F.F.F.F.F.F', '', 'C.C.C.C.C.C.C.', '', '.F.F.F.F.F.F.F', '', '', '', '', '', '', '', '', ''] }
+  ],
+  check: d => {
+    const def = LAB_DEFS.dodge;
+    for(let r = 0; r < def.rows; r++){
+      if(d.cells.slice(r * def.cols, (r + 1) * def.cols).every(v => v)) return { warn: 'A full line with no gap can only be survived at the very edge.' };
+    }
+    return null;
+  }
+});
+function labBarrage(){
+  const d = labDesign('dodge');
+  return d ? labArrivalRows(d) : null;
+}
+
+// ── ☄️ METEOR SHIELD — the storm ───────────────────────────────────────
+labDef('meteor', {
+  what: 'STORM', cols: 12, rows: 10, aspect: 1.1, count: 'FRAGMENTS', fall: true,
+  fallTop: '▼ LAUNCHES LAST', fallBottom: '▲ THIS SALVO LAUNCHES FIRST',
+  tools: [ { id:1, name:'ROCK', note:'normal', color:'#ff8a00', glyph:'●' },
+           { id:2, name:'HEAVY', note:'splits / 2 hits', color:'#a855f7', glyph:'✸' },
+           { id:3, name:'FAST', note:'quick', color:'#ff2442', glyph:'➹' } ],
+  chars: '.RHF',
+  sub: 'Design a Meteor Shield storm · every salvo that falls',
+  hint: 'Twelve launch points across the sky. Each row is one salvo, the bottom row first; every wave replays your storm, a little faster. Empty rows are pauses.',
+  starter: 'salvos', min: 1, minMsg: 'Place at least one fragment.',
+  presets: [
+    { id:'salvos',  name:'SALVOS', rows:['R..R..R..R..', '', '.F..F..F..F.', '', 'R.R.R.R.R.R.', '', '..H....H....', '', 'R..........R', ''] },
+    { id:'curtain', name:'CURTAIN', rows:['', '', 'RRRRRRRRRRRR', '', '', 'FFFFFFFFFFFF', '', '', '', ''] },
+    { id:'heavy',   name:'HEAVY METAL', rows:['H....H....H.', '', '', '..H....H....', '', '', 'H....H....H.', '', '', ''] },
+    { id:'sweep',   name:'SWEEP', rows:['R...........', '.R..........', '..R.........', '...R........', '....R.......', '.....R......', '......R.....', '.......R....', '........R...', '.........R..'] }
+  ]
+});
+function labStorm(){
+  const d = labDesign('meteor');
+  return d ? labArrivalRows(d) : null;
+}
+
+// ── 🏓 CYBER PONG — the court ──────────────────────────────────────────
+// The middle of the court, seen from above with your paddle on the LEFT (in
+// 3D your end is the near one): bumpers bounce the ball, glass breaks on the
+// first touch. The serve spot in the middle is kept clear.
+var LAB_PONG_SERVE = i => { const r = Math.floor(i / 12), c = i % 12; return (r === 4 || r === 5) && (c === 5 || c === 6); };
+labDef('pong', {
+  what: 'COURT', cols: 12, rows: 10, aspect: 0.66, count: 'BUMPERS',
+  tools: [ { id:1, name:'BUMPER', note:'solid', color:'#8fa6ff' },
+           { id:2, name:'GLASS', note:'breaks', color:'#7df9ff', glyph:'◇' } ],
+  chars: '.BG',
+  locked: LAB_PONG_SERVE,
+  lockFace: () => ({ color: '#1b2238', glyph: '·' }),
+  sub: 'Build a Cyber Pong court · bumpers the ball ricochets off',
+  hint: 'Your paddle is on the LEFT, the droid on the right. BUMPERS bounce the ball; GLASS breaks on the first touch. The serve spot in the middle stays clear.',
+  starter: 'pillars', min: 1, minMsg: 'Place at least one bumper.',
+  presets: [
+    { id:'pillars', name:'PILLARS', rows:['', '...B....B...', '', '', '', '', '', '', '...B....B...', ''] },
+    { id:'wall',    name:'GLASS WALL', rows:['.....GG.....', '.....GG.....', '.....GG.....', '.....GG.....', '', '', '.....GG.....', '.....GG.....', '.....GG.....', '.....GG.....'] },
+    { id:'diamond', name:'DIAMOND', rows:['', '.....BB.....', '....B..B....', '...B....B...', '..B......B..', '..B......B..', '...B....B...', '....B..B....', '.....BB.....', ''] },
+    { id:'bricks',  name:'BRICKS', rows:['GGG......GGG', 'GGG......GGG', '', '..B......B..', '', '', '..B......B..', '', 'GGG......GGG', 'GGG......GGG'] }
+  ]
+});
+// { cells:[{c, r, v, hit:false}], cols, rows } — the builds keep `broken` on it.
+function labCourt(){
+  const d = labDesign('pong');
+  if(!d) return null;
+  const def = LAB_DEFS.pong, out = [];
+  d.cells.forEach((v, i) => { if(v) out.push({ c: i % def.cols, r: Math.floor(i / def.cols), v, gone: false }); });
+  return { cols: def.cols, rows: def.rows, cells: out };
+}
+
+// ── 🔌 OVERCLOCK PATH — the circuit ────────────────────────────────────
+// The 5 × 5 board: dead code where the current cannot go, and node A where it
+// starts. A circuit must be solvable — one route through every live node
+// exactly once — so the lab searches for that route before it lets one out.
+labDef('path', {
+  what: 'CIRCUIT', cols: 5, rows: 5, aspect: 1, count: 'DEAD NODES', maxw: 330,
+  tools: [ { id:1, name:'DEAD', note:'no current', color:'#4a1026', glyph:'✕' },
+           { id:2, name:'NODE A', note:'the start', color:'#ffd700', glyph:'A', one:true } ],
+  chars: '.XA',
+  countFn: d => d.cells.filter(v => v === 1).length,
+  sub: 'Wire an Overclock Path circuit · one route through every live node',
+  hint: 'Mark DEAD CODE and place NODE A. The current must pass through every other node exactly once — the lab checks that a route exists before you can play or share it.',
+  starter: 'ring', min: 0,
+  presets: [
+    { id:'ring',    name:'RING', rows:['A....', '.....', '..X..', '.....', '.....'] },
+    { id:'bars',    name:'BARS', rows:['A....', '.XXX.', '.....', '.....', '.....'] },
+    { id:'maze',    name:'MAZE', rows:['A.X..', '..X..', '.....', '..X..', '..X..'] },
+    { id:'zigzag',  name:'ZIGZAG', rows:['A....', 'XXXX.', '.....', '.XXXX', '.....'] },
+    { id:'full',    name:'FULL BOARD', rows:['A....', '.....', '.....', '.....', '.....'] }
+  ],
+  check: d => {
+    const start = d.cells.indexOf(2);
+    if(start < 0) return { block: 'Place NODE A — the current needs somewhere to start.' };
+    const dead = new Set(d.cells.map((v, i) => v === 1 ? i : -1).filter(i => i >= 0));
+    if(25 - dead.size < 4) return { block: 'Leave at least four live nodes.' };
+    const ok = labPathSolvable(dead, start);
+    if(ok === false) return { block: 'No route passes through every live node once — move the dead code or NODE A.' };
+    if(ok === null) return { warn: 'This circuit is too twisty to check quickly — it may have no route.' };
+    return null;
+  }
+});
+// true: a route exists · false: none does · null: gave up looking.
+function labPathSolvable(dead, start){
+  if(dead.has(start)) return false;
+  const need = 25 - dead.size;
+  const nb = i => {
+    const r = (i / 5) | 0, c = i % 5, o = [];
+    if(r > 0) o.push(i - 5); if(r < 4) o.push(i + 5); if(c > 0) o.push(i - 1); if(c < 4) o.push(i + 1);
+    return o.filter(j => !dead.has(j));
+  };
+  // Connected at all? (The fast no.)
+  const seen0 = new Set([start]), q = [start];
+  while(q.length){ const i = q.pop(); for(const j of nb(i)) if(!seen0.has(j)){ seen0.add(j); q.push(j); } }
+  if(seen0.size !== need) return false;
+  const seen = new Uint8Array(25);
+  let budget = 250000;
+  const walk = (i, n) => {
+    if(--budget <= 0) return null;
+    seen[i] = 1;
+    if(n === need) return true;
+    for(const j of nb(i)){
+      if(seen[j]) continue;
+      const r = walk(j, n + 1);
+      if(r) return true;
+      if(r === null){ seen[i] = 0; return null; }
+    }
+    seen[i] = 0;
+    return false;
+  };
+  return walk(start, 1);
+}
+// { dead:[indices], start } — or null.
+function labCircuit(){
+  const d = labDesign('path');
+  if(!d) return null;
+  const start = d.cells.indexOf(2);
+  return { dead: d.cells.map((v, i) => v === 1 ? i : -1).filter(i => i >= 0), start: start < 0 ? 0 : start };
+}
+
+// ── 🧹 DEFRAG — the drive ──────────────────────────────────────────────
+labDef('defrag', {
+  what: 'DRIVE', cols: 12, rows: 9, aspect: 1, count: 'CORRUPT',
+  tools: [ { id:1, name:'CORRUPT', note:'a mine', color:'#ff2442', glyph:'☣' },
+           { id:2, name:'OPENING', note:'opened for you', color:'#39ff88', glyph:'◎', one:true } ],
+  chars: '.XO',
+  countFn: d => d.cells.filter(v => v === 1).length,
+  sub: 'Hide the corruption on a Defrag drive · every sector a clue',
+  hint: 'Plant CORRUPT sectors; the numbers do the rest. OPENING is the sector opened for the player at the start (none = the cleanest one). Clear the drive and it mounts again.',
+  starter: 'scatter', min: 1, minMsg: 'Plant at least one corrupt sector.',
+  presets: [
+    { id:'scatter', name:'SCATTER', rows:['..X......X..', '.....X......', 'X.......X...', '....X.....X.', '.X........X.', '.......X....', '..X.X.......', '.........X..', 'X.....X....X'] },
+    { id:'ring',    name:'RING', rows:['', '...XXXXXX...', '..X......X..', '..X......X..', '..X......X..', '..X......X..', '...XXXXXX...', '', ''] },
+    { id:'lines',   name:'STRIPES', rows:['X.X.X.X.X.X.', '', '', '.X.X.X.X.X.X', '............', '', 'X.X.X.X.X.X.', '', ''] },
+    { id:'diag',    name:'DIAGONALS', rows:['X....X....X.', '.X....X....X', '..X....X....', '...X....X...', '....X....X..', '.....X....X.', 'X.....X....X', '.X.....X....', '..X.....X...'] }
+  ],
+  check: d => {
+    const mines = d.cells.filter(v => v === 1).length;
+    if(108 - mines < 12) return { block: 'Leave at least twelve clean sectors.' };
+    // An opening whose flood fill reaches every clean sector finishes the
+    // drive before the player touches it — and remounts it, forever.
+    const V = labVolumeOf(d);
+    if(V.start >= 0 && labFloodCount(V.mines, V.start) >= 108 - V.mines.size) return { block: 'The opening clears the whole drive by itself — plant more corruption.' };
+    return null;
+  }
+});
+// How many sectors the opening flood fill would uncover.
+function labFloodCount(mines, start){
+  const COLS = 12, ROWS = 9;
+  const n = i => { const c = i % COLS, r = (i / COLS) | 0; let k = 0;
+    for(let dc = -1; dc <= 1; dc++) for(let dr = -1; dr <= 1; dr++){ const cc = c + dc, rr = r + dr;
+      if((dc || dr) && cc >= 0 && rr >= 0 && cc < COLS && rr < ROWS && mines.has(rr * COLS + cc)) k++; }
+    return k; };
+  const seen = new Set(), st = [start];
+  while(st.length){
+    const i = st.pop();
+    if(seen.has(i) || mines.has(i)) continue;
+    seen.add(i);
+    if(n(i) === 0){
+      const c = i % COLS, r = (i / COLS) | 0;
+      for(let dc = -1; dc <= 1; dc++) for(let dr = -1; dr <= 1; dr++){ const cc = c + dc, rr = r + dr;
+        if((dc || dr) && cc >= 0 && rr >= 0 && cc < COLS && rr < ROWS) st.push(rr * COLS + cc); }
+    }
+  }
+  return seen.size;
+}
+// { mines:Set, start } — the opening is the painted one, or the clean sector
+// with the fewest corrupt neighbours nearest the middle.
+function labVolume(){
+  const d = labDesign('defrag');
+  return d ? labVolumeOf(d) : null;
+}
+function labVolumeOf(d){
+  const COLS = 12, ROWS = 9;
+  const mines = new Set(d.cells.map((v, i) => v === 1 ? i : -1).filter(i => i >= 0));
+  let start = d.cells.indexOf(2);
+  if(start < 0){
+    let best = -1, bs = Infinity;
+    for(let i = 0; i < COLS * ROWS; i++){
+      if(mines.has(i)) continue;
+      const c = i % COLS, r = (i / COLS) | 0;
+      let n = 0;
+      for(let dc = -1; dc <= 1; dc++) for(let dr = -1; dr <= 1; dr++){
+        const cc = c + dc, rr = r + dr;
+        if((dc || dr) && cc >= 0 && rr >= 0 && cc < COLS && rr < ROWS && mines.has(rr * COLS + cc)) n++;
+      }
+      const s = n * 100 + Math.abs(c - 5.5) + Math.abs(r - 4);
+      if(s < bs){ bs = s; best = i; }
+    }
+    start = best;
+  }
+  return { mines, start };
+}
+
+// ── 🎵 PULSE SYNC — the chart ──────────────────────────────────────────
+// Three lanes, thirty-two eighth notes (four bars), struck bottom row first
+// and looped for the whole round at the equipped Music Drive's tempo.
+labDef('rhythm', {
+  what: 'CHART', cols: 3, rows: 32, aspect: 5, count: 'NOTES', fall: true, maxw: 250, noMirror: true,
+  fallTop: '▼ BAR 4 · STRUCK LAST', fallBottom: '▲ BAR 1 · THIS ROW IS STRUCK FIRST',
+  rowClass: r => (r % 8 === 0 ? 'bar' : r % 2 === 0 ? 'beat' : ''),
+  tools: [ { id:1, name:'NOTE', note:'strike', color:'#39ff88', glyph:'●' } ],
+  chars: '.N',
+  sub: 'Write a Pulse Sync chart · four bars, on a loop',
+  hint: 'Three lanes, one row per eighth note — two rows a beat, eight a bar (the brighter lines). The bottom row is struck first and the four bars loop all round, in time with your Music Drive.',
+  starter: 'floor', min: 4, minMsg: 'Write at least four notes.',
+  presets: [
+    { id:'floor',  name:'FOUR ON THE FLOOR', rows: [].concat(...Array(4).fill(['', '.N.', '', 'N..', '', '.N.', '', '..N'])) },
+    { id:'zigzag', name:'ZIGZAG', rows: [].concat(...Array(4).fill(['N..', '', '.N.', '', '..N', '', '.N.', ''])) },
+    { id:'rolls',  name:'ROLLS', rows: [].concat(...Array(2).fill(['N..', '.N.', '..N', '', 'N..', '.N.', '..N', '', '', 'N.N', '', '.N.', '', 'N.N', '', '.N.'])) },
+    { id:'sync',   name:'OFFBEATS', rows: [].concat(...Array(4).fill(['', 'N..', '', '..N', '.N.', '', '', 'N.N'])) }
+  ]
+});
+// The 32 rows in strike order (bottom first, untrimmed — a chart's length is
+// its bar count), each [0|1 ×3] — or null.
+function labChart(){
+  const d = labDesign('rhythm');
+  if(!d) return null;
+  const rows = [];
+  for(let r = 31; r >= 0; r--) rows.push(d.cells.slice(r * 3, r * 3 + 3));
+  return rows;
+}
+
+// ── 🧮 CORE MERGE — the lattice ────────────────────────────────────────
+// The starting board: cores already in their sockets, and BLOCKS — dead
+// sockets that never move and never merge, so every slide has to route round
+// them.
+labDef('merge', {
+  what: 'LATTICE', cols: 4, rows: 4, aspect: 1, count: 'PIECES', maxw: 300,
+  tools: [ { id:1, name:'2', color:'#2a3150', glyph:'2' }, { id:2, name:'4', color:'#34406a', glyph:'4' },
+           { id:3, name:'8', color:'#2b7bff', glyph:'8' }, { id:4, name:'16', color:'#00b8c4', glyph:'16' },
+           { id:5, name:'32', color:'#1fae5e', glyph:'32' }, { id:6, name:'64', color:'#c9a200', glyph:'64' },
+           { id:7, name:'BLOCK', note:'dead socket', color:'#3a0f1c', glyph:'✕' } ],
+  chars: '.abcdefX',
+  sub: 'Set up a Core Merge lattice · cores to start with, sockets to block',
+  hint: 'Place starting cores and BLOCKS. Blocks never slide and never merge — every move has to route round them. New cores still drop into the free sockets.',
+  starter: 'pillar', min: 1, minMsg: 'Place at least one core or block.',
+  presets: [
+    { id:'pillar',  name:'PILLAR', rows:['a...', '.X..', '..X.', '...a'] },
+    { id:'corners', name:'CORNERS', rows:['X..X', '.ab.', '.ba.', 'X..X'] },
+    { id:'ladder',  name:'LADDER', rows:['abcd', '....', '....', '....'] },
+    { id:'split',   name:'SPLIT', rows:['..X.', '..X.', 'a.X.', 'b...'] }
+  ],
+  check: d => {
+    if(!d.cells.some(v => !v)) return { block: 'Leave at least one empty socket for new cores.' };
+    if(d.cells.filter(v => v === 7).length > 8) return { warn: 'That many blocks leaves very little room to merge.' };
+    return null;
+  }
+});
+// The sixteen sockets: a core's value, -1 for a block, 0 empty — or null.
+function labLattice(){
+  const d = labDesign('merge');
+  if(!d) return null;
+  return d.cells.map(v => v === 7 ? -1 : v ? Math.pow(2, v) : 0);
+}
+
+// ── 🧠 MEMORY MATCH — the board ────────────────────────────────────────
+// Which squares hold a card, and which symbols are in play: every symbol you
+// paint needs exactly one partner. The cards are dealt AFRESH among your
+// squares every round, so a board stays a memory test however often it is
+// played — it is the shape and the set that are yours.
+var LAB_MEM_ICONS = ['🚀','🧱','🖱️','💥','🧠','🔢','⚡','🏆'];
+labDef('memory', {
+  what: 'BOARD', cols: 4, rows: 4, aspect: 1, count: 'CARDS', maxw: 300,
+  tools: LAB_MEM_ICONS.map((g, k) => ({ id: k + 1, name: g, color: ['#00f5ff','#ff0090','#39ff88','#ffd700','#a855f7','#ff6600','#56b4e9','#ff2442'][k], glyph: g })),
+  chars: '.12345678',
+  sub: 'Shape a Memory Match board · which squares, which symbols',
+  hint: 'Paint the squares that hold a card, each with a symbol — every symbol exactly twice. Blank squares hold no card. The cards are shuffled among your squares every round.',
+  starter: 'ring', min: 4, minMsg: 'Place at least two pairs.',
+  presets: [
+    { id:'ring',    name:'RING', rows:['1234', '5..5', '6..6', '1234'] },
+    { id:'full',    name:'FULL HOUSE', rows:['1234', '5678', '1234', '5678'] },
+    { id:'cross',   name:'CROSS', rows:['.12.', '3443', '5665', '.12.'] },
+    { id:'mini',    name:'QUICK FOUR', rows:['12..', '12..', '..34', '..34'] }
+  ],
+  check: d => {
+    const n = {};
+    d.cells.forEach(v => { if(v) n[v] = (n[v] || 0) + 1; });
+    for(const k in n) if(n[k] !== 2) return { block: `${LAB_MEM_ICONS[k - 1]} is on ${n[k]} square${n[k] > 1 ? 's' : ''} — every symbol needs exactly one partner.` };
+    return null;
+  }
+});
+// { slots:[board index…], pairs:[symbol index 0–7 …] } — the builds deal
+// shuffled pairs into the slots — or null.
+function labBoard(){
+  const d = labDesign('memory');
+  if(!d) return null;
+  const slots = [], pairs = [];
+  d.cells.forEach((v, i) => { if(v){ slots.push(i); pairs.push(v - 1); } });
+  return { slots, pairs };
+}
+
+// ── 🔢 MATH BLITZ — the quiz ───────────────────────────────────────────
+// Which sums, and how big: switch on any operation at any size. Questions
+// are drawn from the squares you light — the times tables up to 12 and
+// nothing else, say, or addition to 100.
+var LAB_MATH_OPS = ['+', '−', '×', '÷'], LAB_MATH_MAX = [5, 10, 12, 20, 50, 100];
+labDef('math', {
+  what: 'QUIZ', cols: 6, rows: 4, aspect: 1.5, count: 'KINDS', maxw: 460, noMirror: true,
+  tools: [ { id:1, name:'ON', note:'in the quiz', color:'#1fae5e' } ],
+  eraseName: 'OFF',
+  cellText: i => LAB_MATH_OPS[Math.floor(i / 6)] + LAB_MATH_MAX[i % 6],
+  chars: '.#',
+  sub: 'Write a Math Blitz quiz · which sums, how big',
+  hint: 'Light the kinds of question you want: + − × ÷ (rows) up to 5, 10, 12, 20, 50 or 100 (columns). Every question is drawn from the lit squares. Subtraction never goes below zero; division always comes out whole.',
+  starter: 'tables', min: 1, minMsg: 'Light at least one kind of question.',
+  presets: [
+    { id:'tables',  name:'TIMES TABLES', rows:['', '', '..#...', ''] },
+    { id:'basics',  name:'FIRST SUMS', rows:['.#....', '.#....', '', ''] },
+    { id:'mixed',   name:'MIXED', rows:['...#..', '...#..', '..#...', '..#...'] },
+    { id:'big',     name:'BIG NUMBERS', rows:['.....#', '.....#', '...#..', ''] }
+  ]
+});
+// A question maker for the builds: () => { a, b, op ('+','-','*','/'), ans,
+// text (with ×÷), plain (the 3D board's +-*/) } — or null.
+function labQuiz(){
+  const d = labDesign('math');
+  if(!d) return null;
+  const kinds = [];
+  d.cells.forEach((v, i) => { if(v) kinds.push({ op: Math.floor(i / 6), max: LAB_MATH_MAX[i % 6] }); });
+  if(!kinds.length) return null;
+  const R = typeof dailyRand === 'function' ? dailyRand : Math.random;
+  const pick = n => 1 + Math.floor(R() * n);
+  return () => {
+    const k = kinds[Math.floor(R() * kinds.length)];
+    let a, b, ans;
+    if(k.op === 0){ a = pick(k.max); b = pick(k.max); ans = a + b; }
+    else if(k.op === 1){ a = pick(k.max); b = pick(a); ans = a - b; }
+    else if(k.op === 2){ a = pick(k.max); b = pick(k.max); ans = a * b; }
+    else{ b = pick(k.max); ans = pick(k.max); a = b * ans; }
+    const sym = ['+', '-', '*', '/'][k.op];
+    return { a, b, op: sym, ans, text: `${a} ${LAB_MATH_OPS[k.op]} ${b}`, plain: `${a}${sym}${b}` };
+  };
+}
+
+// ── ⚡ REACTION TIME — the signals ──────────────────────────────────────
+// One column per read, left to right: how long the wait is before GO, and
+// whether a FAKE flash comes first — strike on the fake and it counts as
+// too early. The sequence loops for the whole round.
+var LAB_RX_WAIT = [4000, 3000, 2200, 1500, 900];         // top row waits longest
+labDef('reaction', {
+  what: 'SIGNALS', cols: 10, rows: 5, aspect: 1, count: 'READS', oneper: 'col', noMirror: true,
+  tools: [ { id:1, name:'GO', note:'a clean read', color:'#39ff88', glyph:'●' },
+           { id:2, name:'FAKE', note:'decoy first', color:'#a855f7', glyph:'◐' } ],
+  rowText: ['4.0s', '3.0s', '2.2s', '1.5s', '0.9s'],
+  cellText: i => ['4s', '3s', '2s', '1.5', '.9'][Math.floor(i / 10)],
+  chars: '.GF',
+  sub: 'Script Reaction Time · every wait, and when to fake them out',
+  hint: 'Each column is one read, left to right; the row is how long the wait before GO lasts (top = 4 s, bottom = 0.9 s). A FAKE read flashes a decoy colour halfway through the wait — strike on it and it counts as too early.',
+  starter: 'mind', min: 2, minMsg: 'Script at least two reads.',
+  presets: [
+    { id:'mind',   name:'MIND GAMES', rows:['...F......', '.G....F...', '....G...G.', 'G.....G...', '..F....F..'] },
+    { id:'rapid',  name:'RAPID FIRE', rows:['', '', '', 'G.G.G.G.G.', '.G.G.G.G.G'] },
+    { id:'patience', name:'PATIENCE', rows:['G.F.G.F.G.', '.G.G.G.G.G', '', '', ''] },
+    { id:'ladder', name:'LADDER', rows:['G.........', '.G........', '..G.......', '...G......', '....GFFFFF'] }
+  ]
+});
+// [{ wait ms, fake }] in order — or null.
+function labSignals(){
+  const d = labDesign('reaction');
+  if(!d) return null;
+  const out = labColumns(d).filter(Boolean).map(c => ({ wait: LAB_RX_WAIT[c.r], fake: c.v === 2 }));
+  return out.length ? out : null;
+}
+
+// ── 🖱️ CLICK FRENZY — the ten seconds ──────────────────────────────────
+labDef('click', {
+  what: 'TIMELINE', cols: 10, rows: 1, aspect: 0.9, count: 'SECONDS', noMirror: true, maxw: 560,
+  tools: [ { id:1, name:'GOLD', note:'×2 points', color:'#c9a200' },
+           { id:2, name:'SURGE', note:'×3 points', color:'#ff0090' },
+           { id:3, name:'JAM', note:'clicks don’t count', color:'#3a3f55' } ],
+  eraseName: 'NORMAL',
+  cellText: i => (i + 1) + 's',
+  chars: '.GSJ',
+  sub: 'Script the ten seconds of Click Frenzy · gold, surges and jams',
+  hint: 'One square per second of the round. GOLD seconds pay double, SURGE triple, and a JAMMED second pays nothing at all — so the frenzy is in knowing when to hammer.',
+  starter: 'finale', min: 1, minMsg: 'Script at least one second.',
+  presets: [
+    { id:'finale', name:'BIG FINISH', rows:['.......GSS'] },
+    { id:'jams',   name:'JAMMED', rows:['J.J.J.J.J.'] },
+    { id:'gold',   name:'GOLD RUSH', rows:['GGJGGJGGJS'] },
+    { id:'start',  name:'FAST START', rows:['SS..JJ..GG'] }
+  ]
+});
+// Points multiplier for each of the ten seconds, first second first — or null.
+function labFrenzy(){
+  const d = labDesign('click');
+  if(!d) return null;
+  return d.cells.slice(0, 10).map(v => v === 1 ? 2 : v === 2 ? 3 : v === 3 ? 0 : 1);
+}
+
+// ── 🔓 NODE HACKER — the sequence ──────────────────────────────────────
+// Tapped, not painted: the order IS the design. The first mainframe plays the
+// first three steps, and every one after adds the next — looping back to the
+// start once the sequence runs out, so a short motif becomes a long melody.
+var LAB_HACK_KEYS = ['1','2','3','4','Q','W','E','R','A','S','D','F','Z','X','C','V'];
+labDef('hacker', {
+  what: 'SEQUENCE', kind: 'seq', cols: 4, rows: 4, aspect: 1, count: 'STEPS', maxw: 300, maxSeq: 24, minSeq: 3,
+  tools: [ { id:1, name:'NODE', color:'#00b8c4' } ],
+  seqFace: i => LAB_HACK_KEYS[i], seqColor: '#00b8c4',
+  sub: 'Compose a Node Hacker sequence · the mainframe plays it back',
+  hint: 'Tap the nodes in the order they should pulse — up to 24 steps (a node can repeat). The first mainframe plays your first three; each after adds your next step, looping back to the start when the sequence runs out.',
+  starter: 'spiral',
+  presets: [
+    { id:'spiral',  name:'SPIRAL',  seq: [0, 1, 2, 3, 7, 11, 15, 14, 13, 12, 8, 4, 5, 6, 10, 9] },
+    { id:'corners', name:'CORNERS', seq: [0, 3, 15, 12, 0, 15, 3, 12] },
+    { id:'scale',   name:'SCALE',   seq: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] },
+    { id:'echo',    name:'ECHO',    seq: [5, 6, 5, 6, 9, 10, 9, 10, 5, 10, 6, 9] }
+  ].map(p => ({ id: p.id, name: p.name, seq: p.seq.map(i => ({ i, t: 1 })) }))
+});
+LAB_DEFS.hacker.starterSeq = LAB_DEFS.hacker.presets[0].seq;
+// The node indices in order — or null.
+function labNodes(){
+  const d = labDesign('hacker');
+  return d && d.seq.length ? d.seq.map(s => s.i) : null;
+}
+
+// ── 🎚️ FREQUENCY MODULATOR — the signals ───────────────────────────────
+var LAB_FREQ_FORMS = [ { name:'SINE', color:'#00f5ff', glyph:'∿' }, { name:'HARMONIC', color:'#39ff88', glyph:'≈' },
+                       { name:'SAWTOOTH', color:'#ffd700', glyph:'⩘' }, { name:'TRIANGLE', color:'#ff6600', glyph:'△' },
+                       { name:'SQUARE', color:'#ff0090', glyph:'⊓' } ];
+// A stage is matched on amplitude and wavelength alone, and the dials stay
+// where the last stage left them — so two stages in a row on one square
+// (the last and the first too: the run loops) would arrive already tuned.
+labDef('freq', {
+  what: 'SIGNALS', kind: 'seq', cols: 7, rows: 7, aspect: 1, count: 'STAGES', maxw: 340, maxSeq: 12, minSeq: 2,
+  tools: LAB_FREQ_FORMS.map((f, k) => ({ id: k + 1, name: f.name, color: f.color, glyph: f.glyph })),
+  sub: 'Tune a Frequency Modulator run · every target signal in order',
+  hint: 'Each tap is one stage, in order: left → right is the WAVELENGTH (short to long), bottom → top the AMPLITUDE (small to big), and the brush is the waveform. The stages loop, so no two in a row — the last and the first included — may share a square.',
+  starter: 'climb',
+  presets: [
+    { id:'climb',  name:'THE CLIMB', seq: [[42, 1], [36, 2], [30, 3], [24, 4], [18, 5], [12, 1], [6, 2]] },
+    { id:'corners', name:'CORNERS', seq: [[0, 1], [6, 5], [48, 3], [42, 4]] },
+    { id:'pairs',  name:'NEAR MISS', seq: [[24, 1], [25, 1], [18, 2], [17, 2], [23, 4], [30, 5], [31, 5]] },
+    { id:'square', name:'SQUARES', seq: [[8, 5], [12, 5], [36, 5], [40, 5]] }
+  ].map(p => ({ id: p.id, name: p.name, seq: p.seq.map(([i, t]) => ({ i, t })) })),
+  check: d => {
+    const s = d.seq, n = s.length;
+    for(let k = 0; k < n; k++){
+      if(s[k].i !== s[(k + 1) % n].i) continue;
+      return { block: k + 1 < n
+        ? `Stages ${k + 1} and ${k + 2} share a square — the second would arrive already tuned. Move one.`
+        : `The last stage shares the first one’s square — looping back, it would arrive already tuned. Move one.` };
+    }
+    return null;
+  }
+});
+LAB_DEFS.freq.starterSeq = LAB_DEFS.freq.presets[0].seq;
+// [{ form 0–4, a 0–1 (amplitude), l 0–1 (wavelength) }] in order — or null.
+function labStages(){
+  const d = labDesign('freq');
+  if(!d || !d.seq.length) return null;
+  return d.seq.map(s => ({ form: s.t - 1, a: 1 - Math.floor(s.i / 7) / 6, l: (s.i % 7) / 6 }));
+}
+
+// ── 📡 SIGNAL TRACE — the ciphers ──────────────────────────────────────
+var LAB_TRACE_GLYPH = { circle:'●', square:'■', triangle:'▲', diamond:'◆' };
+labDef('trace', {
+  what: 'CIPHERS', cols: 4, rows: 6, aspect: 1.2, count: 'CIPHERS', maxw: 300, noMirror: true,
+  tools: TRACE_SYMS.map((s, k) => ({ id: k + 1, name: String(k + 1), color: s.col, glyph: LAB_TRACE_GLYPH[s.shape] || '●' })),
+  countFn: d => labCipherRows(d).length,
+  chars: '.1234567',
+  sub: 'Set Signal Trace ciphers · four symbols each, cracked in order',
+  hint: 'Each row is one four-symbol cipher, cracked in order and looping. Repeats are allowed. The player gets every symbol up to the highest you used (at least six).',
+  starter: 'first', min: 1, minMsg: 'Fill at least one row of four.',
+  presets: [
+    { id:'first',  name:'WARM-UP',  rows: ['1234', '2211', '5436', '6655', '', ''] },
+    { id:'twins',  name:'TWINS',    rows: ['1122', '3344', '5566', '1212', '3434', '5656'] },
+    { id:'mono',   name:'MONO',     rows: ['1111', '2222', '7777', '', '', ''] },
+    { id:'seven',  name:'ALL SEVEN', rows: ['7531', '2467', '7777', '1357', '', ''] }
+  ],
+  check: d => {
+    for(let r = 0; r < 6; r++){
+      const row = d.cells.slice(r * 4, r * 4 + 4), n = row.filter(v => v).length;
+      if(n && n < 4) return { block: `Row ${r + 1} has ${n} of 4 symbols — a cipher needs all four.` };
+    }
+    return null;
+  }
+});
+function labCipherRows(d){
+  const out = [];
+  for(let r = 0; r < 6; r++){ const row = d.cells.slice(r * 4, r * 4 + 4); if(row.every(v => v)) out.push(row.map(v => v - 1)); }
+  return out;
+}
+// { codes:[[0–6 ×4]…], syms } — or null.
+function labCiphers(){
+  const d = labDesign('trace');
+  if(!d) return null;
+  const codes = labCipherRows(d);
+  if(!codes.length) return null;
+  const hi = Math.max(...codes.flat());
+  return { codes, syms: Math.min(TRACE_SYMS.length, Math.max(6, hi + 1)) };
+}
+
+// ── 🗂️ PACKET SORT — the rule schedule ─────────────────────────────────
+labDef('sorter', {
+  what: 'SCHEDULE', cols: 8, rows: 4, aspect: 1.1, count: 'PHASES', oneper: 'col', noMirror: true, maxw: 460,
+  tools: [ { id:1, name:'SHORT', note:'10 s', color:'#ff6600' },
+           { id:2, name:'NORMAL', note:'20 s', color:'#00b8c4' },
+           { id:3, name:'LONG', note:'30 s', color:'#8a5cff' } ],
+  cellText: i => ['COLOUR', 'SHAPE', 'MIRROR', 'SHIFT'][Math.floor(i / 8)],
+  chars: '.SNL',
+  sub: 'Schedule Packet Sort · which rule, for how long, in what order',
+  hint: 'Each column is one phase, left to right: the row is the RULE (match colour, match shape, mirror the colour, shift one right) and the brush is how long it lasts. The schedule loops.',
+  starter: 'classic', min: 1, minMsg: 'Schedule at least one phase.',
+  presets: [
+    { id:'classic', name:'CLASSIC', rows: ['N.N.....', '.N.N....', '....N.N.', '.....N.N'] },
+    { id:'blitz',   name:'BLITZ',   rows: ['S...S...', '.S...S..', '..S...S.', '...S...S'] },
+    { id:'mirror',  name:'MIRRORS', rows: ['L.......', '', '.S.S.S.S', '..N.N.N.'] },
+    { id:'shape',   name:'SHAPE ONLY', rows: ['', 'L.......', '', '.N......'] }
+  ]
+});
+// { rules:[0–3…], ms:[…] } in order — or null.
+function labSortPlan(){
+  const d = labDesign('sorter');
+  if(!d) return null;
+  const cols = labColumns(d).filter(Boolean);
+  if(!cols.length) return null;
+  return { rules: cols.map(c => c.r), ms: cols.map(c => [0, 10000, 20000, 30000][c.v]) };
+}
+
+// ── ❄️ ICE CUTTER — the floor ──────────────────────────────────────────
+// Seen from above: DATA NODES to touch, LAMPS whose beams sweep (each turns
+// toward the middle of the floor and sweeps either side of it), and where you
+// start. A lamp's sweep is set from the design itself, so a floor you share
+// patrols exactly the way it did for you.
+labDef('cutter', {
+  what: 'FLOOR', cols: 12, rows: 10, aspect: 1.08, count: 'NODES',
+  tools: [ { id:1, name:'NODE', note:'touch it', color:'#39ff88', glyph:'◆' },
+           { id:2, name:'LAMP', note:'sweeps', color:'#ff2442', glyph:'✺' },
+           { id:3, name:'START', note:'you', color:'#00f5ff', glyph:'▲', one:true } ],
+  countFn: d => d.cells.filter(v => v === 1).length,
+  chars: '.NLS',
+  sub: 'Lay out an Ice Cutter floor · the nodes, the lamps, your way in',
+  hint: 'Place DATA NODES to touch and LAMPS whose beams sweep either side of the middle of the floor — a lamp on one of the four middle squares turns right round, like a lighthouse. Touch every node to clear it. START is where you begin (none = bottom middle).',
+  starter: 'gallery', min: 1, minMsg: 'Place at least one data node.',
+  presets: [
+    { id:'gallery', name:'GALLERY', rows: ['L....L.....L', '', '..N.....N...', '', '.....N......', 'L..........L', '..N.....N...', '', '.....N......', '.....S......'] },
+    { id:'vault',   name:'VAULT', rows: ['L..........L', '', '....NNNN....', '....N..N....', '....NNNN....', '', '', 'L..........L', '', '.....S......'] },
+    { id:'corridor', name:'CORRIDOR', rows: ['L.L.L..L.L.L', '', '', '.N..N..N..N.', '', '', '', '', '', 'S...........'] },
+    { id:'lamps',   name:'LIGHTHOUSE', rows: ['N..........N', '', '', '', '.....L......', '', '', '', '', 'N....S.....N'] }
+  ],
+  check: d => {
+    const n = d.cells.filter(v => v === 1).length, l = d.cells.filter(v => v === 2).length;
+    if(n > 16) return { block: 'Sixteen data nodes is the most a floor can hold.' };
+    if(l > 10) return { block: 'Ten lamps is the most a floor can hold.' };
+    return null;
+  }
+});
+// { nodes:[{u,v}], lamps:[{u,v,span,half,speed,phase,len,spin}], start:{u,v}|null }
+// in design fractions (0–1 across, 0–1 down; each build maps them onto its
+// own floor) — or null. A lamp on one of the four middle squares SPINS.
+function labFloor(){
+  const d = labDesign('cutter');
+  if(!d) return null;
+  const R = makeRng(hashStr('floor:' + labPackData(LAB_DEFS.cutter, d)));
+  const nodes = [], lamps = [];
+  let start = null;
+  d.cells.forEach((v, i) => {
+    const u = ((i % 12) + 0.5) / 12, w = (Math.floor(i / 12) + 0.5) / 10;
+    if(v === 1) nodes.push({ u, v: w });
+    else if(v === 2) lamps.push({ u, v: w, span: 0.55 + R() * 0.5, half: 0.26 + R() * 0.1, speed: 0.34 + R() * 0.3, phase: R() * 6.28, len: 250 + R() * 180,
+                                  spin: Math.hypot(u - 0.5, w - 0.5) < 0.1 });
+    else if(v === 3) start = { u, v: w };
+  });
+  return { nodes, lamps, start };
+}
+
+// ── 🌡️ COOLANT — the shaft ─────────────────────────────────────────────
+// Drawn as a picture of the shaft: each column is one stretch of it, and the
+// squares painted in a column are the tunnel through the rock — the rest of
+// the column is rock. ❄ squares are tunnel with a coolant cell in them. A
+// column left blank carries the tunnel smoothly between its painted
+// neighbours, and the shaft loops for the whole run.
+var LAB_COOL = { cols: 16, rows: 10, seg: 600, lead: 600 };   // seg: shaft units a column spans
+// Presets are written one column at a time: [top row, height, ❄ row] or null.
+function labShaftPic(spec){
+  const rows = [];
+  for(let r = 0; r < LAB_COOL.rows; r++){
+    let s = '';
+    spec.forEach(col => {
+      if(!col){ s += '.'; return; }
+      const [t, h, c] = col;
+      s += r === c ? 'C' : (r >= t && r < t + h) ? 'T' : '.';
+    });
+    rows.push(s);
+  }
+  return rows;
+}
+// The painted rows of column c, top to bottom.
+function labShaftRows(d, c){
+  const out = [];
+  for(let r = 0; r < LAB_COOL.rows; r++) if(d.cells[r * LAB_COOL.cols + c]) out.push(r);
+  return out;
+}
+labDef('coolant', {
+  what: 'SHAFT', cols: LAB_COOL.cols, rows: LAB_COOL.rows, aspect: 0.9, count: 'SECTIONS',
+  tools: [ { id:1, name:'TUNNEL', note:'open shaft', color:'#1f5a96' },
+           { id:2, name:'COOLANT', note:'vents heat', color:'#00b8c8', glyph:'❄' } ],
+  colFace: { color: '#5a1a26' },
+  chars: '.TC',
+  countFn: d => { let n = 0; for(let c = 0; c < LAB_COOL.cols; c++) if(labShaftRows(d, c).length) n++; return n; },
+  sub: 'Carve a Coolant shaft · the tunnel you fly through',
+  hint: 'Each column is one stretch of the shaft: paint the tunnel through it, two squares tall at least — the rest of the column is rock. ❄ squares are tunnel with a coolant cell in them. A column left blank carries the tunnel smoothly between its neighbours. The shaft loops.',
+  starter: 'wave', min: 1, minMsg: 'Carve at least one column of tunnel.',
+  presets: [
+    { id:'wave',    name:'THE WAVE',     rows: labShaftPic([[3,4],[2,4,3],[1,4],[1,4],[2,4],[3,4],[4,4],[5,4,6],[5,4],[5,4],[4,4],[3,4],[2,4,4],[2,4],[3,4],[3,4]]) },
+    { id:'squeeze', name:'THE SQUEEZE',  rows: labShaftPic([[2,6],[2,6],[2,6,4],[3,5],[3,4],[3,4],[4,3],[4,2],[4,2],[4,2],[4,3],[3,4,5],[3,4],[2,5],[2,6],[2,6]]) },
+    { id:'zigzag',  name:'ZIGZAG',       rows: labShaftPic([[1,3],null,[6,3],null,[1,3,2],null,[6,3],null,[1,3],null,[6,3,7],null,[1,3],null,[6,3],null]) },
+    { id:'cavern',  name:'OPEN CAVERN',  rows: labShaftPic([[1,8],[1,8,2],[1,8],[1,8,7],[1,8],[1,8,4],[1,8],[1,8,8],[1,8],[1,8,1],[1,8],[1,8,5],[1,8],[1,8,3],[1,8],[1,8,6]]) }
+  ],
+  check: d => {
+    for(let c = 0; c < LAB_COOL.cols; c++){
+      const rs = labShaftRows(d, c);
+      if(!rs.length) continue;
+      if(rs[rs.length - 1] - rs[0] + 1 !== rs.length) return { block: `Column ${c + 1} has two openings — a column’s tunnel must be one piece.` };
+      if(rs.length < 2) return { block: `Column ${c + 1}’s tunnel is one square tall — the craft needs two at least.` };
+    }
+    return null;
+  }
+});
+// The shaft both builds fly — the same { at(x) → {top, bot}, cells } that
+// coolBuildShaft() makes — or null. It opens on the stock mouth (so the craft
+// never starts inside rock), holds each column's tunnel across the middle of
+// its stretch and eases between columns, and widens or tightens with the tier
+// exactly as the stock shaft does.
+function labShaft(len, diff){
+  const d = labDesign('coolant');
+  if(!d) return null;
+  const C = LAB_COOL.cols, SEG = LAB_COOL.seg, LEAD = LAB_COOL.lead, RH = BOARD_H / LAB_COOL.rows;
+  const k = 1 / Math.max(0.85, diff * 0.92);
+  const keys = [], cool = [];
+  for(let c = 0; c < C; c++){
+    const rs = labShaftRows(d, c);
+    if(!rs.length){ keys.push(null); continue; }
+    const mid = (rs[0] + rs[rs.length - 1] + 1) / 2 * RH;
+    const gap = Math.max(84, rs.length * RH * k);
+    keys.push({ top: mid - gap / 2, bot: mid + gap / 2 });
+    rs.forEach(r => { if(d.cells[r * C + c] === 2) cool.push({ c, r }); });
+  }
+  if(!keys.some(Boolean)) return null;
+  // A blank column: in a straight line between the painted ones either side of
+  // it, round the loop.
+  const val = keys.map((v, c) => {
+    if(v) return v;
+    let p = c, n = c, dp = 0, dn = 0;
+    do{ p = (p - 1 + C) % C; dp++; } while(!keys[p]);
+    do{ n = (n + 1) % C; dn++; } while(!keys[n]);
+    const t = dp / (dp + dn);
+    return { top: keys[p].top + (keys[n].top - keys[p].top) * t, bot: keys[p].bot + (keys[n].bot - keys[p].bot) * t };
+  });
+  const mouth = { top: BOARD_H / 2 - 116 * k, bot: BOARD_H / 2 + 116 * k };
+  const vAt = i => i < 0 ? mouth : val[i % C];
+  const at = x => {
+    const p = (x - LEAD) / SEG - 0.5, i = Math.floor(p), u = p - i;
+    const a = vAt(i), b = vAt(i + 1);
+    let w = Math.min(1, Math.max(0, (u - 0.3) / 0.4));
+    w = w * w * (3 - 2 * w);
+    return { top: a.top + (b.top - a.top) * w, bot: a.bot + (b.bot - a.bot) * w };
+  };
+  const cells = [];
+  for(let lap = 0; LEAD + lap * C * SEG < len; lap++){
+    for(const q of cool){
+      const x = LEAD + (lap * C + q.c + 0.5) * SEG;
+      if(x < len) cells.push({ x, y: (q.r + 0.5) * RH, got: false, pulse: 0 });
+    }
+  }
+  cells.sort((a, b) => a.x - b.x);
+  return { at, cells };
+}
+
+// ── 🛰️ ORBITAL UPLINK — the fields ─────────────────────────────────────
+// A run of fields, tapped in order on the sky beyond the firewall: where each
+// relay floats (further right is further out, higher is higher), and — the
+// brush — the firewall and the wind it is played in. Land a relay and the
+// next field comes up; the run loops.
+labDef('uplink', {
+  what: 'FIELDS', kind: 'seq', cols: 8, rows: 6, aspect: 1.15, count: 'FIELDS', maxw: 360, maxSeq: 16, minSeq: 1,
+  tools: [ { id:1, name:'LOW WALL', color:'#1fae5e', glyph:'▁' },
+           { id:2, name:'HIGH WALL', color:'#ff2442', glyph:'▮' },
+           { id:3, name:'HEADWIND', color:'#8a5cff', glyph:'←' },
+           { id:4, name:'TAILWIND', color:'#e08a00', glyph:'→' } ],
+  seqColor: '#00b8c4',
+  sub: 'Plot an Orbital Uplink run · every relay, its firewall and its wind',
+  hint: 'The grid is the sky beyond the firewall, with the dish off to its left. Tap where each relay floats, in the order they come — further right is further out, higher is higher. The brush sets that field: a LOW or HIGH firewall, or a HEADWIND or TAILWIND over a middling one. The fields loop.',
+  starter: 'ladder',
+  presets: [
+    { id:'ladder', name:'THE LADDER', seq: [[40, 1], [33, 1], [26, 1], [19, 2], [12, 2], [5, 3], [14, 4], [23, 4]] },
+    { id:'long',   name:'LONG SHOTS', seq: [[47, 1], [23, 3], [7, 4], [31, 2]] },
+    { id:'winds',  name:'CROSSWINDS', seq: [[27, 3], [27, 4], [13, 3], [13, 4], [38, 3], [38, 4]] },
+    { id:'behind', name:'BEHIND THE WALL', seq: [[40, 2], [33, 2], [42, 2], [32, 2]] }
+  ].map(p => ({ id: p.id, name: p.name, seq: p.seq.map(([i, t]) => ({ i, t })) }))
+});
+LAB_DEFS.uplink.starterSeq = LAB_DEFS.uplink.presets[0].seq;
+// [{ u 0–1 (near → far), v 0–1 (low → high), wall 0 low · 1 mid · 2 high,
+// wind -1 head · 0 · +1 tail }] in order — or null.
+function labFields(){
+  const d = labDesign('uplink');
+  if(!d || !d.seq.length) return null;
+  return d.seq.map(s => ({ u: (s.i % 8) / 7, v: 1 - Math.floor(s.i / 8) / 5,
+                           wall: s.t === 1 ? 0 : s.t === 2 ? 2 : 1, wind: s.t === 3 ? -1 : s.t === 4 ? 1 : 0 }));
+}
+
+// ── 🗄️ SERVER STACK — the schedule ─────────────────────────────────────
+// One column per floor: how fast its slab slides in, and how — STEADY at an
+// even pace, or SWING, easing at the ends and racing through the middle,
+// which is exactly where you want to drop it. Laps get a little faster.
+var LAB_STACK_SPEED = [2, 1.5, 1, 0.7, 0.5];                 // top row fastest
+labDef('stack', {
+  what: 'TOWER', cols: 12, rows: 5, aspect: 1, count: 'FLOORS', oneper: 'col', noMirror: true,
+  tools: [ { id:1, name:'STEADY', note:'even slide', color:'#00a3b4' },
+           { id:2, name:'SWING', note:'fast in the middle', color:'#d4007a' } ],
+  cellText: i => ['×2', '×1.5', '×1', '×.7', '×.5'][Math.floor(i / 12)],
+  chars: '.SW',
+  sub: 'Schedule a Server Stack tower · how every floor slides in',
+  hint: 'Each column is one floor, left to right: the row is how fast its slab slides (top ×2, bottom ×½) and the brush how — STEADY, at an even pace, or SWING, easing at the ends and racing through the middle. The schedule loops, a little faster every lap.',
+  starter: 'breathe', min: 1, minMsg: 'Schedule at least one floor.',
+  presets: [
+    { id:'breathe', name:'BREATHE',    rows: ['', '...S.....S..', '..S.S...S.S.', '.S...S.S...S', 'S.....S.....'] },
+    { id:'sprint',  name:'SPRINT',     rows: ['...........S', '.........SS.', '......SSS...', '...SSS......', 'SSS.........'] },
+    { id:'swing',   name:'SWING TIME', rows: ['', '', 'SWSWSWSWSWSW', '', ''] },
+    { id:'curve',   name:'CURVEBALLS', rows: ['..W.....W...', 'S.....S.....', '.W..S....W..', '...W...S...S', '.....W....W.'] }
+  ]
+});
+// [{ mult, swing }] per floor, in order — or null. Read by stackSim().
+function labTower(){
+  const d = labDesign('stack');
+  if(!d) return null;
+  const cols = labColumns(d).filter(Boolean);
+  return cols.length ? cols.map(c => ({ mult: LAB_STACK_SPEED[c.r], swing: c.v === 2 })) : null;
+}
+
+// ── ⚔️ CYBER ARENA — the arena ─────────────────────────────────────────
+// The arena floor seen from above: WALLS are cover — they stop you, the bots
+// and every shot — GATES are where the bots break in, and START is you.
+var LAB_AR = { cols: 16, rows: 18 };
+// The START square, or the open one nearest the middle; -1 if all is wall.
+function labArenaStart(d){
+  const C = LAB_AR.cols, R = LAB_AR.rows;
+  const s = d.cells.indexOf(3);
+  if(s >= 0) return s;
+  let best = -1, bd = Infinity;
+  for(let i = 0; i < C * R; i++){
+    if(d.cells[i] === 1) continue;
+    const dd = (i % C + 0.5 - C / 2) ** 2 + (Math.floor(i / C) + 0.5 - R / 2) ** 2;
+    if(dd < bd){ bd = dd; best = i; }
+  }
+  return best;
+}
+labDef('arena', {
+  what: 'ARENA', cols: LAB_AR.cols, rows: LAB_AR.rows, aspect: 1, count: 'WALLS', gap: 2,
+  tools: [ { id:1, name:'WALL', note:'cover', color:'#6a3fd0' },
+           { id:2, name:'GATE', note:'bots break in', color:'#ff2442', glyph:'◆' },
+           { id:3, name:'START', note:'you', color:'#00f5ff', glyph:'▲', one:true } ],
+  chars: '.#GS',
+  countFn: d => d.cells.filter(v => v === 1).length,
+  sub: 'Build a Cyber Arena · cover to fight around, gates the bots pour through',
+  hint: 'Paint WALLS — they stop you, the bots and every shot. GATES are where the bots break in (none = anywhere along the edge). START is where you begin (none = the middle).',
+  starter: 'pillars', min: 1, minMsg: 'Paint at least one wall.',
+  presets: [
+    { id:'pillars', name:'PILLARS', rows: ['G..............G', '................', '................', '...##......##...', '...##......##...', '................', '................', '................', '.##..........##.', '.##..........##.', '................', '................', '................', '...##......##...', '...##......##...', '................', '................', 'G..............G'] },
+    { id:'fort',    name:'THE FORT', rows: ['G......GG......G', '................', '................', '................', '...####..####...', '...#........#...', '...#........#...', '...#........#...', '................', '.......S........', '...#........#...', '...#........#...', '...#........#...', '...####..####...', '................', '................', '................', 'G......GG......G'] },
+    { id:'lanes',   name:'CORRIDORS', rows: ['G..............G', '................', '..############..', '................', '................', '######....######', '................', '................', '..####....####..', '................', '................', '..####....####..', '................', '................', '######....######', '................', '..############..', 'G..............G'] },
+    { id:'rooms',   name:'ROOMS', rows: ['G......##......G', '.......##.......', '.......##.......', '................', '................', '.......##.......', '.......##.......', '.......##.......', '###..######..###', '###..######..###', '.......##.......', '.......##.......', '.......##.......', '...S............', '................', '.......##.......', '.......##.......', 'G......##......G'] }
+  ],
+  check: d => {
+    const C = LAB_AR.cols, R = LAB_AR.rows, N = C * R;
+    if(d.cells.filter(v => v === 1).length > N * 0.6) return { block: 'Leave more open floor — two squares in five at least.' };
+    const s = labArenaStart(d);
+    if(s < 0) return { block: 'Leave some open floor.' };
+    const seen = new Uint8Array(N), q = [s];
+    seen[s] = 1;
+    let n = 0;
+    while(q.length){
+      const i = q.pop(); n++;
+      const c = i % C, r = (i / C) | 0;
+      for(const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]){
+        const cc = c + dc, rr = r + dr;
+        if(cc < 0 || rr < 0 || cc >= C || rr >= R) continue;
+        const j = rr * C + cc;
+        if(seen[j] || d.cells[j] === 1) continue;
+        seen[j] = 1; q.push(j);
+      }
+    }
+    if(n < 30) return { block: 'You start walled into a tiny pocket — open it up.' };
+    if(d.cells.some((v, i) => v === 2 && !seen[i])) return { warn: 'A gate is walled off from you — bots from it can never reach you.' };
+    return null;
+  }
+});
+// { walls:[{u0,u1,v0,v1}], gates:[{u,v}]|null, start:{u,v} } in arena
+// fractions (0–1 across, 0–1 down) — or null. A wall is a run of squares
+// along a row, grown downward while the rows under it repeat the same run,
+// so a painted block is one block rather than a stack of slices.
+function labCover(){
+  const d = labDesign('arena');
+  if(!d) return null;
+  const C = LAB_AR.cols, R = LAB_AR.rows;
+  const walls = [], gates = [];
+  let open = {};                                   // "c0-c1" → the rect still growing down
+  for(let r = 0; r < R; r++){
+    const next = {};
+    for(let c = 0; c < C; ){
+      if(d.cells[r * C + c] !== 1){ c++; continue; }
+      let e = c;
+      while(e + 1 < C && d.cells[r * C + e + 1] === 1) e++;
+      const key = c + '-' + e;
+      if(open[key]){ open[key].v1 = (r + 1) / R; next[key] = open[key]; }
+      else{ const w = { u0: c / C, u1: (e + 1) / C, v0: r / R, v1: (r + 1) / R }; walls.push(w); next[key] = w; }
+      c = e + 1;
+    }
+    open = next;
+  }
+  d.cells.forEach((v, i) => { if(v === 2) gates.push({ u: (i % C + 0.5) / C, v: (Math.floor(i / C) + 0.5) / R }); });
+  const s = Math.max(0, labArenaStart(d));
+  return { walls, gates: gates.length ? gates : null, start: { u: (s % C + 0.5) / C, v: (Math.floor(s / C) + 0.5) / R } };
+}
+
+// ── 🤖 BATTLE BOTS — the siege ─────────────────────────────────────────
+// The malware's side of the war, wave by wave: one column per wave, one row
+// per kind of hostile, and how many of each it sends. An empty column is a
+// breather; the waves loop until the siege is decided.
+var LAB_BB_FOES = ['bug', 'virus', 'adware', 'worm', 'spyware', 'trojan'];
+labDef('battlebots', {
+  what: 'SIEGE', cols: 12, rows: 6, aspect: 1, count: 'HOSTILES', noMirror: true,
+  tools: [ { id:1, name:'×1', note:'one', color:'#d98a00' },
+           { id:2, name:'×2', note:'two', color:'#e0480a' },
+           { id:3, name:'×3', note:'three', color:'#d4003e' } ],
+  cellText: (i, v) => v ? '×' + v : BB.foes[LAB_BB_FOES[Math.floor(i / 12)]].icon,
+  chars: '.123',
+  countFn: d => d.cells.reduce((a, v) => a + (v | 0), 0),
+  sub: 'Script a Battle Bots siege · which malware comes, and when',
+  hint: 'Each column is one wave, left to right; each row one kind of malware — 🐛 BUG · 🦠 VIRUS · 📢 ADWARE · 🪱 WORM · 🕷️ SPYWARE · 🐴 TROJAN. Paint how many of each the wave brings (nine at most). An empty column is a breather. The waves loop until the siege ends.',
+  starter: 'burn', min: 1, minMsg: 'Send at least one hostile.',
+  presets: [
+    { id:'burn',  name:'SLOW BURN', rows: ['1212.2.1.1..', '..1.1....2..', '....1..2..1.', '......1...1.', '.....1..2...', '...........1'] },
+    { id:'swarm', name:'SWARM', rows: ['3.3.3.3.3.3.', '', '', '', '.3.3.3.3.3.3', ''] },
+    { id:'heavy', name:'HEAVY METAL', rows: ['1...1...1...', '..1...1...1.', '', '.1...1...1..', '', '...1...1...1'] },
+    { id:'alley', name:'ADWARE ALLEY', rows: ['2.2.2.2.2.2.', '', '.2.2.2.2.2.2', '.....1.....1', '', ''] }
+  ],
+  check: d => {
+    for(let c = 0; c < 12; c++){
+      let n = 0;
+      for(let r = 0; r < 6; r++) n += d.cells[r * 12 + c] | 0;
+      if(n > 9) return { block: `Wave ${c + 1} sends ${n} hostiles — nine is the most one wave can hold.` };
+    }
+    return null;
+  }
+});
+// [[foe key…] per wave], trailing breathers trimmed — or null.
+function labWaves(){
+  const d = labDesign('battlebots');
+  if(!d) return null;
+  const waves = [];
+  for(let c = 0; c < 12; c++){
+    const wv = [];
+    for(let r = 0; r < 6; r++){ const n = d.cells[r * 12 + c] | 0; for(let k = 0; k < n; k++) wv.push(LAB_BB_FOES[r]); }
+    waves.push(wv);
+  }
+  while(waves.length && !waves[waves.length - 1].length) waves.pop();
+  return waves.length ? waves : null;
+}
+
+try{
+  window.addEventListener('pointerup', labPaintUp);
+  window.addEventListener('pointercancel', labPaintUp);
+  document.getElementById('btn-lab')?.addEventListener('click', () => {
+    labView = labPending ? 'incoming' : 'edit';
+    openLab();
+  });
+  document.getElementById('lab-close')?.addEventListener('click', () => closeOverlay('lab-overlay'));
+  document.getElementById('lab-overlay')?.addEventListener('click', e => { if(e.target.id === 'lab-overlay') closeOverlay('lab-overlay'); });
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Escape' && document.getElementById('lab-overlay')?.classList.contains('show')) closeOverlay('lab-overlay');
+  });
+  labBoot();
+}catch(e){ console.warn('Brick Lab failed to wire:', e); }
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 26 · v53 — ⌨️ GAME 30: COMMAND LINE — type the command, kill the process
+// ══════════════════════════════════════════════════════════════════════
+// Viruses fall toward your shell, each one carrying a command. Type a word's
+// first letter to lock onto the virus nearest the shell that starts with it,
+// then type the rest; every letter fires a bolt and the last one deletes the
+// process. A typo breaks the combo but not the lock. Let a virus reach the
+// shell and it costs a point of integrity — three and the session is gone.
+//
+// It is the one verb the arcade had none of. Every other mission is steered,
+// aimed, timed or deduced; this one is SPELLED. On a phone the keys are an
+// on-screen keypad under the board (#g-type-keys), because the system keyboard
+// covers half the screen and autocorrects commands into English.
+//
+// ONE SIMULATION, TWO RENDERERS (§ 16's pattern): cmdSim() is the game in
+// board space; the 2D build draws it as a terminal, the 3D build as a deck the
+// viruses run down, with the words as DOM labels over them. Words are drawn
+// through dailyRand(), so the Daily Hack and a party both deal every player the
+// same stream of commands.
+//
+// ⚠️ LOAD ORDER — META/SOLO_START and the other tables name startCommandLine
+// (a hoisted function); everything the tables or other sections reach here is
+// a function declaration or a `var`.
+var CMD = {
+  CAP: 1200,
+  TIME: 90,                    // seconds at Stable, times the tier's clock
+  INTEGRITY: 3,
+  SPAWN0: 2.5, SPAWN1: 1.25,   // seconds between viruses, start → end of the round
+  FALL0: 13.5, FALL1: 8.2,     // seconds a virus takes to reach the shell, start → end
+  BOSS_EVERY: 24, BOSS_FALL: 19,
+  MAX_LIVE: 8,
+  LETTER: 1, WORD: 2, BOSS_BONUS: 40,
+  COMBO_STEP: 4, MULT_STEP: 0.25, MULT_MAX: 2,
+  SURVIVE: 30                  // per point of integrity left at the buzzer
+};
+// Four tiers by length. Lower-case a–z only, so every word can be typed on the
+// keypad and read at a glance — commands, protocols and the grid's own words.
+var CMD_WORDS = [
+  ['bit', 'bot', 'bug', 'byte', 'cpu', 'dns', 'git', 'hex', 'hub', 'key', 'lag', 'lan', 'log', 'net', 'node',
+   'null', 'ping', 'port', 'ram', 'root', 'rom', 'run', 'ssh', 'sudo', 'sys', 'tcp', 'udp', 'url', 'usb', 'vpn',
+   'web', 'wifi', 'zip', 'code', 'core', 'data', 'disk', 'grid', 'hack', 'host', 'link', 'loop', 'mesh', 'neon',
+   'pipe', 'scan', 'sync', 'void', 'wire', 'worm', 'zero', 'echo', 'fork', 'flag', 'kill', 'grep', 'exit', 'jump'],
+  ['admin', 'alias', 'array', 'cache', 'chmod', 'cloud', 'crash', 'crypt', 'debug', 'delta', 'drone', 'error',
+   'flood', 'input', 'laser', 'login', 'macro', 'patch', 'pixel', 'proxy', 'query', 'queue', 'relay', 'reset',
+   'route', 'shell', 'stack', 'token', 'trace', 'virus', 'binary', 'bitmap', 'buffer', 'cipher', 'cookie',
+   'cursor', 'daemon', 'domain', 'driver', 'encode', 'filter', 'glitch', 'hacker', 'hijack', 'kernel', 'packet',
+   'plasma', 'portal', 'reboot', 'render', 'router', 'script', 'server', 'signal', 'socket', 'spider', 'syntax',
+   'thread', 'tunnel', 'update', 'uplink', 'vector'],
+  ['adware', 'backdoor', 'botnet', 'browser', 'compile', 'console', 'cyborg', 'decrypt', 'default', 'deflect',
+   'desktop', 'digital', 'dropper', 'encrypt', 'exploit', 'firewall', 'firmware', 'gateway', 'hardware',
+   'keylogger', 'mainframe', 'malware', 'network', 'overflow', 'overload', 'password', 'payload', 'phishing',
+   'protocol', 'quantum', 'ransom', 'rootkit', 'sandbox', 'scanner', 'spoofer', 'spyware', 'terminal', 'trojan',
+   'upgrade', 'variable', 'virtual', 'wireless', 'software', 'hotspot', 'datalink'],
+  ['ransomware', 'encryption', 'cyberattack', 'overclocked', 'polymorphic', 'datastream', 'blockchain',
+   'quarantine', 'singularity', 'motherboard', 'microchip', 'algorithm', 'supercomputer', 'cryptojacker',
+   'decompiler', 'bootloader']
+];
+
+function cmdPickWord(t, boss, taken, firsts){
+  const R = typeof dailyRand === 'function' ? dailyRand : Math.random;
+  let tier;
+  if(boss) tier = 3;
+  else{
+    const u = R();
+    tier = t < 20 ? (u < 0.72 ? 0 : 1)
+         : t < 48 ? (u < 0.3 ? 0 : u < 0.8 ? 1 : 2)
+         :          (u < 0.1 ? 0 : u < 0.5 ? 1 : 2);
+  }
+  // 🧱 A BRICK LAB word list (§ 25), sorted into the same four tiers.
+  const lists = (typeof labCmdWords === 'function' && labCmdWords()) || CMD_WORDS;
+  const list = lists[tier];
+  // Prefer a word whose first letter nothing on screen already starts with —
+  // the first keystroke picks the target, so two live words sharing a letter
+  // make that keystroke a guess.
+  let pick = null;
+  for(let k = 0; k < 10; k++){
+    const w = list[Math.floor(R() * list.length)];
+    if(taken.has(w)) continue;
+    pick = w;
+    if(!firsts.has(w[0])) break;
+  }
+  return pick || list[Math.floor(R() * list.length)];
+}
+
+function cmdSim(opts){
+  opts = opts || {};
+  const W = opts.W || BOARD_W, H = opts.H || BOARD_H;
+  const diff = Math.max(0.5, opts.diff || 1);
+  const coreX = W / 2, coreY = H - 40;
+  const S = {
+    W, H, coreX, coreY,
+    viruses: [], lock: null, t: 0, spawnIn: 0.6, bossIn: CMD.BOSS_EVERY,
+    score: 0, combo: 0, bestCombo: 0, kills: 0, letters: 0, typos: 0, strays: 0, keys: 0,
+    integrity: CMD.INTEGRITY, over: false, nextId: 1, duration: opts.duration || CMD.TIME
+  };
+  const mult = () => Math.min(CMD.MULT_MAX, 1 + Math.floor(S.combo / CMD.COMBO_STEP) * CMD.MULT_STEP);
+
+  function spawn(boss){
+    const R = typeof dailyRand === 'function' ? dailyRand : Math.random;
+    const taken = new Set(S.viruses.map(v => v.word));
+    const firsts = new Set(S.viruses.filter(v => !v.typed).map(v => v.word[0]));
+    const word = cmdPickWord(S.t, boss, taken, firsts);
+    const k = Math.min(1, S.t / Math.max(1, S.duration));
+    const fall = (boss ? CMD.BOSS_FALL : CMD.FALL0 + (CMD.FALL1 - CMD.FALL0) * k) / diff;
+    const x0 = W * (0.12 + R() * 0.76);
+    // Converging on the shell, but only part of the way: straight at it and
+    // every word would pile into one unreadable stack by the bottom third.
+    const x1 = x0 + (coreX - x0) * 0.62;
+    S.viruses.push({ id: S.nextId++, word, typed: 0, boss: !!boss, age: 0, fall,
+                     x0, y0: -14, x1, y1: coreY - 22, x: x0, y: -14, hitAt: -9, wob: R() * 6.28 });
+    return word;
+  }
+
+  function nearestFor(ch){
+    let best = null;
+    for(const v of S.viruses){
+      if(v.word[0] !== ch) continue;
+      if(!best || v.y > best.y) best = v;
+    }
+    return best;
+  }
+
+  // One keystroke. Returns what it did, for the round's sounds and the
+  // renderers' bolts.
+  function key(ch){
+    if(S.over) return null;
+    ch = String(ch || '').toLowerCase();
+    if(!/^[a-z]$/.test(ch)) return null;
+    S.keys++;
+    let v = S.lock ? S.viruses.find(x => x.id === S.lock) : null;
+    if(!v){
+      v = nearestFor(ch);
+      if(!v){ S.strays++; return { type: 'stray' }; }
+      S.lock = v.id;
+    }
+    if(v.word[v.typed] !== ch){
+      S.typos++;
+      S.combo = 0;
+      return { type: 'typo', v };
+    }
+    v.typed++;
+    v.hitAt = S.t;
+    S.letters++;
+    S.score += CMD.LETTER * mult();
+    if(v.typed >= v.word.length){
+      S.kills++;
+      S.combo++;
+      S.bestCombo = Math.max(S.bestCombo, S.combo);
+      S.score += v.word.length * CMD.WORD * mult() + (v.boss ? CMD.BOSS_BONUS : 0);
+      S.viruses = S.viruses.filter(x => x !== v);
+      S.lock = null;
+      return { type: 'kill', v, combo: S.combo, mult: mult() };
+    }
+    return { type: v.typed === 1 ? 'lock' : 'hit', v };
+  }
+
+  // Backspace / Escape: let go of a half-typed word. Its letters stay typed —
+  // a word you walk away from is still half-deleted.
+  function release(){
+    if(!S.lock) return false;
+    S.lock = null;
+    return true;
+  }
+
+  // Advances the round. `breach(v)` is asked when a virus reaches the shell and
+  // answers whether a shield absorbed it; returns the events of this step.
+  function update(dt, breach){
+    const ev = [];
+    if(S.over || dt <= 0) return ev;
+    S.t += dt;
+    for(const v of S.viruses){
+      v.age += dt;
+      const k = Math.min(1, v.age / v.fall);
+      // Slightly eased so a virus seems to speed up as it closes in.
+      const e = k * (0.7 + 0.3 * k);
+      v.x = v.x0 + (v.x1 - v.x0) * e + Math.sin(v.age * 1.6 + v.wob) * 6 * (1 - k);
+      v.y = v.y0 + (v.y1 - v.y0) * e;
+    }
+    for(const v of S.viruses.filter(x => x.age >= x.fall)){
+      S.viruses = S.viruses.filter(x => x !== v);
+      if(S.lock === v.id) S.lock = null;
+      const saved = breach ? breach(v) : false;
+      if(!saved){
+        S.integrity -= v.boss ? 2 : 1;
+        S.combo = 0;
+      }
+      ev.push({ type: saved ? 'saved' : 'breach', v });
+      if(S.integrity <= 0){ S.integrity = 0; S.over = true; ev.push({ type: 'dead' }); return ev; }
+    }
+    S.spawnIn -= dt;
+    S.bossIn -= dt;
+    if(S.bossIn <= 0){
+      S.bossIn = CMD.BOSS_EVERY;
+      ev.push({ type: 'boss', word: spawn(true) });
+    }else if(S.spawnIn <= 0 && S.viruses.length < CMD.MAX_LIVE){
+      const k = Math.min(1, S.t / Math.max(1, S.duration));
+      S.spawnIn = (CMD.SPAWN0 + (CMD.SPAWN1 - CMD.SPAWN0) * k) / Math.sqrt(diff);
+      spawn(false);
+    }
+    return ev;
+  }
+
+  return { S, key, release, update, mult };
+}
+
+// ── THE ROUND ──────────────────────────────────────────────────────────
+var cmdLast = null;
+function cmdRound(o){
+  o = o || {};
+  const diff = getDifficultyModifier();
+  const total = Math.max(20, Math.round(CMD.TIME * getTimeModifier()));
+  const sim = cmdSim({ W: BOARD_W, H: BOARD_H, diff, duration: total });
+  const S = sim.S;
+  let time = total, ended = false;
+
+  setControls(null);
+  setControlHint('TAP THE KEYS UNDER THE BOARD', 'TYPE THE WORD ON A VIRUS · BACKSPACE LETS GO');
+  document.getElementById('g-time').textContent = time;
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,var(--lime),var(--cyan))';
+  cmdShowKeys(true);
+  showTouchHint('TYPE THE FIRST LETTER OF A WORD TO LOCK ON');
+
+  const live = () => {
+    setLive(Math.min(CMD.CAP, Math.round(S.score)));
+  };
+  const press = ch => {
+    if(ended) return;
+    hideTouchHint();
+    const r = sim.key(ch);
+    if(!r) return;
+    if(r.type === 'stray'){ snd('deny'); }
+    else if(r.type === 'typo'){ snd('wrong'); }
+    else if(r.type === 'kill'){ snd(r.v.boss ? 'bigExplode' : 'explode'); if(r.combo > 1 && r.combo % CMD.COMBO_STEP === 0) snd('combo', { semi: Math.min(12, r.combo) }); }
+    else{ snd('node', { semi: Math.min(14, r.v.typed) }); }
+    live();
+    if(o.onKey) o.onKey(r);
+  };
+  const letGo = () => { if(!ended && sim.release()){ snd('uiBack'); if(o.onKey) o.onKey({ type: 'release' }); } };
+
+  window.onkeydown = e => {
+    if(e.ctrlKey || e.metaKey || e.altKey) return;
+    if(e.key === 'Backspace' || e.key === 'Escape'){ e.preventDefault(); letGo(); return; }
+    if(e.key && e.key.length === 1 && /[a-z]/i.test(e.key)){
+      e.preventDefault();
+      if(!e.repeat) press(e.key);
+    }
+  };
+  cmdKeysBind(press, letGo);
+
+  gTimer = setInterval(() => {
+    if(ended) return;
+    time--;
+    document.getElementById('g-time').textContent = time;
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time / total * 100)}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0) end('timeout');
+  }, 1000);
+
+  function step(dt){
+    if(ended) return;
+    const ev = sim.update(dt, () => survivedFatal());
+    for(const e of ev){
+      if(e.type === 'breach'){ snd('hurt'); }
+      else if(e.type === 'saved'){ snd('shield'); }
+      else if(e.type === 'boss'){ snd('alarm'); }
+      else if(e.type === 'dead'){ snd('gameOver'); end('breached'); }
+      if(o.onEvent) o.onEvent(e);
+    }
+    if(ev.length) live();
+  }
+
+  function end(reason){
+    if(ended) return;
+    ended = true;
+    S.over = true;
+    cmdShowKeys(false);
+    const acc = S.keys ? S.letters / S.keys : 0;
+    const survive = S.integrity * CMD.SURVIVE;
+    const earned = Math.min(CMD.CAP, Math.round(S.score + survive));
+    gLater(() => showResults('cmdline', earned, {
+      '📡 Session': reason === 'timeout' ? 'CLOCK EXPIRED' : 'SHELL BREACHED',
+      '💀 Processes Killed': S.kills,
+      '⌨️ Accuracy': `${Math.round(acc * 100)}% · ${S.letters} of ${S.keys} keys`,
+      '🔗 Best Clean Run': `${S.bestCombo} words`,
+      '🛡️ Integrity Left': `${S.integrity} (+${survive})`,
+      '🏆 Final Score': `${earned} PTS`
+    }), 900);
+  }
+  snd('go');
+  return cmdLast = { sim, S, step, press, letGo, mult: sim.mult, get ended(){ return ended; }, get time(){ return time; }, total };
+}
+
+// ── THE KEYPAD — built once, shown on touch devices ─────────────────────
+var CMD_ROWS = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
+var cmdKeysHandlers = null;
+function cmdBuildKeys(){
+  const el = document.getElementById('g-type-keys');
+  if(!el || el.dataset.built) return el;
+  el.dataset.built = '1';
+  el.innerHTML = CMD_ROWS.map((row, i) =>
+    `<div class="tk-row">` + [...row].map(ch => `<button class="tk-key" type="button" data-k="${ch}" aria-label="${ch}">${ch}</button>`).join('') +
+    (i === 2 ? `<button class="tk-key tk-back" type="button" data-k="back" aria-label="Let go of the word">⌫</button>` : '') +
+    `</div>`).join('');
+  // pointerdown, not click: a click waits for the finger to lift, and a typist
+  // on glass is already on the next key by then.
+  el.addEventListener('pointerdown', e => {
+    const b = e.target.closest && e.target.closest('.tk-key');
+    if(!b || !cmdKeysHandlers) return;
+    e.preventDefault();
+    b.classList.add('down');
+    setTimeout(() => b.classList.remove('down'), 110);
+    if(b.dataset.k === 'back') cmdKeysHandlers.back();
+    else cmdKeysHandlers.press(b.dataset.k);
+  });
+  return el;
+}
+function cmdKeysBind(press, back){ cmdKeysHandlers = { press, back }; }
+function cmdShowKeys(on){
+  const el = document.getElementById('g-type-keys');
+  if(!el) return;
+  // Touch only: a keyboard's own keys are faster than any on-screen copy of
+  // them, and the keypad would cost the board height it does not need to lose.
+  const want = !!on && (typeof isTouchDevice !== 'undefined' ? isTouchDevice : false);
+  if(want) cmdBuildKeys();
+  el.style.display = want ? '' : 'none';
+  if(!on) cmdKeysHandlers = null;
+}
+
+// ── THE 2D BUILD — a terminal the viruses fall down ─────────────────────
+function startCommandLine(){
+  document.getElementById('g-canvas-holder').style.display = 'block';
+  const W = BOARD_W, H = BOARD_H;
+  let shake = 0, flash = 0, flashText = '', typoFlash = 0;
+  const bolts = [], parts = [], rings = [];
+  const round = cmdRound({
+    onKey(r){
+      if(r.type === 'typo'){ typoFlash = 1; shake = 5; }
+      if(r.type === 'lock' || r.type === 'hit' || r.type === 'kill'){
+        bolts.push({ x: S.coreX, y: S.coreY - 14, tx: r.v.x, ty: r.v.y, t: 0 });
+      }
+      if(r.type === 'kill'){
+        for(let i = 0; i < (r.v.boss ? 34 : 16); i++){
+          const a = Math.random() * 6.283, v = 40 + Math.random() * 140;
+          parts.push({ x: r.v.x, y: r.v.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.7, c: r.v.boss ? '#ffd700' : '#ff4df0' });
+        }
+        rings.push({ x: r.v.x, y: r.v.y, t: 0, boss: r.v.boss });
+        if(r.combo > 1 && r.combo % CMD.COMBO_STEP === 0){ flash = 1; flashText = `CLEAN RUN ×${r.mult.toFixed(2)}`; }
+      }
+    },
+    onEvent(e){
+      if(e.type === 'breach'){ shake = 12; flash = 1; flashText = e.v.boss ? 'SHELL BREACHED ×2' : 'SHELL BREACHED'; }
+      if(e.type === 'saved'){ flash = 1; flashText = '🛡️ SHIELD CATCH'; }
+      if(e.type === 'boss'){ flash = 1; flashText = '⚠ HEAVY PROCESS INCOMING'; }
+    }
+  });
+  fitCanvas();
+  const S = round.S;
+  let last = gNow();
+
+  function wordLabel(v){
+    const locked = S.lock === v.id;
+    const done = v.word.slice(0, v.typed), rest = v.word.slice(v.typed);
+    aCtx.save();
+    aCtx.font = `700 ${v.boss ? 17 : 14}px Consolas, Menlo, "DejaVu Sans Mono", monospace`;
+    aCtx.textBaseline = 'middle';
+    const wDone = aCtx.measureText(done).width, wAll = aCtx.measureText(v.word).width;
+    let x = v.x - wAll / 2;
+    x = Math.max(6, Math.min(W - wAll - 6, x));
+    const y = v.y - (v.boss ? 30 : 22);
+    aCtx.fillStyle = locked ? 'rgba(0,30,40,0.85)' : 'rgba(4,4,14,0.72)';
+    aCtx.strokeStyle = locked ? '#00f5ff' : 'rgba(255,255,255,0.14)';
+    aCtx.lineWidth = locked ? 1.5 : 1;
+    aCtx.beginPath(); aCtx.roundRect(x - 6, y - 11, wAll + 12, 22, 5); aCtx.fill(); aCtx.stroke();
+    aCtx.fillStyle = '#00f5ff'; aCtx.shadowBlur = locked ? 10 : 0; aCtx.shadowColor = '#00f5ff';
+    aCtx.fillText(done, x, y + 1);
+    aCtx.shadowBlur = 0;
+    aCtx.fillStyle = locked ? '#ffffff' : 'rgba(234,246,255,0.92)';
+    aCtx.fillText(rest, x + wDone, y + 1);
+    aCtx.restore();
+  }
+
+  function loop(){
+    gameLoopId = requestAnimationFrame(loop);
+    const now = gNow();
+    const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
+    round.step(dt);
+
+    aCtx.clearRect(0, 0, W, H);
+    aCtx.save();
+    if(shake > 0){ aCtx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake); if(dt > 0){ shake *= 0.86; if(shake < 0.3) shake = 0; } }
+    // The terminal: a dark screen, a faint grid, scanlines.
+    const g = aCtx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#030712'); g.addColorStop(1, '#06121a');
+    aCtx.fillStyle = g; aCtx.fillRect(0, 0, W, H);
+    aCtx.strokeStyle = 'rgba(57,255,20,0.05)'; aCtx.lineWidth = 1;
+    for(let x = 0; x <= W; x += 28){ aCtx.beginPath(); aCtx.moveTo(x, 0); aCtx.lineTo(x, H); aCtx.stroke(); }
+    for(let y = 0; y <= H; y += 28){ aCtx.beginPath(); aCtx.moveTo(0, y); aCtx.lineTo(W, y); aCtx.stroke(); }
+    aCtx.fillStyle = 'rgba(0,0,0,0.12)';
+    for(let y = 0; y < H; y += 3) aCtx.fillRect(0, y, W, 1);
+
+    // The lock: a beam from the shell to the target.
+    const lk = S.lock ? S.viruses.find(v => v.id === S.lock) : null;
+    if(lk){
+      aCtx.save();
+      aCtx.strokeStyle = 'rgba(0,245,255,0.35)'; aCtx.lineWidth = 2; aCtx.setLineDash([6, 6]);
+      aCtx.lineDashOffset = -S.t * 40;
+      aCtx.beginPath(); aCtx.moveTo(S.coreX, S.coreY - 16); aCtx.lineTo(lk.x, lk.y); aCtx.stroke();
+      aCtx.restore();
+    }
+
+    // Viruses: a spiked core that pulses, bigger and gold-rimmed for a boss.
+    for(const v of S.viruses){
+      const r = v.boss ? 17 : 11;
+      const hit = S.t - v.hitAt < 0.12;
+      const danger = v.age / v.fall;
+      const col = v.boss ? '#ffb000' : danger > 0.75 ? '#ff2442' : '#ff2bd6';
+      aCtx.save();
+      aCtx.translate(v.x, v.y);
+      aCtx.rotate(v.age * (v.boss ? 0.8 : 1.6));
+      aCtx.shadowBlur = hit ? 26 : 16; aCtx.shadowColor = col;
+      aCtx.strokeStyle = col; aCtx.lineWidth = 2;
+      const spikes = v.boss ? 10 : 7;
+      aCtx.beginPath();
+      for(let i = 0; i < spikes; i++){
+        const a = i / spikes * 6.283;
+        aCtx.moveTo(Math.cos(a) * r * 0.7, Math.sin(a) * r * 0.7);
+        aCtx.lineTo(Math.cos(a) * r * 1.35, Math.sin(a) * r * 1.35);
+      }
+      aCtx.stroke();
+      aCtx.fillStyle = hit ? '#ffffff' : col;
+      aCtx.beginPath(); aCtx.arc(0, 0, r * 0.72, 0, 6.283); aCtx.fill();
+      aCtx.fillStyle = 'rgba(0,0,0,0.45)';
+      aCtx.beginPath(); aCtx.arc(0, 0, r * 0.34, 0, 6.283); aCtx.fill();
+      aCtx.restore();
+      if(S.lock === v.id){
+        aCtx.save();
+        aCtx.strokeStyle = '#00f5ff'; aCtx.lineWidth = 1.5;
+        aCtx.beginPath(); aCtx.arc(v.x, v.y, r * 1.8 + Math.sin(S.t * 8) * 2, 0, 6.283); aCtx.stroke();
+        aCtx.restore();
+      }
+    }
+    for(const v of S.viruses) wordLabel(v);
+
+    // Bolts and bursts.
+    for(let i = bolts.length - 1; i >= 0; i--){
+      const b = bolts[i];
+      if(dt > 0) b.t += dt / 0.1;
+      if(b.t >= 1){ bolts.splice(i, 1); continue; }
+      const x = b.x + (b.tx - b.x) * b.t, y = b.y + (b.ty - b.y) * b.t;
+      aCtx.save(); aCtx.fillStyle = '#b8ffff'; aCtx.shadowBlur = 12; aCtx.shadowColor = '#00f5ff';
+      aCtx.beginPath(); aCtx.arc(x, y, 3.2, 0, 6.283); aCtx.fill(); aCtx.restore();
+    }
+    for(let i = parts.length - 1; i >= 0; i--){
+      const p = parts[i];
+      if(dt > 0){ p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.94; p.vy *= 0.94; }
+      if(p.life <= 0){ parts.splice(i, 1); continue; }
+      aCtx.save(); aCtx.globalAlpha = Math.min(1, p.life / 0.5); aCtx.fillStyle = p.c;
+      aCtx.fillRect(p.x - 1.5, p.y - 1.5, 3, 3); aCtx.restore();
+    }
+    for(let i = rings.length - 1; i >= 0; i--){
+      const q = rings[i];
+      if(dt > 0) q.t += dt * 2.6;
+      if(q.t >= 1){ rings.splice(i, 1); continue; }
+      aCtx.save(); aCtx.globalAlpha = 1 - q.t; aCtx.strokeStyle = q.boss ? '#ffd700' : '#ff4df0'; aCtx.lineWidth = 2;
+      aCtx.beginPath(); aCtx.arc(q.x, q.y, 10 + q.t * (q.boss ? 60 : 36), 0, 6.283); aCtx.stroke(); aCtx.restore();
+    }
+
+    // The shell: a prompt block, the half-typed word, the integrity pips.
+    if(dt > 0) typoFlash = Math.max(0, typoFlash - dt * 3);
+    const px = S.coreX - 92, py = S.coreY - 16;
+    aCtx.save();
+    aCtx.fillStyle = typoFlash > 0 ? `rgba(255,36,66,${0.25 + typoFlash * 0.4})` : 'rgba(0,20,12,0.9)';
+    aCtx.strokeStyle = typoFlash > 0 ? '#ff2442' : '#39ff14'; aCtx.lineWidth = 1.5;
+    aCtx.shadowBlur = 14; aCtx.shadowColor = aCtx.strokeStyle;
+    aCtx.beginPath(); aCtx.roundRect(px, py, 184, 34, 6); aCtx.fill(); aCtx.stroke();
+    aCtx.shadowBlur = 0;
+    aCtx.font = '700 15px Consolas, Menlo, "DejaVu Sans Mono", monospace'; aCtx.textBaseline = 'middle';
+    const shown = lk ? lk.word.slice(0, lk.typed) : '';
+    const caret = Math.floor(S.t * 2) % 2 ? '_' : ' ';
+    aCtx.fillStyle = '#39ff14';
+    aCtx.fillText('> ' + shown + caret, px + 10, py + 17);
+    for(let i = 0; i < CMD.INTEGRITY; i++){
+      aCtx.fillStyle = i < S.integrity ? '#39ff14' : 'rgba(255,255,255,0.12)';
+      aCtx.fillRect(px + 184 - 14 - i * 12, py + 12, 8, 10);
+    }
+    aCtx.restore();
+
+    // Top-left: the multiplier and the clean-run count.
+    const m = round.mult();
+    aCtx.font = '700 12px Orbitron, sans-serif'; aCtx.textAlign = 'left'; aCtx.textBaseline = 'alphabetic';
+    aCtx.fillStyle = m > 1 ? '#ffd700' : 'rgba(234,246,255,0.7)';
+    aCtx.fillText(`×${m.toFixed(2)}` + (S.combo ? ` · CLEAN ${S.combo}` : ''), 12, 22);
+
+    if(flash > 0){
+      if(dt > 0) flash -= dt * 1.2;
+      aCtx.save();
+      aCtx.globalAlpha = Math.max(0, flash);
+      aCtx.font = '900 22px Orbitron, sans-serif'; aCtx.textAlign = 'center';
+      aCtx.fillStyle = '#eaffff'; aCtx.shadowBlur = 18; aCtx.shadowColor = '#00f5ff';
+      aCtx.fillText(flashText, W / 2, H * 0.42);
+      aCtx.restore();
+    }
+    aCtx.restore();
+  }
+  gameLoopId = requestAnimationFrame(loop);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  🚀 3D MISSIONS, PART VII · ⌨️ COMMAND LINE 3D — processes on the deck
+// ══════════════════════════════════════════════════════════════════════
+// The board rotated onto the floor: viruses come down a long deck toward the
+// shell's turret, which turns to face whatever you are typing at — the
+// turret turns, the camera never does (§ 3's never-yaw rule is about input,
+// and here the input is letters). The words ride over the viruses as DOM
+// labels in the world's text layer, projected every frame, so they stay the
+// crisp webfont a player has to read at speed; unmount() clears the layer.
+(function(){
+'use strict';
+
+const P = window.PI3D;
+if(!P) return;
+const K = P.kit;
+const { begin3d, runLoop } = K;
+
+const TERM = {
+  env:  { zenith:'#02040f', horizon:'#0a3a2c', ground:'#03070a', intensity: 1.2 },
+  fog:  { color:'#03100c', density: 0.0072 },
+  sun:  { dir:[-0.3, -1, -0.5], color:'#4fffb0', intensity: 0.5 },
+  grade:{ exposure: 0.95, bloom: 0.45, threshold: 1.6, knee: 0.5, radius: 0.9,
+          vignette: 0.46, aberration: 0.35, grain: 0.03, scanline: 0.02, saturation: 1.1 }
+};
+
+P.games.cmdline = function(){
+  const w = begin3d(Object.assign({ ease: 0.1 }, TERM));
+  if(!w) return;
+  const r = w.r;
+  w.buildCity({ seed: 20261001, count: 70, spread: 120, hole: 18, y: -6 });
+  w.buildStars(140);
+  const layer = document.getElementById('gl-fx');
+  const labels = new Map();                 // virus id → { el, key }
+  let aim = 0, recoil = 0, typo = 0;
+
+  // Board space → the deck. The shell sits at z = 3; a virus spawns 40 back.
+  let S = null;
+  const X = x => (x / S.W - 0.5) * 22;
+  const Z = y => -40 + (y / S.coreY) * 43;
+  const at = v => [X(v.x), v.boss ? 1.9 : 1.35, Z(v.y)];
+  const SHELL = [0, 0.9, 4.2];
+
+  const round = cmdRound({
+    onKey(res){
+      if(res.type === 'typo'){ typo = 1; w.kick(0.35); return; }
+      if(!res.v) return;
+      const p = at(res.v);
+      // A bolt: one fast spark from the barrel toward the target.
+      const dx = p[0] - SHELL[0], dz = p[2] - SHELL[2], dy = p[1] - 1.6, L = Math.hypot(dx, dy, dz) || 1;
+      w.spark([SHELL[0], 1.6, SHELL[2] - 0.8], '#b8ffff', 0.42, L / 90, [dx / L * 90, dy / L * 90, dz / L * 90]);
+      recoil = 1;
+      if(res.type === 'kill'){
+        w.burst(p, res.v.boss ? '#ffd700' : '#ff4df0', res.v.boss ? 46 : 24, { speed: res.v.boss ? 14 : 10, life: 0.7, size: 0.36 });
+        w.kick(res.v.boss ? 1.2 : 0.35);
+        if(res.combo > 1 && res.combo % CMD.COMBO_STEP === 0) w.pop([p[0], p[1] + 2.4, p[2]], `CLEAN ×${res.mult.toFixed(2)}`, '#ffd700', { size: 16 });
+      }
+    },
+    onEvent(e){
+      if(e.type === 'breach'){ w.kick(2); w.burst([SHELL[0], 1.2, SHELL[2]], '#ff2442', 34, { speed: 12, life: 0.8 }); }
+      if(e.type === 'saved'){ w.pop([SHELL[0], 3, SHELL[2]], 'SHIELD CATCH', '#a855f7'); w.kick(0.8); }
+      if(e.type === 'boss'){ w.pop([0, 4, -30], 'HEAVY PROCESS', '#ffb000', { size: 18, life: 1.6 }); }
+    }
+  });
+  S = round.S;
+
+  function label(v, sp){
+    let L = labels.get(v.id);
+    if(!L){
+      const el = document.createElement('div');
+      el.className = 'cmd-lbl' + (v.boss ? ' boss' : '');
+      layer.appendChild(el);
+      L = { el, key: '' };
+      labels.set(v.id, L);
+    }
+    const lock = S.lock === v.id;
+    const key = v.typed + (lock ? 'L' : '');
+    if(L.key !== key){
+      L.key = key;
+      L.el.innerHTML = `<b>${v.word.slice(0, v.typed)}</b>${v.word.slice(v.typed)}`;
+      L.el.classList.toggle('lock', lock);
+    }
+    if(!sp){ L.el.style.opacity = '0'; return; }
+    L.el.style.opacity = '1';
+    L.el.style.transform = `translate(-50%,-100%) translate(${sp.x.toFixed(1)}px,${sp.y.toFixed(1)}px)`;
+  }
+
+  runLoop(dt => {
+    round.step(dt);
+    if(dt > 0){ recoil = Math.max(0, recoil - dt * 6); typo = Math.max(0, typo - dt * 3); }
+    const lk = S.lock ? S.viruses.find(v => v.id === S.lock) : null;
+    const want = lk ? Math.atan2(X(lk.x) - SHELL[0], -(Z(lk.y) - SHELL[2])) : 0;
+    if(dt > 0) aim += (want - aim) * Math.min(1, dt * 14);
+
+    w.goal.eye[0] = 0; w.goal.eye[1] = 10.5; w.goal.eye[2] = 16;
+    w.goal.target[0] = 0; w.goal.target[1] = 0; w.goal.target[2] = -12;
+    w.goal.fov = 56;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+    // Roughness 0.4, not a mirror: a glossy deck under a point light returns a
+    // hard specular blob that reads as an object sitting in the lane.
+    r.draw('ground', { pos:[0, 0, -18], scale:[26, 1, 52], color:'#03080a', metallic: 0.8, roughness: 0.4, rim: 0.4 });
+    w.drawGrid({ y: 0.02, halfX: 12, halfZ: 26, step: 3, color:'#1b7a4a', emissive: 0.9, width: 0.05 });
+    w.drawCity(0);
+    for(const s of [-1, 1]){
+      r.beam([s * 11.6, 0.08, -44], [s * 11.6, 0.08, 6], 0.12, { color:'#39ff88', emissive:'#39ff88', emissiveStrength: 2, height: 0.1 });
+    }
+    // The line a virus must not cross.
+    r.beam([-11.6, 0.09, SHELL[2] - 1.6], [11.6, 0.09, SHELL[2] - 1.6], 0.14,
+           { color:'#ff2442', emissive:'#ff2442', emissiveStrength: 2.2 + typo * 3, height: 0.12 });
+
+    // The shell: a turret that turns to face what you are typing at.
+    r.draw('core', { pos:[SHELL[0], 0.45, SHELL[2]], scale: 1.3, color:'#0c1a14', metallic: 0.8, roughness: 0.3, rim: 1.2,
+                     emissive: typo > 0 ? '#ff2442' : '#39ff14', emissiveStrength: 0.8 + typo * 2 });
+    r.draw('turret', { pos:[SHELL[0], 1.25, SHELL[2] + recoil * 0.25], rot:[0, aim, 0], scale: 1.1,
+                       color:'#bfe9d0', metallic: 1, roughness: 0.2, rim: 1.4, emissive: '#39ff14', emissiveStrength: 0.6 });
+    for(let i = 0; i < CMD.INTEGRITY; i++){
+      const on = i < S.integrity;
+      r.draw('thintorus', { pos:[SHELL[0] - 1.6 + i * 1.6, 0.2, SHELL[2] + 1.8], rot:[Math.PI / 2, 0, w.t], scale: 0.6,
+                            color: on ? '#39ff14' : '#2a3a30', emissive: on ? '#39ff14' : '#2a3a30', emissiveStrength: on ? 2.2 : 0.2 });
+    }
+    if(lk){
+      const p = at(lk);
+      r.beam([SHELL[0], 1.5, SHELL[2] - 0.6], p, 0.05, { color:'#00f5ff', emissive:'#00f5ff', emissiveStrength: 2.4, height: 0.05 });
+    }
+
+    // The processes.
+    for(const v of S.viruses){
+      const p = at(v);
+      const danger = v.age / v.fall;
+      const col = v.boss ? '#ffb000' : danger > 0.75 ? '#ff2442' : '#ff2bd6';
+      const hit = S.t - v.hitAt < 0.12;
+      const sc = v.boss ? 1.5 : 0.95;
+      r.draw('lowsphere', { pos: p, rot:[v.age * 1.3, v.age * 0.9, 0], scale: sc,
+                            color:'#1a0616', metallic: 0.6, roughness: 0.3, rim: 1.4,
+                            emissive: hit ? '#ffffff' : col, emissiveStrength: hit ? 2.4 : 1.1 });
+      r.draw('thintorus', { pos: p, rot:[v.age * 2, 0, 0.6], scale: sc * 1.5, color: col, emissive: col, emissiveStrength: 1.8 });
+      r.draw('thintorus', { pos: p, rot:[0.5, v.age * 2.4, Math.PI / 2], scale: sc * 1.35, color: col, emissive: col, emissiveStrength: 1.4 });
+      r.glow(p, sc * 1.6, col, 0.6);
+      if(S.lock === v.id){
+        r.draw('thintorus', { pos:[p[0], 0.1, p[2]], rot:[Math.PI / 2, 0, w.t * 3], scale: sc * 2.4,
+                              color:'#00f5ff', emissive:'#00f5ff', emissiveStrength: 2.6 });
+      }
+    }
+    r.light({ pos:[SHELL[0], 4, SHELL[2]], color: typo > 0 ? '#ff2442' : '#39ff88', intensity: 180, range: 20 });
+    r.light({ pos:[0, 15, -34], color:'#ff2bd6', intensity: 220, range: 50 });
+    w.end();
+
+    // Labels last, after the frame is drawn: every projection first, then
+    // every write, so no read in the loop has to wait on a style change.
+    const shown = new Set();
+    const pos = S.viruses.map(v => { const p = at(v); return r.project([p[0], p[1] + (v.boss ? 1.9 : 1.4), p[2]]); });
+    S.viruses.forEach((v, i) => { shown.add(v.id); label(v, pos[i]); });
+    for(const [id, L] of labels){ if(!shown.has(id)){ L.el.remove(); labels.delete(id); } }
+  });
+};
+
+})();
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 27 · v53 — 🎬 CLIP RECORDER
+// ══════════════════════════════════════════════════════════════════════
+// Every round on a canvas board is recorded as it is played, and the last
+// ~twelve seconds of it — plus a one-second end card — can be saved from the
+// results card as a video: MP4 (H.264) where the browser can encode it, WebM
+// otherwise. On a phone it goes straight to the share sheet with the round's
+// challenge link; on a desktop it downloads. Nothing is uploaded, anywhere.
+//
+// Every clip carries its own advert: the mission, the live score and the
+// site's address are burned into the picture, so a clip posted anywhere says
+// where to play.
+//
+// HOW (WebCodecs, no library):
+//   · a 2D board is sampled from #arcade-canvas on a frame loop of its own; a
+//     3D round is grabbed inside runLoop() in the SAME turn as the render,
+//     because the GL canvas has no preserveDrawingBuffer (a separate callback
+//     would copy a blank buffer);
+//   · each grab is drawn onto a small compositing canvas with the overlay and
+//     handed to a VideoEncoder with a keyframe every second, at most 30 fps,
+//     timestamped on ROUND time (gNow) so a pause or a photo leaves no hole;
+//   · encoded chunks go into a rolling buffer trimmed at a keyframe to the
+//     last CLIP_SECS, so memory stays at a few megabytes however long you play;
+//   · on save, the chunks are wrapped in a container written here (mp4Mux /
+//     webmMux): the chunks ARE the video, so the container is only an index.
+//
+// Missions whose 2D build is DOM rather than canvas (Click Frenzy's button,
+// Memory Match's grid, Math Blitz…) have nothing to record in 2D and offer no
+// clip; in 3D every mission has a canvas. A duel, a party turn and a lab run
+// start without prepGame() and are not recorded. Off switch: ⚙️ SETTINGS.
+//
+// ⚠️ LOAD ORDER: hooks reach this from prepGame, showResults, stopGame,
+// runLoop (§ 2) and showResultsCard — every name they touch is a `var` or a
+// function declaration.
+var CLIP_KEY = 'pi_clips';
+var CLIP_SECS = 12, CLIP_FPS = 30, CLIP_KF = 30, CLIP_END = 36;
+var clip = null;            // the round being recorded
+var clipDone = null;        // the last round's clip, ready to save
+var clipSeq = 0;            // bumps every start, so a late flush can tell it is stale
+var clipCodec = null;       // the encoder config this device supports, or null
+var clipProbed = false;
+
+function clipSupported(){ return typeof VideoEncoder === 'function' && typeof VideoFrame === 'function'; }
+function clipsEnabled(){ try{ return localStorage.getItem(CLIP_KEY) !== '0'; }catch(e){ return true; } }
+function clipSize(){
+  // Multiples of 16 (encoders are happiest on whole macroblocks), at the
+  // board's own 560:500 aspect. Smaller on a touch device: the encoder shares
+  // a phone's budget with the round.
+  return (typeof isTouchDevice !== 'undefined' && isTouchDevice) ? [640, 576] : [896, 800];
+}
+async function clipProbe(){
+  if(clipProbed || !clipSupported()) return clipCodec;
+  clipProbed = true;
+  const [w, h] = clipSize();
+  const base = { width: w, height: h, bitrate: 2500000, framerate: CLIP_FPS, latencyMode: 'realtime' };
+  const tries = [
+    { kind: 'mp4',  config: Object.assign({ codec: 'avc1.42001f', avc: { format: 'avc' } }, base) },
+    { kind: 'mp4',  config: Object.assign({ codec: 'avc1.4d001f', avc: { format: 'avc' } }, base) },
+    { kind: 'webm', config: Object.assign({ codec: 'vp09.00.10.08' }, base) },
+    { kind: 'webm', config: Object.assign({ codec: 'vp8' }, base) }
+  ];
+  for(const t of tries){
+    try{
+      const s = await VideoEncoder.isConfigSupported(t.config);
+      if(s && s.supported){ clipCodec = t; break; }
+    }catch(e){ /* this codec is not on this device — try the next */ }
+  }
+  paintClipToggle();
+  return clipCodec;
+}
+function clipHost(){
+  const href = document.querySelector('link[rel="canonical"]')?.href || location.href;
+  try{ const u = new URL(href); return (u.host + u.pathname).replace(/\/+$/, ''); }catch(e){ return 'Point Invaders'; }
+}
+
+// From prepGame's countdown callback, right after the mission has started.
+function clipStart(gid){
+  clipStop({ discard: true });
+  clipDone = null;
+  clipSeq++;
+  if(!clipsEnabled() || !clipSupported() || !clipCodec || !META[gid]) return;
+  if(mp || (typeof partyRunActive === 'function' && partyRunActive()) || (typeof labActive === 'function' && labActive())) return;
+  const gl = document.getElementById('gl-canvas');
+  const is3d = !!(gl && gl.style.display !== 'none' && getComputedStyle(gl).display !== 'none' &&
+                  document.body.classList.contains('mode-3d'));
+  const holder = document.getElementById('g-canvas-holder');
+  const src = is3d ? gl : document.getElementById('arcade-canvas');
+  // A DOM mission in 2D: its board is not a canvas, so there is nothing to film.
+  if(!src || (!is3d && (!holder || holder.style.display === 'none' || !document.getElementById('game-screen').classList.contains('canvas-game')))) return;
+  const [W, H] = clipSize();
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const c = { seq: clipSeq, gid, is3d, src, cv, ctx: cv.getContext('2d'), chunks: [], meta: null, W, H,
+              g0: gNow(), last: -1e9, lastTs: 0, n: 0, raf: 0, broken: false,
+              host: clipHost(), title: META[gid].emoji + '  ' + META[gid].name };
+  try{
+    c.enc = new VideoEncoder({
+      output: (chunk, md) => {
+        const data = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(data);
+        c.chunks.push({ key: chunk.type === 'key', ts: chunk.timestamp, data });
+        const desc = md && md.decoderConfig && md.decoderConfig.description;
+        if(desc && !c.meta) c.meta = new Uint8Array(desc.buffer ? desc.buffer.slice(desc.byteOffset || 0, (desc.byteOffset || 0) + desc.byteLength) : desc);
+        clipTrim(c);
+      },
+      error: e => { console.warn('🎬 Clip encoder stopped:', e && e.message); c.broken = true; }
+    });
+    c.enc.configure(Object.assign({}, clipCodec.config, { width: W, height: H }));
+  }catch(e){ console.warn('🎬 Clip recorder unavailable:', e && e.message); return; }
+  clip = c;
+  if(!is3d){
+    const tick = () => { if(clip !== c) return; clipGrab(c); c.raf = requestAnimationFrame(tick); };
+    c.raf = requestAnimationFrame(tick);
+  }
+}
+
+// From resetGameStage(): every round starts without the last one's clip —
+// including the rounds that are never recorded (a duel, a party turn, a lab
+// run), whose cards must not offer a clip of something else. Bumping the
+// sequence also drops a flush still in flight for the round before.
+function clipReset(){
+  clipDone = null;
+  clipSeq++;
+  clipPaintButton();
+}
+
+// Called by runLoop() (§ 2) straight after a 3D frame is rendered.
+function clipGrab3D(){ if(clip && clip.is3d) clipGrab(clip); }
+
+function clipOverlay(c){
+  const x = c.ctx, W = c.W, H = c.H, s = W / 896;
+  const g = x.createLinearGradient(0, 0, 0, 74 * s);
+  g.addColorStop(0, 'rgba(2,3,12,0.8)'); g.addColorStop(1, 'rgba(2,3,12,0)');
+  x.fillStyle = g; x.fillRect(0, 0, W, 74 * s);
+  x.textBaseline = 'top';
+  x.font = `900 ${Math.round(22 * s)}px Orbitron, sans-serif`;
+  x.fillStyle = '#00f5ff'; x.textAlign = 'left';
+  x.fillText(c.title, 18 * s, 14 * s);
+  const pts = (document.getElementById('g-pts') || {}).textContent || '0';
+  x.fillStyle = '#ffd700'; x.textAlign = 'right';
+  x.fillText(pts + ' PTS', W - 18 * s, 14 * s);
+  const bh = 42 * s;
+  x.fillStyle = 'rgba(2,3,12,0.74)'; x.fillRect(0, H - bh, W, bh);
+  x.textBaseline = 'middle'; x.textAlign = 'left';
+  x.font = `700 ${Math.round(16 * s)}px Rajdhani, sans-serif`;
+  x.fillStyle = 'rgba(234,246,255,0.92)';
+  x.fillText('▶ PLAY FREE · ' + c.host, 18 * s, H - bh / 2);
+  x.textAlign = 'right'; x.fillStyle = '#ff2bd6';
+  x.font = `900 ${Math.round(14 * s)}px Orbitron, sans-serif`;
+  x.fillText('POINT INVADERS', W - 18 * s, H - bh / 2);
+  x.textAlign = 'left';
+}
+
+function clipGrab(c){
+  if(c.broken || !c.enc || c.enc.state !== 'configured') return;
+  if(typeof photoActive === 'function' && photoActive()) return;
+  const now = gNow();
+  if(now - c.last < 1000 / CLIP_FPS - 2) return;
+  // An encoder that has fallen behind drops a frame rather than queueing more
+  // work into the round it is sharing the device with.
+  if(c.enc.encodeQueueSize > 3) return;
+  c.last = now;
+  try{
+    c.ctx.drawImage(c.src, 0, 0, c.W, c.H);
+    clipOverlay(c);
+    const ts = Math.round((now - c.g0) * 1000);
+    const vf = new VideoFrame(c.cv, { timestamp: ts });
+    c.enc.encode(vf, { keyFrame: c.n % CLIP_KF === 0 });
+    vf.close();
+    c.lastTs = ts; c.n++;
+  }catch(e){ c.broken = true; }
+}
+
+// Keeps the buffer to the last CLIP_SECS, cut at a keyframe so it still starts
+// on a picture a player can decode.
+function clipTrim(c){
+  const ch = c.chunks;
+  if(ch.length < 2) return;
+  const last = ch[ch.length - 1].ts;
+  let cut = 0;
+  for(let i = 0; i < ch.length; i++){ if(ch[i].key && last - ch[i].ts >= CLIP_SECS * 1e6) cut = i; }
+  if(cut > 0) ch.splice(0, cut);
+}
+
+function clipEndCard(c, pts, i){
+  const x = c.ctx, W = c.W, H = c.H, s = W / 896;
+  const k = Math.min(1, i / 8);
+  x.fillStyle = `rgba(3,4,14,${0.55 + 0.35 * k})`;
+  x.fillRect(0, 0, W, H);
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.font = `900 ${Math.round(24 * s)}px Orbitron, sans-serif`;
+  x.fillStyle = '#00f5ff';
+  x.fillText(c.title, W / 2, H * 0.34);
+  x.font = `900 ${Math.round(74 * s)}px Orbitron, sans-serif`;
+  x.fillStyle = '#ffd700';
+  x.fillText(Math.max(0, Math.round(+pts || 0)).toLocaleString(), W / 2, H * 0.5);
+  x.font = `700 ${Math.round(20 * s)}px Rajdhani, sans-serif`;
+  x.fillStyle = 'rgba(234,246,255,0.95)';
+  x.fillText('THINK YOU CAN BEAT IT?  ·  PLAY FREE AT ' + c.host, W / 2, H * 0.66);
+  x.font = `900 ${Math.round(16 * s)}px Orbitron, sans-serif`;
+  x.fillStyle = '#ff2bd6';
+  x.fillText('POINT INVADERS', W / 2, H * 0.76);
+  x.textAlign = 'left';
+}
+
+// From showResults (with the round's score) or stopGame (a quit: discarded).
+async function clipStop(o){
+  o = o || {};
+  const c = clip;
+  if(!c) return;
+  clip = null;
+  if(c.raf) cancelAnimationFrame(c.raf);
+  if(o.discard || c.broken){ try{ c.enc.close(); }catch(e){} return; }
+  try{
+    // Out of the moment the round ends: the end card is 36 frames of drawing
+    // and encoding, and that moment belongs to the death sting.
+    await new Promise(r => setTimeout(r, 0));
+    // The end card: the final number and where to play, held for a second.
+    if(c.n > 0 && c.enc.state === 'configured'){
+      for(let i = 0; i < CLIP_END; i++){
+        clipEndCard(c, o.pts, i);
+        const vf = new VideoFrame(c.cv, { timestamp: c.lastTs + Math.round((i + 1) * 1e6 / CLIP_FPS) });
+        c.enc.encode(vf, { keyFrame: i === 0 });
+        vf.close();
+      }
+    }
+    await c.enc.flush();
+    c.enc.close();
+  }catch(e){ return; }
+  clipTrim(c);
+  // Stale: another round started while this one flushed.
+  if(c.seq !== clipSeq) return;
+  if(c.chunks.length < CLIP_FPS || !c.chunks[0].key || (clipCodec.kind === 'mp4' && !c.meta)) return;
+  clipDone = { chunks: c.chunks, meta: c.meta, W: c.W, H: c.H, kind: clipCodec.kind, codec: clipCodec.config.codec,
+               gid: c.gid, pts: Math.max(0, Math.round(+o.pts || 0)) };
+  clipPaintButton();
+}
+
+// ── THE CONTAINERS ──
+function clipBytes(parts){
+  let n = 0;
+  for(const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  let o = 0;
+  for(const p of parts){ out.set(p, o); o += p.length; }
+  return out;
+}
+function mp4Mux(d){
+  const u32 = v => new Uint8Array([(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255]);
+  const u16 = v => new Uint8Array([(v >>> 8) & 255, v & 255]);
+  const str = t => new Uint8Array([...t].map(ch => ch.charCodeAt(0)));
+  const zeros = n => new Uint8Array(n);
+  const box = (type, ...parts) => { const body = clipBytes(parts); return clipBytes([u32(body.length + 8), str(type), body]); };
+  const full = (type, ver, flags, ...parts) => box(type, new Uint8Array([ver, (flags >> 16) & 255, (flags >> 8) & 255, flags & 255]), ...parts);
+  const matrix = clipBytes([u32(0x00010000), u32(0), u32(0), u32(0), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x40000000)]);
+
+  const TS = 90000;
+  const t0 = d.chunks[0].ts;
+  const times = d.chunks.map(c => Math.round((c.ts - t0) * TS / 1e6));
+  const frame = Math.round(TS / CLIP_FPS);
+  const durs = times.map((t, i) => i < times.length - 1 ? Math.max(1, times[i + 1] - t) : frame);
+  const total = durs.reduce((a, b) => a + b, 0);
+  const ms = Math.round(total * 1000 / TS);
+
+  const sttsE = [];
+  for(const v of durs){ const l = sttsE[sttsE.length - 1]; if(l && l[1] === v) l[0]++; else sttsE.push([1, v]); }
+  const keys = [];
+  d.chunks.forEach((c, i) => { if(c.key) keys.push(i + 1); });
+
+  const ftyp = box('ftyp', str('isom'), u32(512), str('isom'), str('iso2'), str('avc1'), str('mp41'));
+  const dataLen = d.chunks.reduce((a, c) => a + c.data.length, 0);
+  const mdatHead = clipBytes([u32(dataLen + 8), str('mdat')]);
+  const firstOffset = ftyp.length + mdatHead.length;
+
+  const name = new Uint8Array(32); const nm = 'Point Invaders'; name[0] = nm.length; name.set(str(nm), 1);
+  const avc1 = box('avc1', zeros(6), u16(1), u16(0), u16(0), zeros(12), u16(d.W), u16(d.H),
+                   u32(0x00480000), u32(0x00480000), u32(0), u16(1), name, u16(0x0018), u16(0xffff),
+                   box('avcC', d.meta));
+  const stbl = box('stbl',
+    full('stsd', 0, 0, u32(1), avc1),
+    full('stts', 0, 0, u32(sttsE.length), ...sttsE.map(e => clipBytes([u32(e[0]), u32(e[1])]))),
+    full('stss', 0, 0, u32(keys.length), ...keys.map(k => u32(k))),
+    full('stsc', 0, 0, u32(1), u32(1), u32(d.chunks.length), u32(1)),
+    full('stsz', 0, 0, u32(0), u32(d.chunks.length), ...d.chunks.map(c => u32(c.data.length))),
+    full('stco', 0, 0, u32(1), u32(firstOffset)));
+  const minf = box('minf', full('vmhd', 0, 1, u16(0), u16(0), u16(0), u16(0)),
+                   box('dinf', full('dref', 0, 0, u32(1), full('url ', 0, 1))), stbl);
+  const mdia = box('mdia',
+    full('mdhd', 0, 0, u32(0), u32(0), u32(TS), u32(total), u16(0x55c4), u16(0)),
+    full('hdlr', 0, 0, u32(0), str('vide'), zeros(12), str('VideoHandler'), zeros(1)),
+    minf);
+  const trak = box('trak',
+    full('tkhd', 0, 3, u32(0), u32(0), u32(1), u32(0), u32(ms), zeros(8), u16(0), u16(0), u16(0), u16(0),
+         matrix, u32(d.W << 16), u32(d.H << 16)),
+    mdia);
+  const moov = box('moov',
+    full('mvhd', 0, 0, u32(0), u32(0), u32(1000), u32(ms), u32(0x00010000), u16(0x0100), zeros(10), matrix, zeros(24), u32(2)),
+    trak);
+  return new Blob([ftyp, mdatHead, ...d.chunks.map(c => c.data), moov], { type: 'video/mp4' });
+}
+function webmMux(d){
+  const id = hex => new Uint8Array(hex.match(/../g).map(h => parseInt(h, 16)));
+  const size8 = n => { const b = new Uint8Array(8); b[0] = 0x01; let v = n; for(let i = 7; i >= 1; i--){ b[i] = v & 255; v = Math.floor(v / 256); } return b; };
+  const el = (hex, ...parts) => { const body = clipBytes(parts.map(p => p instanceof Uint8Array ? p : new Uint8Array(p))); return clipBytes([id(hex), size8(body.length), body]); };
+  const uint = (hex, v) => { const b = []; do{ b.unshift(v & 255); v = Math.floor(v / 256); }while(v > 0); return el(hex, new Uint8Array(b)); };
+  const text = (hex, t) => el(hex, new Uint8Array([...t].map(ch => ch.charCodeAt(0))));
+  const f64 = (hex, v) => { const b = new Uint8Array(8); new DataView(b.buffer).setFloat64(0, v); return el(hex, b); };
+  const t0 = d.chunks[0].ts;
+  const dur = (d.chunks[d.chunks.length - 1].ts - t0) / 1000 + 1000 / CLIP_FPS;
+  const blocks = d.chunks.map(c => {
+    const rel = Math.round((c.ts - t0) / 1000);
+    const head = new Uint8Array([0x81, (rel >> 8) & 255, rel & 255, c.key ? 0x80 : 0x00]);
+    return el('A3', clipBytes([head, c.data]));
+  });
+  const header = el('1A45DFA3', uint('4286', 1), uint('42F7', 1), uint('42F2', 4), uint('42F3', 8),
+                    text('4282', 'webm'), uint('4287', 4), uint('4285', 2));
+  const info = el('1549A966', uint('2AD7B1', 1000000), text('4D80', 'PointInvaders'), text('5741', 'PointInvaders'), f64('4489', dur));
+  const tracks = el('1654AE6B', el('AE', uint('D7', 1), uint('73C5', 1), uint('83', 1),
+                    text('86', /^vp09/.test(d.codec) ? 'V_VP9' : 'V_VP8'), el('E0', uint('B0', d.W), uint('BA', d.H))));
+  const cluster = el('1F43B675', uint('E7', 0), ...blocks);
+  const segment = el('18538067', info, tracks, cluster);
+  return new Blob([header, segment], { type: 'video/webm' });
+}
+
+// ── THE RESULTS CARD'S BUTTON ──
+function clipPaintButton(){
+  const b = document.getElementById('btn-clip');
+  if(!b) return;
+  const gname = document.getElementById('results-screen')?.classList.contains('active');
+  const ready = !!clipDone && gname;
+  b.style.display = ready ? '' : 'none';
+  b.disabled = !ready;
+  b.textContent = '🎬 Save Clip';
+}
+async function saveClip(){
+  const d = clipDone, b = document.getElementById('btn-clip');
+  if(!d){ snd('deny'); return; }
+  let blob;
+  try{ blob = d.kind === 'mp4' ? mp4Mux(d) : webmMux(d); }
+  catch(e){ console.warn('🎬 Clip could not be written:', e); snd('error'); toast('🎬 That clip could not be written.', 2800); return; }
+  try{ if(typeof statsEvent === 'function') statsEvent('_clip'); }catch(e){}
+  const name = `point-invaders-${d.gid}-${d.pts}.${d.kind}`;
+  const type = d.kind === 'mp4' ? 'video/mp4' : 'video/webm';
+  const phone = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  if(phone && typeof File === 'function' && navigator.canShare){
+    const file = new File([blob], name, { type });
+    if(navigator.canShare({ files: [file] })){
+      const run = (typeof clLastRun === 'object' && clLastRun) ? clLastRun : null;
+      const text = run ? `⚔️ Beat my ${run.pts.toLocaleString()} in ${META[run.gid].name} on Point Invaders: ${clUrl(run)}`
+                       : `👾 ${META[d.gid].name} on Point Invaders — play free: ${document.querySelector('link[rel="canonical"]')?.href || location.href}`;
+      try{ await navigator.share({ files: [file], title: 'Point Invaders', text }); snd('coin'); return; }
+      catch(e){ if(e && e.name === 'AbortError') return; }
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  snd('coin');
+  if(b){ b.textContent = '✔ Clip saved'; setTimeout(() => { b.textContent = '🎬 Save Clip'; }, 2400); }
+}
+
+// ── ⚙️ SETTINGS ──
+function paintClipToggle(){
+  const b = document.getElementById('btn-clips');
+  const note = document.getElementById('clips-note');
+  if(!b) return;
+  const ok = clipSupported() && (!clipProbed || !!clipCodec);
+  const on = ok && clipsEnabled();
+  b.disabled = !ok;
+  b.classList.toggle('on', on);
+  b.setAttribute('aria-pressed', String(on));
+  b.textContent = !ok ? '🎬 CLIPS: NOT SUPPORTED HERE' : on ? '🎬 CLIPS: ON' : '🎬 CLIPS: OFF';
+  if(note && !ok) note.textContent = 'This browser cannot encode video, so there is nothing to record — every round still plays exactly the same.';
+}
+
+try{
+  document.getElementById('btn-clip')?.addEventListener('click', () => saveClip());
+  document.getElementById('btn-clips')?.addEventListener('click', () => {
+    try{ localStorage.setItem(CLIP_KEY, clipsEnabled() ? '0' : '1'); }catch(e){}
+    if(!clipsEnabled()) clipStop({ discard: true });
+    paintClipToggle();
+    snd('toggle');
+    toast(clipsEnabled() ? '🎬 Clips on — the last twelve seconds of each round can be saved from the results card.' : '🎬 Clips off.', 2800);
+  });
+  paintClipToggle();
+  // Probed once, shortly after load, so the first round already knows.
+  setTimeout(() => { clipProbe().catch(() => {}); }, 1500);
+}catch(e){ console.warn('Clip recorder failed to wire:', e); }

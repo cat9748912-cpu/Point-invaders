@@ -24,18 +24,18 @@
      in the manifest below and on og.jpg itself — bump it with a new mission.
      The canonical link is also what 📣 Share Score sends (shareRun() in
      app.js), so moving the site to a new address is one edit, here. -->
-<meta name="description" content="29 free arcade missions in 2D or full 3D: live duels, a 20-chapter campaign, Boss Rush and party mode. No download, no signup — play as a guest in seconds.">
+<meta name="description" content="30 free arcade missions in 2D or full 3D: live duels, a 20-chapter campaign, Boss Rush and party mode. No download, no signup — play as a guest in seconds.">
 <link rel="canonical" href="https://cat9748912-cpu.github.io/Point-invaders/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Point Invaders">
 <meta property="og:url" content="https://cat9748912-cpu.github.io/Point-invaders/">
 <meta property="og:title" content="Point Invaders — a free neon arcade in your browser">
-<meta property="og:description" content="29 free arcade missions in 2D or full 3D: live duels, a 20-chapter campaign, Boss Rush and party mode. No download, no signup — play as a guest in seconds.">
+<meta property="og:description" content="30 free arcade missions in 2D or full 3D: live duels, a 20-chapter campaign, Boss Rush and party mode. No download, no signup — play as a guest in seconds.">
 <meta property="og:image" content="https://cat9748912-cpu.github.io/Point-invaders/og.jpg">
 <meta property="og:image:type" content="image/jpeg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Point Invaders — neon 3D arcade gameplay. 29 missions in 2D or 3D, live duels, free in the browser.">
+<meta property="og:image:alt" content="Point Invaders — neon 3D arcade gameplay. 30 missions in 2D or 3D, live duels, free in the browser.">
 <meta name="twitter:card" content="summary_large_image">
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
 
@@ -48,7 +48,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=52">
+<link rel="stylesheet" href="style.css?v=54">
 </head>
 <body>
 
@@ -74,6 +74,10 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <span class="auth-icon">🎮</span>
     <div class="logo">POINT INVADERS</div>
     <div class="tagline">Arcade Hub · Play · Compete · Dominate</div>
+    <!-- 🔗 Arrived on a challenge link: who sent it and what to beat, before
+         the sign-in choice, so the visitor knows why they are here. Painted
+         by paintClAuth() in app.js (§ 22). -->
+    <div class="cl-auth" id="cl-auth" style="display:none" role="status"></div>
 
     <!-- ── RENDER MODE ──
          Picked before any account exists, so the choice lives in localStorage
@@ -167,6 +171,14 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     </button>
     <span class="chaos-note" id="chaos-note">Roll a modifier before every mission — handicaps and windfalls both pay.</span>
   </div>
+  <!-- 🔥 HEAT — the other appetite: the player picks the hazards instead of
+       the dice, and every mission keeps a record of the hottest run that
+       still made a medal. Painted by paintHeatRow() (§ 24 in app.js). -->
+  <div class="heat-selector" id="heat-selector" data-band="off">
+    <span class="diff-label">🔥 HEAT</span>
+    <button class="heat-open" id="btn-heat" type="button" aria-haspopup="dialog">OFF · SET HEAT</button>
+    <span class="chaos-note" id="heat-note">Pick your own hazards — more heat, more pay, and a heat record on every mission.</span>
+  </div>
   <!-- 📈 OPERATIVE RAIL — the profile's level, its XP bar, and the two doors
        into what that level bought. Sits under the stability dial because it is
        the OTHER thing that scales what a round is worth, and the two belong
@@ -244,6 +256,17 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         </div>
         <button class="btn btn-primary" id="btn-party">🎉 START A PARTY</button>
       </div>
+      <!-- 🧱 BRICK LAB — build a level for ANY mission (a wall, a maze, a
+           course, a word list…) and share it as a code or a link. Practice
+           runs only: nothing a lab level scores is banked (§ 25 in app.js). -->
+      <div class="mp-banner lab-banner" id="lab-banner">
+        <span class="mp-banner-icon">🧱</span>
+        <div class="mp-banner-txt">
+          <div class="mp-banner-title">BRICK LAB</div>
+          <div class="mp-banner-sub">Build your own level for ANY mission — walls, mazes, courses, word lists — test it, and send it to a friend.</div>
+        </div>
+        <button class="btn btn-primary" id="btn-lab">🧱 OPEN THE LAB</button>
+      </div>
       <!-- 📅 DAILY HACK — the same locked layout for everyone, every UTC day.
            Its own banner rather than a mission card because the mission is not
            yours to pick: the date picks it, and the seed picks the questions. -->
@@ -305,7 +328,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         </div>
         <div class="game-card" data-game="tetris" data-c="purple">
           <span class="gc-icon">🧱</span>
-          <div class="gc-name" data-c="purple">CYBERPUNK TETRIS</div>
+          <div class="gc-name" data-c="purple">MATRIX DROP</div>
           <div class="gc-desc">Drop retro matrix blocks and clear solid code lines!</div>
           <span class="gc-pts" data-c="purple">UP TO 1500 PTS</span>
         </div>
@@ -471,6 +494,12 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
           <div class="gc-name" data-c="gold">DATA MUNCHER</div>
           <div class="gc-desc">Eat every data bit in the maze — then grab a power core and hunt the daemons back!</div>
           <span class="gc-pts" data-c="gold">UP TO 1300 PTS</span>
+        </div>
+        <div class="game-card" data-game="cmdline" data-c="lime">
+          <span class="gc-icon">⌨️</span>
+          <div class="gc-name" data-c="lime">COMMAND LINE</div>
+          <div class="gc-desc">Type the command on each falling virus to kill the process before it reaches your shell!</div>
+          <span class="gc-pts" data-c="lime">UP TO 1200 PTS</span>
         </div>
       </div>
     </div>
@@ -912,6 +941,11 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <span class="sr-next" id="sr-next">—</span>
     </div>
 
+    <!-- ⌨️ COMMAND LINE's keypad, touch devices only. A sibling of the holder
+         for the reason #bb-deck is; built by cmdBuildKeys() and measured by
+         fitCanvas() by id (§ 26). -->
+    <div id="g-type-keys" style="display:none" role="group" aria-label="Keyboard"></div>
+
     <div id="g-memory" class="memory-grid" style="display:none"></div>
 
     <div id="g-math" class="math-wrap" style="display:none">
@@ -956,25 +990,39 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
 
 <div class="screen" id="results-screen">
   <div class="card res-card">
-    <span class="res-emoji" id="res-emoji">🎉</span>
-    <div class="res-gname" id="res-gname">GAME</div>
-    <div class="res-pts" id="res-pts">0</div>
-    <div class="res-pts-lbl">POINTS EARNED</div>
+    <!-- v54: the headline is one block so a wide screen can stand it beside
+         the breakdown. The tier badge and the medal panel are slotted in by
+         app.js next to their siblings (gname / the POINTS label), so they land
+         inside this block too. -->
+    <div class="res-head">
+      <span class="res-emoji" id="res-emoji">🎉</span>
+      <div class="res-gname" id="res-gname">GAME</div>
+      <div class="res-pts" id="res-pts">0</div>
+      <div class="res-pts-lbl">POINTS EARNED</div>
+    </div>
     <div class="res-bd" id="res-bd"></div>
     <div class="res-btns">
-      <button class="btn btn-primary" id="btn-again">Play Again</button>
-      <button class="btn btn-secondary" id="btn-hub">Hub</button>
-      <!-- 📣 The one button on this card meant for someone who has never
-           played: the score and the site's link, to a phone's share sheet or
-           the clipboard. See shareRun() in app.js. -->
-      <button class="btn btn-secondary" id="btn-share-run">📣 Share Score</button>
-      <!-- 📋 The run, as a string. Sits with the two navigation buttons because
-           it belongs to the run that just ended, not to the hub. -->
-      <button class="btn btn-secondary" id="btn-replay-export">📋 Export Replay Code</button>
-      <!-- ⚔️ Posts this run as a standing challenge. Lives with the replay export
-           for the same reason: both are things you do WITH the run that just
-           ended. Shown only when the run is postable — see showResultsCard(). -->
-      <button class="btn btn-secondary" id="btn-post-chal" style="display:none">⚔️ Post As Challenge</button>
+      <!-- The two ways off the card, as one big row. -->
+      <div class="res-main">
+        <button class="btn btn-primary" id="btn-again">Play Again</button>
+        <button class="btn btn-secondary" id="btn-hub">Hub</button>
+      </div>
+      <!-- Everything you can do WITH the run that just ended, as one even grid
+           under them: however many are showing, they share the row(s) equally. -->
+      <div class="res-more">
+        <!-- 📣 The one button on this card meant for someone who has never
+             played: the score and the site's link, to a phone's share sheet or
+             the clipboard. See shareRun() in app.js. -->
+        <button class="btn btn-secondary" id="btn-share-run">📣 Share Score</button>
+        <!-- 🎬 The last ~12 s of the round as a video (§ 27 in app.js). Shown only
+             when this round was recorded and its clip is ready. -->
+        <button class="btn btn-secondary" id="btn-clip" style="display:none">🎬 Save Clip</button>
+        <!-- 📋 The run, as a string. -->
+        <button class="btn btn-secondary" id="btn-replay-export">📋 Export Replay Code</button>
+        <!-- ⚔️ Posts this run as a standing challenge. Shown only when the run is
+             postable — see showResultsCard(). -->
+        <button class="btn btn-secondary" id="btn-post-chal" style="display:none">⚔️ Post As Challenge</button>
+      </div>
     </div>
     <div class="res-replay" id="res-replay"></div>
   </div>
@@ -987,7 +1035,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      ══════════════════════════════════════════════════════════════ -->
 <!-- ══════════════════════════════════════════════
      📖 MISSION BRIEFING — what the ⓘ on a game card opens.
-     Summary, controls, a numbered tutorial and the tips, for all twenty-six.
+     Summary, controls, a numbered tutorial and the tips, for all thirty.
      Built by briefingHTML(); opened by openBriefing().
      ══════════════════════════════════════════════ -->
 <div class="fb-overlay brief-tint" id="brief-overlay" aria-hidden="true">
@@ -1154,6 +1202,66 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      📖 CAMPAIGN — the chapter map and the selected chapter's briefing
      from ARC. Built by renderCampaign(); see § 21 in app.js.
      ══════════════════════════════════════════════════════════════ -->
+<!-- ══════════════════════════════════════════════════════════════
+     🔗 INCOMING CHALLENGE — what a challenge link opens once the
+     visitor reaches the hub (§ 22 in app.js).
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay" id="cl-overlay" aria-hidden="true">
+  <div class="fb-modal cl-modal" role="dialog" aria-modal="true" aria-labelledby="cl-heading">
+    <button class="fb-close" id="cl-close" aria-label="Close challenge">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="cl-heading">⚔️ INCOMING CHALLENGE</div>
+      <div class="fb-sub">Someone shared a run with you. Beat their score.</div>
+    </div>
+    <div id="cl-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     📊 GRID TELEMETRY — anonymous play counters, opened by adding
+     ?stats to the address (§ 23 in app.js). Not linked from the UI.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay" id="stats-overlay" aria-hidden="true">
+  <div class="fb-modal st-modal" role="dialog" aria-modal="true" aria-labelledby="st-heading">
+    <button class="fb-close" id="st-close" aria-label="Close telemetry">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="st-heading">📊 GRID TELEMETRY</div>
+      <div class="fb-sub">Anonymous play counters · live</div>
+    </div>
+    <div class="st-range" role="group" aria-label="Time range">
+      <button class="st-rg" data-r="7" type="button">7 days</button>
+      <button class="st-rg on" data-r="30" type="button">30 days</button>
+      <button class="st-rg" data-r="0" type="button">All time</button>
+    </div>
+    <div id="st-body"></div>
+  </div>
+</div>
+
+<!-- 🧱 BRICK LAB — the mission picker, each mission's editor, a level someone
+     sent, and a lab run's result (§ 25). -->
+<div class="fb-overlay" id="lab-overlay" aria-hidden="true">
+  <div class="fb-modal lab-modal" role="dialog" aria-modal="true" aria-labelledby="lab-heading">
+    <button class="fb-close" id="lab-close" aria-label="Close Brick Lab">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="lab-heading">🧱 BRICK LAB</div>
+      <div class="fb-sub" id="lab-sub">Build a level for any mission · share it as a code</div>
+    </div>
+    <div id="lab-body"></div>
+  </div>
+</div>
+
+<!-- 🔥 HEAT PANEL — six hazards to stack, the gauge, and the records (§ 24). -->
+<div class="fb-overlay" id="heat-overlay" aria-hidden="true">
+  <div class="fb-modal heat-modal" role="dialog" aria-modal="true" aria-labelledby="heat-heading">
+    <button class="fb-close" id="heat-close" aria-label="Close heat">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="heat-heading">🔥 HEAT</div>
+      <div class="fb-sub">Stack the hazards · every grid mission</div>
+    </div>
+    <div id="heat-body"></div>
+  </div>
+</div>
+
 <div class="fb-overlay campaign-tint" id="campaign-overlay" aria-hidden="true">
   <div class="fb-modal campaign-modal" role="dialog" aria-modal="true" aria-labelledby="campaign-heading">
     <button class="fb-close" id="campaign-close" aria-label="Close campaign">✕</button>
@@ -1254,6 +1362,14 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <div class="set-sec-h"><span id="set-gfx-h">✨ GRAPHICS</span></div>
       <p class="set-note">How much detail the 3D renderer draws. <b>Ultra Realistic</b> is the sharpest image and the heaviest on the GPU; <b>Normal</b> keeps the frame rate smooth. Stored per device, and it applies in 3D mode.</p>
       <button class="btn btn-secondary btn-full gfx-toggle" id="btn-gfx" aria-pressed="false" title="Graphics: Normal — click for Ultra Realistic">✨ GRAPHICS: NORMAL</button>
+    </section>
+
+    <!-- ── 🎬 CLIPS ── the clip recorder's off switch (§ 27). Per device: it is
+         about what this machine can spare while a round runs. -->
+    <section class="set-sec" aria-labelledby="set-clips-h">
+      <div class="set-sec-h"><span id="set-clips-h">🎬 CLIPS</span></div>
+      <p class="set-note" id="clips-note">Keeps the last twelve seconds of every round on this device, so a great run can be saved or shared as a video from the results card. Nothing is uploaded. Turn it off if rounds feel slower.</p>
+      <button class="btn btn-secondary btn-full inp-toggle" id="btn-clips" aria-pressed="true">🎬 CLIPS: ON</button>
     </section>
 
     <!-- ── 🎮 INPUT ── Both are per-device I/O preferences, painted together by
@@ -1407,7 +1523,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=52"></script>
+<script src="app.js?v=54"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker
@@ -1467,7 +1583,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
   const manifest = {
     name: 'Point Invaders — Arcade Hub',
     short_name: 'Point Invaders',
-    description: 'A neon arcade hub: 29 missions in 2D or 3D, head-to-head duels, a story campaign and a live leaderboard.',
+    description: 'A neon arcade hub: 30 missions in 2D or 3D, head-to-head duels, a story campaign and a live leaderboard.',
     start_url: dir,
     scope: dir,
     display: 'fullscreen',

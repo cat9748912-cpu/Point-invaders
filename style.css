@@ -666,6 +666,14 @@ textarea::-webkit-scrollbar-thumb,select::-webkit-scrollbar-thumb,.input::-webki
 .click-label{color:var(--dim);font-weight:600;font-size:.8rem;letter-spacing:.2em;text-transform:uppercase}
 #click-btn{width:180px;height:180px;border-radius:50%;border:none;background:linear-gradient(135deg,var(--cyan),var(--purple));font-size:3.5rem;cursor:pointer;box-shadow:0 0 50px rgba(0,245,255,.3)}
 #click-btn:active{transform:scale(.9)}
+/* 🧱 A Brick Lab timeline's seconds (§ 25): gold pays double, a surge
+   triple, a jam nothing — the button says which second this is. */
+#g-click.fz-gold #click-btn{background:linear-gradient(135deg,#fff3a0,#ffd700 55%,#c99a00);box-shadow:0 0 60px rgba(255,215,0,.6)}
+#g-click.fz-surge #click-btn{background:linear-gradient(135deg,#ff8ad6,#ff0090);box-shadow:0 0 60px rgba(255,0,144,.6)}
+#g-click.fz-jam #click-btn{filter:grayscale(1) brightness(.55);box-shadow:none}
+#g-click.fz-gold .click-label{color:#ffd700}
+#g-click.fz-surge .click-label{color:#ff5ab8}
+#g-click.fz-jam .click-label{color:var(--dimmer)}
 
 /* ── Memory Match Layout ─ */
 .memory-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;width:100%;max-width:340px}
@@ -862,7 +870,20 @@ textarea::-webkit-scrollbar-thumb,select::-webkit-scrollbar-thumb,.input::-webki
 #g-sort-rule.warn .sr-next{color:var(--gold)}
 
 /* ── RESULTS SCREEN ── */
-#results-screen .res-card{max-width:560px;width:100%;text-align:center}
+/* v54 — THE CARD GREW WITH THE RUN. It was 560px wide when it had two buttons;
+   it has six now (Play Again, Hub, Share, Clip, Replay, Challenge), and they
+   wrapped into three rows on a desktop and five on a phone, so the card ran
+   off the bottom of a laptop screen and under the offline bar. Now it is
+   wider, a wide screen stands the headline beside the breakdown (see the
+   media query further down), the two ways off the card are one big row, and
+   everything you can do WITH the run sits in one even grid under them.
+   Centred with auto margins rather than the screen's justify-content: a
+   centred flex column that overflows loses its TOP, which scrolling can never
+   reach — the emoji and the score were the part that went. */
+#results-screen{justify-content:flex-start}
+html.is-offline #results-screen{padding-bottom:calc(64px + env(safe-area-inset-bottom, 0px))}
+#results-screen .res-card{max-width:920px;width:100%;text-align:center;margin:auto 0}
+.res-head{min-width:0}
 .res-emoji{font-size:4.5rem;display:block;margin-bottom:18px}
 .res-gname{font-family:var(--fd);font-size:.6rem;color:var(--dim);letter-spacing:.15em;text-transform:uppercase;margin-bottom:12px}
 .res-bonus{display:inline-block;font-family:var(--fd);font-size:.62rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:5px 14px;border-radius:20px;margin:0 0 14px;border:1px solid var(--border);background:var(--s2);color:var(--dim)}
@@ -875,7 +896,38 @@ textarea::-webkit-scrollbar-thumb,select::-webkit-scrollbar-thumb,.input::-webki
 .res-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:.85rem}
 .res-row:last-child{border:none}
 .res-row .rv{color:var(--cyan);font-weight:700}
-.res-btns{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
+.res-btns{display:flex;flex-direction:column;gap:10px}
+.res-main{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);gap:10px}
+.res-main .btn{padding:16px 18px;font-size:.84rem;min-height:52px}
+/* auto-fit: however many of the four are showing share the width equally —
+   four across on a desktop, two by two on a phone. Labels may wrap to two
+   lines rather than force a third row. */
+.res-more{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.res-more .btn{padding:11px 10px;white-space:normal;line-height:1.3;min-height:46px;font-size:.66rem}
+/* A wide screen: the headline on the left, the breakdown on the right, the
+   buttons across the bottom under both. */
+@media (min-width:860px){
+  #results-screen .res-card{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);
+    grid-template-areas:"head bd" "btns btns" "replay replay";
+    column-gap:32px;align-items:center;padding:30px 34px 28px
+  }
+  #results-screen .res-head{grid-area:head}
+  #results-screen .res-bd{grid-area:bd;margin-bottom:0;align-self:center}
+  #results-screen .res-btns{grid-area:btns;margin-top:24px}
+  #results-screen .res-replay{grid-area:replay}
+  #results-screen .res-head #res-medal{margin-bottom:0}
+}
+/* A phone: a smaller headline buys the buttons their room. */
+@media (max-width:560px){
+  #results-screen{padding-left:12px;padding-right:12px}
+  #results-screen .res-card{padding:18px 16px}
+  .res-emoji{font-size:3rem;margin-bottom:8px}
+  .res-pts{font-size:3.4rem}
+  .res-pts-lbl{margin-bottom:16px}
+  .res-bd{margin-bottom:16px}
+}
 
 /* Toast */
 #toast{position:fixed;bottom:-60px;left:50%;transform:translateX(-50%);background:rgba(4,4,14,.9);border:1px solid var(--cyan);padding:12px 24px;border-radius:30px;font-family:var(--fd);font-size:.75rem;color:var(--cyan);z-index:9999;transition:bottom .3s ease, border-color .3s ease, color .3s ease, box-shadow .3s ease;box-shadow:0 10px 30px rgba(0,245,255,.2)}
@@ -4914,3 +4966,535 @@ body.mode-3d .cp-node:hover{
 body.mode-3d .cp-node.done{--wall:#0f4a12;--wallb:#062308}
 body.mode-3d .cp-node.sel{--wall:#6b5600;--wallb:#3a2f00}
 body.mode-3d .cp-node.locked{--wall:#0d1120;--wallb:#05070f}
+
+/* ══════════════════════════════════════════════════════════════════════
+   § 22 · v53 — 🔗 CHALLENGE LINKS
+   The invitation on the sign-in screen and the INCOMING CHALLENGE modal.
+   Gold, because gold is what the arcade already uses for "someone else's
+   number to beat" (the challenge board's own rows, the replay card's score).
+   ══════════════════════════════════════════════════════════════════════ */
+.cl-auth{
+  margin:16px auto 0;max-width:430px;padding:12px 14px;text-align:center;
+  border:1px solid rgba(255,215,0,.5);border-radius:var(--r);
+  background:linear-gradient(135deg,rgba(255,215,0,.13),rgba(255,0,144,.08));
+  box-shadow:0 0 24px rgba(255,215,0,.12)
+}
+.cl-auth-top{font-family:var(--fd);font-size:.6rem;font-weight:900;letter-spacing:.18em;color:var(--gold)}
+.cl-auth-mid{margin-top:7px;font-family:var(--fd);font-size:.8rem;font-weight:700;letter-spacing:.05em;color:var(--text);overflow-wrap:anywhere}
+.cl-auth-mid strong{color:var(--gold)}
+.cl-auth-ico{font-size:1rem}
+.cl-auth-sub{margin-top:5px;font-size:.8rem;color:var(--dim)}
+
+.cl-modal{max-width:440px;border-color:rgba(255,215,0,.45);box-shadow:0 0 70px rgba(255,215,0,.12),inset 0 0 0 1px rgba(255,255,255,.03)}
+.cl-modal .fb-head{margin-bottom:18px}
+.cl-card{
+  text-align:center;padding:16px 12px 14px;margin-bottom:12px;
+  border:1px solid rgba(255,215,0,.4);border-radius:var(--r);background:rgba(255,215,0,.06)
+}
+.cl-ico{font-size:2.6rem;line-height:1}
+.cl-mission{margin-top:8px;font-family:var(--fd);font-size:1rem;font-weight:900;letter-spacing:.08em;color:var(--cyan)}
+.cl-by{margin-top:12px;font-family:var(--fd);font-size:.55rem;letter-spacing:.2em;color:var(--dim);overflow-wrap:anywhere}
+.cl-pts{font-family:var(--fd);font-size:2.1rem;font-weight:900;color:var(--gold);line-height:1.15}
+.cl-pts em{font-style:normal;font-size:.5rem;letter-spacing:.16em;color:var(--dimmer);margin-left:6px}
+.cl-tier{margin-top:4px;font-size:.82rem;color:var(--text)}
+.cl-how{font-size:.88rem;line-height:1.55;color:var(--text);margin:0 2px 10px}
+.cl-note{font-size:.8rem;line-height:1.5;color:var(--text);padding:8px 10px;border-radius:10px;background:var(--s1);border:1px solid var(--border);margin-bottom:8px}
+.cl-note.dim{color:var(--dim);background:none;border-color:transparent;padding:2px 2px 0}
+.cl-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:14px}
+@media (max-width:520px){
+  .cl-modal{padding:24px 16px 20px}
+  .cl-modal .fb-head{padding:0 30px}          /* keep the title clear of the ✕ */
+  .cl-pts{font-size:1.8rem}
+  /* Stacked on a phone, the button that starts the race goes on top. */
+  .cl-btns{flex-direction:column-reverse}
+  .cl-btns .btn{width:100%}
+}
+.cl-modal::before{background:linear-gradient(90deg,transparent,var(--gold),transparent);box-shadow:0 0 12px var(--gold)}
+/* 🧊 3D chrome: restate the walls WITH the gold glow, or body.mode-3d
+   .fb-modal's own wall stack wins and the tint is lost (the .x-tint trap). */
+body.mode-3d .cl-modal{
+  box-shadow:
+    0 2px 0 #131a2e,0 4px 0 #131a2e,0 6px 0 #080c18,0 8px 0 #080c18,0 10px 0 #05070f,
+    0 44px 70px -22px rgba(0,0,0,.95),0 0 70px rgba(255,215,0,.12),
+    inset 0 1px 0 rgba(255,255,255,.16),inset 0 -1px 0 rgba(0,0,0,.6)
+}
+.cl-modal .fb-title{background:linear-gradient(90deg,var(--gold),var(--pink));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+
+/* ══════════════════════════════════════════════════════════════════════
+   § 23 · v53 — 📊 GRID TELEMETRY (?stats)
+   An operator's panel, so it is quieter than the arcade around it: one hue
+   (the cyan) for every magnitude, text in the text tokens, status in chips
+   that carry an icon as well as a colour.
+   ══════════════════════════════════════════════════════════════════════ */
+.st-modal{max-width:940px;border-color:rgba(0,245,255,.4);box-shadow:0 0 70px rgba(0,245,255,.1),inset 0 0 0 1px rgba(255,255,255,.03)}
+.st-modal::before{background:linear-gradient(90deg,transparent,var(--cyan),transparent);box-shadow:0 0 12px var(--cyan)}
+.st-modal .fb-head{margin-bottom:14px}
+.st-modal .fb-title{background:linear-gradient(90deg,var(--cyan),var(--lime));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.st-range{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-bottom:16px}
+.st-rg{
+  font-family:var(--fd);font-size:.56rem;letter-spacing:.14em;text-transform:uppercase;cursor:pointer;
+  color:var(--dim);background:var(--s1);border:1px solid var(--border);border-radius:999px;padding:8px 13px
+}
+.st-rg:hover{color:var(--text);border-color:var(--border2)}
+.st-rg.on{color:#02121a;background:var(--cyan);border-color:var(--cyan)}
+.st-rg:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+
+.st-tiles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:20px}
+.st-tile{padding:12px 12px 10px;border:1px solid var(--border);border-radius:var(--r);background:var(--s1);min-width:0}
+.st-tl{font-size:.78rem;color:var(--dim)}
+.st-tv{font-family:var(--fb);font-weight:700;font-size:1.65rem;line-height:1.15;margin-top:2px;color:var(--text);font-variant-numeric:tabular-nums}
+.st-tn{font-size:.7rem;color:var(--dimmer);margin-top:2px}
+
+.st-sec{margin-bottom:20px;min-width:0}
+.st-h{font-family:var(--fd);font-size:.6rem;letter-spacing:.14em;text-transform:uppercase;color:var(--cyan);margin-bottom:9px}
+.st-h span{font-family:var(--fb);font-size:.76rem;letter-spacing:0;text-transform:none;color:var(--dimmer);margin-left:6px}
+
+.st-chart-wrap{position:relative;padding-top:4px}
+.st-chart{display:block;width:100%;height:auto;max-width:100%}
+.st-grid{stroke:rgba(255,255,255,.08);stroke-width:1}
+.st-axis{fill:rgba(255,255,255,.45);font-size:10px;font-family:var(--fb)}
+.st-bar{fill:var(--cyan)}
+.st-hit{fill:transparent;cursor:pointer}
+.st-hit.on{fill:rgba(0,245,255,.07)}
+.st-tip{
+  position:absolute;top:-10px;pointer-events:none;white-space:nowrap;z-index:2;
+  background:#0b0f22;border:1px solid var(--border2);border-radius:8px;padding:6px 10px;
+  font-size:.8rem;line-height:1.35;color:var(--text);box-shadow:0 10px 24px rgba(0,0,0,.6)
+}
+.st-tip span{color:var(--dim)}
+
+.st-table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--r)}
+.st-table{width:100%;border-collapse:collapse;font-size:.86rem;font-variant-numeric:tabular-nums}
+.st-table th,.st-table td{padding:7px 10px;text-align:left;border-bottom:1px solid rgba(255,255,255,.05);white-space:nowrap}
+.st-table thead th{font-family:var(--fd);font-size:.5rem;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:var(--dim);background:rgba(255,255,255,.03)}
+.st-table tbody tr:last-child th,.st-table tbody tr:last-child td{border-bottom:0}
+.st-table .n{text-align:right}
+.st-table tbody th{font-weight:600;color:var(--text)}
+.st-table td{color:rgba(255,255,255,.82)}
+.st-table tr.idle th,.st-table tr.idle td{color:var(--dimmer)}
+.st-em{margin-right:7px}
+.st-mbar{display:inline-block;vertical-align:middle;width:60px;height:6px;margin-right:9px;border-radius:3px;background:rgba(0,245,255,.1);position:relative;overflow:hidden}
+.st-mbar::after{content:'';position:absolute;left:0;top:0;bottom:0;width:var(--w);background:var(--cyan);border-radius:0 3px 3px 0}
+.st-chip{display:inline-block;padding:1px 8px;border-radius:999px;font-size:.76rem;font-weight:700}
+.st-chip.warn{background:rgba(255,215,0,.13);color:#ffe066}
+.st-chip.bad{background:rgba(255,36,66,.16);color:#ff8a9a}
+
+.st-cols{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:20px}
+.st-lane{display:grid;grid-template-columns:128px minmax(0,1fr) 48px;gap:10px;align-items:center;font-size:.84rem;margin-bottom:7px}
+.st-ll{color:var(--text)}
+.st-lt{height:8px;border-radius:4px;background:rgba(0,245,255,.08);position:relative;overflow:hidden}
+.st-lb{position:absolute;left:0;top:0;bottom:0;width:var(--w);background:var(--cyan);border-radius:0 4px 4px 0}
+.st-lv{text-align:right;color:var(--text);font-variant-numeric:tabular-nums}
+.st-fun{padding:10px 12px;margin-bottom:8px;border:1px solid var(--border);border-radius:var(--r);background:var(--s1);font-size:.84rem;line-height:1.5;color:var(--dim)}
+.st-fun strong{color:var(--text);font-size:1.12rem;font-variant-numeric:tabular-nums}
+
+.st-note{margin-bottom:14px;padding:10px 12px;border-radius:10px;border:1px dashed var(--border2);font-size:.84rem;line-height:1.5;color:var(--dim)}
+.st-foot{margin-top:4px;font-size:.74rem;line-height:1.5;color:var(--dimmer);text-align:center}
+.st-setup{text-align:left;font-size:.9rem;line-height:1.6;color:var(--text)}
+.st-setup-h{font-family:var(--fd);font-size:.72rem;letter-spacing:.1em;color:var(--gold);margin-bottom:8px}
+.st-setup p{margin:0 0 10px;color:rgba(255,255,255,.82)}
+.st-setup code{font-size:.84em;color:#cfe4ff}
+.st-rule{
+  max-height:300px;overflow:auto;margin:0 0 10px;padding:10px 12px;white-space:pre;text-align:left;
+  font:500 .72rem/1.5 ui-monospace,Consolas,monospace;color:#cfe4ff;background:#02020a;border:1px solid var(--border);border-radius:10px
+}
+@media (max-width:760px){
+  .st-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .st-tile:last-child:nth-child(odd){grid-column:1 / -1}
+  .st-cols{grid-template-columns:1fr}
+  .st-modal{padding:24px 16px 20px}
+  .st-lane{grid-template-columns:110px minmax(0,1fr) 44px}
+}
+body.mode-3d .st-modal{
+  box-shadow:
+    0 2px 0 #131a2e,0 4px 0 #131a2e,0 6px 0 #080c18,0 8px 0 #080c18,0 10px 0 #05070f,
+    0 44px 70px -22px rgba(0,0,0,.95),0 0 70px rgba(0,245,255,.1),
+    inset 0 1px 0 rgba(255,255,255,.16),inset 0 -1px 0 rgba(0,0,0,.6)
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   § 24 · v53 — 🔥 HEAT
+   Sits directly under CHAOS PROTOCOL and borrows its frame: the two are the
+   same kind of offer (hazards that pay), one chosen by the dice and one by the
+   player. Its colour runs gold → orange → red with the heat itself, because
+   how hot it is IS the setting.
+   ══════════════════════════════════════════════════════════════════════ */
+.heat-selector{
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex:none;width:100%;
+  max-width:1060px;margin:-12px auto 20px;padding:9px 16px;
+  border:1px solid var(--border);border-radius:var(--r);background:var(--s1);
+  --heat:#ffb000;
+  transition:border-color .25s ease,box-shadow .25s ease,background .25s ease
+}
+.heat-selector[data-band="hot"]{--heat:#ff7a00}
+.heat-selector[data-band="scorching"]{--heat:#ff3d1f}
+.heat-selector[data-band="inferno"]{--heat:#ff1f5a}
+.heat-selector.armed{
+  border-color:color-mix(in srgb,var(--heat) 55%,transparent);
+  background:linear-gradient(100deg,color-mix(in srgb,var(--heat) 14%,transparent),rgba(255,36,66,.05));
+  box-shadow:0 0 24px color-mix(in srgb,var(--heat) 18%,transparent)
+}
+.heat-open{
+  display:inline-flex;align-items:center;gap:8px;cursor:pointer;
+  padding:6px 14px;border-radius:20px;border:1px solid var(--border2);background:var(--s2);
+  font-family:var(--fd);font-size:.5rem;font-weight:900;letter-spacing:.16em;color:var(--dim);
+  transition:all .2s ease
+}
+.heat-open:hover{border-color:var(--heat);color:var(--text)}
+.heat-open:focus-visible{outline:2px solid var(--heat);outline-offset:2px}
+.heat-selector.armed .heat-open{border-color:var(--heat);color:var(--heat);background:color-mix(in srgb,var(--heat) 14%,transparent)}
+.heat-selector.armed .chaos-note{color:rgba(255,255,255,.75)}
+
+/* ── the panel ── */
+.heat-modal{max-width:640px;border-color:rgba(255,122,0,.45);box-shadow:0 0 70px rgba(255,122,0,.12),inset 0 0 0 1px rgba(255,255,255,.03)}
+.heat-modal::before{background:linear-gradient(90deg,transparent,#ff7a00,transparent);box-shadow:0 0 12px #ff7a00}
+.heat-modal .fb-head{margin-bottom:16px}
+.heat-modal .fb-title{background:linear-gradient(90deg,#ffd000,#ff3d1f);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.heat-gauge{padding:12px 14px;margin-bottom:14px;border:1px solid var(--border);border-radius:var(--r);background:var(--s1)}
+.hg-top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:9px}
+.hg-n{font-family:var(--fd);font-size:1.9rem;font-weight:900;line-height:1;color:var(--text);font-variant-numeric:tabular-nums}
+.hg-of{font-size:.85rem;color:var(--dimmer)}
+.hg-band{font-family:var(--fd);font-size:.56rem;letter-spacing:.18em;color:#ffb000;margin-left:4px}
+.heat-gauge[data-band="hot"] .hg-band{color:#ff7a00}
+.heat-gauge[data-band="scorching"] .hg-band{color:#ff5a3d}
+.heat-gauge[data-band="inferno"] .hg-band{color:#ff4d7a}
+.heat-gauge[data-band="off"] .hg-band{color:var(--dimmer)}
+.hg-pay{margin-left:auto;font-family:var(--fd);font-size:.66rem;font-weight:900;letter-spacing:.08em;color:var(--gold)}
+.hg-segs{display:grid;grid-template-columns:repeat(13,1fr);gap:3px}
+.hg-segs i{height:9px;border-radius:2px;background:rgba(255,255,255,.07)}
+
+.heat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-bottom:14px}
+.heat-card{
+  display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;text-align:left;cursor:pointer;
+  padding:10px 11px;border-radius:var(--r);border:1px solid var(--border);background:var(--s1);color:var(--text);
+  font-family:var(--fb);transition:border-color .18s,background .18s,transform .18s
+}
+.heat-card:hover{border-color:var(--border2)}
+.heat-card:focus-visible{outline:2px solid #ff7a00;outline-offset:2px}
+.heat-card.on{border-color:rgba(255,122,0,.7);background:linear-gradient(135deg,rgba(255,122,0,.16),rgba(255,31,90,.08))}
+.hc-ico{font-size:1.4rem;line-height:1}
+.hc-txt{display:flex;flex-direction:column;gap:2px;min-width:0}
+.hc-name{font-family:var(--fd);font-size:.56rem;font-weight:900;letter-spacing:.1em}
+.hc-desc{font-size:.76rem;line-height:1.35;color:var(--dim)}
+.heat-card.on .hc-desc{color:rgba(255,255,255,.78)}
+.hc-pts{font-family:var(--fd);font-size:.8rem;font-weight:900;color:#ffb000;text-align:right;line-height:1.2}
+.hc-pts em{display:block;font-style:normal;font-family:var(--fb);font-size:.66rem;font-weight:600;color:var(--dimmer)}
+.heat-card.on .hc-pts{color:#ff8a3d}
+.heat-rules{font-size:.78rem;line-height:1.55;color:var(--dim);margin-bottom:14px}
+.heat-recs{margin-bottom:16px}
+.hr-h{font-family:var(--fd);font-size:.52rem;letter-spacing:.16em;color:#ff8a3d;margin-bottom:8px}
+.hr-chip{display:inline-flex;align-items:center;gap:6px;margin:0 6px 6px 0;padding:4px 10px;border-radius:999px;border:1px solid var(--border);background:var(--s1);font-size:.78rem}
+.hr-chip b{color:#ff8a3d;font-variant-numeric:tabular-nums}
+.hr-empty{font-size:.8rem;color:var(--dimmer)}
+.heat-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+@media (max-width:560px){
+  .heat-grid{grid-template-columns:1fr}
+  .heat-modal{padding:24px 16px 20px}
+  .heat-btns{flex-direction:column-reverse}
+  .heat-btns .btn{width:100%}
+}
+
+/* the card: the record under the medal strip */
+.gm-heat{margin-top:3px;font-family:var(--fd);font-size:.44rem;font-weight:900;letter-spacing:.12em;color:#ff8a3d}
+/* the countdown banner when the stack is the player's own */
+#chaos-banner.chaos-heat{border-color:rgba(255,122,0,.6);box-shadow:0 0 22px rgba(255,122,0,.25)}
+
+body.mode-3d .heat-modal{
+  box-shadow:
+    0 2px 0 #131a2e,0 4px 0 #131a2e,0 6px 0 #080c18,0 8px 0 #080c18,0 10px 0 #05070f,
+    0 44px 70px -22px rgba(0,0,0,.95),0 0 70px rgba(255,122,0,.12),
+    inset 0 1px 0 rgba(255,255,255,.16),inset 0 -1px 0 rgba(0,0,0,.6)
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   § v53 — ❄️ SEASONAL EVENTS · COLD BOOT (Dec 1 – Jan 1)
+   The second event, built exactly the way NEON HAUNT is: everything scoped to
+   body.ev-coldboot (set from the date by applyEventTheme()), plus the banner's
+   own .evb-coldboot class, which it wears through the TEASER week too — the
+   body class only exists once the window opens.
+   ══════════════════════════════════════════════════════════════════════ */
+body.ev-coldboot{--ev-a:#8fe3ff;--ev-b:#c9b8ff}
+body.ev-coldboot::before{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(120% 55% at 50% 108%,rgba(120,210,255,.13),transparent 60%),
+    radial-gradient(90% 50% at 50% -8%,rgba(190,170,255,.11),transparent 62%);
+}
+body.ev-coldboot .hub-bar{box-shadow:0 0 34px -8px rgba(143,227,255,.42),inset 0 -1px 0 rgba(201,184,255,.35)}
+body.ev-coldboot .hub-logo-sm::after{content:' ❄️';-webkit-text-fill-color:initial}
+body.ev-coldboot .sec-label{text-shadow:0 0 12px rgba(143,227,255,.25)}
+
+/* ── the banner (live and teaser) ── */
+.ev-banner.evb-coldboot{
+  border-color:rgba(143,227,255,.55)!important;
+  background:linear-gradient(120deg,rgba(120,210,255,.13),rgba(150,120,255,.10) 60%,rgba(6,10,24,.6))!important;
+  box-shadow:0 0 40px -10px rgba(143,227,255,.5)
+}
+.ev-banner.evb-coldboot .mp-banner-title{background:linear-gradient(90deg,#ffffff,#9fe6ff 45%,#c9b8ff);-webkit-background-clip:text;background-clip:text;filter:drop-shadow(0 0 8px rgba(143,227,255,.45))}
+.ev-banner.evb-coldboot .ev-prog i{background:linear-gradient(90deg,#9fe6ff,#c9b8ff);box-shadow:0 0 10px rgba(143,227,255,.6)}
+body.ev-coldboot .ev-lb-label{color:#b8ecff}
+
+/* ── snow on the hub (never over a round) ── */
+body.ev-coldboot:has(#hub-screen.active) #ev-deco{display:block}
+/* The fall rides `translate` and the sway rides `transform` — two properties
+   that compose — so neither animation touches layout. */
+.evd-snow{
+  position:absolute;top:0;color:#eaf8ff;text-shadow:0 0 8px rgba(160,225,255,.8);
+  animation-name:evdSnow,evdSway;animation-timing-function:linear,ease-in-out;
+  animation-iteration-count:infinite,infinite;animation-direction:normal,alternate
+}
+@keyframes evdSnow{from{translate:0 -8vh}to{translate:0 108vh}}
+@keyframes evdSway{from{transform:translateX(-18px) rotate(-20deg)}to{transform:translateX(18px) rotate(20deg)}}
+body.ev-coldboot .evd-float{filter:drop-shadow(0 0 12px rgba(143,227,255,.7))}
+
+/* ── the shelf ── */
+body.ev-coldboot .market-tab-event{color:#b8ecff!important;border-color:rgba(143,227,255,.5)!important}
+body.ev-coldboot .market-tab-event.active{background:rgba(143,227,255,.13)!important;box-shadow:0 0 18px rgba(143,227,255,.3)}
+body.ev-coldboot .ev-shelf-note{border-color:rgba(143,227,255,.55);background:rgba(120,210,255,.07);color:#b8ecff}
+.shop-card.ev-item-coldboot{border-color:rgba(143,227,255,.45)}
+.shop-card.ev-item-coldboot .shop-evtag{color:#04121c;background:linear-gradient(90deg,#e8faff,#8fe3ff);box-shadow:0 0 12px rgba(143,227,255,.5)}
+
+/* ── 🧊 FLASH FREEZE — the event's exit state ──
+   ⚠️ The layer paints its own background, like Graveyard Shift's: with a
+   transparent root the 3D chrome's lifted buttons draw OVER a z-index 2500
+   layer in 3D mode. */
+#exit-fx.fx-freeze{background:rgba(2,8,18,.25);animation:fzOut 1.9s ease forwards}
+@keyframes fzOut{0%,84%{opacity:1}100%{opacity:0}}
+/* Frost closing in from every edge: an inset glow whose spread grows, over a
+   pale wash that thickens behind it. */
+.fz-frost{position:absolute;inset:0;
+  background:radial-gradient(ellipse at center,rgba(200,238,255,0) 30%,rgba(200,238,255,.35) 75%,rgba(235,250,255,.8));
+  box-shadow:inset 0 0 0 0 rgba(225,246,255,.9);animation:fzFrost 1.05s cubic-bezier(.3,.7,.3,1) both}
+@keyframes fzFrost{
+  from{opacity:0;box-shadow:inset 0 0 0 0 rgba(225,246,255,.9)}
+  to{opacity:1;box-shadow:inset 0 0 22vmin 6vmin rgba(225,246,255,.85)}
+}
+.fz-cracks{position:absolute;left:50%;top:50%;width:0;height:0}
+.fz-crack{position:absolute;left:0;top:0;height:2px;width:var(--l);transform-origin:0 50%;
+  transform:rotate(var(--a)) scaleX(0);background:linear-gradient(90deg,#ffffff,rgba(200,240,255,.2));
+  box-shadow:0 0 6px rgba(200,240,255,.9);animation:fzCrack .5s cubic-bezier(.2,.8,.2,1) both}
+@keyframes fzCrack{to{transform:rotate(var(--a)) scaleX(1)}}
+.fz-shards{position:absolute;inset:0}
+.fz-shard{position:absolute;width:calc(9vmin * var(--s));height:calc(12vmin * var(--s));
+  background:linear-gradient(135deg,rgba(240,252,255,.95),rgba(150,215,255,.55));
+  clip-path:polygon(50% 0,100% 72%,18% 100%);opacity:0;
+  animation:fzShard .8s cubic-bezier(.15,.7,.3,1) 1.05s both}
+/* Invisible at 0% on purpose: `both` holds the first keyframe through the
+   1.05s delay, and a visible one there stacked every shard in the middle of
+   the ice before it had broken. */
+@keyframes fzShard{
+  0%{opacity:0;transform:translate(-50%,-50%) rotate(0)}
+  2%{opacity:1;transform:translate(-50%,-50%) rotate(0)}
+  100%{opacity:0;transform:translate(calc(-50% + var(--x)),calc(-50% + var(--y))) rotate(var(--r))}
+}
+.fz-block{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  display:flex;flex-direction:column;align-items:center;gap:.4vmin;padding:3vmin 5vmin;border-radius:2vmin;
+  background:linear-gradient(160deg,rgba(235,250,255,.92),rgba(150,215,255,.7));
+  border:1px solid rgba(255,255,255,.9);box-shadow:0 0 50px rgba(160,225,255,.6),inset 0 0 22px rgba(255,255,255,.7);
+  color:#06263a;opacity:0;animation:fzBlock .5s cubic-bezier(.2,1.3,.4,1) 1.05s both}
+.fz-block b{font-family:var(--fd);font-size:max(10px,1.6vmin);letter-spacing:.24em}
+.fz-block em{font-family:var(--fd);font-style:normal;font-weight:900;font-size:max(26px,6.4vmin);line-height:1}
+.fz-block i{font-family:var(--fd);font-style:normal;font-size:max(9px,1.3vmin);letter-spacing:.3em;opacity:.7}
+@keyframes fzBlock{from{opacity:0;transform:translate(-50%,-50%) scale(.6)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
+
+/* ══════════════════════════════════════════════════════════════════════
+   § 25 · v53 — 🧱 BRICK LAB
+   The wall is drawn in the same colours the mission uses — a row's colour is
+   its place in the wall, ARMOUR wears a heavy frame, CORE is gold — so what
+   you paint is what the round lays down.
+   ══════════════════════════════════════════════════════════════════════ */
+.lab-banner{border-color:rgba(0,245,255,.35)}
+.lab-modal{max-width:560px;border-color:rgba(0,245,255,.42);box-shadow:0 0 70px rgba(0,245,255,.12),inset 0 0 0 1px rgba(255,255,255,.03)}
+.lab-modal::before{background:linear-gradient(90deg,transparent,var(--cyan),transparent);box-shadow:0 0 12px var(--cyan)}
+.lab-modal .fb-head{margin-bottom:16px}
+.lab-modal .fb-title{background:linear-gradient(90deg,#9fe6ff,var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+
+.lab-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.lab-name-l{font-family:var(--fd);font-size:.5rem;letter-spacing:.16em;color:var(--dim)}
+.lab-name{flex:1;min-width:150px;font-family:var(--fd);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;padding:9px 12px}
+.lab-count{font-family:var(--fd);font-size:.5rem;letter-spacing:.14em;color:var(--dimmer);font-variant-numeric:tabular-nums}
+
+.lab-tools{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:12px}
+.lab-tool{
+  display:flex;align-items:center;justify-content:center;gap:7px;flex-wrap:wrap;cursor:pointer;
+  padding:8px 6px;border-radius:10px;border:1px solid var(--border);background:var(--s1);color:var(--text);
+  font-family:var(--fd);font-size:.52rem;font-weight:900;letter-spacing:.1em
+}
+.lab-tool em{flex-basis:100%;text-align:center;font-style:normal;font-family:var(--fb);font-size:.66rem;font-weight:600;letter-spacing:0;color:var(--dimmer)}
+.lab-tool.on{border-color:var(--cyan);background:rgba(0,245,255,.1);box-shadow:0 0 14px rgba(0,245,255,.22)}
+.lab-tool:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.lt-sw{width:18px;height:10px;border-radius:3px}
+
+/* The cell colours. --row picks the mission's row colour, cycling every five
+   rows the way both builds do. */
+.lab-cell{--rc:#ff0090}
+.lab-cell[style*="--row:1"]{--rc:#a855f7}
+.lab-cell[style*="--row:2"]{--rc:#00f5ff}
+.lab-cell[style*="--row:3"]{--rc:#39ff14}
+.lab-cell[style*="--row:4"]{--rc:#ffd700}
+.lab-cell[style*="--row:5"]{--rc:#ff0090}
+.lab-cell[style*="--row:6"]{--rc:#a855f7}
+.lab-cell.t0{background:rgba(255,255,255,.035);border:1px dashed rgba(255,255,255,.08)}
+.lab-cell.t1{background:var(--rc);border:1px solid rgba(255,255,255,.25);box-shadow:0 0 8px color-mix(in srgb,var(--rc) 55%,transparent),inset 0 2px 0 rgba(255,255,255,.3)}
+.lab-cell.t2{background:var(--rc);border:3px solid rgba(8,10,24,.75);outline:1px solid rgba(255,255,255,.55);outline-offset:-4px;box-shadow:0 0 8px color-mix(in srgb,var(--rc) 55%,transparent)}
+.lab-cell.t3{background:linear-gradient(135deg,#fff6b0,#ffd700 55%,#e0a800);border:1px solid #fff2a0;box-shadow:0 0 12px rgba(255,215,0,.7);
+  display:flex;align-items:center;justify-content:center}
+/* The star is what tells a CORE from the fifth row, whose own colour is gold. */
+.lab-cell.t3::after{content:'★';font-size:.62rem;line-height:1;color:rgba(60,36,0,.85)}
+/* The palette swatches use the same faces, in the cyan row. */
+.lt-sw.t1{background:#00f5ff;box-shadow:0 0 6px rgba(0,245,255,.6)}
+.lt-sw.t2{background:#00f5ff;border:2px solid rgba(8,10,24,.8);outline:1px solid rgba(255,255,255,.6);outline-offset:-3px}
+.lt-sw.t3{background:linear-gradient(135deg,#fff6b0,#ffd700);box-shadow:0 0 6px rgba(255,215,0,.7)}
+.lt-sw.t0{background:none;border:1px dashed rgba(255,255,255,.4)}
+
+.lab-grid{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:4px;padding:10px;margin:0 0 8px;
+  border-radius:var(--r);border:1px solid var(--border);background:rgba(0,0,0,.35)}
+.lab-grid .lab-cell{display:flex;align-items:center;justify-content:center;aspect-ratio:2.1 / 1;border-radius:3px;padding:0;min-width:0}
+.lab-grid.edit{touch-action:none;user-select:none;-webkit-user-select:none}
+.lab-grid.edit .lab-cell{cursor:pointer;aspect-ratio:1.7 / 1}
+.lab-grid.edit .lab-cell:hover{filter:brightness(1.25)}
+.lab-grid.edit .lab-cell:focus-visible{outline:2px solid #fff;outline-offset:1px}
+.lab-hint{font-size:.76rem;color:var(--dimmer);margin-bottom:12px;line-height:1.45}
+
+.lab-presets{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:14px}
+.lab-presets span{font-family:var(--fd);font-size:.48rem;letter-spacing:.16em;color:var(--dimmer);margin-right:4px}
+.lab-pre{cursor:pointer;padding:6px 10px;border-radius:999px;border:1px solid var(--border);background:var(--s1);
+  color:var(--dim);font-family:var(--fd);font-size:.48rem;font-weight:900;letter-spacing:.12em}
+.lab-pre:hover{color:var(--text);border-color:var(--border2)}
+.lab-pre:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+
+.lab-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:12px}
+.lab-load{display:flex;gap:8px;margin-bottom:8px}
+.lab-load .input{flex:1;min-width:0;font-size:.8rem;padding:8px 10px}
+.lab-out{margin-bottom:8px;overflow-wrap:anywhere}
+.lab-out .replay-code{display:inline;word-break:break-all}
+.lab-note{font-size:.76rem;line-height:1.5;color:var(--dimmer);text-align:center}
+.lab-note b{color:var(--text)}
+
+.lab-res{text-align:center;margin-bottom:12px}
+.lab-res-name{font-family:var(--fd);font-size:.8rem;font-weight:900;letter-spacing:.1em;color:var(--cyan);overflow-wrap:anywhere}
+.lab-res-name em{font-family:var(--fb);font-style:normal;font-weight:600;font-size:.8rem;letter-spacing:0;color:var(--dim)}
+.lab-res-pts{font-family:var(--fd);font-size:2.3rem;font-weight:900;color:var(--gold);line-height:1.2;margin-top:6px;font-variant-numeric:tabular-nums}
+.lab-res-pts span{font-size:.5rem;letter-spacing:.16em;color:var(--dimmer);margin-left:6px}
+.lab-res-best{font-family:var(--fd);font-size:.52rem;letter-spacing:.14em;color:var(--dim);margin:4px 0 12px}
+.lab-res-rows{text-align:left;margin-bottom:12px}
+@media (max-width:520px){
+  .lab-modal{padding:24px 14px 18px}
+  .lab-grid{gap:3px;padding:7px}
+  .lab-tools{gap:6px}
+  .lab-btns{flex-direction:column}
+  .lab-btns .btn{width:100%}
+}
+body.mode-3d .lab-modal{
+  box-shadow:
+    0 2px 0 #131a2e,0 4px 0 #131a2e,0 6px 0 #080c18,0 8px 0 #080c18,0 10px 0 #05070f,
+    0 44px 70px -22px rgba(0,0,0,.95),0 0 70px rgba(0,245,255,.12),
+    inset 0 1px 0 rgba(255,255,255,.16),inset 0 -1px 0 rgba(0,0,0,.6)
+}
+
+/* ── v54: THE LAB HOLDS EVERY MISSION ──────────────────────────────────
+   A mission chip at the top of the editor (tap to change), a picker of all
+   thirty, and one generic grid: each cell is a tool's own colour (--c) with
+   its glyph, sized off the grid's column count (--cols, --ar, --gap and the
+   font size are set inline per mission). The wall keeps v53's faces above. */
+.lab-modal{max-width:680px}
+.lab-mbtn{
+  display:flex;align-items:center;gap:12px;width:100%;margin:0 0 14px;padding:10px 14px;cursor:pointer;
+  border-radius:12px;border:1px solid rgba(0,245,255,.35);background:rgba(0,245,255,.06);color:var(--text);text-align:left
+}
+.lab-mbtn:hover{border-color:var(--cyan);background:rgba(0,245,255,.1)}
+.lab-mbtn:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.lm-emoji{font-size:1.6rem;line-height:1}
+.lm-txt{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}
+.lm-txt b{font-family:var(--fd);font-size:.72rem;font-weight:900;letter-spacing:.1em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lm-txt em{font-style:normal;font-family:var(--fd);font-size:.48rem;font-weight:700;letter-spacing:.16em;color:var(--cyan)}
+.lm-chg{font-family:var(--fd);font-size:.48rem;font-weight:700;letter-spacing:.14em;color:var(--dim);white-space:nowrap}
+
+.lab-picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:8px;margin-bottom:14px}
+.lab-pick{
+  position:relative;display:flex;flex-direction:column;align-items:center;gap:5px;padding:12px 6px 10px;cursor:pointer;
+  border-radius:12px;border:1px solid var(--border);background:var(--s1);color:var(--text)
+}
+.lab-pick:hover{border-color:var(--border2);background:var(--s2)}
+.lab-pick:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.lab-pick.on{border-color:var(--cyan);box-shadow:0 0 14px rgba(0,245,255,.2)}
+.lp-emoji{font-size:1.5rem;line-height:1}
+.lp-name{font-family:var(--fd);font-size:.5rem;font-weight:900;letter-spacing:.08em;text-align:center;line-height:1.35}
+.lp-what{font-family:var(--fd);font-size:.42rem;font-weight:700;letter-spacing:.14em;color:var(--cyan)}
+.lp-dot{position:absolute;top:7px;right:7px;width:7px;height:7px;border-radius:50%;background:var(--lime);box-shadow:0 0 6px var(--lime)}
+
+.lab-grid{grid-template-columns:repeat(var(--cols,10),minmax(0,1fr));gap:var(--gap,4px);margin:0 auto 8px}
+.lab-grid .lab-cell,.lab-grid.edit .lab-cell{aspect-ratio:var(--ar,1)}
+.lab-cell.lv{
+  background:rgba(255,255,255,.035);border:1px dashed rgba(255,255,255,.08);border-radius:3px;
+  color:#fff;line-height:1;font-weight:900;overflow:hidden;padding:0;font-size:inherit
+}
+.lab-cell.lv.bf{color:rgba(255,255,255,.32)}
+.lab-cell.lv.on{
+  background:var(--c);border:1px solid rgba(255,255,255,.28);
+  box-shadow:0 0 6px color-mix(in srgb,var(--c) 55%,transparent),inset 0 1px 0 rgba(255,255,255,.28);
+  text-shadow:0 1px 2px rgba(0,0,0,.75)
+}
+.lab-cell.lv.lk{background:var(--c,rgba(255,255,255,.08));border:1px solid rgba(255,255,255,.1);opacity:.75;cursor:not-allowed}
+/* The chart's time grid: a line on every beat, a brighter one on every bar. */
+.lab-grid .lab-cell.beat{box-shadow:inset 0 1px 0 rgba(255,255,255,.14)}
+.lab-grid .lab-cell.bar{box-shadow:inset 0 2px 0 rgba(0,245,255,.45)}
+.lab-grid .lab-cell.lv.on.beat,.lab-grid .lab-cell.lv.on.bar{box-shadow:0 0 6px color-mix(in srgb,var(--c) 55%,transparent)}
+/* A course column with its gap painted: the rest of it is wall. */
+.lab-cell.lv.cf{background:var(--c);border:1px solid rgba(255,255,255,.06)}
+.lab-grid.dense{padding:6px}
+.lab-grid.dense .lab-cell{border-radius:1px}
+.lab-grid.dense .lab-cell.lv{border:0;background:rgba(255,255,255,.055)}
+.lab-grid.dense .lab-cell.lv.on,.lab-grid.dense .lab-cell.lv.lk{border:0;background:var(--c)}
+.lab-grid.dense .lab-cell.lv.bf{background:rgba(255,255,255,.055)}
+/* A sequence's step numbers can run to "3·11·17" on one cell. */
+.lab-grid.seq .lab-cell.lv{font-size:.9em;letter-spacing:-.02em;word-break:break-all}
+.lab-tools.many{grid-template-columns:repeat(auto-fit,minmax(86px,1fr))}
+.lt-sw.lv{display:inline-flex;align-items:center;justify-content:center;width:18px;height:14px;border-radius:3px;
+  background:var(--c);font-size:.58rem;line-height:1;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.7)}
+.lab-arrow{font-family:var(--fd);font-size:.46rem;font-weight:700;letter-spacing:.16em;color:var(--dimmer);text-align:center;margin:0 0 6px}
+.lab-check{font-size:.8rem;line-height:1.45;margin:-4px 0 12px;text-align:center}
+.lab-check:empty{display:none}
+.lab-check.block{color:#ff5a6e}
+.lab-check.warn{color:var(--gold)}
+.lab-words{width:100%;min-height:112px;margin-bottom:8px;resize:vertical;text-transform:lowercase;
+  font:600 .9rem/1.5 ui-monospace,Consolas,Menlo,monospace}
+.lab-words-prev{display:flex;flex-wrap:wrap;justify-content:center;gap:5px;margin-bottom:10px;max-height:170px;overflow:auto}
+.lab-words-prev span{padding:3px 8px;border-radius:6px;background:rgba(57,255,20,.1);border:1px solid rgba(57,255,20,.3);
+  font:700 .8rem ui-monospace,Consolas,Menlo,monospace;color:#caffd8}
+.lab-res-mission{font-family:var(--fd);font-size:.5rem;font-weight:700;letter-spacing:.16em;color:var(--dim);margin-bottom:5px}
+@media (max-width:520px){
+  .lab-picks{grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px}
+  .lab-mbtn{padding:9px 11px}
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   § 26 · v53 — ⌨️ COMMAND LINE
+   The keypad under the board (touch only) and the 3D build's word labels.
+   Monospace on purpose: a word you have to type is read letter by letter,
+   and a fixed pitch keeps the typed half and the rest lined up.
+   ══════════════════════════════════════════════════════════════════════ */
+#g-type-keys{
+  display:flex;flex-direction:column;gap:6px;margin:10px auto 0;
+  width:var(--board-w,100%);max-width:100%;
+  user-select:none;-webkit-user-select:none;touch-action:manipulation
+}
+.tk-row{display:flex;gap:5px;justify-content:center}
+.tk-key{
+  flex:1 1 0;min-width:0;max-width:46px;height:46px;padding:0;border-radius:8px;cursor:pointer;
+  border:1px solid var(--border2);background:linear-gradient(180deg,rgba(255,255,255,.1),rgba(255,255,255,.035));
+  color:var(--text);font:700 1.08rem ui-monospace,Consolas,Menlo,monospace;text-transform:lowercase;
+  box-shadow:0 2px 0 rgba(0,0,0,.45);transition:background .08s,border-color .08s,transform .08s
+}
+.tk-key.down{background:rgba(57,255,20,.28);border-color:var(--lime);transform:translateY(1px);box-shadow:0 0 12px rgba(57,255,20,.4)}
+.tk-back{flex-grow:1.5;max-width:66px;color:var(--pink);font-size:1.2rem}
+@media (max-height:700px){ .tk-key{height:40px} }
+
+.cmd-lbl{
+  position:absolute;left:0;top:0;padding:2px 8px;border-radius:5px;white-space:nowrap;pointer-events:none;
+  font:700 15px ui-monospace,Consolas,Menlo,monospace;color:#eaf6ff;
+  background:rgba(4,4,14,.74);border:1px solid rgba(255,255,255,.16);will-change:transform
+}
+.cmd-lbl b{color:#00f5ff;text-shadow:0 0 8px rgba(0,245,255,.7)}
+.cmd-lbl.lock{border-color:#00f5ff;background:rgba(0,30,40,.86);box-shadow:0 0 12px rgba(0,245,255,.45)}
+.cmd-lbl.boss{font-size:18px;border-color:rgba(255,176,0,.65)}
