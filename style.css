@@ -5498,3 +5498,119 @@ body.mode-3d .lab-modal{
 .cmd-lbl b{color:#00f5ff;text-shadow:0 0 8px rgba(0,245,255,.7)}
 .cmd-lbl.lock{border-color:#00f5ff;background:rgba(0,30,40,.86);box-shadow:0 0 12px rgba(0,245,255,.45)}
 .cmd-lbl.boss{font-size:18px;border-color:rgba(255,176,0,.65)}
+
+/* ══════════════════════════════════════════════════════════════════════
+   § 28 · v55 — 📲 INSTALL · 💾 SAVE WITH GOOGLE
+   ══════════════════════════════════════════════════════════════════════ */
+/* Google's own dark button: a near-black face, a grey hairline, the four-colour
+   G at 20px and the label beside it. Case and letter-spacing follow the arcade. */
+.btn-google{display:flex;align-items:center;justify-content:center;gap:12px;
+  background:#131314;color:#e3e3e3;border:1px solid #8e918f;letter-spacing:.06em}
+.btn-google .g-logo{width:20px;height:20px;flex:none;display:block}
+.btn-google:hover:not(:disabled){background:#1f2023;border-color:#c4c7c5;transform:translateY(-2px);box-shadow:0 0 26px rgba(255,255,255,.08)}
+.btn-google:active:not(:disabled){transform:scale(.97)}
+.btn-google:disabled{opacity:.55;cursor:progress;transform:none;box-shadow:none}
+#btn-google{margin-top:12px}
+.up-or{margin:14px 0 12px}
+body.mode-3d .btn-google{--wall:#3a3d44;--wallb:#17181b}
+
+/* One line on the results card: an icon, a sentence, the action and a ✕. */
+.res-nudge{display:flex;align-items:center;gap:10px;margin:10px 0 2px;padding:10px 10px 10px 14px;
+  border:1px solid rgba(0,245,255,.32);border-radius:var(--r);background:rgba(0,245,255,.05);text-align:left}
+.res-nudge[hidden]{display:none}
+.res-nudge.save{border-color:rgba(255,215,0,.42);background:rgba(255,215,0,.06)}
+.res-nudge .rn-ico{font-size:1.35rem;flex:none;line-height:1}
+.res-nudge .rn-txt{flex:1;min-width:0;font-size:.86rem;line-height:1.35;color:var(--dim)}
+.res-nudge .rn-txt b{color:var(--text);font-weight:700}
+.res-nudge .rn-go{flex:none;padding:10px 14px;font-size:.62rem;white-space:nowrap}
+.res-nudge .rn-go .g-logo{width:16px;height:16px}
+.res-nudge .rn-x{flex:none;width:34px;height:34px;padding:0;border-radius:8px;font-size:.8rem;line-height:1;
+  background:transparent;color:var(--dimmer);border:1px solid var(--border)}
+.res-nudge .rn-x:hover{color:var(--text);border-color:var(--border2)}
+@media (max-width:560px){
+  .res-nudge{flex-wrap:wrap;padding:10px 12px}
+  .res-nudge .rn-txt{flex:1 1 calc(100% - 80px)}
+  .res-nudge .rn-go{flex:1 1 auto}
+}
+body.mode-3d .res-nudge .rn-x{--wall:#1b2237;--wallb:#0a0e1a}
+
+/* The iPhone / iPad how-to: numbered steps with the icon Safari actually shows. */
+.inst-tint .fb-modal{border-color:rgba(0,245,255,.42);box-shadow:0 0 70px rgba(0,245,255,.13),inset 0 0 0 1px rgba(255,255,255,.03)}
+.inst-steps{list-style:none;margin:6px 0 16px;padding:0;counter-reset:inst}
+.inst-steps li{counter-increment:inst;display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--border);font-size:.95rem;line-height:1.4;color:var(--dim)}
+.inst-steps li:first-child{border-top:none}
+.inst-steps li::before{content:counter(inst);flex:none;width:26px;height:26px;border-radius:50%;display:grid;place-items:center;
+  font-family:var(--fd);font-size:.62rem;font-weight:700;color:#01131a;background:var(--cyan)}
+.inst-steps b{color:var(--text)}
+.inst-glyph{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:8px;border:1px solid var(--border2);
+  background:var(--s2);color:var(--cyan);vertical-align:middle;margin:0 2px}
+.inst-glyph svg{width:18px;height:18px}
+.inst-note{font-size:.8rem;color:var(--dimmer);line-height:1.45;margin-bottom:14px}
+
+/* The callsign dialog: a new Google account names itself before the hub. */
+.cs-modal{max-width:420px}
+.cs-cancel{margin-top:10px}
+
+/* ══════════════════════════════════════════════════════════════════════
+   § 29 · v55 — 🌐 LAB GALLERY
+   ══════════════════════════════════════════════════════════════════════ */
+.lab-switch{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:4px;margin:0 0 14px;border:1px solid var(--border);border-radius:12px;background:rgba(0,0,0,.25)}
+.lab-sw{font-family:var(--fd);font-size:.62rem;font-weight:700;letter-spacing:.12em;padding:10px 8px;border-radius:9px;border:1px solid transparent;
+  background:transparent;color:var(--dim);cursor:pointer;transition:background .15s ease,color .15s ease,border-color .15s ease}
+.lab-sw:hover{color:var(--text);background:var(--s1)}
+.lab-sw.on{color:#01131a;background:linear-gradient(90deg,var(--cyan),#8b7bff);border-color:rgba(255,255,255,.25)}
+body.mode-3d .lab-sw.on{box-shadow:0 1px 0 #0a8f9a,0 2px 0 #0a8f9a,0 3px 0 #05545c,0 6px 10px -4px rgba(0,0,0,.8)}
+
+.gal-msg{text-align:center;padding:26px 10px 18px}
+.gal-msg-h{font-family:var(--fd);font-size:.78rem;font-weight:900;letter-spacing:.1em;color:var(--cyan);margin-bottom:10px}
+.gal-msg p{font-size:.9rem;line-height:1.5;color:var(--dim);margin-bottom:14px}
+
+.gal-lotd{border:1px solid rgba(255,215,0,.45);border-radius:14px;background:linear-gradient(160deg,rgba(255,215,0,.08),rgba(0,0,0,.2));padding:12px 12px 14px;margin-bottom:14px}
+.gal-lotd-h{font-family:var(--fd);font-size:.56rem;font-weight:900;letter-spacing:.18em;color:var(--gold);margin-bottom:10px;display:flex;justify-content:space-between;gap:8px}
+.gal-lotd-h span{color:var(--dimmer);font-weight:700;letter-spacing:.1em}
+.gal-lotd-in{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);gap:12px;align-items:center}
+.gal-lotd-prev .lab-grid{margin:0;max-height:180px;overflow:hidden}
+.gal-lotd-prev .lab-words-prev{max-height:150px;overflow:hidden}
+.gal-lotd-txt{display:flex;flex-direction:column;gap:3px;min-width:0}
+.gal-lotd-m{font-family:var(--fd);font-size:.5rem;letter-spacing:.14em;color:var(--dim)}
+.gal-lotd-txt b{font-family:var(--fd);font-size:.9rem;font-weight:900;letter-spacing:.06em;color:#fff;overflow-wrap:anywhere}
+.gal-lotd-txt em{font-style:normal;font-size:.85rem;color:var(--dim)}
+.gal-lotd-s{font-size:.8rem;color:var(--dimmer);margin:2px 0 6px}
+.gal-lotd-b{display:flex;gap:8px;flex-wrap:wrap}
+
+.gal-ctl{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.gal-sel{flex:1 1 220px;min-width:0;font-size:.82rem;padding:9px 10px}
+.gal-sort{display:flex;gap:4px;padding:3px;border:1px solid var(--border);border-radius:10px;flex:none}
+.gal-srt{font-family:var(--fd);font-size:.55rem;font-weight:700;letter-spacing:.1em;padding:8px 10px;border-radius:7px;border:none;background:transparent;color:var(--dim);cursor:pointer}
+.gal-srt.on{background:var(--s2);color:var(--text);box-shadow:inset 0 0 0 1px var(--border2)}
+
+.gal-list{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+.gal-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"em main st" "em acts acts";gap:4px 10px;align-items:center;
+  padding:10px 10px 10px 12px;border:1px solid var(--border);border-radius:12px;background:var(--s1)}
+.gal-row.flash{border-color:var(--cyan);box-shadow:0 0 0 1px rgba(0,245,255,.35),0 0 18px rgba(0,245,255,.18)}
+.gal-em{grid-area:em;font-size:1.5rem;line-height:1}
+.gal-main{grid-area:main;display:flex;flex-direction:column;min-width:0}
+.gal-main b{font-family:var(--fd);font-size:.66rem;font-weight:900;letter-spacing:.08em;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gal-main em{font-style:normal;font-size:.78rem;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gal-chip{align-self:flex-start;margin-top:4px;font-family:var(--fd);font-size:.44rem;letter-spacing:.12em;color:var(--pink);border:1px solid currentColor;border-radius:20px;padding:2px 8px}
+.gal-st{grid-area:st;font-family:var(--fd);font-size:.56rem;letter-spacing:.06em;color:var(--dim);white-space:nowrap}
+.gal-lk.on{color:var(--pink)}
+.gal-acts{grid-area:acts;display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+.gal-acts .btn{padding:7px 12px}
+.gal-like.on,#lab-res-like.on{color:var(--pink);border-color:rgba(255,0,144,.55);background:rgba(255,0,144,.1)}
+.gal-empty{text-align:center;font-size:.9rem;line-height:1.5;color:var(--dim);padding:22px 8px}
+.gal-empty b{color:var(--text)}
+.gal-more{margin-bottom:10px}
+@media (max-width:560px){
+  .gal-lotd-in{grid-template-columns:1fr}
+  .gal-lotd-prev .lab-grid{max-height:140px}
+}
+
+/* The hub banner's featured level: a slim second line under the banner text. */
+.lab-lotd{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;margin-top:8px;padding:7px 10px;border-radius:9px;cursor:pointer;text-align:left;
+  border:1px solid rgba(255,215,0,.4);background:rgba(255,215,0,.07);color:var(--text);font-family:var(--fb);max-width:100%}
+.lab-lotd[hidden]{display:none}
+.lab-lotd:hover{background:rgba(255,215,0,.13);border-color:var(--gold)}
+.lab-lotd-k{font-family:var(--fd);font-size:.5rem;font-weight:900;letter-spacing:.14em;color:var(--gold)}
+.lab-lotd-n{font-family:var(--fd);font-size:.6rem;font-weight:700;letter-spacing:.06em;color:#fff}
+.lab-lotd-b{font-size:.8rem;color:var(--dim)}

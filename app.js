@@ -1391,6 +1391,8 @@ const META = {
   muncher:{ name: 'DATA MUNCHER',  emoji: '👾', maxPts: 1300 },
   // ── § 26 · v53 — the one mission that is SPELLED ─────────────────────
   cmdline:{ name: 'COMMAND LINE',  emoji: '⌨️', maxPts: 1200 },
+  // v55 (§ 30): GAME 31.
+  pinball:{ name: 'NEON PINBALL',  emoji: '🎱', maxPts: 1200 },
   // Not a mission — the chained run. maxPts is the ceiling of the five biggest
   // caps, which is what clamps the combined award. DERIVED, not written down:
   // it was left at 6200 when Pulse Sync and Core Merge widened the cap table,
@@ -1403,7 +1405,7 @@ const META = {
 };
 // The ISO week a mission added after launch joins the SHARED weekly rotations
 // (the Weekly Anomaly). Anything not named here has always been in them.
-const MISSION_WEEK = { lightcycle: '2026-W40', stack: '2026-W40', muncher: '2026-W40', cmdline: '2026-W41' };
+const MISSION_WEEK = { lightcycle: '2026-W40', stack: '2026-W40', muncher: '2026-W40', cmdline: '2026-W41', pinball: '2026-W42' };
 
 // One place that knows how to start each mission. prepGame() runs them behind a
 // countdown; a Network Arena score race runs the very same function behind a
@@ -1419,7 +1421,7 @@ const SOLO_START = {
   cutter: startIceCutter, sorter: startPacketSort, trace: startSignalTrace,
   defrag: startDefrag,    coolant: startCoolant,
   lightcycle: startLightCycle, stack: startServerStack, muncher: startDataMuncher,
-  cmdline: startCommandLine
+  cmdline: startCommandLine, pinball: startPinball
 };
 
 // ══════════════════════════════════════════════
@@ -2555,6 +2557,12 @@ async function loadUser(uid){
     if(!data){ showAuthOfflineNotice(); return; }
   }
 
+  // 🆔 A Google account signing in for the first time has no profile yet (a
+  // tab closed on the callsign dialog comes back here too): it names itself
+  // before the hub opens, instead of landing as "Player" (§ 28).
+  if(live && !existed && typeof gNeedsCallsign === 'function' && gNeedsCallsign()){
+    if(typeof gOpenCallsign === 'function'){ gOpenCallsign(uid); return; }
+  }
   user = { uid, ...ensureUserDefaults(data) };
   // Anonymous sessions are the source of truth for guest status, not the DB flag.
   user.isGuest = !!(auth && auth.currentUser && auth.currentUser.isAnonymous);
@@ -2747,6 +2755,8 @@ function enterHub(){
   catch(e){ console.warn('Challenge link check failed:', e); }
   // 🧱 A wall that arrived by link, once nothing else is open (§ 25).
   try{ if(typeof maybeLabInvite === 'function') setTimeout(() => maybeLabInvite(0), 900); }catch(e){}
+  // 🌐 …and the gallery's Level of the Day on its banner (§ 29).
+  try{ if(typeof galHubPaint === 'function') setTimeout(() => galHubPaint(), 1200); }catch(e){}
   // 📊 Devices per day, and the challenge-link funnel's first step (§ 23).
   try{
     if(typeof statsDay === 'function') statsDay();
@@ -2846,7 +2856,7 @@ function resetGameStage(gid){
   // build is pure DOM — so the landscape layout that parks the pad beside the
   // board has to know about them too.
   const canvasGame = ['nebula','tetris','dodge','pong','snake','flappy','breaker','arena','runner','meteor','battlebots','freq',
-                      'rhythm','merge','uplink','cutter','sorter','trace','defrag','coolant','lightcycle','stack','muncher','cmdline'].includes(gid)
+                      'rhythm','merge','uplink','cutter','sorter','trace','defrag','coolant','lightcycle','stack','muncher','cmdline','pinball'].includes(gid)
                   || !!(window.PI3D && PI3D.has(gid));
   document.getElementById('game-screen').classList.toggle('canvas-game', canvasGame);
   // Whatever the last round left up comes down here, before the next one
@@ -3639,6 +3649,9 @@ function showResultsCard(gid,pts,bd,opts){
     document.getElementById('h-credits').textContent=`💎 ${(user?.credits||0).toLocaleString()} CR`;
     enterHub();
   };
+  // 💾 📲 One quiet line under the two exits: keep your guest progress with
+  // Google, or install the arcade (§ 28).
+  try{ if(typeof resNudgePaint === 'function') resNudgePaint(gid, finalPts, opts); }catch(e){ console.warn('Results nudge failed:', e); }
   // 📖 LAST, after both buttons are wired: a chapter's card swaps them for
   // "Next Chapter" / "Campaign" and hands the borrowed stability tier back. This
   // function must not return early above this line, or a chapter would never
@@ -4671,7 +4684,7 @@ function announceStreak(count, bonus){
 // not for them.
 const MISSION_CLEARANCE = {
   // 1 — one rule each, readable in a single sentence.
-  click: 1, reaction: 1, memory: 1, math: 1, dodge: 1, nebula: 1, stack: 1, cmdline: 1,
+  click: 1, reaction: 1, memory: 1, math: 1, dodge: 1, nebula: 1, stack: 1, cmdline: 1, pinball: 1,
   // 2 — one rule plus a control scheme to learn.
   pong: 2, snake: 2, flappy: 2, coolant: 2, muncher: 2,
   // 3 — a board that has state you have to plan against.
@@ -17567,6 +17580,8 @@ async function sendFeedback(payload){
     const email = emailEl.value.trim();
     const pass  = passEl.value;
 
+    // Only a name typed: point at the one-tap way rather than at two empty fields (§ 28).
+    if(name && !email && !pass && googleEl){ snd('error'); errEl.textContent='Add an email and a password — or tap Save with Google above.'; return; }
     if(!name || !email || !pass){ snd('error'); errEl.textContent='Fields cannot remain unassigned.'; return; }
     if(!/^[a-zA-Z0-9_-]{2,20}$/.test(name)){ snd('error'); errEl.textContent='Format error inside username syntax.'; return; }
     if(pass.length < 6){ snd('error'); errEl.textContent='Minimum signature length unfulfilled.'; return; }
@@ -17607,6 +17622,7 @@ async function sendFeedback(payload){
       ], ()=>{ closeUpgrade(); enterHub(); });
 
       toast(`🔒 Account saved — welcome, ${name}!`, 3500);
+      try{ if(typeof statsEvent === 'function') statsEvent('_save_e'); }catch(e){}
       loadLeaderboard();
     }catch(e){
       console.error('Account upgrade failed:', e);
@@ -17617,6 +17633,73 @@ async function sendFeedback(payload){
       submitEl.textContent = '🔒 Lock In Account';
     }
   }
+
+  // 💾 SAVE WITH GOOGLE (§ 28). linkWithPopup, like linkWithCredential above,
+  // keeps the SAME uid, so nothing under players/<uid> moves. Called straight
+  // from the click: an await in front of the popup can cost the browser's
+  // permission to open it.
+  const googleEl = document.getElementById('up-google');
+  const googleHTML = googleEl ? googleEl.innerHTML : '';
+  async function upgradeGoogle(){
+    if(saving || !googleEl) return;
+    const name = nameEl.value.trim();
+    if(!name){ snd('error'); errEl.textContent='Pick a username first — it goes on the leaderboard.'; nameEl.focus(); return; }
+    if(!/^[a-zA-Z0-9_-]{2,20}$/.test(name)){ snd('error'); errEl.textContent='Format error inside username syntax.'; nameEl.focus(); return; }
+    if(!auth || !auth.currentUser || !auth.currentUser.isAnonymous){ snd('error'); errEl.textContent='No guest session to upgrade.'; return; }
+    if(typeof gInApp === 'function' && gInApp()){ snd('error'); errEl.textContent = G_INAPP_MSG; return; }
+    saving = true;
+    errEl.textContent = '';
+    googleEl.disabled = true;
+    let popup;
+    try{
+      popup = auth.currentUser.linkWithPopup(gProvider());
+      googleEl.innerHTML = '<span>⏳ Waiting for Google…</span>';
+      await popup;
+      const uid = auth.currentUser.uid;
+      await db.ref('players/' + uid).update({
+        username:   name,
+        isGuest:    false,
+        upgradedAt: firebase.database.ServerValue.TIMESTAMP
+      });
+      user.username = name;
+      user.isGuest  = false;
+      saving = false;
+      body.style.display='none';
+      success.classList.add('show');
+      snd('victory');
+      const mail = auth.currentUser.email;
+      typeTerm([
+        { text:'> binding google identity to node…' },
+        { text:`> handle registered: ${name}` },
+        ...(mail ? [{ text:`> sign in anywhere as ${mail}` }] : []),
+        { text:'> ACCOUNT SECURED — PROGRESS PRESERVED', ok:true },
+        { text:'> welcome to the grid, operative.' }
+      ], ()=>{ closeUpgrade(); enterHub(); });
+      toast(`🔒 Saved with Google — welcome, ${name}!`, 3500);
+      try{ if(typeof statsEvent === 'function') statsEvent('_save_g'); }catch(e){}
+      loadLeaderboard();
+    }catch(e){
+      saving = false;
+      console.warn('Google save failed:', e);
+      if(e && e.code === 'auth/credential-already-in-use'){
+        // This Google account is already a player. Say so, and offer the switch.
+        snd('error');
+        errEl.textContent = 'That Google account already has its own Point Invaders profile. ';
+        const sw = document.createElement('button');
+        sw.type = 'button'; sw.className = 'btn btn-secondary btn-sm up-switch'; sw.textContent = 'Switch to it';
+        sw.onclick = () => { if(typeof gSwitchAccounts === 'function') gSwitchAccounts(e); };
+        errEl.appendChild(sw);
+      }else if(typeof gShowErr === 'function'){
+        gShowErr(errEl, e);
+      }else{
+        showAuthErr(errEl, e, 'google');
+      }
+    }finally{
+      googleEl.disabled = false;
+      googleEl.innerHTML = googleHTML;
+    }
+  }
+  if(googleEl) googleEl.onclick = upgradeGoogle;
 
   submitEl.onclick = upgrade;
   window.openSaveAccount = openUpgrade;
@@ -17854,6 +17937,11 @@ const MP_MODES = {
   cmdrace: {
     gid:'cmdline', icon:'⌨️', name:'KEYSTROKE RACE', seconds:100, kind:'race',
     desc:'Two terminals, the same stream of commands. Type cleaner and faster than your rival before the clock runs out.',
+    meta:'UP TO 1200 PTS · HIGH SCORE WINS'
+  },
+  pinrace: {
+    gid:'pinball', icon:'🎱', name:'FLIPPER RACE', seconds:120, kind:'race',
+    desc:'Two tables, three balls each. Light N·E·O·N, crack the core and out-score your rival before the clock — or your last ball — runs out.',
     meta:'UP TO 1200 PTS · HIGH SCORE WINS'
   }
 };
@@ -20416,6 +20504,7 @@ const VS_BOT_PROFILE = {
   stack:      { q:20,  dur:[25,75],  step:20, band:[200, 900]  },   // 20 a floor, perfects on top
   muncher:    { q:5,   dur:[45,92],  step:5,  band:[300, 1150] },   // 5 a bit, daemons on top
   cmdline:    { q:3,   dur:[80,92],  step:3,  band:[260, 1120] },   // ~3 a letter, words on top
+  pinball:    { q:4,   dur:[60,112], step:4,  band:[240, 1080] },   // bumpers and lanes, multiball on top
   nebula:     { q:20,  dur:[55,110], step:20, band:[140, 940]  },   // 20 an alien
   tetris:     { q:30,  dur:[60,140], step:10, band:[70, 1120]  },   // 10/30/70/150 a clear
   memory:     { q:75,  dur:[16,24],  step:75, band:[300, 600]  },   // 75 a pair, 8 pairs, 25s
@@ -38894,6 +38983,7 @@ const MISSION_HOW = {
   stack:   'Tap to drop the sliding slab onto the tower. Whatever hangs over the edge is cut off; a perfect drop cuts nothing, and three in a row grows it back. Miss the tower and it is over.',
   muncher: 'Eat every data bit in the maze while four security daemons hunt you. Eat a power core and, for a few seconds, they run from you — and you can eat them.',
   cmdline: 'Viruses fall toward your shell, each carrying a command. Type a word to delete its virus — the first letter locks on. A typo breaks your clean run; a virus that lands costs integrity.',
+  pinball: 'Hold LAUNCH to pull the plunger, then keep the ball alive with the two flippers. Bumpers, targets and the N·E·O·N lanes score — light all four letters to raise the multiplier.',
 };
 
 // ══════════════════════════════════════════════
@@ -38969,6 +39059,8 @@ const MISSION_KEYS = {
                 keys:  "SPACE, ENTER or ↓ to drop the slab" },
   cmdline:    { touch: "Tap the letters on the keypad under the board · ⌫ lets go of a word",
                 keys:  "Just type · the first letter locks on · BACKSPACE or ESC lets go" },
+  pinball:    { touch: "Tap to launch · hold the left or right half of the table (or ◀ ▶) to flip",
+                keys:  "← / Z / A flips left · → / M / D flips right · hold SPACE or ↓ to pull the plunger" },
   muncher:    { touch: "Swipe the way you want to go · or tap the arrow pad",
                 keys:  "ARROW KEYS or WASD · press a turn early and it happens at the next corner" },
 };
@@ -39299,6 +39391,18 @@ const MISSION_BRIEF = {
       "Accuracy beats speed. A typo breaks your clean run, and the multiplier climbs every four clean words — up to ×2.",
       "The gold HEAVY PROCESS is a long word worth 40 extra, and costs two integrity if it lands. Start it early.",
     ] },
+  pinball: {
+    steps: [
+      "The ball waits on the plunger in the lane on the right. Hold LAUNCH (SPACE) to pull it back, let go to fire — a longer pull sends it harder.",
+      "Keep it alive with the two flippers at the bottom. The first few seconds of each ball are covered by SHOOT AGAIN; after that a ball down the middle or an outlane is gone.",
+      "Bumpers, slingshots, targets and stars all score. Roll through the four N·E·O·N lanes at the top to light every letter: that raises the multiplier (up to ×4) for everything after it.",
+      "Five shots on the green reactor core start MULTIBALL — a second ball, and every core hit is a JACKPOT. Three balls and a clock: the run ends when either runs out.",
+    ],
+    tips: [
+      "Hold a flipper up to catch the ball and stop it, then aim: the further along the flipper it sits, the sharper the angle.",
+      "Pressing a flipper also shifts the lit N·E·O·N letters. Line an unlit letter up with the lane the ball is heading for.",
+      "Clear the three drop targets on the right to relight both KICKBACKS — the green arrows that throw an outlane ball back into play.",
+    ] },
   muncher: {
     steps: [
       "You are the muncher at the bottom of the maze. Every data bit you pass over is eaten: 5 points each.",
@@ -39502,9 +39606,9 @@ document.addEventListener('keydown', e => {
 // hub), not a game.
 const ONBOARD_STEPS = [
   { icon:'🎮', title:'WELCOME TO THE GRID',
-    body:'Thirty missions, a live leaderboard, and a market that sells the colour of your own dot. Thirty seconds and you will have played one.' },
+    body:'Thirty-one missions, a live leaderboard, and a market that sells the colour of your own dot. Thirty seconds and you will have played one.' },
   { icon:'⚡', title:'PICK A MISSION',
-    body:'Every card in the grid is a round. Tap the ⓘ on any card to read its rules without starting it — that badge is on all thirty, forever.' },
+    body:'Every card in the grid is a round. Tap the ⓘ on any card to read its rules without starting it — that badge is on all thirty-one, forever.' },
   { icon:'⚙️', title:'SET THE STABILITY',
     body:'The dial at the top scales the whole arcade: OVERCLOCK and MELTDOWN make every mission faster and shorter, and pay ×1.5 and ×2 for it.' },
   { icon:'🎯', title:'LET US RUN ONE',
@@ -40245,15 +40349,15 @@ function paintSettings(){
       ' and is not on the leaderboard yet. Finished runs are banked here until you save.');
     list = ['Connect to wifi',
             'Press 💾 Save Progress Online — banked runs replay into a real profile',
-            'Then lock it to an email from here, so you can sign in on any device'];
+            'Then save it with Google or an email from here, so you can sign in on any device'];
   }else if(guest){
     tone = ['warn', 'GUEST · NOT SAVED'];
     note.append('Guest progress is tied to this browser. Clearing site data — or pressing Exit — deletes this profile and its ',
       bold((user.totalPoints || 0).toLocaleString() + ' PTS'), ' for good.');
     if(offlineMode) note.append(' Saving needs a connection, so reconnect first.');
     list = ['Pick a username — 2–20 letters, numbers, _ or -',
-            'Add an email and a password of 6+ characters',
-            'Lock it in — same profile, so every PTS, CR and cosmetic carries over'];
+            'Tap Save with Google — or add an email and a password of 6+ characters',
+            'Same profile, so every PTS, CR and cosmetic carries over'];
   }else{
     tone = ['ok', 'SECURED'];
     note.append('Signed in as ', bold(user.username || 'Player'),
@@ -40262,6 +40366,7 @@ function paintSettings(){
   }
   badge.className = 'set-state ' + tone[0];
   badge.textContent = tone[1];
+  try{ if(typeof instPaint === 'function') instPaint(); }catch(e){}
   steps.textContent = '';
   list.forEach(t => { const li = document.createElement('li'); li.textContent = t; steps.appendChild(li); });
 }
@@ -40536,7 +40641,8 @@ const MISSION_KINDS = {
   rhythm:['reflex'], merge:['puzzle', 'strategy'], uplink:['strategy'],
   cutter:['patience'], sorter:['patience'], trace:['patience', 'puzzle'],
   defrag:['patience', 'puzzle'], coolant:['patience'],
-  lightcycle:['reflex', 'strategy'], stack:['reflex'], muncher:['reflex', 'strategy'], cmdline:['reflex']
+  lightcycle:['reflex', 'strategy'], stack:['reflex'], muncher:['reflex', 'strategy'], cmdline:['reflex'],
+  pinball:['reflex']
 };
 const GRID_FILTERS = [
   { id:'all',      label:'ALL' },
@@ -43460,7 +43566,7 @@ var party = null;             // var, not let: partyRunActive() is asked from co
 const PARTY_MIN = 2, PARTY_MAX = 6, PARTY_ROUNDS = 3;
 const PARTY_COLORS = ['#00f5ff', '#ff0090', '#39ff14', '#ffd700', '#a855f7', '#ff6600'];
 const PARTY_EXCLUDE = ['arena', 'battlebots'];   // no finish line / a long economy round
-const PARTY_SAME_BOARD = ['math', 'path', 'trace', 'defrag', 'cutter', 'sorter', 'coolant', 'memory', 'cmdline'];
+const PARTY_SAME_BOARD = ['math', 'path', 'trace', 'defrag', 'cutter', 'sorter', 'coolant', 'memory', 'cmdline', 'pinball'];
 const LS_PARTY = 'pi_party_names';
 
 function partyRunActive(){ return !!(party && party.stage === 'play'); }
@@ -44818,6 +44924,11 @@ function stSummary(data, range){
     finish: stPct(done, done + quit), avg: (done + quit) > 0 ? Math.round(secs / (done + quit)) : null,
     lkArrive: sum('_lk_arrive'), lkRace: sum('_lk_race'), share: sum('_share') + sum('_share_lk'), shareLk: sum('_share_lk'),
     wallShare: sum('_share_wall'), wallArrive: sum('_wall_arrive'), wallPlay: sum('_wall_play'),
+    // v55 (§ 28 / § 29): the two ways back, and the gallery.
+    instOffer: sum('_inst_offer'), instTap: sum('_inst_tap'), instOk: sum('_inst_ok'), instIos: sum('_inst_ios'),
+    saveOffer: sum('_save_offer'), saveTap: sum('_save_tap'), saveG: sum('_save_g'), saveE: sum('_save_e'),
+    loginG: sum('_login_g'), newG: sum('_new_g'),
+    galOpen: sum('_gal_open'), galPub: sum('_gal_pub'), galPlay: sum('_gal_play') + sum('_gal_lotd'), galLotd: sum('_gal_lotd'), galLike: sum('_gal_like'),
     empty: !Object.keys(D).length && !Object.keys(M).length
   };
 }
@@ -44866,6 +44977,45 @@ function stChart(days, width){
   return `<svg class="st-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Plays per day">${g}</svg>`;
 }
 
+// 📲 💾 🌐 v55: installs, accounts, the gallery (§ 28 / § 29).
+function stGrowthHTML(S, span, pct){
+  const row = (big, label, sub) => `<div class="st-fun"><div><strong>${stFmt(big)}</strong> ${label}</div>${sub ? `<div>${sub}</div>` : ''}</div>`;
+  return `<div class="st-cols">` +
+      `<div class="st-sec"><div class="st-h">Coming back <span>${span}</span></div>` +
+        row(S.instOk, 'installs to a home screen', `${stFmt(S.instOffer)} offered on a results card · ${stFmt(S.instTap)} install taps · ${stFmt(S.instIos)} iPhone how-tos opened`) +
+        row(S.saveG + S.saveE, 'guest profiles saved', `${stFmt(S.saveG)} with Google · ${stFmt(S.saveE)} with email · ${stFmt(S.saveOffer)} nudges shown, ${stFmt(S.saveTap)} tapped`) +
+        row(S.loginG, 'Google sign-ins', `${stFmt(S.newG)} of them brand-new accounts`) +
+      `</div>` +
+      `<div class="st-sec"><div class="st-h">Lab Gallery <span>${span}</span></div>` +
+        row(S.galPub, 'levels published', `${stFmt(S.galOpen)} gallery visits`) +
+        row(S.galPlay, 'gallery plays', `${stFmt(S.galLotd)} of them the Level of the Day from the hub · ${stFmt(S.galLike)} likes`) +
+      `</div>` +
+    `</div>`;
+}
+// Which of the Console rules this build asks for are in place. `stats` is
+// known the moment this panel reads; `lab` (the gallery) is probed once.
+var stLabRule = null;     // null unknown · true in place · false refused
+function stRulesHTML(){
+  if(stLabRule === null && typeof db === 'object' && db){
+    stLabRule = 'probing';
+    try{
+      withTimeout(db.ref('lab/d').limitToLast(1).once('value'), NET_WAIT)
+        .then(() => { stLabRule = true; }, e => { stLabRule = /PERMISSION|permission/.test(String(e && (e.code || e.message))) ? false : null; })
+        .finally(() => { if(document.getElementById('stats-overlay')?.classList.contains('show')) stDashRender(); });
+    }catch(e){ stLabRule = null; }
+  }
+  const state = v => v === true ? '<span class="st-chip">✔ IN PLACE</span>' : v === false ? '<span class="st-chip bad">✖ NOT ADDED</span>' : '<span class="st-chip warn">… CHECKING</span>';
+  const lab = typeof GAL_RULE === 'string' ? GAL_RULE : '';
+  return `<div class="st-sec"><div class="st-h">Console rules <span>Realtime Database → Rules</span></div>` +
+      `<div class="st-fun"><div><strong>stats</strong> — this panel ${state(true)}</div></div>` +
+      `<div class="st-fun"><div><strong>lab</strong> — the Brick Lab gallery ${state(stLabRule === 'probing' ? null : stLabRule)}</div>` +
+        (stLabRule === false ? `<div>Paste this inside <code>"rules"</code> next to <code>"players"</code>, press Publish, reload.</div>` +
+           `<pre class="st-rule" id="st-lab-rule">${esc(lab)}</pre>` +
+           `<button class="btn btn-secondary btn-sm" id="st-lab-copy" type="button">📋 Copy the lab rule</button>` : '') +
+      `</div>` +
+    `</div>`;
+}
+
 function stDashRender(){
   const body = document.getElementById('st-body');
   if(!body) return;
@@ -44879,9 +45029,20 @@ function stDashRender(){
         (denied
           ? `<p>The counters need one rule before they can be stored or read. In the Firebase Console open <strong>Realtime Database → Rules</strong>, paste this inside <code>"rules"</code> next to <code>"players"</code>, press <strong>Publish</strong>, then reload this page.</p>` +
             `<pre class="st-rule" id="st-rule">${esc(ST_RULE)}</pre>` +
-            `<button class="btn btn-secondary btn-sm" id="st-copy" type="button">📋 Copy the rule</button>`
+            `<button class="btn btn-secondary btn-sm" id="st-copy" type="button">📋 Copy the rule</button>` +
+            (typeof GAL_RULE === 'string'
+              ? `<p style="margin-top:14px">The 🌐 Brick Lab gallery needs one more, pasted the same way:</p>` +
+                `<pre class="st-rule" id="st-lab-rule">${esc(GAL_RULE)}</pre>` +
+                `<button class="btn btn-secondary btn-sm" id="st-lab-copy" type="button">📋 Copy the lab rule</button>`
+              : '')
           : `<p>${esc(stDash.err)} — check the connection and reopen the panel.</p>`) +
       `</div>`;
+    const lc0 = document.getElementById('st-lab-copy');
+    if(lc0) lc0.onclick = async () => {
+      try{ await navigator.clipboard.writeText(GAL_RULE); lc0.textContent = '✔ Copied'; }
+      catch(e){ const r = document.createRange(); r.selectNodeContents(document.getElementById('st-lab-rule'));
+                const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); lc0.textContent = 'Selected — copy it by hand'; }
+    };
     const cp = document.getElementById('st-copy');
     if(cp) cp.onclick = async () => {
       try{ await navigator.clipboard.writeText(ST_RULE); cp.textContent = '✔ Copied'; }
@@ -44939,7 +45100,15 @@ function stDashRender(){
         `<div>${stFmt(S.wallArrive)} arrived by link · ${stFmt(S.wallPlay)} played</div></div>` +
       `</div>` +
     `</div>` +
+    stGrowthHTML(S, span, pct) +
+    stRulesHTML() +
     `<div class="st-foot">Anonymous counters only: no names, no accounts, no device ids. Local play and offline rounds are not counted.</div>`;
+  const lc = document.getElementById('st-lab-copy');
+  if(lc) lc.onclick = async () => {
+    try{ await navigator.clipboard.writeText(GAL_RULE); lc.textContent = '✔ Copied'; }
+    catch(e){ const r = document.createRange(); r.selectNodeContents(document.getElementById('st-lab-rule'));
+              const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); lc.textContent = 'Selected — copy it by hand'; }
+  };
   // Hover: one tooltip for the chart, fed from the bar under the pointer.
   const wrap = document.getElementById('st-chart-wrap'), tip = document.getElementById('st-tip');
   if(wrap && wrap.clientWidth){
@@ -45208,7 +45377,8 @@ try{
 //  § 25 · v53 → v54 — 🧱 BRICK LAB · a level for every mission
 // ══════════════════════════════════════════════════════════════════════
 // v53 shipped the lab for one mission: design an ICE BREAKER wall, play it,
-// and hand it to someone as a code or a link. v54 opens it to all thirty.
+// and hand it to someone as a code or a link. v54 opens it to all thirty
+// (thirty-one since NEON PINBALL, v55 — § 25 is edited in place from v55 on).
 // Every mission has ONE thing that makes a round that round — a wall, a maze,
 // a course, a formation, a chart, a word list — and the lab lets the player
 // draw it. Three kinds of editor cover the lot:
@@ -45597,7 +45767,7 @@ function labCheck(d){
 }
 
 // ── PLAYING A DESIGN ───────────────────────────────────────────────────
-function labPlay(d){
+function labPlay(d, extra){
   const def = d && LAB_DEFS[d.gid];
   if(!user || !def || !SOLO_START[d.gid] || !META[d.gid]){ snd('deny'); return; }
   const chk = labCheck(d);
@@ -45610,7 +45780,7 @@ function labPlay(d){
   closeOverlay('lab-overlay');
   const gid = d.gid;
   const design = labNorm(d);
-  labRun = { gid, design, key: labKey(design),
+  labRun = { gid, design, key: labKey(design), gal: (extra && extra.gal) || null,
              wall: gid === 'breaker' ? { cells: design.cells.slice(), name: design.name || '', by: design.by || '',
                                          rows: LAB_ROWS, cols: LAB_COLS } : null };
   curGame = gid;
@@ -45652,7 +45822,7 @@ function labFinish(res){
   const before = labBestOf(run.key);
   if(res && res.pts > before) labSetBest(run.key, res.pts);
   labResult = res ? { pts: res.pts, bd: res.bd, best: Math.max(before, res.pts), isBest: res.pts > before && before > 0,
-                      first: before === 0 && res.pts > 0, design: run.design, wall: run.design } : null;
+                      first: before === 0 && res.pts > 0, design: run.design, wall: run.design, gal: run.gal || null } : null;
   labView = res ? 'result' : 'edit';
   if(res) snd(res.pts > before ? 'victory' : 'results');
   enterHub();
@@ -45780,6 +45950,9 @@ function renderLab(){
   const body = document.getElementById('lab-body');
   const sub = document.getElementById('lab-sub');
   if(!body) return;
+  // 🌐 The BUILD | GALLERY switch over every view (§ 29).
+  try{ if(typeof galSwitchPaint === 'function') galSwitchPaint(); }catch(e){}
+  if(labView === 'gallery' && typeof labRenderGallery === 'function') return labRenderGallery(body, sub);
   if(labView === 'missions') return labRenderMissions(body, sub);
   if(labView === 'result' && labResult) return labRenderResult(body, sub);
   if(labView === 'incoming' && labPending) return labRenderIncoming(body, sub);
@@ -45815,6 +45988,9 @@ function labRenderMissions(body, sub){
 
 function labRenderResult(body, sub){
   const R = labResult, d = R.design, def = LAB_DEFS[d.gid];
+  // 🌐 A gallery level (§ 29), or your own design that just scored (publishable).
+  const galIt = (R.gal && typeof GAL === 'object') ? GAL.byId[R.gal] || null : null;
+  const canPub = !R.gal && !d.by && R.pts > 0 && typeof galPublish === 'function';
   if(sub) sub.textContent = 'Practice run · nothing banked';
   body.innerHTML =
     `<div class="lab-res">` +
@@ -45831,12 +46007,23 @@ function labRenderResult(body, sub){
     `<div class="lab-note">Lab runs are practice: they pay no points, credits or XP and never touch your records or the leaderboard.</div>` +
     `<div class="lab-btns">` +
       `<button class="btn btn-primary" id="lab-again" type="button">▶ RUN IT AGAIN</button>` +
-      `<button class="btn btn-secondary" id="lab-share" type="button">🔗 SHARE THIS LEVEL</button>` +
+      (galIt
+        ? (galIt.mine ? '' : `<button class="btn btn-secondary${galIt.liked ? ' on' : ''}" id="lab-res-like" type="button">${galIt.liked ? '♥ LIKED' : '♥ LIKE THIS LEVEL'}</button>`) +
+          `<button class="btn btn-secondary" id="lab-res-gal" type="button">🌐 GALLERY</button>`
+        : `<button class="btn btn-secondary" id="lab-share" type="button">🔗 SHARE THIS LEVEL</button>` +
+          (canPub ? `<button class="btn btn-secondary" id="lab-res-pub" type="button">📤 PUBLISH</button>` : '')) +
       `<button class="btn btn-secondary" id="lab-edit" type="button">✏️ EDIT</button>` +
     `</div>` +
     `<div class="lab-out" id="lab-out"></div>`;
-  document.getElementById('lab-again').onclick = () => labPlay(d);
-  document.getElementById('lab-share').onclick = e => labShare(d, e.currentTarget);
+  document.getElementById('lab-again').onclick = () => labPlay(d, R.gal ? { gal: R.gal } : null);
+  const share = document.getElementById('lab-share');
+  if(share) share.onclick = e => labShare(d, e.currentTarget);
+  const like = document.getElementById('lab-res-like');
+  if(like) like.onclick = e => galLike(galIt, e.currentTarget);
+  const back = document.getElementById('lab-res-gal');
+  if(back) back.onclick = () => { snd('tab'); galOpen(); };
+  const rp = document.getElementById('lab-res-pub');
+  if(rp) rp.onclick = e => galPublish(Object.assign({}, d, { by: '' }), e.currentTarget);
   document.getElementById('lab-edit').onclick = () => {
     // Editing a design someone sent you works on a COPY in your own draft.
     labSetGid(d.gid);
@@ -45928,6 +46115,7 @@ function labRenderEditor(body, sub){
     `<div class="lab-btns">` +
       `<button class="btn btn-primary" id="lab-test" type="button">▶ TEST RUN</button>` +
       `<button class="btn btn-secondary" id="lab-share" type="button">🔗 SHARE ${esc(def.what || 'LEVEL')}</button>` +
+      (typeof galPublish === 'function' ? `<button class="btn btn-secondary" id="lab-publish" type="button">📤 PUBLISH</button>` : '') +
     `</div>` +
     `<div class="lab-load">` +
       `<input class="input" id="lab-code" placeholder="Paste a level code or link" autocomplete="off" spellcheck="false">` +
@@ -45981,10 +46169,11 @@ function labRefreshCounts(){
     box.className = 'lab-check' + (chk && chk.block ? ' block' : chk && chk.warn ? ' warn' : '');
     box.textContent = chk ? '⚠️ ' + (chk.block || chk.warn) : '';
   }
-  const t = document.getElementById('lab-test'), s = document.getElementById('lab-share');
+  const t = document.getElementById('lab-test'), s = document.getElementById('lab-share'), p = document.getElementById('lab-publish');
   const off = !!(chk && chk.block);
   if(t) t.disabled = off;
   if(s) s.disabled = off;
+  if(p) p.disabled = off;
 }
 
 function labWireLoad(){
@@ -46100,6 +46289,8 @@ function labWireEditor(){
   });
   document.getElementById('lab-test').onclick = () => labPlay(d);
   document.getElementById('lab-share').onclick = e => labShare(d, e.currentTarget);
+  const pub = document.getElementById('lab-publish');
+  if(pub) pub.onclick = e => galPublish(d, e.currentTarget);
   labWireLoad();
 }
 // A sequence redraws its whole grid (every step number can move).
@@ -47523,6 +47714,51 @@ function labWaves(){
   return waves.length ? waves : null;
 }
 
+// ── 🎱 NEON PINBALL — the table (v55) ─────────────────────────────────
+// The middle of the table, square by square: bumpers that kick, posts that
+// only deflect, standup targets (light them all for a bonus), one reactor
+// core (five shots and it throws a second ball) and rollover stars. The
+// frame — walls, lanes, slingshots, the drop targets on the right, the
+// flippers and the plunger — is the same on every table. The stock table is
+// the CLASSIC preset (PB_CLASSIC in § 30 must match it).
+labDef('pinball', {
+  what: 'TABLE', cols: 9, rows: 7, aspect: 0.88, count: 'PIECES', gap: 3,
+  tools: [ { id:1, name:'BUMPER', note:'kicks', color:'#ff2bd6', glyph:'◉' },
+           { id:2, name:'POST', note:'deflects', color:'#00f5ff', glyph:'•' },
+           { id:3, name:'TARGET', note:'light all', color:'#ffd700', glyph:'▬' },
+           { id:4, name:'CORE', note:'multiball', color:'#39ff14', glyph:'◆', one:true },
+           { id:5, name:'STAR', note:'rollover', color:'#b35cff', glyph:'★' } ],
+  chars: '.BPTCS',
+  sub: 'Build a NEON PINBALL table · bumpers, targets, a reactor core',
+  hint: 'Paint the middle of the table. BUMPERS kick the ball, POSTS only deflect it, TARGETS pay a bonus once every one is lit, the CORE starts multiball after five shots, STARS score as the ball rolls over them. Walls, lanes, flippers and plunger are the same on every table.',
+  starter: 'classic', min: 1, minMsg: 'Place at least one piece.',
+  presets: [
+    { id:'classic',   name:'CLASSIC',   rows: ['..S...S..', '...B.B...', '....B....', '.........', 'T.......T', '..P.C.P..', '.........'] },
+    { id:'gauntlet',  name:'GAUNTLET',  rows: ['.S.....S.', 'B.......B', '..P.P.P..', '.B.....B.', 'P.P...P.P', '...TCT...', '.........'] },
+    { id:'reactor',   name:'REACTOR',   rows: ['....S....', '..B...B..', '.........', 'B...C...B', '.........', '..B...B..', '....S....'] },
+    { id:'starfield', name:'STARFIELD', rows: ['S.S.S.S.S', '.........', '..B...B..', 'S...S...S', '....B....', 'T.S.S.S.T', '.........'] }
+  ],
+  check: d => {
+    const C = 9, N = 63;
+    let bumpers = 0;
+    for(let i = 0; i < N; i++){
+      if(d.cells[i] !== 1) continue;
+      bumpers++;
+      // Side by side, two bumpers touch: nothing passes between them and a
+      // ball caught there is thrown back and forth for ever.
+      if(i % C < C - 1 && d.cells[i + 1] === 1) return { block: 'Two bumpers side by side trap the ball — leave a square between them.' };
+    }
+    if(bumpers > 12) return { warn: 'More than a dozen bumpers turns the table into a blender — it plays, but loudly.' };
+    return null;
+  }
+});
+// The table's 63 cells (the codes above), or null outside a lab run — read
+// by BOTH pinball builds through pbRound().
+function labTable(){
+  const d = labDesign('pinball');
+  return d ? d.cells.slice() : null;
+}
+
 try{
   window.addEventListener('pointerup', labPaintUp);
   window.addEventListener('pointercancel', labPaintUp);
@@ -48595,3 +48831,2290 @@ try{
   // Probed once, shortly after load, so the first round already knows.
   setTimeout(() => { clipProbe().catch(() => {}); }, 1500);
 }catch(e){ console.warn('Clip recorder failed to wire:', e); }
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 28 · v55 — 📲 INSTALL · 💾 SAVE WITH GOOGLE
+// ══════════════════════════════════════════════════════════════════════
+// Two ways to bring a player back, from the 2026-09-30 look at the live
+// profiles: of the real sign-ups, only three had ever played two days running
+// and only three guests had ever saved their progress to an account.
+//
+// 📲 INSTALL. The arcade has always been installable (manifest + service
+// worker, see index.html), but nothing ever OFFERED it — Chrome shows a
+// mini-bar once, early, and then nothing. The browser's own prompt is caught
+// here (beforeinstallprompt) and held for a better moment: the ⚙️ Settings
+// panel always, and one line on the results card after the third round on
+// this device. iPhone and iPad have no prompt at all, so there the same
+// button opens a two-step "Share → Add to Home Screen" card instead.
+//
+// 💾 SAVE WITH GOOGLE. The Save Account modal asked for an email AND a
+// password; a guest now picks a username and taps Google. linkWithPopup keeps
+// the SAME uid, exactly like the email link, so every point stays where it
+// is. A Google account that is already a player is offered as a switch (the
+// guest cannot be merged into it — said so before anything is deleted). The
+// sign-in screen gets the matching "Continue with Google", and a Google
+// account signing in for the first time names itself in a small callsign
+// dialog before the hub opens.
+//
+// Popups, not redirects: the site lives on github.io and signs in through
+// neal-with-roblox.firebaseapp.com, and browsers that partition third-party
+// storage break signInWithRedirect across those two origins. A popup opened
+// straight from the click is not blocked. In-app browsers (Instagram,
+// Facebook, TikTok…) are refused by Google itself, so they are told to open
+// the page in a real browser instead of watching a popup fail.
+//
+// Two Console steps before Google works at all — the error text names both:
+// Authentication → Sign-in method → Google → Enable, and Authentication →
+// Settings → Authorized domains → add cat9748912-cpu.github.io.
+//
+// ⚠️ LOAD ORDER: hooked from showResultsCard, loadUser and paintSettings, all
+// earlier in the file — everything they reach is a var or a function
+// declaration (see § 21).
+
+var instEvt = null;                 // the browser's held install prompt (Chrome, Edge, Samsung)
+var INST_KEY = 'pi_inst';           // { n: times dismissed, until: ms, done: 1 }
+var ROUNDS_KEY = 'pi_rounds';       // results cards seen on this device
+var SAVE_NUDGE_KEY = 'pi_save_nudge';
+
+function instStandalone(){
+  try{
+    if(navigator.standalone === true) return true;
+    if(matchMedia('(display-mode: standalone)').matches) return true;
+    // The manifest asks for fullscreen; a page the PLAYER sent fullscreen with
+    // the ⛶ button matches that query too, so it only counts outside one.
+    return matchMedia('(display-mode: fullscreen)').matches && !document.fullscreenElement && !document.webkitFullscreenElement;
+  }catch(e){ return false; }
+}
+function instIOS(){
+  const ua = navigator.userAgent || '';
+  return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1);
+}
+// Browsers built into other apps: no install, and Google refuses to sign in there.
+function gInApp(){
+  return /FBAN|FBAV|FB_IAB|Instagram|Line\/|Snapchat|TikTok|musical_ly|BytedanceWebview|GSA\/|MicroMessenger|; wv\)/i.test(navigator.userAgent || '');
+}
+function instOfferable(){
+  if(instStandalone()) return false;
+  return !!instEvt || (instIOS() && !gInApp());
+}
+function instState(){ const o = lsGet(INST_KEY, null); return (o && typeof o === 'object') ? o : { n: 0, until: 0 }; }
+
+// ── ⚙️ SETTINGS ──
+function instPaint(){
+  const sec = document.getElementById('set-app');
+  if(!sec) return;
+  const btn = document.getElementById('btn-install');
+  const note = document.getElementById('set-app-note');
+  const badge = document.getElementById('set-app-state');
+  const app = instStandalone();
+  sec.hidden = !(app || instOfferable());
+  if(sec.hidden) return;
+  if(app){
+    badge.className = 'set-state ok'; badge.textContent = 'INSTALLED';
+    note.textContent = 'You are playing the installed app — it opens from your home screen, full screen, and keeps working offline.';
+    btn.hidden = true;
+    return;
+  }
+  badge.className = 'set-state'; badge.textContent = '';
+  btn.hidden = false;
+  btn.textContent = instEvt ? '📲 Install Point Invaders' : '📲 Add to Home Screen';
+  note.textContent = instEvt
+    ? 'Put Point Invaders on your home screen or desktop — it opens full screen like an app, starts faster and keeps working offline.'
+    : 'Put Point Invaders on your home screen — it opens full screen like an app, starts faster and keeps working offline. Safari does it in two taps.';
+}
+
+// The one door both offers use. Resolves true when the player said yes.
+async function instGo(src){
+  try{ statsEvent('_inst_tap'); }catch(e){}
+  if(instEvt){
+    const ev = instEvt;
+    instEvt = null;              // a prompt can be shown once; the browser deals a fresh one later if still installable
+    try{
+      await ev.prompt();
+      const ch = await ev.userChoice;
+      const yes = !!(ch && ch.outcome === 'accepted');
+      if(yes){ lsSet(INST_KEY, Object.assign(instState(), { done: 1 })); snd('success'); }
+      else snd('uiBack');
+      instPaint();
+      return yes;
+    }catch(e){
+      console.warn('Install prompt failed:', e);
+      instPaint();
+      return false;
+    }
+  }
+  if(instIOS()){ instOpenHowTo(); return false; }
+  toast('📲 This browser cannot install web apps — open the arcade in Chrome, Edge or Safari.', 4200);
+  return false;
+}
+
+// iPhone / iPad: where Safari keeps "Add to Home Screen".
+var INST_SHARE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></svg>';
+var INST_ADD_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/></svg>';
+function instOpenHowTo(){
+  const ov = document.getElementById('inst-overlay'), body = document.getElementById('inst-body');
+  if(!ov || !body) return;
+  try{ statsEvent('_inst_ios'); }catch(e){}
+  const safari = /Safari/.test(navigator.userAgent || '') && !/CriOS|FxiOS|EdgiOS/.test(navigator.userAgent || '');
+  body.innerHTML =
+    `<ol class="inst-steps">` +
+      `<li><span>Tap <span class="inst-glyph">${INST_SHARE_SVG}</span> <b>Share</b> — ${safari ? 'in Safari’s toolbar, at the bottom of the screen (at the top on iPad)' : 'in the browser’s address bar or menu'}.</span></li>` +
+      `<li><span>Scroll the list and tap <span class="inst-glyph">${INST_ADD_SVG}</span> <b>Add to Home Screen</b>.</span></li>` +
+      `<li><span>Tap <b>Add</b>. Point Invaders is now an icon on your home screen.</span></li>` +
+    `</ol>` +
+    `<div class="inst-note">It opens full screen with no browser bars, and your progress comes with it — same browser storage, same account.</div>` +
+    `<button class="btn btn-primary btn-full" id="inst-ok" type="button">Got it</button>`;
+  document.getElementById('inst-ok').onclick = () => closeOverlay('inst-overlay');
+  ov.classList.add('show');
+  ov.setAttribute('aria-hidden', 'false');
+  snd('tab');
+}
+
+// ── 💬 THE RESULTS CARD'S ONE LINE ──
+// Save first (a guest with real points stands to LOSE something), install
+// second (after the third card on this device). Never both, never on a duel.
+function saveNudgeDue(pts){
+  if(!user || !user.isGuest || isLocalSession() || offlineMode || !auth || !db) return false;
+  if(!auth.currentUser || !auth.currentUser.isAnonymous) return false;
+  const total = (user.totalPoints || 0) + Math.max(0, +pts || 0);
+  if(total < 250 || (user.gamesPlayed || 0) < 1) return false;
+  const st = lsGet(SAVE_NUDGE_KEY, null) || {};
+  return Date.now() >= (+st.until || 0);
+}
+function instNudgeDue(rounds){
+  if(rounds < 3 || !instOfferable()) return false;
+  const st = instState();
+  if(st.done || (st.n | 0) >= 3) return false;
+  return Date.now() >= (+st.until || 0);
+}
+function resNudgePaint(gid, pts, opts){
+  const el = document.getElementById('res-nudge');
+  if(!el) return;
+  el.hidden = true; el.className = 'res-nudge'; el.textContent = '';
+  const rounds = (lsGet(ROUNDS_KEY, 0) | 0) + 1;
+  lsSet(ROUNDS_KEY, rounds);
+  if(mp || (opts && opts.internal)) return;
+  const x = label => {
+    const b = document.createElement('button');
+    b.className = 'btn rn-x'; b.type = 'button'; b.textContent = '✕'; b.setAttribute('aria-label', label);
+    return b;
+  };
+  const txt = html => { const s = document.createElement('span'); s.className = 'rn-txt'; s.innerHTML = html; return s; };
+  const ico = e => { const s = document.createElement('span'); s.className = 'rn-ico'; s.textContent = e; s.setAttribute('aria-hidden', 'true'); return s; };
+
+  if(saveNudgeDue(pts)){
+    const total = (user.totalPoints || 0) + Math.max(0, Math.round(+pts || 0));
+    el.classList.add('save');
+    const go = document.createElement('button');
+    go.className = 'btn btn-google rn-go'; go.type = 'button';
+    go.innerHTML = (document.querySelector('#up-google .g-logo')?.outerHTML || '') + '<span>Save with Google</span>';
+    const no = x('Not now');
+    el.append(ico('💾'), txt(`<b>${total.toLocaleString()} PTS</b> live only in this browser. Keep them — pick a name and tap Google.`), go, no);
+    go.onclick = () => { try{ statsEvent('_save_tap'); }catch(e){} if(typeof window.openSaveAccount === 'function') window.openSaveAccount(); };
+    no.onclick = () => {
+      const st = lsGet(SAVE_NUDGE_KEY, null) || {};
+      const n = (st.n | 0) + 1;
+      lsSet(SAVE_NUDGE_KEY, { n, until: Date.now() + [2, 5, 14][Math.min(2, n - 1)] * DAY_MS });
+      el.hidden = true; snd('uiBack');
+    };
+    el.hidden = false;
+    try{ statsEvent('_save_offer'); }catch(e){}
+    return;
+  }
+  if(instNudgeDue(rounds)){
+    const go = document.createElement('button');
+    go.className = 'btn btn-primary rn-go'; go.type = 'button';
+    go.textContent = instEvt ? '📲 Install' : '📲 How?';
+    const no = x('Not now');
+    el.append(ico('📲'), txt(instEvt ? '<b>Play it like an app</b> — full screen, one tap from your home screen, works offline.'
+                                      : '<b>Put it on your home screen</b> — full screen, one tap away, works offline.'), go, no);
+    go.onclick = async () => { const yes = await instGo('card'); if(yes) el.hidden = true; };
+    no.onclick = () => {
+      const st = instState();
+      const n = (st.n | 0) + 1;
+      lsSet(INST_KEY, Object.assign(st, { n, until: Date.now() + [4, 10, 30][Math.min(2, n - 1)] * DAY_MS }));
+      el.hidden = true; snd('uiBack');
+    };
+    el.hidden = false;
+    try{ statsEvent('_inst_offer'); }catch(e){}
+  }
+}
+
+// ── 🔑 GOOGLE ──────────────────────────────────────────────────────────
+var G_INAPP_MSG = 'Google sign-in does not work inside another app’s built-in browser — open this page in Chrome or Safari (⋮ or ⋯ → Open in browser).';
+function gProvider(){
+  const p = new firebase.auth.GoogleAuthProvider();
+  // Always show the account chooser, so a shared computer never signs the
+  // next person straight into the last person's arcade.
+  try{ p.setCustomParameters({ prompt: 'select_account' }); }catch(e){}
+  return p;
+}
+function gErrText(e){
+  const c = e && e.code;
+  if(e && e.isOffline) return '📴 No connection to the mainframe.';
+  switch(c){
+    case 'auth/popup-closed-by-user':
+    case 'auth/cancelled-popup-request':
+    case 'auth/user-cancelled':
+      return '';
+    case 'auth/popup-blocked':
+      return 'The browser blocked Google’s window — allow pop-ups for this site, then tap the button again.';
+    case 'auth/operation-not-allowed':
+    case 'auth/admin-restricted-operation':
+      return 'Google sign-in is switched off — enable it in the Firebase Console (Authentication → Sign-in method → Google).';
+    case 'auth/unauthorized-domain':
+      return 'This address is not on the sign-in allowlist — add it in the Firebase Console (Authentication → Settings → Authorized domains).';
+    case 'auth/operation-not-supported-in-this-environment':
+    case 'auth/web-storage-unsupported':
+      return G_INAPP_MSG;
+    case 'auth/network-request-failed':
+      return '📴 Could not reach Google — check the connection and try again.';
+    case 'auth/account-exists-with-different-credential':
+    case 'auth/email-already-in-use':
+      return 'That Google address already belongs to a Point Invaders account with a password — sign in with email instead.';
+    case 'auth/provider-already-linked':
+      return 'This profile is already saved with Google.';
+    case 'auth/too-many-requests':
+      return 'Too many tries — wait a minute, then try again.';
+  }
+  return (typeof fErr === 'function') ? fErr(e, 'google') : 'Matrix validation anomaly.';
+}
+// The same shape as showAuthErr(): the friendly line, then the raw code under it.
+function gShowErr(el, e){
+  const t = gErrText(e);
+  if(!el || !t) return;
+  snd('error');
+  el.textContent = t;
+  if(e && e.code){
+    const tag = document.createElement('div');
+    tag.textContent = e.code;
+    tag.style.cssText = 'margin-top:6px;font-family:var(--fd),monospace;font-size:.52rem;letter-spacing:.1em;color:var(--dimmer);text-transform:none';
+    el.appendChild(tag);
+  }
+}
+function gIsGoogleUser(u){
+  return !!(u && !u.isAnonymous && (u.providerData || []).some(p => p && p.providerId === 'google.com'));
+}
+// A Google account with no profile yet names itself first (loadUser asks this).
+function gNeedsCallsign(){ return !!(auth && gIsGoogleUser(auth.currentUser)); }
+
+// The sign-in screen's button.
+async function signInGoogle(){
+  const btn = document.getElementById('btn-google');
+  const errEl = document.getElementById('auth-err');
+  if(!auth || !db){ showAuthOfflineNotice(); return; }
+  if(gInApp()){ setErr(G_INAPP_MSG); return; }
+  setErr('');
+  // Held until this function has decided where the account goes, so the
+  // session-restore listener cannot open a half-made profile underneath it.
+  authPending = true;
+  if(btn) btn.disabled = true;
+  let cred;
+  try{
+    cred = await auth.signInWithPopup(gProvider());      // straight from the click, or it is blocked
+  }catch(e){
+    authPending = false;
+    if(btn) btn.disabled = false;
+    console.warn('Google sign-in failed:', e);
+    gShowErr(errEl, e);
+    return;
+  }
+  try{
+    const uid = cred.user.uid;
+    const snap = await withTimeout(db.ref('players/' + uid).once('value'), NET_WAIT);
+    if(snap.exists()){
+      authPending = false;
+      await loadUser(uid);
+      try{ statsEvent('_login_g'); }catch(e){}
+    }else{
+      gOpenCallsign(uid);                                  // keeps authPending until it is done
+    }
+  }catch(e){
+    authPending = false;
+    console.warn('Google sign-in: profile read failed:', e);
+    if(e && e.isOffline) showAuthOfflineNotice(); else gShowErr(errEl, e);
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+// ── 🆔 CALLSIGN ──
+var csUid = null, csBusy = false;
+function gOpenCallsign(uid){
+  const ov = document.getElementById('cs-overlay');
+  if(!ov) return;
+  csUid = uid;
+  authPending = true;
+  const inp = document.getElementById('cs-name'), err = document.getElementById('cs-err');
+  const cu = auth && auth.currentUser;
+  const sub = document.getElementById('cs-sub');
+  if(sub) sub.textContent = cu && cu.email ? `New account · ${cu.email}` : 'New Google account · one last step';
+  if(err) err.textContent = '';
+  // Never prefilled from the Google profile: a real name is not a callsign,
+  // and this one goes on a public leaderboard.
+  if(inp){ inp.value = ''; setTimeout(() => inp.focus(), 260); }
+  ov.classList.add('show');
+  ov.setAttribute('aria-hidden', 'false');
+  snd('tab');
+}
+function gCloseCallsign(){
+  const ov = document.getElementById('cs-overlay');
+  if(!ov) return;
+  ov.classList.remove('show');
+  ov.setAttribute('aria-hidden', 'true');
+}
+async function gCallsignGo(){
+  if(csBusy || !csUid) return;
+  const inp = document.getElementById('cs-name'), err = document.getElementById('cs-err'), go = document.getElementById('cs-go');
+  const name = (inp && inp.value || '').trim();
+  if(!/^[a-zA-Z0-9_-]{2,20}$/.test(name)){ snd('error'); if(err) err.textContent = name ? 'Format error inside username syntax.' : 'Pick a username first.'; return; }
+  if(!db){ showAuthOfflineNotice(); return; }
+  csBusy = true;
+  if(go){ go.disabled = true; go.textContent = '⏳ Registering…'; }
+  const uid = csUid;
+  try{
+    await withTimeout(db.ref('players/' + uid).set({
+      username: name, totalPoints: 0, gamesPlayed: 0, credits: 0, isGuest: false,
+      createdAt: firebase.database.ServerValue.TIMESTAMP
+    }), NET_WAIT);
+    gCloseCallsign();
+    csUid = null;
+    authPending = false;
+    await loadUser(uid);
+    try{ statsEvent('_new_g'); }catch(e){}
+    toast(`🔒 Welcome to the grid, ${name} — your progress is saved to Google.`, 4200);
+  }catch(e){
+    console.warn('Callsign write failed:', e);
+    if(err){ if(e && e.isOffline){ err.textContent = '📴 No connection to the mainframe.'; } else showAuthErr(err, e, 'google'); }
+  }finally{
+    csBusy = false;
+    if(go){ go.disabled = false; go.textContent = 'Enter the Grid →'; }
+  }
+}
+async function gCallsignCancel(){
+  if(csBusy) return;
+  csUid = null;
+  gCloseCallsign();
+  try{ if(auth) await auth.signOut(); }catch(e){}
+  authPending = false;
+  snd('uiBack');
+}
+
+// ── 💾 SAVE: THE SWITCH ──
+// linkWithPopup refused because this Google account already HAS a profile.
+// The guest cannot be merged into it; switching deletes the guest (as Exit
+// would) and signs in to the saved account. The order matters: the guest's
+// node can only be removed while signed in AS the guest, and User.delete()
+// signs out whoever is current — so both happen before the switch, never after.
+async function gSwitchAccounts(e){
+  const old = auth && auth.currentUser;
+  if(!old || !old.isAnonymous) return false;
+  const pts = ((user && user.totalPoints) || 0).toLocaleString();
+  if(!confirm(`That Google account already has its own Point Invaders profile.\n\nSwitching signs this browser in to it. This guest profile and its ${pts} PTS are deleted — they cannot be merged.\n\nSwitch accounts?`)) return false;
+  let cred = e && e.credential;
+  try{ if(!cred && firebase.auth.GoogleAuthProvider.credentialFromError) cred = firebase.auth.GoogleAuthProvider.credentialFromError(e); }catch(x){}
+  authPending = true;
+  try{
+    if(typeof mpLeaveRoom === 'function') await mpLeaveRoom();
+    try{ if(db) await withTimeout(db.ref('players/' + old.uid).remove(), NET_WAIT); }catch(x){ console.warn('Guest purge before switch failed:', x); }
+    try{ await old.delete(); }catch(x){ try{ await auth.signOut(); }catch(y){} }
+    if(cred) await auth.signInWithCredential(cred);
+    else await auth.signInWithPopup(gProvider());
+    try{ statsEvent('_login_g'); }catch(x){}
+    toast('🔓 Switched to your saved account…', 2000);
+    // A clean boot, not a patched-up session: every hub system restarts
+    // against the account it now belongs to.
+    setTimeout(() => location.reload(), 500);
+    return true;
+  }catch(x){
+    authPending = false;
+    console.warn('Account switch failed:', x);
+    toast('⚠️ Could not switch accounts — sign in with Google from the start screen.', 4200);
+    setTimeout(() => location.reload(), 1600);
+    return false;
+  }
+}
+
+// ── WIRING ──
+try{
+  if(typeof fErrProviderOff === 'object' && fErrProviderOff){
+    fErrProviderOff.google = 'Google sign-in is switched off — enable it in the Firebase Console (Authentication → Sign-in method → Google).';
+  }
+}catch(e){}
+try{
+  window.addEventListener('beforeinstallprompt', e => {
+    // Held for a moment the player chooses, instead of Chrome's mini-bar
+    // turning up over the first round.
+    e.preventDefault();
+    instEvt = e;
+    instPaint();
+  });
+  window.addEventListener('appinstalled', () => {
+    instEvt = null;
+    lsSet(INST_KEY, Object.assign(instState(), { done: 1 }));
+    try{ statsEvent('_inst_ok'); }catch(e){}
+    toast('📲 Installed — Point Invaders is on your home screen now.', 3600);
+    instPaint();
+    const el = document.getElementById('res-nudge');
+    if(el && !el.classList.contains('save')) el.hidden = true;
+  });
+  document.getElementById('btn-install')?.addEventListener('click', () => instGo('settings'));
+  document.getElementById('inst-close')?.addEventListener('click', () => closeOverlay('inst-overlay'));
+  document.getElementById('inst-overlay')?.addEventListener('click', e => { if(e.target.id === 'inst-overlay') closeOverlay('inst-overlay'); });
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Escape' && document.getElementById('inst-overlay')?.classList.contains('show')) closeOverlay('inst-overlay');
+  });
+  document.getElementById('btn-google')?.addEventListener('click', signInGoogle);
+  document.getElementById('cs-go')?.addEventListener('click', gCallsignGo);
+  document.getElementById('cs-cancel')?.addEventListener('click', gCallsignCancel);
+  document.getElementById('cs-name')?.addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); gCallsignGo(); } });
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Escape' && document.getElementById('cs-overlay')?.classList.contains('show')){ e.stopPropagation(); gCallsignCancel(); }
+  }, true);
+  registerOverlayCloser('cs-overlay', () => gCallsignCancel());
+  // In another app's browser the button stays, but says what will happen.
+  if(gInApp()){
+    const b = document.getElementById('btn-google');
+    if(b) b.title = 'Opens in Chrome or Safari only';
+  }
+  instPaint();
+}catch(e){ console.warn('Install / Google sign-in failed to wire:', e); }
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 29 · v55 — 🌐 LAB GALLERY · publish · play · like · Level of the Day
+// ══════════════════════════════════════════════════════════════════════
+// Brick Lab levels used to travel only as links. The gallery is a shared
+// shelf: 📤 PUBLISH from the editor, and anyone can browse it by mission,
+// sort it by 🔥 TOP or 🆕 NEW, play a level (still a practice run — § 25's
+// side door, nothing banked), ♥ like it, 🔗 pass it on or ⚑ report it.
+// Every day one level is the ⭐ LEVEL OF THE DAY, shown here and on the hub's
+// lab banner.
+//
+// RULES FOR PUBLISHING — the gallery should be worth opening:
+//   · a network profile (a guest counts; a local session or offline, no),
+//   · a name, and nothing in it the name filter refuses,
+//   · the level passes its own lab check,
+//   · YOU have scored on it at least once (a TEST RUN), so every level on the
+//     shelf has been played by the person who made it,
+//   · not already on the shelf (same mission, same layout — names aside),
+//   · one publish a minute (the database enforces it, see GAL_RULE).
+//
+// DATA (all under the NEW top-level node `lab`, readable by anyone):
+//   lab/d/<id>     { g: mission, c: PIL1 code, n: name, b: author, u: uid, t: time }
+//   lab/l/<id>/<uid>   true — a like (removable)
+//   lab/p/<id>         plays, +1 at a time
+//   lab/f/<id>/<uid>   true — a report; three hide a level for everyone
+//   lab/day/<date>     the Level of the Day's id — written once, by whoever
+//                      opens the gallery first that UTC day
+//   lab/w/<uid>        the last publish time (the one-a-minute brake)
+//
+// ⚠️ A NEW TOP-LEVEL NODE: the database refuses it until the rule below is
+// pasted into the Console (see [[firebase-rtdb-rules-allowlist]] in the
+// notes). Until then the gallery says it is not open yet, publishing is
+// refused, and the rule text is on the ?stats panel for the owner.
+//
+// ⚠️ LOAD ORDER: § 25 (renderLab, the editor, labFinish) and enterHub call in
+// here, so every name they reach is a var or a function declaration.
+
+var GAL = { state: 'idle', items: [], byId: Object.create(null), days: {}, lotd: null, at: 0, err: null,
+            sort: 'top', gid: '', busy: null, shown: 40, hubAt: 0, hub: null, flash: null };
+var GAL_TTL = 60000, GAL_PAGE = 40, GAL_HIDE_AT = 3;
+var GAL_PLAYED_KEY = 'pi_gal_played', GAL_PUB_KEY = 'pi_gal_pub', GAL_HIDE_KEY = 'pi_gal_hidden';
+var GAL_BAD_SUB = null, GAL_BAD_WORD = null;
+
+// The rule, exactly as it should be pasted: inside "rules", beside "players".
+var GAL_RULE = `"lab": {
+  ".read": true,
+  "d": {
+    ".indexOn": ["t"],
+    "$id": {
+      ".write": "auth != null && ((!data.exists() && newData.child('u').val() === auth.uid && newData.parent().parent().child('w/' + auth.uid).val() === now) || (data.exists() && !newData.exists() && data.child('u').val() === auth.uid))",
+      ".validate": "newData.hasChildren(['g', 'c', 'n', 'b', 'u', 't']) && newData.child('g').isString() && newData.child('g').val().matches(/^[a-z0-9]+$/) && newData.child('g').val().length <= 16 && newData.child('c').isString() && newData.child('c').val().beginsWith('PIL1.') && newData.child('c').val().length <= 2400 && newData.child('n').isString() && newData.child('n').val().length <= 32 && newData.child('b').isString() && newData.child('b').val().length <= 24 && newData.child('t').val() === now",
+      "$other": { ".validate": "$other.matches(/^(g|c|n|b|u|t)$/)" }
+    }
+  },
+  "w": {
+    "$uid": {
+      ".write": "auth != null && auth.uid === $uid",
+      ".validate": "newData.val() === now && (!data.exists() || data.val() < now - 60000)"
+    }
+  },
+  "l": {
+    "$id": {
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid && (!newData.exists() || root.child('lab/d/' + $id).exists())",
+        ".validate": "newData.val() === true"
+      }
+    }
+  },
+  "p": {
+    "$id": {
+      ".write": "auth != null && root.child('lab/d/' + $id).exists()",
+      ".validate": "newData.isNumber() && newData.val() === (data.exists() ? data.val() : 0) + 1"
+    }
+  },
+  "f": {
+    "$id": {
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid && !data.exists()",
+        ".validate": "newData.val() === true"
+      }
+    }
+  },
+  "day": {
+    "$day": {
+      ".write": "auth != null && !data.exists()",
+      ".validate": "$day.matches(/^20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) && newData.isString() && root.child('lab/d/' + newData.val()).exists()"
+    }
+  }
+},`;
+
+// ── THE NAME FILTER ──
+// Names are public. Two lists, stored encoded so the source does not carry
+// them in plain text: stems refused anywhere in the name (leetspeak folded,
+// spacing ignored), and short words refused only as whole words — "GRAPE",
+// "PASS" and "COCKPIT" are fine.
+function galBadLists(){
+  if(GAL_BAD_SUB) return;
+  try{
+    GAL_BAD_SUB = atob('ZnVjayxzaGl0LGN1bnQsYml0Y2gsd2hvcmUsc2x1dCxuaWdnLGZhZ2dvdCxyZXRhcmQscG9ybixwZW5pcyx2YWdpbmEsZGlsZG8saml6eix3YW5rLHR3YXQsYXNzaG9sZSxoaXRsZXIsbmF6aSxwdXNzeSxib29icyxwdWtpbWFrLGtpbWFrLGxhbmNhdSxwYW50YXQsYnV0b2gscGVwZWssY2liYWksa2FuaW5hLGxhbmppYW8sbW90aGVyZg==').split(',');
+    GAL_BAD_WORD = atob('cmFwZSxyYXBlZCxjb2NrLGRpY2ssY3VtLHNleCxreXMsZmFnLGFzcyx0aXRzLGtpa2Usc3BpYyxjaGluayx0cmFubnkscHVraSxuYWJlaCxrbm4sYmFiaSxzaWFsLGtvdGUsaG9lLGhvZXMsYW5hbCxudWRlLG51ZGVz').split(',');
+  }catch(e){ GAL_BAD_SUB = []; GAL_BAD_WORD = []; }
+}
+function galClean(text){
+  galBadLists();
+  const map = { '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '8': 'b', '@': 'a', '$': 's', '!': 'i', '|': 'i' };
+  const low = String(text || '').toLowerCase().replace(/[0134578@$!|]/g, c => map[c] || c);
+  const flat = low.replace(/[^a-z]/g, '');
+  if(GAL_BAD_SUB.some(w => w && flat.includes(w))) return false;
+  const words = low.split(/[^a-z]+/).filter(Boolean);
+  if(words.some(w => GAL_BAD_WORD.includes(w)) || GAL_BAD_WORD.includes(flat)) return false;
+  return true;
+}
+
+function galOnline(){ return !!db && !!user && !isLocalSession() && !offlineMode; }
+function galCanWrite(){ return galOnline() && !!(auth && auth.currentUser); }
+function galDenied(e){ return /PERMISSION|permission/.test(String((e && (e.code || e.message)) || '')); }
+function galHiddenIds(){ const a = lsGet(GAL_HIDE_KEY, []); return new Set(Array.isArray(a) ? a : []); }
+
+// ── READING THE SHELF ──
+function galLoad(force){
+  if(!galOnline()){ GAL.state = 'offline'; return Promise.resolve(); }
+  if(GAL.busy) return GAL.busy;
+  if(!force && GAL.state === 'ok' && Date.now() - GAL.at < GAL_TTL) return Promise.resolve();
+  GAL.busy = (async () => {
+    try{
+      const [d, l, p, f, days] = await Promise.all([
+        withTimeout(db.ref('lab/d').orderByChild('t').limitToLast(300).once('value'), NET_WAIT),
+        withTimeout(db.ref('lab/l').once('value'), NET_WAIT),
+        withTimeout(db.ref('lab/p').once('value'), NET_WAIT),
+        withTimeout(db.ref('lab/f').once('value'), NET_WAIT),
+        withTimeout(db.ref('lab/day').orderByKey().limitToLast(40).once('value'), NET_WAIT)
+      ]);
+      galIngest(d.val() || {}, l.val() || {}, p.val() || {}, f.val() || {}, days.val() || {});
+      GAL.state = 'ok'; GAL.at = Date.now(); GAL.err = null;
+      await galEnsureLotd();
+    }catch(e){
+      GAL.state = galDenied(e) ? 'off' : 'error';
+      GAL.err = (e && (e.code || e.message)) || String(e);
+      console.info('🌐 Lab gallery:', GAL.state, GAL.err);
+    }finally{
+      GAL.busy = null;
+    }
+  })();
+  return GAL.busy;
+}
+function galIngest(D, L, P, F, Dy){
+  const me = user && user.uid;
+  const hidden = galHiddenIds();
+  const items = [];
+  for(const [id, r] of Object.entries(D)){
+    if(!r || typeof r !== 'object' || typeof r.c !== 'string' || !r.g) continue;
+    // A level for a mission this build does not have (an older cached page)
+    // or a code that does not decode is simply not shown.
+    const design = labDecode(r.c);
+    if(!design || design.gid !== r.g || !LAB_DEFS[design.gid] || !META[design.gid] || !SOLO_START[design.gid]) continue;
+    const lk = (L[id] && typeof L[id] === 'object') ? L[id] : {};
+    const flags = (F[id] && typeof F[id] === 'object') ? Object.keys(F[id]).length : 0;
+    items.push({
+      id, g: r.g, c: r.c, n: String(r.n || '').slice(0, 32), b: String(r.b || '').slice(0, 24), u: r.u, t: +r.t || 0, design,
+      likes: Object.keys(lk).length, liked: !!(me && lk[me]), plays: +P[id] || 0, flags,
+      mine: !!(me && r.u === me), hidden: flags >= GAL_HIDE_AT || hidden.has(id)
+    });
+  }
+  GAL.items = items;
+  GAL.byId = Object.create(null);
+  items.forEach(i => { GAL.byId[i.id] = i; });
+  GAL.days = (Dy && typeof Dy === 'object') ? Dy : {};
+}
+
+// ── ⭐ LEVEL OF THE DAY ──
+// The most-liked level that has not been featured in the last month (plays
+// and freshness break ties). Chosen by the first player to open the gallery
+// that UTC day and written ONCE — everybody else reads the same answer.
+function galPickLotd(today){
+  const recent = new Set(Object.entries(GAL.days).filter(([k]) => k < today && daysBetween(k, today) <= 30).map(([, v]) => v));
+  const cands = GAL.items.filter(i => !i.hidden && i.flags === 0 && !recent.has(i.id));
+  if(!cands.length) return null;
+  const now = Date.now();
+  const score = i => i.likes * 4 + Math.min(i.plays, 60) * 0.5 + Math.max(0, 14 - (now - i.t) / DAY_MS) * 0.2;
+  cands.sort((a, b) => score(b) - score(a) || b.t - a.t);
+  return cands[0];
+}
+async function galEnsureLotd(){
+  const today = dayKey();
+  let id = GAL.days[today];
+  if(!id || !GAL.byId[id]){
+    const pick = galPickLotd(today);
+    if(pick && galCanWrite() && !id){
+      try{
+        await withTimeout(db.ref('lab/day/' + today).set(pick.id), NET_WAIT);
+        GAL.days[today] = pick.id;
+      }catch(e){
+        // Written first by someone else (the day is write-once): theirs stands.
+        try{ const s = await withTimeout(db.ref('lab/day/' + today).once('value'), NET_WAIT); if(s.exists()) GAL.days[today] = s.val(); }catch(x){}
+      }
+    }
+    id = GAL.days[today];
+  }
+  const it = id ? GAL.byId[id] : null;
+  GAL.lotd = it && !it.hidden ? it : null;
+}
+
+// ── THE VIEW ───────────────────────────────────────────────────────────
+function galAge(t){
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if(s < 3600) return 'just now';
+  if(s < 86400) return Math.floor(s / 3600) + 'h ago';
+  if(s < 86400 * 45) return Math.floor(s / 86400) + 'd ago';
+  return new Date(t).toISOString().slice(0, 10);
+}
+function galMsg(title, body, retry){
+  return `<div class="gal-msg"><div class="gal-msg-h">${title}</div><p>${body}</p>` +
+         (retry ? `<button class="btn btn-secondary btn-sm" id="gal-retry" type="button">↻ Try again</button>` : '') + `</div>`;
+}
+function galList(){
+  let list = GAL.items.filter(i => !i.hidden || i.mine);
+  if(GAL.gid) list = list.filter(i => i.g === GAL.gid);
+  if(GAL.sort === 'new') list.sort((a, b) => b.t - a.t);
+  else list.sort((a, b) => b.likes - a.likes || b.plays - a.plays || b.t - a.t);
+  return list;
+}
+function galRowHTML(i){
+  const m = META[i.g];
+  const name = esc(i.n || i.design.name || 'CUSTOM ' + (LAB_DEFS[i.g].what || 'LEVEL'));
+  return `<div class="gal-row${i.id === GAL.flash ? ' flash' : ''}" role="listitem" data-id="${esc(i.id)}">` +
+      `<span class="gal-em" aria-hidden="true">${m.emoji}</span>` +
+      `<div class="gal-main"><b>${name}</b><em>${esc(m.name)} · by ${esc(i.b || 'someone')} · ${galAge(i.t)}</em>` +
+        (i.mine && i.hidden ? `<span class="gal-chip">⚑ HIDDEN — REPORTED</span>` : '') + `</div>` +
+      `<span class="gal-st" title="${i.likes} likes · ${i.plays} plays"><span class="gal-lk${i.liked ? ' on' : ''}">♥ ${i.likes}</span> <span>▶ ${i.plays}</span></span>` +
+      `<div class="gal-acts">` +
+        `<button class="btn btn-primary btn-sm" type="button" data-a="play" aria-label="Play ${name}">▶ PLAY</button>` +
+        (i.mine ? '' : `<button class="btn btn-secondary btn-sm gal-like${i.liked ? ' on' : ''}" type="button" data-a="like" aria-pressed="${i.liked}" aria-label="${i.liked ? 'Unlike' : 'Like'} ${name}">♥</button>`) +
+        `<button class="btn btn-secondary btn-sm" type="button" data-a="share" aria-label="Copy a link to ${name}" title="Copy link">🔗</button>` +
+        (i.mine ? `<button class="btn btn-secondary btn-sm" type="button" data-a="del" aria-label="Delete ${name}" title="Delete your level">🗑</button>`
+                : `<button class="btn btn-secondary btn-sm" type="button" data-a="report" aria-label="Report ${name}" title="Report">⚑</button>`) +
+      `</div>` +
+    `</div>`;
+}
+function galLotdHTML(i){
+  const m = META[i.g];
+  const name = esc(i.n || i.design.name || 'CUSTOM ' + (LAB_DEFS[i.g].what || 'LEVEL'));
+  return `<div class="gal-lotd" data-id="${esc(i.id)}">` +
+      `<div class="gal-lotd-h">⭐ LEVEL OF THE DAY <span>${dayKey()}</span></div>` +
+      `<div class="gal-lotd-in">` +
+        `<div class="gal-lotd-prev">${labPreviewHTML(i.design)}</div>` +
+        `<div class="gal-lotd-txt">` +
+          `<div class="gal-lotd-m">${m.emoji} ${esc(m.name)}</div>` +
+          `<b>${name}</b><em>by ${esc(i.b || 'someone')}</em>` +
+          `<div class="gal-lotd-s">♥ ${i.likes} · ▶ ${i.plays} plays</div>` +
+          `<div class="gal-lotd-b"><button class="btn btn-primary btn-sm" type="button" data-a="play">▶ PLAY IT</button>` +
+          (i.mine ? '' : `<button class="btn btn-secondary btn-sm gal-like${i.liked ? ' on' : ''}" type="button" data-a="like" aria-pressed="${i.liked}" aria-label="Like">♥</button>`) +
+          `</div>` +
+        `</div>` +
+      `</div>` +
+    `</div>`;
+}
+
+function labRenderGallery(body, sub){
+  if(sub) sub.textContent = 'Levels built by players · play them, like the good ones';
+  galSwitchPaint();
+  if(!galOnline()){
+    body.innerHTML = galMsg('📡 The gallery needs a connection',
+      isLocalSession() ? 'This profile lives on this device only. Save it online from ⚙️ Settings, then the whole gallery opens up.'
+                       : 'Reconnect, then open it again. Levels sent to you by link still play offline.');
+    return;
+  }
+  if(GAL.state === 'off'){
+    body.innerHTML = galMsg('🌐 The gallery is not open yet', 'Share your levels by link meanwhile — 🔗 SHARE in the editor. They play the same way.', true);
+    galWireMsg();
+    return;
+  }
+  if(GAL.state === 'error'){
+    body.innerHTML = galMsg('📡 Could not reach the gallery', 'The connection dropped on the way. Try again in a moment.', true);
+    galWireMsg();
+    return;
+  }
+  if(GAL.state !== 'ok'){
+    body.innerHTML = `<div class="lb-empty">Loading the gallery…</div>`;
+    galLoad().then(() => { if(labView === 'gallery' && document.getElementById('lab-overlay')?.classList.contains('show')) renderLab(); });
+    return;
+  }
+  // Stale: show what we have, refresh underneath.
+  if(Date.now() - GAL.at > GAL_TTL && !GAL.busy){
+    galLoad(true).then(() => { if(labView === 'gallery' && document.getElementById('lab-overlay')?.classList.contains('show')) renderLab(); });
+  }
+  const list = galList();
+  const counts = Object.create(null);
+  GAL.items.forEach(i => { if(!i.hidden || i.mine) counts[i.g] = (counts[i.g] || 0) + 1; });
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const gids = Object.keys(SOLO_START).filter(g => LAB_DEFS[g] && META[g]);
+  const shown = list.slice(0, GAL.shown);
+  body.innerHTML =
+    `<div class="gal">` +
+      (GAL.lotd && !GAL.gid ? galLotdHTML(GAL.lotd) : '') +
+      `<div class="gal-ctl">` +
+        `<select class="input gal-sel" id="gal-mission" aria-label="Show levels for">` +
+          `<option value="">ALL MISSIONS · ${total}</option>` +
+          gids.map(g => `<option value="${g}"${g === GAL.gid ? ' selected' : ''}>${META[g].emoji} ${esc(META[g].name)} · ${counts[g] || 0}</option>`).join('') +
+        `</select>` +
+        `<div class="gal-sort" role="group" aria-label="Sort">` +
+          `<button class="gal-srt${GAL.sort === 'top' ? ' on' : ''}" type="button" data-s="top" aria-pressed="${GAL.sort === 'top'}">🔥 TOP</button>` +
+          `<button class="gal-srt${GAL.sort === 'new' ? ' on' : ''}" type="button" data-s="new" aria-pressed="${GAL.sort === 'new'}">🆕 NEW</button>` +
+        `</div>` +
+      `</div>` +
+      (shown.length
+        ? `<div class="gal-list" role="list">${shown.map(galRowHTML).join('')}</div>`
+        : `<div class="gal-empty">${GAL.gid ? 'No ' + esc(META[GAL.gid].name) + ' levels yet.' : 'No levels yet.'} Build one, score on it with ▶ TEST RUN, then press <b>📤 PUBLISH</b>.</div>`) +
+      (list.length > shown.length ? `<button class="btn btn-secondary btn-full btn-sm gal-more" id="gal-more" type="button">Show more · ${list.length - shown.length} left</button>` : '') +
+      `<div class="lab-out" id="lab-out"></div>` +
+      `<div class="lab-note">Levels are built by players and play as practice runs — nothing is banked. Tap ⚑ to report one that should not be here; it disappears for you at once.</div>` +
+    `</div>`;
+  galWire(body);
+}
+function galWireMsg(){
+  const b = document.getElementById('gal-retry');
+  if(b) b.onclick = () => { GAL.state = 'idle'; snd('tab'); renderLab(); };
+}
+function galWire(body){
+  const sel = document.getElementById('gal-mission');
+  if(sel) sel.onchange = () => { GAL.gid = sel.value; GAL.shown = GAL_PAGE; snd('tab'); renderLab(); };
+  body.querySelectorAll('.gal-srt').forEach(b => b.onclick = () => { GAL.sort = b.dataset.s; GAL.shown = GAL_PAGE; snd('tab'); renderLab(); });
+  const more = document.getElementById('gal-more');
+  if(more) more.onclick = () => { GAL.shown += GAL_PAGE; snd('tab'); renderLab(); };
+  body.querySelectorAll('[data-a]').forEach(b => b.onclick = e => {
+    const host = b.closest('[data-id]');
+    const it = host && GAL.byId[host.dataset.id];
+    if(!it) return;
+    const a = b.dataset.a;
+    if(a === 'play') galPlay(it);
+    else if(a === 'like') galLike(it, b);
+    else if(a === 'share') galShare(it, b);
+    else if(a === 'report') galReport(it);
+    else if(a === 'del') galDelete(it);
+  });
+}
+
+// The switch at the top of the lab: 🧱 BUILD | 🌐 GALLERY.
+function galSwitchPaint(){
+  const g = labView === 'gallery';
+  const b = document.getElementById('lab-sw-build'), gl = document.getElementById('lab-sw-gallery');
+  if(b){ b.classList.toggle('on', !g); b.setAttribute('aria-selected', String(!g)); }
+  if(gl){ gl.classList.toggle('on', g); gl.setAttribute('aria-selected', String(g)); }
+}
+function galOpen(){
+  labView = 'gallery';
+  try{ statsEvent('_gal_open'); }catch(e){}
+  if(!document.getElementById('lab-overlay')?.classList.contains('show')) openLab();
+  else renderLab();
+}
+
+// ── ACTIONS ────────────────────────────────────────────────────────────
+function galPlay(it, src){
+  if(!it || !it.design) return;
+  // One play a level a device a day — a practice loop is not ten plays.
+  const played = lsGet(GAL_PLAYED_KEY, {}) || {};
+  const today = dayKey();
+  if(played[it.id] !== today && galCanWrite()){
+    played[it.id] = today;
+    const keys = Object.keys(played);
+    if(keys.length > 200) delete played[keys[0]];
+    lsSet(GAL_PLAYED_KEY, played);
+    it.plays++;
+    try{ db.ref('lab/p/' + it.id).set(firebase.database.ServerValue.increment(1)).catch(() => {}); }catch(e){}
+  }
+  try{ statsEvent(src === 'hub' ? '_gal_lotd' : '_gal_play'); }catch(e){}
+  labPlay(it.design, { gal: it.id });
+}
+async function galLike(it, btn){
+  if(!galCanWrite()){ snd('deny'); toast('🌐 Liking needs a connection.', 2400); return; }
+  if(it.mine) return;
+  const uid = auth.currentUser.uid;
+  const was = it.liked;
+  it.liked = !was; it.likes += was ? -1 : 1;
+  snd(was ? 'uiBack' : 'coin');
+  galRepaintLikes(it);
+  try{
+    const r = db.ref('lab/l/' + it.id + '/' + uid);
+    await withTimeout(was ? r.remove() : r.set(true), NET_WAIT);
+    if(!was){ try{ statsEvent('_gal_like'); }catch(e){} }
+  }catch(e){
+    it.liked = was; it.likes += was ? 1 : -1;
+    galRepaintLikes(it);
+    toast(galDenied(e) ? '🌐 The gallery refused that — it may not be open yet.' : '📡 Could not save the like.', 2800);
+  }
+}
+function galRepaintLikes(it){
+  document.querySelectorAll(`[data-id="${CSS.escape(it.id)}"]`).forEach(host => {
+    host.querySelectorAll('.gal-like').forEach(b => { b.classList.toggle('on', it.liked); b.setAttribute('aria-pressed', String(it.liked)); });
+    const lk = host.querySelector('.gal-lk');
+    if(lk){ lk.textContent = '♥ ' + it.likes; lk.classList.toggle('on', it.liked); }
+    const s = host.querySelector('.gal-lotd-s');
+    if(s) s.textContent = `♥ ${it.likes} · ▶ ${it.plays} plays`;
+  });
+  const rl = document.getElementById('lab-res-like');
+  if(rl && labResult && labResult.gal === it.id){ rl.classList.toggle('on', it.liked); rl.textContent = it.liked ? '♥ LIKED' : '♥ LIKE THIS LEVEL'; }
+}
+async function galShare(it, btn){
+  // The author's name stays on it — this is their level being passed on.
+  const d = Object.assign({}, it.design, { name: it.n || it.design.name, by: it.b || it.design.by });
+  const url = labUrl(d);
+  const m = META[it.g], def = LAB_DEFS[it.g];
+  const text = `🧱 Try “${d.name || 'this level'}” — a ${m.name} ${String(def.what || 'level').toLowerCase()} by ${d.by || 'a player'} on Point Invaders.`;
+  try{ statsEvent('_share_wall'); }catch(e){}
+  const phone = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  if(navigator.share && phone){
+    try{ await navigator.share({ title: 'Point Invaders · Brick Lab', text, url }); snd('coin'); return; }
+    catch(e){ if(e && e.name === 'AbortError') return; }
+  }
+  try{
+    await navigator.clipboard.writeText(text + ' ' + url);
+    snd('coin');
+    if(btn){ const was = btn.textContent; btn.textContent = '✔'; setTimeout(() => { btn.textContent = was; }, 1600); }
+    toast('🔗 Link copied.', 1800);
+  }catch(e){
+    const out = document.getElementById('lab-out');
+    if(out) out.innerHTML = `<div class="replay-code">${esc(text + ' ' + url)}</div><div class="replay-hint">Copy this and paste it anywhere.</div>`;
+  }
+}
+async function galReport(it){
+  if(!confirm(`Report “${it.n || 'this level'}”?\n\nIt disappears for you now, and three reports hide it for everyone.`)) return;
+  const hidden = galHiddenIds(); hidden.add(it.id);
+  lsSet(GAL_HIDE_KEY, [...hidden].slice(-300));
+  it.hidden = true;
+  snd('uiBack');
+  toast('⚑ Reported — thanks. It is hidden for you.', 2600);
+  renderLab();
+  if(galCanWrite()){
+    try{ await withTimeout(db.ref('lab/f/' + it.id + '/' + auth.currentUser.uid).set(true), NET_WAIT); }catch(e){}
+  }
+}
+async function galDelete(it){
+  if(!it.mine || !galCanWrite()) return;
+  if(!confirm(`Delete “${it.n || 'your level'}” from the gallery?\n\nIts likes go with it. Your draft in the editor stays.`)) return;
+  try{
+    await withTimeout(db.ref('lab/d/' + it.id).remove(), NET_WAIT);
+    GAL.items = GAL.items.filter(x => x.id !== it.id);
+    delete GAL.byId[it.id];
+    if(GAL.lotd && GAL.lotd.id === it.id) GAL.lotd = null;
+    snd('uiBack');
+    toast('🗑 Removed from the gallery.', 2200);
+    renderLab();
+  }catch(e){
+    toast(galDenied(e) ? '🌐 The gallery refused that.' : '📡 Could not reach the gallery.', 2800);
+  }
+}
+
+// 📤 From the editor (and from a lab result that just scored).
+async function galPublish(d, btn){
+  const def = d && LAB_DEFS[d.gid];
+  const out = document.getElementById('lab-out');
+  const say = (msg, good) => {
+    if(!good) snd('deny');
+    if(out) out.innerHTML = `<div class="${good ? 'replay-hint' : 'replay-err'}">${msg}</div>`;
+    else toast(msg.replace(/<[^>]+>/g, ''), 3200);
+  };
+  if(!def) return;
+  if(!galCanWrite()) return say(isLocalSession() ? '📤 Publishing needs a profile online — save this one from ⚙️ Settings first.' : '📡 Publishing needs a connection.');
+  const chk = labCheck(d);
+  if(chk && chk.block) return say('⚠️ ' + esc(chk.block));
+  const name = String(d.name || '').trim();
+  if(!name) return say('📤 Give your level a name first.');
+  if(!galClean(name)) return say('📤 That name will not go on a public shelf — pick another.');
+  const design = labNorm(Object.assign({}, d, { name, by: String(user.username || '').slice(0, 14) }));
+  if(!galClean(design.by)) return say('📤 Your username will not go on a public shelf — publishing is off for this profile.');
+  if(labBestOf(labKey(design)) <= 0) return say('📤 Play it first — score on it with <b>▶ TEST RUN</b>, then publish. Every level on the shelf has been played by the one who made it.');
+  const last = +lsGet(GAL_PUB_KEY, 0) || 0;
+  if(Date.now() - last < 60000) return say('📤 One level a minute — try again in ' + Math.ceil((60000 - (Date.now() - last)) / 1000) + 's.');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Publishing…'; }
+  try{
+    await galLoad(true);
+    if(GAL.state === 'off') return say('🌐 The gallery is not open yet — share it with 🔗 SHARE meanwhile.');
+    if(GAL.state !== 'ok') return say('📡 Could not reach the gallery — try again in a moment.');
+    const data = labPackData(def, design);
+    const twin = GAL.items.find(i => i.g === design.gid && labPackData(def, i.design) === data);
+    if(twin) return say(twin.mine ? '📤 This level is already in the gallery — it is yours.' : '📤 This exact layout is already in the gallery (“' + esc(twin.n || 'untitled') + '”).');
+    const uid = auth.currentUser.uid;
+    const id = db.ref('lab/d').push().key;
+    const TS = firebase.database.ServerValue.TIMESTAMP;
+    await withTimeout(db.ref('lab').update({
+      ['d/' + id]: { g: design.gid, c: labEncode(design), n: design.name, b: design.by, u: uid, t: TS },
+      ['w/' + uid]: TS
+    }), NET_WAIT);
+    lsSet(GAL_PUB_KEY, Date.now());
+    try{ statsEvent('_gal_pub'); }catch(e){}
+    snd('victory');
+    toast(`📤 “${design.name}” is in the gallery.`, 3200);
+    GAL.at = 0; GAL.sort = 'new'; GAL.gid = ''; GAL.flash = id; GAL.shown = GAL_PAGE;
+    await galLoad(true);
+    labView = 'gallery';
+    renderLab();
+  }catch(e){
+    console.warn('Publish failed:', e);
+    if(galDenied(e)){
+      const recent = Date.now() - last < 70000;
+      say(recent ? '📤 One level a minute — try again shortly.' : '🌐 The gallery refused it — it may not be open yet. Share it with 🔗 SHARE meanwhile.');
+    }else say('📡 Could not reach the gallery — try again in a moment.');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '📤 PUBLISH'; }
+  }
+}
+
+// ── ⭐ ON THE HUB ──
+// The lab banner carries today's featured level: one small read, at most
+// every ten minutes, and nothing at all while the gallery is closed.
+async function galHubPaint(){
+  const el = document.getElementById('lab-lotd');
+  if(!el) return;
+  if(!galOnline() || GAL.state === 'off'){ el.hidden = true; return; }
+  if(!GAL.hub || Date.now() - GAL.hubAt > 600000){
+    GAL.hubAt = Date.now();
+    try{
+      const s = await withTimeout(db.ref('lab/day').orderByKey().limitToLast(1).once('value'), NET_WAIT);
+      let day = null, id = null;
+      s.forEach(c => { day = c.key; id = c.val(); });
+      if(!id){ GAL.hub = null; el.hidden = true; return; }
+      const r = await withTimeout(db.ref('lab/d/' + id).once('value'), NET_WAIT);
+      const v = r.val();
+      const design = v && v.c ? labDecode(v.c) : null;
+      GAL.hub = design && META[design.gid] ? { id, day, n: String(v.n || design.name || ''), b: String(v.b || ''), g: design.gid, design, c: v.c } : null;
+    }catch(e){
+      if(galDenied(e)) GAL.state = 'off';
+      GAL.hub = null;
+    }
+  }
+  const h = GAL.hub;
+  if(!h || !document.getElementById('hub-screen')?.classList.contains('active')){ el.hidden = !h; if(!h) return; }
+  const today = h.day === dayKey();
+  el.innerHTML = `<span class="lab-lotd-k">${today ? '⭐ LEVEL OF THE DAY' : '⭐ FEATURED LEVEL'}</span>` +
+                 `<span class="lab-lotd-n">${META[h.g].emoji} ${esc(h.n || 'UNTITLED')}</span>` +
+                 `<span class="lab-lotd-b">by ${esc(h.b || 'a player')} · ${esc(META[h.g].name)} · ▶ PLAY</span>`;
+  el.hidden = false;
+  el.onclick = () => {
+    const it = GAL.byId[h.id] || { id: h.id, g: h.g, design: h.design, n: h.n, b: h.b, plays: 0 };
+    galPlay(it, 'hub');
+  };
+}
+
+// ── WIRING ──
+try{
+  document.getElementById('lab-sw-build')?.addEventListener('click', () => {
+    if(labView === 'gallery'){ labView = 'edit'; snd('tab'); renderLab(); }
+  });
+  document.getElementById('lab-sw-gallery')?.addEventListener('click', () => {
+    if(labView !== 'gallery'){ snd('tab'); galOpen(); }
+  });
+}catch(e){ console.warn('Lab gallery failed to wire:', e); }
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 30 · v55 — 🎱 GAME 31: NEON PINBALL — three balls, two flippers, one clock
+// ══════════════════════════════════════════════════════════════════════
+// The arcade staple the grid did not have. Pull the plunger, keep the ball
+// alive with the flippers, light the N·E·O·N lanes for the multiplier, clear
+// the drop targets to relight the kickbacks, and put five shots into the
+// reactor core for MULTIBALL. Three balls and a two-minute clock.
+//
+// ONE SIMULATION, TWO RENDERERS (the Light Cycle pattern, § 16): pbSim() is
+// the whole table — geometry, physics, rules, scoring — and pbRound() the
+// whole round (controls, clock, sounds, the ending). The 2D build below and
+// the 3D build in 3D MISSIONS PART VIII only draw it and feed it time.
+//
+// PHYSICS: circles and segments, sub-stepped so no step moves a ball more
+// than ~3.5 units (a ball is 8 in radius, so a thin wall can never be
+// skipped); flippers are capsules whose surface speed is added to the
+// bounce. A ball that sits still somewhere it cannot leave is nudged free
+// after a couple of seconds — never one resting on a raised flipper.
+// Tiers speed the whole table up rather than changing its geometry
+// (Safe 0.88×, Overclock 1.15×, Meltdown 1.27×).
+//
+// Balanced with a headless bot (scratchpad pb_bot.mjs, 40 rounds a tier): a
+// steady flipper banks ~600 at Stable, the top tenth ~1,000–1,150 — hence
+// the 1,200 cap. Without flipping at all a round lasts ~30 s for ~35 points.
+// No layout, stock or lab, ever let a ball out of the table.
+//
+// Pause/photo rules (§ 13): every wall-clock read is gNow(), the only timer
+// is the shimmed 1 s clock, and the table only moves when the frame loop
+// hands it time (dt 0 while held).
+// ── THE TABLE ──────────────────────────────────────────────────────────
+// World units: 360 × 720, y DOWN (toward the flippers). The 2D build draws
+// it squashed vertically (a tilted-table look); the 3D build lays it flat
+// on the deck. Everything that moves or scores lives here, so a 3D score is
+// a 2D score by construction.
+var PB = {
+  W: 360, H: 720, BALL_R: 8,
+  G: 1150,                    // gravity down the table at Stable, units/s²
+  VMAX: 2100,                 // a speed clamp, so nothing tunnels
+  CLOCK: 120, BALLS: 3, BALLS_MAX: 5,
+  SAVE: 6,                    // ball-save seconds after a launch
+  CAP: 1200,
+  // Points before the playfield multiplier.
+  PTS: { bumper: 1, sling: 0, lane: 3, neon: 20, target: 4, bank: 15, labTarget: 3, labBank: 15,
+         core: 3, multiball: 20, jackpot: 15, skill: 25, star: 2, kickback: 0 },
+  MULT_MAX: 4, CORE_HITS: 5,
+  KICK: { bumper: 560, sling: 480, back: 1250 },
+  // The Brick Lab grid over the middle of the table (§ 25): 9 × 7 squares.
+  GRID: { cols: 9, rows: 7, x0: 40, x1: 290, y0: 150, y1: 470 },
+  LANE_X: [105, 145, 185, 225], LANE_Y0: 92, LANE_Y1: 128,
+  FLIP: { len: 58, r0: 9, r1: 5, rest: 0.49, up: -0.52, wUp: 22, wDown: 13, e: 0.28 },
+  PLUNGE: { x: 333, y: 691, vMin: 1160, vMax: 1830, chargeSecs: 0.9 },
+  COLORS: { bumper: '#ff2bd6', post: '#00f5ff', target: '#ffd700', core: '#39ff14', star: '#b35cff', sling: '#00f5ff', wall: '#3d7bff' }
+};
+// The stock table is a lab design like any other: . empty · B bumper ·
+// P post · T target · C core · S star. A lab level replaces it square for square.
+var PB_CHARS = '.BPTCS';
+var PB_CLASSIC = ['..S...S..', '...B.B...', '....B....', '.........', 'T.......T', '..P.C.P..', '.........'];
+
+function pbCell(c, r){
+  const g = PB.GRID, cw = (g.x1 - g.x0) / g.cols, ch = (g.y1 - g.y0) / g.rows;
+  return { x: g.x0 + (c + 0.5) * cw, y: g.y0 + (r + 0.5) * ch, cw, ch };
+}
+function pbCellsFromPic(rows){
+  const g = PB.GRID, cells = new Array(g.cols * g.rows).fill(0);
+  rows.forEach((row, r) => { for(let c = 0; c < g.cols; c++){ const v = PB_CHARS.indexOf(row[c] || '.'); cells[r * g.cols + c] = v > 0 ? v : 0; } });
+  return cells;
+}
+
+// Segments are {ax, ay, bx, by}; `one` makes one side solid only (its front
+// is the LEFT of A→B, i.e. normal (dy, -dx)/len for a y-down world).
+function pbSeg(ax, ay, bx, by, o){ return Object.assign({ ax, ay, bx, by, e: 0.45 }, o || {}); }
+
+function pbTable(cells){
+  const W = PB.W, H = PB.H;
+  const walls = [], posts = [], bumpers = [], slings = [], targets = [], stars = [];
+  let core = null;
+  const add = (ax, ay, bx, by, o) => { const s = pbSeg(ax, ay, bx, by, o); walls.push(s); return s; };
+  // ── THE FRAME ──
+  add(12, H + 40, 12, 170);                                   // left wall
+  // The top arch: an ellipse from the left wall over to the right wall.
+  const cx = 180, cy = 170, rx = 168, ry = 150, N = 26;
+  let px = 12, py = 170;
+  for(let i = 1; i <= N; i++){
+    const a = Math.PI - Math.PI * i / N;
+    const x = cx + rx * Math.cos(a), y = cy - ry * Math.sin(a);
+    add(px, py, x, y, { arc: true });
+    px = x; py = y;
+  }
+  add(348, 170, 348, H + 40);                                 // right wall (the plunger lane's outer wall)
+  add(318, H + 40, 318, 258);                                 // the lane's inner wall
+  // One-way gate at the top of the lane, sloped so a ball that lands on it
+  // rolls off into the playfield instead of back down the lane.
+  add(318, 258, 346, 238, { one: true, gate: true });
+  // The plunger's face: the ball rests on it.
+  add(318, 700, 348, 700, { plunger: true, e: 0.1 });
+  // ── THE BOTTOM: outlanes, inlanes, slingshots (mirrored about x = 165) ──
+  const M = x => 330 - x;
+  for(const s of [1, -1]){
+    const X = x => s > 0 ? x : M(x);
+    // Inlane guide: the post line between the outlane and the inlane, then the bend onto the flipper.
+    add(X(32), 506, X(32), 596, { side: s });
+    add(X(32), 596, X(91), 629, { side: s });
+    posts.push({ x: X(32), y: 506, r: 5, kind: 'lanepost' });
+    // Slingshot: the kicking face looks up and in, toward the middle.
+    const a = [X(62), 506], b = [X(62), 574], c = [X(94), 594];
+    add(a[0], a[1], b[0], b[1], { side: s, sling: true });
+    add(b[0], b[1], c[0], c[1], { side: s, sling: true });
+    const face = pbSeg(a[0], a[1], c[0], c[1], { side: s, e: 0.5, flash: 0 });
+    const dx = face.bx - face.ax, dy = face.by - face.ay, L = Math.hypot(dx, dy);
+    // The inward normal: points away from the sling body toward the playfield centre.
+    let nx = dy / L, ny = -dx / L;
+    if((165 - (face.ax + face.bx) / 2) * nx < 0){ nx = -nx; ny = -ny; }
+    face.nx = nx; face.ny = ny;
+    slings.push(face);
+    posts.push({ x: a[0], y: a[1], r: 4, kind: 'slingpost' });
+    posts.push({ x: c[0], y: c[1], r: 4, kind: 'slingpost' });
+    // The apron under the flipper, into the drain.
+    add(X(12), 660, X(88), 700, { side: s, apron: true });
+  }
+  // ── THE TOP LANES: five posts make four rollover lanes ──
+  for(const x of [85, 125, 165, 205, 245]){
+    walls.push(pbSeg(x, PB.LANE_Y0, x, PB.LANE_Y1, { r: 4, lane: true }));
+    posts.push({ x, y: PB.LANE_Y0, r: 4, kind: 'lanepost' });
+    posts.push({ x, y: PB.LANE_Y1, r: 4, kind: 'lanepost' });
+  }
+  // ── THE DROP-TARGET BANK on the right, against the lane wall ──
+  // A launch comes round the arch and down the LEFT side, so a bank there was
+  // hit by nearly every plunge. Over here it has to be aimed at.
+  for(let i = 0; i < 3; i++){
+    const y = 330 + i * 30;
+    const t = pbSeg(316, y - 13, 316, y + 13, { bank: true, i, down: false, flash: 0, e: 0.35 });
+    t.nx = -1; t.ny = 0;
+    targets.push(t);
+  }
+  // ── THE MIDDLE: a lab design, or the stock one ──
+  const g = PB.GRID;
+  const list = Array.isArray(cells) && cells.length === g.cols * g.rows ? cells : pbCellsFromPic(PB_CLASSIC);
+  let li = 0;
+  list.forEach((v, i) => {
+    if(!v) return;
+    const { x, y } = pbCell(i % g.cols, Math.floor(i / g.cols));
+    if(v === 1) bumpers.push({ x, y, r: 14, flash: 0, i: bumpers.length });
+    else if(v === 2) posts.push({ x, y, r: 6, kind: 'post' });
+    else if(v === 3){
+      const t = pbSeg(x - 11, y, x + 11, y, { lab: true, i: li++, lit: false, flash: 0, two: true, e: 0.4 });
+      t.nx = 0; t.ny = 1;
+      targets.push(t);
+    }
+    else if(v === 4 && !core) core = { x, y, r: 13, flash: 0 };
+    else if(v === 5) stars.push({ x, y, r: 11, flash: 0, cool: 0 });
+  });
+  // Posts that are also wall ends are drawn once but collide as circles too.
+  const flippers = [-1, 1].map(s => {
+    const F = PB.FLIP;
+    const px = s < 0 ? 98 : 232, py = 640;
+    // Angles measured from +x in the y-down world. The left flipper points
+    // right; the right one is its mirror (π − θ).
+    const rest = s < 0 ? F.rest : Math.PI - F.rest, up = s < 0 ? F.up : Math.PI - F.up;
+    return { side: s < 0 ? 'L' : 'R', s, px, py, len: F.len, r0: F.r0, r1: F.r1, rest, up, ang: rest, w: 0, held: false };
+  });
+  // Kickbacks: a lit outlane throws the ball back up once (lit at every new
+  // ball, relit by clearing the drop-target bank).
+  const kickbacks = [{ side: 'L', x0: 12, x1: 32, lit: true, flash: 0 }, { side: 'R', x0: 298, x1: 318, lit: true, flash: 0 }];
+  return { W, H, walls, posts, bumpers, slings, targets, stars, core, flippers, kickbacks, lanes: PB.LANE_X.map(x => ({ x, lit: false, flash: 0 })) };
+}
+
+// Closest point on a segment.
+function pbClosest(s, x, y){
+  const dx = s.bx - s.ax, dy = s.by - s.ay, L2 = dx * dx + dy * dy || 1;
+  let t = ((x - s.ax) * dx + (y - s.ay) * dy) / L2;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return { x: s.ax + dx * t, y: s.ay + dy * t, t };
+}
+
+// ── THE SIMULATION ─────────────────────────────────────────────────────
+// opts: { diff, cells (a lab layout or null), absorb() (the shield), rng }
+function pbSim(opts){
+  opts = opts || {};
+  const rng = opts.rng || Math.random;
+  const T = pbTable(opts.cells || null);
+  // A tier runs the WHOLE table faster (every shot keeps its shape, there is
+  // just less time to answer it): Safe 0.88×, Overclock 1.15×, Meltdown 1.27×.
+  const PACE = Math.pow(Math.min(3, Math.max(0.5, opts.diff || 1)), 0.35);
+  const G = PB.G;
+  const S = {
+    score: 0, mult: 1, ballsLeft: PB.BALLS - 1, ballNo: 1, over: false, reason: '',
+    save: 0, saveUsed: false, skill: -1, skillOpen: false, neonSets: 0, extra: 0,
+    bankUp: 3, coreHits: 0, multiball: false, charge: 0, charging: false,
+    labHit: 0, labTargets: T.targets.filter(t => t.lab).length,
+    stats: { bumpers: 0, slings: 0, targets: 0, banks: 0, lanes: 0, neon: 0, jackpots: 0, multiballs: 0, drains: 0, stars: 0, saves: 0 },
+    t: 0, bankReset: 0, autoLaunch: 0, flipEvt: null, pace: PACE, jpCool: 0
+  };
+  const pend = [];              // events raised by input between frames
+  const balls = [];
+  let nextId = 1;
+  const R = PB.BALL_R;
+
+  function newBall(inLane){
+    const b = { id: nextId++, x: PB.PLUNGE.x, y: 700 - R - 0.5, vx: 0, vy: 0, lane: !!inLane, still: 0, stuckT: 0, lastX: 0, lastY: 0 };
+    balls.push(b);
+    return b;
+  }
+  function award(ev, kind, pts, x, y){
+    const p = Math.round(pts * S.mult);
+    S.score += p;
+    ev.push({ type: kind, pts: p, x, y });
+    return p;
+  }
+  function pickSkill(){ S.skill = Math.floor(rng() * 4); S.skillOpen = true; }
+
+  // Serves a ball into the plunger lane.
+  function serve(){
+    const b = newBall(true);
+    pickSkill();
+    return b;
+  }
+
+  // ── COLLISION RESPONSE ──
+  function bounce(b, nx, ny, e, kick, fr){
+    const vn = b.vx * nx + b.vy * ny;
+    if(vn < 0){
+      b.vx -= (1 + e) * vn * nx; b.vy -= (1 + e) * vn * ny;
+      if(fr){ const tx = -ny, ty = nx, vt = b.vx * tx + b.vy * ty; b.vx -= vt * fr * tx; b.vy -= vt * fr * ty; }
+    }
+    if(kick){
+      const v2 = b.vx * nx + b.vy * ny;
+      if(v2 < kick){ b.vx += (kick - v2) * nx; b.vy += (kick - v2) * ny; }
+    }
+    return -vn;                       // impact speed
+  }
+  function hitSeg(b, s){
+    const c = pbClosest(s, b.x, b.y);
+    let dx = b.x - c.x, dy = b.y - c.y;
+    let d = Math.hypot(dx, dy);
+    const rad = R + (s.r || 0);
+    if(d >= rad) return null;
+    if(s.one){
+      // Solid from the front only: the front is where (dy, -dx) points.
+      const sx = s.bx - s.ax, sy = s.by - s.ay, L = Math.hypot(sx, sy);
+      const fx = sy / L, fy = -sx / L;
+      if((b.x - s.ax) * fx + (b.y - s.ay) * fy < 0) return null;
+      if(d < 1e-6){ dx = fx; dy = fy; d = 1; }
+    }
+    if(d < 1e-6){ dx = 0; dy = -1; d = 1; }
+    const nx = dx / d, ny = dy / d;
+    b.x += nx * (rad - d); b.y += ny * (rad - d);
+    return { nx, ny };
+  }
+  function hitCircle(b, cx, cy, r){
+    let dx = b.x - cx, dy = b.y - cy;
+    const d = Math.hypot(dx, dy), rad = R + r;
+    if(d >= rad) return null;
+    if(d < 1e-6){ dx = 0; dy = -1; }
+    const nx = d < 1e-6 ? 0 : dx / d, ny = d < 1e-6 ? -1 : dy / d;
+    b.x = cx + nx * rad; b.y = cy + ny * rad;
+    return { nx, ny };
+  }
+  function flipperPts(f){
+    const c = Math.cos(f.ang), s = Math.sin(f.ang);
+    return { tx: f.px + c * f.len, ty: f.py + s * f.len };
+  }
+  function hitFlipper(b, f){
+    const { tx, ty } = flipperPts(f);
+    const dx = tx - f.px, dy = ty - f.py, L2 = dx * dx + dy * dy;
+    let t = ((b.x - f.px) * dx + (b.y - f.py) * dy) / L2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const cx = f.px + dx * t, cy = f.py + dy * t, rr = f.r0 + (f.r1 - f.r0) * t;
+    let ox = b.x - cx, oy = b.y - cy;
+    const d = Math.hypot(ox, oy), rad = R + rr;
+    if(d >= rad) return false;
+    const nx = d < 1e-6 ? 0 : ox / d, ny = d < 1e-6 ? -1 : oy / d;
+    b.x = cx + nx * rad; b.y = cy + ny * rad;
+    // The flipper's own surface speed where the ball touches it.
+    const rx = cx + nx * rr - f.px, ry = cy + ny * rr - f.py;
+    const svx = -f.w * ry, svy = f.w * rx;
+    const rvx = b.vx - svx, rvy = b.vy - svy;
+    const vn = rvx * nx + rvy * ny;
+    if(vn < 0){
+      b.vx -= (1 + PB.FLIP.e) * vn * nx; b.vy -= (1 + PB.FLIP.e) * vn * ny;
+      // A little grip along the rubber, so a flip carries the ball with it.
+      const tx2 = -ny, ty2 = nx, vt = rvx * tx2 + rvy * ty2;
+      b.vx -= vt * 0.08 * tx2; b.vy -= vt * 0.08 * ty2;
+    }
+    return true;
+  }
+
+  // ── ONE SUBSTEP ──
+  function step(b, h, ev){
+    if(b.lane){
+      // Resting on the plunger: nothing moves until it is launched.
+      b.x = PB.PLUNGE.x; b.y = 700 - R - 0.5 + S.charge * 14; b.vx = 0; b.vy = 0;
+      return;
+    }
+    b.vy += G * h;
+    b.vx *= 1 - 0.25 * h; b.vy *= 1 - 0.25 * h;
+    const sp = Math.hypot(b.vx, b.vy);
+    if(sp > PB.VMAX){ b.vx *= PB.VMAX / sp; b.vy *= PB.VMAX / sp; }
+    b.x += b.vx * h; b.y += b.vy * h;
+
+    for(const s of T.walls){
+      const n = hitSeg(b, s);
+      if(n) bounce(b, n.nx, n.ny, s.e != null ? s.e : 0.45, 0, 0.02);
+    }
+    for(const p of T.posts){
+      if(p.kind !== 'post') continue;          // lane and sling posts are drawn; their walls collide
+      const n = hitCircle(b, p.x, p.y, p.r);
+      if(n) bounce(b, n.nx, n.ny, 0.5, 0, 0.02);
+    }
+    for(const sl of T.slings){
+      const n = hitSeg(b, sl);
+      if(!n) continue;
+      // Only a real hit fires the kicker; a ball rolling along it just rolls.
+      const imp = -(b.vx * n.nx + b.vy * n.ny);
+      if(imp > 70 && n.nx * sl.nx + n.ny * sl.ny > 0.5){
+        bounce(b, sl.nx, sl.ny, 0.5, PB.KICK.sling, 0);
+        if(sl.flash <= 0){ S.stats.slings++; award(ev, 'sling', PB.PTS.sling, b.x, b.y); }
+        sl.flash = 0.18;
+      }else bounce(b, n.nx, n.ny, 0.45, 0, 0.02);
+    }
+    for(const bp of T.bumpers){
+      const n = hitCircle(b, bp.x, bp.y, bp.r);
+      if(!n) continue;
+      bounce(b, n.nx, n.ny, 0.9, PB.KICK.bumper, 0);
+      if(bp.flash <= 0.05){ S.stats.bumpers++; award(ev, 'bumper', PB.PTS.bumper, bp.x, bp.y); ev.push({ type: 'bumperhit', i: bp.i, x: bp.x, y: bp.y }); }
+      bp.flash = 0.2;
+    }
+    for(const t of T.targets){
+      if(t.down) continue;
+      const n = hitSeg(b, t);
+      if(!n) continue;
+      const imp = bounce(b, n.nx, n.ny, t.e, 0, 0.02);
+      if(imp < 60 || t.flash > 0.05) continue;
+      t.flash = 0.3;
+      if(t.bank){
+        t.down = true;
+        S.bankUp--;
+        S.stats.targets++;
+        award(ev, 'target', PB.PTS.target, t.ax, (t.ay + t.by) / 2);
+        if(S.bankUp <= 0){
+          S.stats.banks++;
+          award(ev, 'bank', PB.PTS.bank, 300, 360);
+          S.bankReset = 3;
+          if(T.kickbacks.some(k => !k.lit)){ T.kickbacks.forEach(k => { k.lit = true; }); ev.push({ type: 'kbon' }); }
+        }
+      }else if(t.lab){
+        if(!t.lit){ t.lit = true; S.labHit++; }
+        S.stats.targets++;
+        award(ev, 'target', PB.PTS.labTarget, (t.ax + t.bx) / 2, t.ay);
+        if(S.labHit >= S.labTargets){
+          award(ev, 'bank', PB.PTS.labBank, (t.ax + t.bx) / 2, t.ay);
+          S.stats.banks++;
+          T.targets.forEach(x => { if(x.lab) x.lit = false; });
+          S.labHit = 0;
+        }
+      }
+    }
+    if(T.core){
+      const c = T.core, n = hitCircle(b, c.x, c.y, c.r);
+      if(n){
+        const imp = bounce(b, n.nx, n.ny, 0.6, 0, 0);
+        // Only a real SHOT counts — a ball dribbling off the core is not one.
+        if(imp > 220 && c.flash <= 0.05){
+          c.flash = 0.35;
+          if(S.multiball){
+            if(S.jpCool <= 0){ S.jpCool = 1.2; S.stats.jackpots++; award(ev, 'jackpot', PB.PTS.jackpot, c.x, c.y); }
+          }else{
+            S.coreHits++;
+            award(ev, 'core', PB.PTS.core, c.x, c.y);
+            ev.push({ type: 'corecharge', n: S.coreHits });
+            if(S.coreHits >= PB.CORE_HITS) startMultiball(ev);
+          }
+        }
+      }
+    }
+    for(const f of T.flippers) hitFlipper(b, f);
+    // Other balls (multiball): equal masses, a soft elastic swap along the normal.
+    for(const o of balls){
+      if(o === b || o.lane || o.id < b.id) continue;
+      const dx = b.x - o.x, dy = b.y - o.y, d = Math.hypot(dx, dy);
+      if(d >= 2 * R || d < 1e-6) continue;
+      const nx = dx / d, ny = dy / d, pen = (2 * R - d) / 2;
+      b.x += nx * pen; b.y += ny * pen; o.x -= nx * pen; o.y -= ny * pen;
+      const rv = (b.vx - o.vx) * nx + (b.vy - o.vy) * ny;
+      if(rv < 0){ const j = -rv * 0.95; b.vx += j * nx; b.vy += j * ny; o.vx -= j * nx; o.vy -= j * ny; }
+    }
+  }
+
+  // Rollovers: the lanes and the lab's stars are sensors, crossed not hit.
+  function sensors(b, ev){
+    if(b.y > PB.LANE_Y0 && b.y < PB.LANE_Y1){
+      for(let i = 0; i < 4; i++){
+        const ln = T.lanes[i];
+        if(Math.abs(b.x - ln.x) < 14 && !b.inLane){
+          b.inLane = true;
+          ln.flash = 0.4;
+          S.stats.lanes++;
+          award(ev, 'lane', PB.PTS.lane, ln.x, 110);
+          if(S.skillOpen){
+            S.skillOpen = false;
+            if(i === S.skill){ award(ev, 'skill', PB.PTS.skill, ln.x, 110); }
+          }
+          if(!ln.lit){
+            ln.lit = true;
+            if(T.lanes.every(l => l.lit)){
+              S.neonSets++; S.stats.neon++;
+              award(ev, 'neon', PB.PTS.neon, 165, 110);
+              T.lanes.forEach(l => { l.lit = false; });
+              if(S.mult < PB.MULT_MAX){ S.mult++; ev.push({ type: 'mult', mult: S.mult }); }
+              // Every third N·E·O·N earns an extra ball.
+              if(S.neonSets % 3 === 0 && S.ballsLeft + balls.length < PB.BALLS_MAX){ S.ballsLeft++; S.extra++; ev.push({ type: 'extra' }); }
+            }
+          }
+        }
+      }
+    }
+    if(b.y > PB.LANE_Y1 + 6 || b.y < PB.LANE_Y0 - 6) b.inLane = false;
+    for(const k of T.kickbacks){
+      if(!k.lit || b.vy <= 0 || b.y < 600 || b.y > 650 || b.x < k.x0 || b.x > k.x1) continue;
+      k.lit = false; k.flash = 0.6;
+      b.vy = -PB.KICK.back; b.vx = k.side === 'L' ? 30 : -30;
+      award(ev, 'kickback', PB.PTS.kickback, b.x, 630);
+    }
+    for(const st of T.stars){
+      if(st.cool > 0) continue;
+      if(Math.hypot(b.x - st.x, b.y - st.y) < st.r + R * 0.4){
+        st.cool = 0.4; st.flash = 0.3; S.stats.stars++;
+        award(ev, 'star', PB.PTS.star, st.x, st.y);
+      }
+    }
+  }
+
+  function startMultiball(ev){
+    S.multiball = true; S.coreHits = 0; S.stats.multiballs++;
+    award(ev, 'multiball', PB.PTS.multiball, T.core ? T.core.x : 165, T.core ? T.core.y : 400);
+    const nb = newBall(false);
+    nb.x = PB.PLUNGE.x; nb.y = 640; nb.vx = 0; nb.vy = -1500;
+    S.save = Math.max(S.save, 8);
+  }
+
+  // A ball resting somewhere it can never leave (a pocket of posts in a lab
+  // level, a dead spot on the stock one) gets nudged after a few seconds.
+  // Not a ball the player is holding up on a flipper — that is a trap, a skill.
+  function unstick(b, dt, ev){
+    const moved = Math.hypot(b.x - b.lastX, b.y - b.lastY);
+    b.lastX = b.x; b.lastY = b.y;
+    const onFlipper = T.flippers.some(f => f.held && Math.hypot(b.x - f.px, b.y - f.py) < f.len + 20);
+    if(!b.lane && !onFlipper && moved < 25 * dt) b.stuckT += dt; else b.stuckT = 0;
+    if(b.stuckT > 2.6){
+      b.stuckT = 0;
+      b.vx = (rng() - 0.5) * 500; b.vy = -380 - rng() * 220;
+      ev.push({ type: 'nudge', x: b.x, y: b.y });
+    }
+  }
+
+  // ── DRAINS ──
+  function drain(b, ev){
+    balls.splice(balls.indexOf(b), 1);
+    S.stats.drains++;
+    ev.push({ type: 'drain', x: b.x });
+    if(balls.length) {                       // multiball carries on while one is left
+      if(balls.filter(x => !x.lane).length === 1 && S.multiball){ S.multiball = false; ev.push({ type: 'mbend' }); }
+      return;
+    }
+    S.multiball = false;
+    if(S.save > 0){ S.stats.saves++; ev.push({ type: 'saved' }); serve(); S.skillOpen = false; S.autoLaunch = 0.7; S.save = 0; S.saveUsed = true; return; }
+    if(S.ballsLeft > 0){
+      S.ballsLeft--; S.ballNo++;
+      T.kickbacks.forEach(k => { k.lit = true; });
+      ev.push({ type: 'nextball', n: S.ballNo });
+      serve();
+      return;
+    }
+    // The last ball: the round asks the shield first.
+    if(opts.absorb && opts.absorb()){ ev.push({ type: 'absorb', x: b.x, y: 680 }); serve(); S.skillOpen = false; S.autoLaunch = 0.7; S.saveUsed = true; return; }
+    S.over = true; S.reason = 'drain';
+    ev.push({ type: 'over' });
+  }
+
+  // ── INPUT ──
+  function flip(side, down){
+    for(const f of T.flippers){
+      if(f.side !== side) continue;
+      if(down && !f.held) pend.push({ type: 'flip', side });
+      f.held = !!down;
+    }
+    // A flip is also a LANE CHANGE: the lit N·E·O·N letters shift with it.
+    if(down){
+      const lit = T.lanes.map(l => l.lit);
+      if(lit.some(Boolean) && !lit.every(Boolean)){
+        const n = lit.length;
+        T.lanes.forEach((l, i) => { l.lit = side === 'L' ? lit[(i + 1) % n] : lit[(i - 1 + n) % n]; });
+      }
+    }
+  }
+  function launch(ev, power){
+    const b = balls.find(x => x.lane);
+    if(!b) return false;
+    const P = PB.PLUNGE;
+    b.lane = false;
+    b.x = P.x; b.y = 700 - R - 1;
+    b.vx = 0; b.vy = -(P.vMin + (P.vMax - P.vMin) * Math.max(0, Math.min(1, power)));
+    S.save = Math.max(S.save, S.saveUsed ? 0 : PB.SAVE);
+    S.saveUsed = false;
+    ev.push({ type: 'launch', power });
+    return true;
+  }
+
+  function update(dtReal){
+    const ev = pend.splice(0);
+    if(S.over || dtReal <= 0) return ev;
+    const dt = dtReal * PACE;
+    S.t += dt;
+    if(S.save > 0) S.save = Math.max(0, S.save - dt);
+    if(S.jpCool > 0) S.jpCool = Math.max(0, S.jpCool - dt);
+    if(S.charging) S.charge = Math.min(1, S.charge + dt / PB.PLUNGE.chargeSecs);
+    if(S.autoLaunch > 0){ S.autoLaunch -= dt; if(S.autoLaunch <= 0){ S.autoLaunch = 0; launch(ev, 0.55); } }
+    if(S.bankReset > 0){ S.bankReset -= dt; if(S.bankReset <= 0){ T.targets.forEach(t => { if(t.bank) t.down = false; }); S.bankUp = 3; ev.push({ type: 'bankup' }); } }
+    // Flippers move at their own speed, whatever the frame rate.
+    for(const f of T.flippers){
+      const target = f.held ? f.up : f.rest;
+      const w = f.held ? PB.FLIP.wUp : PB.FLIP.wDown;
+      const d = target - f.ang;
+      const stepA = Math.sign(d) * Math.min(Math.abs(d), w * dt);
+      f.w = dt > 0 ? stepA / dt : 0;
+      f.dAng = stepA;
+    }
+    // Substeps: each moves a ball at most ~4 units, so a thin wall cannot be skipped.
+    let vmax = 0;
+    for(const b of balls) vmax = Math.max(vmax, Math.hypot(b.vx, b.vy));
+    const fmax = Math.max(...T.flippers.map(f => Math.abs(f.w) * f.len));
+    const n = Math.min(40, Math.max(3, Math.ceil(Math.max(vmax, fmax) * dt / 3.5)));
+    const h = dt / n;
+    for(let k = 0; k < n; k++){
+      for(const f of T.flippers) f.ang += f.dAng / n;
+      for(const b of balls.slice()) step(b, h, ev);
+      for(const b of balls) sensors(b, ev);
+    }
+    for(const f of T.flippers) if(Math.abs(f.ang - (f.held ? f.up : f.rest)) < 1e-4) f.w = 0;
+    for(const b of balls.slice()){
+      // A plunge too weak to clear the lane rolls back onto the plunger: it is
+      // served again rather than counted as stuck.
+      if(!b.lane && b.x > 318 && b.y > 650 && Math.abs(b.vy) < 60 && Math.abs(b.vx) < 60){ b.lane = true; b.stuckT = 0; }
+      unstick(b, dt, ev);
+      if(b.y > PB.H + R * 2 || b.x < -30 || b.x > PB.W + 30) drain(b, ev);
+    }
+    const fade = x => x > 0 ? Math.max(0, x - dt) : 0;
+    T.bumpers.forEach(o => { o.flash = fade(o.flash); });
+    T.slings.forEach(o => { o.flash = fade(o.flash); });
+    T.targets.forEach(o => { o.flash = fade(o.flash); });
+    T.lanes.forEach(o => { o.flash = fade(o.flash); });
+    T.stars.forEach(o => { o.flash = fade(o.flash); o.cool = fade(o.cool); });
+    T.kickbacks.forEach(o => { o.flash = fade(o.flash); });
+    if(T.core) T.core.flash = fade(T.core.flash);
+    return ev;
+  }
+
+  serve();
+  return {
+    S, T, balls, update, flip,
+    // Hold to charge, let go to fire. A tap is a soft plunge.
+    chargeDown(){ if(balls.some(b => b.lane)){ S.charging = true; } },
+    chargeUp(){
+      if(!S.charging) return false;
+      S.charging = false;
+      const p = S.charge;
+      S.charge = 0;
+      return launch(pend, p);
+    },
+    endClock(){ if(!S.over){ S.over = true; S.reason = 'timeout'; } },
+    flipperTip(f){ return flipperPts(f); }
+  };
+}
+
+// ── THE ROUND ──────────────────────────────────────────────────────────
+// Controls, clock, scoring and the ending, shared by both builds. The frame
+// loop is the renderer's: it calls round.frame(dt) and draws what comes back.
+var pbLast = null;   // the last round, for the console: pbLast.S is the whole state
+var PB_LKEYS = ['ArrowLeft', 'KeyZ', 'KeyA', 'ShiftLeft'];
+var PB_RKEYS = ['ArrowRight', 'Slash', 'KeyM', 'KeyD', 'ShiftRight'];
+// Up AND down both plunge, so INVERSE CONTROLS (which swaps them) cannot strand a ball.
+var PB_PKEYS = ['Space', 'ArrowDown', 'ArrowUp', 'Enter', 'KeyS', 'KeyW'];
+
+function pbRound(){
+  const diff = getDifficultyModifier();
+  const sim = pbSim({
+    diff,
+    cells: (typeof labTable === 'function') ? labTable() : null,    // 🧱 a Brick Lab table, or the stock one
+    absorb: () => survivedFatal(),
+    rng: () => dailyRand()
+  });
+  const S = sim.S;
+  S.multMax = 1;
+  const time0 = Math.round(PB.CLOCK * getTimeModifier());
+  let time = time0, ended = false;
+
+  setControls({ left: '◀', action: 'LAUNCH', right: '▶' });
+  setControlHint('HOLD ◀ ▶ (OR EITHER HALF OF THE TABLE) TO FLIP · LAUNCH FIRES THE BALL',
+                 '← / Z FLIPS LEFT · → / M FLIPS RIGHT · HOLD SPACE OR ↓ TO PULL THE PLUNGER');
+  showTouchHint('TAP TO LAUNCH · HOLD EITHER SIDE TO FLIP');
+  document.getElementById('g-time').textContent = time;
+  document.getElementById('prog-fill').style.background = 'linear-gradient(90deg,#ff2bd6,var(--cyan))';
+
+  // Every source that can hold a flipper (a key, the pad, a finger) is
+  // counted, so letting go of ONE of them never drops a flipper another is
+  // still holding.
+  const held = { L: new Set(), R: new Set() };
+  const frozen = () => ((typeof photoActive === 'function') && photoActive()) || ((typeof pauseActive === 'function') && pauseActive());
+  const press = (side, src) => {
+    if(ended || frozen()) return;
+    hideTouchHint();
+    const set = held[side];
+    const was = set.size > 0;
+    set.add(src);
+    if(!was) sim.flip(side, true);
+  };
+  const release = (side, src) => {
+    const set = held[side];
+    if(!set.delete(src)) return;
+    if(!set.size) sim.flip(side, false);
+  };
+  let plungeSrc = null;
+  const laneBall = () => sim.balls.some(b => b.lane) && !S.autoLaunch;
+  const plungeDown = src => {
+    if(ended || frozen() || plungeSrc || !laneBall()) return false;
+    hideTouchHint();
+    plungeSrc = src;
+    sim.chargeDown();
+    return true;
+  };
+  const plungeUp = src => {
+    if(plungeSrc !== src) return;
+    plungeSrc = null;
+    sim.chargeUp();
+  };
+
+  window.onkeydown = e => {
+    const k = e.code;
+    if(PB_LKEYS.includes(k)){ e.preventDefault(); if(!e.repeat) press('L', 'k' + k); }
+    else if(PB_RKEYS.includes(k)){ e.preventDefault(); if(!e.repeat) press('R', 'k' + k); }
+    else if(PB_PKEYS.includes(k)){
+      e.preventDefault();
+      // The gamepad's A arrives as a Space press with no release (it plunges
+      // through the LAUNCH pad instead), so an untrusted one is ignored here.
+      if(e.isTrusted === false && (k === 'Space' || k === 'Enter')) return;
+      if(!e.repeat) plungeDown('k' + k);
+    }
+  };
+  window.onkeyup = e => {
+    const k = e.code;
+    if(PB_LKEYS.includes(k)) release('L', 'k' + k);
+    else if(PB_RKEYS.includes(k)) release('R', 'k' + k);
+    else if(PB_PKEYS.includes(k)) plungeUp('k' + k);
+  };
+  bindHold(document.getElementById('ctrl-left'),  () => press('L', 'pad'), () => release('L', 'pad'));
+  bindHold(document.getElementById('ctrl-right'), () => press('R', 'pad'), () => release('R', 'pad'));
+  bindHold(document.getElementById('ctrl-action'), () => plungeDown('padA'), () => plungeUp('padA'));
+
+  // The table itself: EVERY finger is its own flipper (bindCanvasDrag drives
+  // one finger only, and pinball is played with two). A touch while a ball
+  // waits on the plunger launches it; after that, the side it lands on flips.
+  // Registered in _drag so clearCanvasDrag() takes it down with the round.
+  const touches = new Map();
+  const on = (target, type, fn, bucket) => { target.addEventListener(type, fn, { passive: false }); _drag[bucket].push([target, type, fn]); };
+  const sideAt = (cx, cy) => boardPos(cx, cy).x < BOARD_W / 2 ? 'L' : 'R';
+  if(aCanvas){
+    if('ontouchstart' in window){
+      on(aCanvas, 'touchstart', e => {
+        e.preventDefault();
+        for(const t of e.changedTouches){
+          const id = 't' + t.identifier;
+          if(sim.balls.every(b => b.lane) && plungeDown(id)){ touches.set(id, 'P'); continue; }
+          const side = sideAt(t.clientX, t.clientY);
+          touches.set(id, side);
+          press(side, id);
+        }
+      }, 'touch');
+      const up = e => {
+        e.preventDefault();
+        for(const t of e.changedTouches){
+          const id = 't' + t.identifier, what = touches.get(id);
+          touches.delete(id);
+          if(what === 'P') plungeUp(id); else if(what) release(what, id);
+        }
+      };
+      on(aCanvas, 'touchend', up, 'touch');
+      on(aCanvas, 'touchcancel', up, 'touch');
+    }
+    // A mouse on the table works like one finger (the controller's A button
+    // synthesises mouse presses at its cursor — those are left to the pad).
+    let mouseSide = null;
+    on(aCanvas, 'mousedown', e => {
+      if(e.isTrusted === false) return;
+      e.preventDefault();
+      if(sim.balls.every(b => b.lane) && plungeDown('m')){ mouseSide = 'P'; return; }
+      mouseSide = sideAt(e.clientX, e.clientY);
+      press(mouseSide, 'm');
+    }, 'mouse');
+    on(window, 'mouseup', e => {
+      if(!mouseSide) return;
+      if(mouseSide === 'P') plungeUp('m'); else release(mouseSide, 'm');
+      mouseSide = null;
+    }, 'mouse');
+  }
+
+  gTimer = setInterval(() => {
+    if(ended) return;
+    time--;
+    document.getElementById('g-time').textContent = Math.max(0, time);
+    document.getElementById('prog-fill').style.width = `${Math.max(0, time / time0 * 100)}%`;
+    if(time <= 5 && time > 0) snd('tick');
+    if(time <= 0){ sim.endClock(); end('timeout'); }
+  }, 1000);
+
+  function end(reason){
+    if(ended) return;
+    ended = true;
+    clearCanvasDrag();
+    held.L.clear(); held.R.clear();
+    sim.flip('L', false); sim.flip('R', false);
+    if(reason !== 'timeout') snd('gameOver');
+    const earned = Math.min(PB.CAP, Math.round(S.score));
+    const st = S.stats;
+    gLater(() => showResults('pinball', earned, {
+      '🎯 Bumper Hits': st.bumpers,
+      '🔤 N·E·O·N Sets': st.neon,
+      '✖️ Best Multiplier': '×' + S.multMax,
+      '💥 Multiballs': st.multiballs + (st.jackpots ? ` · ${st.jackpots} jackpot${st.jackpots === 1 ? '' : 's'}` : ''),
+      '🎱 Balls Played': S.ballNo + (S.extra ? ` (+${S.extra} extra)` : ''),
+      ...(reason === 'timeout' ? { '✅ Status': 'TABLE POWERED DOWN' } : { '💥 Status': 'LAST BALL DRAINED' }),
+      '🏆 Final Score': `${earned} PTS`
+    }), reason === 'timeout' ? 300 : 900);
+  }
+
+  let lastScore = -1;
+  snd('go');
+  return pbLast = {
+    sim, S,
+    // One frame: advance, sound, publish — and hand the events to the renderer.
+    frame(dt){
+      if(ended) return [];
+      const ev = sim.update(dt);
+      for(const e of ev){
+        switch(e.type){
+          case 'flip': snd('flip'); break;
+          case 'launch': snd('shoot'); break;
+          case 'bumper': snd('bounce'); break;
+          case 'sling': snd('bounceWall'); break;
+          case 'target': snd('hit'); break;
+          case 'bank': snd('combo'); toastPb('🎯 BANK CLEARED'); break;
+          case 'bankup': break;
+          case 'kbon': toastPb('⬆ KICKBACKS LIT'); break;
+          case 'lane': snd('pickup'); break;
+          case 'skill': snd('success'); toastPb('🎯 SKILL SHOT +' + e.pts); break;
+          case 'neon': snd('levelUp'); break;
+          case 'mult': S.multMax = Math.max(S.multMax, e.mult); toastPb(`🔤 N·E·O·N · MULTIPLIER ×${e.mult}`); break;
+          case 'extra': snd('levelUp'); toastPb('🎱 EXTRA BALL'); break;
+          case 'core': snd('charge'); break;
+          case 'multiball': snd('alarm'); toastPb('💥 MULTIBALL'); break;
+          case 'jackpot': snd('coin'); toastPb('💰 JACKPOT +' + e.pts); break;
+          case 'star': snd('score'); break;
+          case 'kickback': snd('dash'); break;
+          case 'nudge': snd('land'); break;
+          case 'drain': snd('hurt'); break;
+          case 'saved': snd('shield'); toastPb('🛡️ BALL SAVED'); break;
+          case 'absorb': snd('shieldHit'); toastPb('🛡️ SHIELD — ONE MORE BALL'); break;
+          case 'nextball': snd('go'); break;
+          case 'over': break;
+        }
+      }
+      if(S.score !== lastScore){ lastScore = S.score; setLive(Math.min(PB.CAP, S.score)); }
+      if(S.over && S.reason === 'drain') end('drain');
+      return ev;
+    },
+    get ended(){ return ended; }
+  };
+}
+// A one-line banner under the board for the table's big moments — the
+// renderers draw their own flourish; this one says it in words.
+function toastPb(msg){ try{ toast(msg, 1500); }catch(e){} }
+
+// ── THE 2D BUILD ───────────────────────────────────────────────────────
+// The table is drawn in its own units and squashed to fit the 560 × 500
+// board: 360 wide in the middle, 720 tall shown as 500 — a table seen at a
+// tilt, so every circle is an ellipse and the flippers read as flat on it.
+// The two side panels carry the table's state; the header carries the score.
+function startPinball(){
+  document.getElementById('g-canvas-holder').style.display = 'block';
+  const round = pbRound();
+  fitCanvas();
+  const W = BOARD_W, H = BOARD_H;
+  const OX = (W - PB.W) / 2, K = H / PB.H;
+  const S = round.S, sim = round.sim, T = sim.T;
+  const trails = new Map(), pops = [], sparks = [];
+  let banner = { text: 'BALL 1', t: 1.4 }, last = gNow(), glowT = 0;
+  const col = PB.COLORS;
+  const sx = x => OX + x, sy = y => y * K;
+
+  // Draw in table units: everything between begin() and done() is squashed,
+  // so a circle comes out an ellipse and the flippers keep their true shape.
+  function begin(){ aCtx.save(); aCtx.translate(OX, 0); aCtx.scale(1, K); }
+  function done(){ aCtx.restore(); }
+
+  function glowLine(ax, ay, bx, by, c, w, blur){
+    aCtx.save();
+    aCtx.strokeStyle = c; aCtx.lineWidth = w; aCtx.lineCap = 'round';
+    aCtx.shadowBlur = blur || 0; aCtx.shadowColor = c;
+    aCtx.beginPath(); aCtx.moveTo(ax, ay); aCtx.lineTo(bx, by); aCtx.stroke();
+    aCtx.restore();
+  }
+  function disc(x, y, r, fill, stroke, lw){
+    aCtx.beginPath(); aCtx.arc(x, y, r, 0, Math.PI * 2);
+    if(fill){ aCtx.fillStyle = fill; aCtx.fill(); }
+    if(stroke){ aCtx.strokeStyle = stroke; aCtx.lineWidth = lw || 2; aCtx.stroke(); }
+  }
+  function starPath(x, y, r){
+    aCtx.beginPath();
+    for(let i = 0; i < 10; i++){
+      const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r;
+      const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr;
+      i ? aCtx.lineTo(px, py) : aCtx.moveTo(px, py);
+    }
+    aCtx.closePath();
+  }
+
+  // The playfield's outline, for the table surface.
+  function fieldPath(){
+    aCtx.beginPath();
+    aCtx.moveTo(12, PB.H);
+    for(const w of T.walls) if(w.arc) aCtx.lineTo(w.bx, w.by);
+    aCtx.lineTo(348, PB.H); aCtx.closePath();
+  }
+
+  function drawTable(dt){
+    // ── SURFACE ──
+    begin();
+    fieldPath();
+    const g = aCtx.createLinearGradient(0, 0, 0, PB.H);
+    g.addColorStop(0, '#0b0a26'); g.addColorStop(0.55, '#07081a'); g.addColorStop(1, '#0d0618');
+    aCtx.fillStyle = g; aCtx.fill();
+    aCtx.save(); aCtx.clip();
+    aCtx.strokeStyle = 'rgba(80,120,255,0.07)'; aCtx.lineWidth = 1;
+    for(let x = 12; x < 348; x += 24){ aCtx.beginPath(); aCtx.moveTo(x, 0); aCtx.lineTo(x, PB.H); aCtx.stroke(); }
+    for(let y = 0; y < PB.H; y += 24){ aCtx.beginPath(); aCtx.moveTo(0, y); aCtx.lineTo(PB.W, y); aCtx.stroke(); }
+    // Lane glow under the plunger lane and a soft pool of light where the bumpers are.
+    const pool = aCtx.createRadialGradient(165, 250, 10, 165, 250, 170);
+    pool.addColorStop(0, 'rgba(255,43,214,0.10)'); pool.addColorStop(1, 'rgba(255,43,214,0)');
+    aCtx.fillStyle = pool; aCtx.fillRect(0, 60, PB.W, 400);
+    aCtx.restore();
+    // The plunger lane.
+    aCtx.fillStyle = 'rgba(0,245,255,0.05)';
+    aCtx.fillRect(318, 250, 30, 450);
+
+    // ── WALLS ──
+    for(const w of T.walls){
+      if(w.plunger) continue;
+      const c = w.arc ? '#ff2bd6' : w.gate ? '#ffd700' : w.lane ? '#00f5ff' : w.sling ? '#1fb7ff' : w.apron ? '#3d7bff' : col.wall;
+      glowLine(w.ax, w.ay, w.bx, w.by, c, w.lane ? 5 : 3, w.arc ? 10 : 6);
+    }
+    // Slingshot faces: they light when they kick.
+    for(const s of T.slings){
+      const f = Math.min(1, s.flash / 0.18);
+      glowLine(s.ax, s.ay, s.bx, s.by, f > 0 ? '#ffffff' : '#00f5ff', 4 + f * 3, 8 + f * 16);
+    }
+    // Posts.
+    for(const p of T.posts){
+      disc(p.x, p.y, p.r, p.kind === 'post' ? '#0b1a3a' : '#0a1024', p.kind === 'post' ? col.post : 'rgba(0,245,255,0.7)', 2);
+    }
+    // ── TOP LANES ──
+    const letters = ['N', 'E', 'O', 'N'];
+    T.lanes.forEach((ln, i) => {
+      const lit = ln.lit, fl = ln.flash > 0, skill = S.skillOpen && S.skill === i && sim.balls.some(b => b.lane || b.y > 250);
+      aCtx.fillStyle = lit ? 'rgba(255,43,214,0.55)' : fl ? 'rgba(255,255,255,0.35)' : skill && (glowT % 0.5 < 0.25) ? 'rgba(255,215,0,0.45)' : 'rgba(255,43,214,0.08)';
+      aCtx.fillRect(ln.x - 12, PB.LANE_Y0 + 4, 24, PB.LANE_Y1 - PB.LANE_Y0 - 8);
+    });
+    // Kickback arrows in the outlanes.
+    for(const k of T.kickbacks){
+      const x = (k.x0 + k.x1) / 2;
+      aCtx.fillStyle = k.lit ? (k.flash > 0 ? '#ffffff' : '#39ff14') : 'rgba(57,255,20,0.12)';
+      aCtx.beginPath(); aCtx.moveTo(x, 606); aCtx.lineTo(x + 7, 622); aCtx.lineTo(x - 7, 622); aCtx.closePath(); aCtx.fill();
+    }
+    // ── STARS ──
+    for(const st of T.stars){
+      starPath(st.x, st.y, st.r);
+      aCtx.fillStyle = st.flash > 0 ? '#ffffff' : 'rgba(179,92,255,0.35)';
+      aCtx.fill();
+      aCtx.strokeStyle = col.star; aCtx.lineWidth = 1.5; aCtx.stroke();
+    }
+    // ── TARGETS ──
+    for(const t of T.targets){
+      if(t.bank){
+        if(t.down){ glowLine(t.ax, t.ay, t.bx, t.by, 'rgba(255,215,0,0.15)', 3, 0); continue; }
+        glowLine(t.ax, t.ay, t.bx, t.by, t.flash > 0 ? '#ffffff' : col.target, 6, 10);
+      }else{
+        glowLine(t.ax, t.ay, t.bx, t.by, t.flash > 0 ? '#ffffff' : t.lit ? col.target : 'rgba(255,215,0,0.35)', 6, t.lit ? 10 : 0);
+      }
+    }
+    // ── THE CORE ──
+    if(T.core){
+      const c = T.core, fl = c.flash > 0;
+      const pulse = 0.6 + 0.4 * Math.sin(glowT * (S.multiball ? 14 : 4));
+      const rg = aCtx.createRadialGradient(c.x, c.y, 2, c.x, c.y, c.r + 10);
+      rg.addColorStop(0, fl ? '#ffffff' : '#b6ffa0'); rg.addColorStop(0.5, S.multiball ? '#ffd700' : col.core); rg.addColorStop(1, 'rgba(57,255,20,0)');
+      aCtx.fillStyle = rg; aCtx.globalAlpha = 0.5 + 0.5 * pulse;
+      disc(c.x, c.y, c.r + 10, rg);
+      aCtx.globalAlpha = 1;
+      disc(c.x, c.y, c.r, '#052a10', S.multiball ? '#ffd700' : col.core, 2.5);
+      // Charge pips: how many hits until multiball.
+      for(let i = 0; i < PB.CORE_HITS; i++){
+        const a = -Math.PI / 2 + i * Math.PI * 2 / PB.CORE_HITS;
+        disc(c.x + Math.cos(a) * (c.r - 5), c.y + Math.sin(a) * (c.r - 5), 2.2, i < S.coreHits || S.multiball ? '#39ff14' : 'rgba(57,255,20,0.2)');
+      }
+    }
+    // ── BUMPERS ──
+    for(const bp of T.bumpers){
+      const f = Math.min(1, bp.flash / 0.2);
+      aCtx.save();
+      aCtx.shadowBlur = 8 + f * 22; aCtx.shadowColor = col.bumper;
+      disc(bp.x, bp.y, bp.r + f * 3, '#2a0628', f > 0 ? '#ffffff' : col.bumper, 3);
+      aCtx.restore();
+      const cap = aCtx.createRadialGradient(bp.x - 4, bp.y - 5, 1, bp.x, bp.y, bp.r - 3);
+      cap.addColorStop(0, f > 0 ? '#ffffff' : '#ff9df0'); cap.addColorStop(1, '#8a0f7a');
+      disc(bp.x, bp.y, bp.r - 4, cap);
+    }
+    // ── FLIPPERS ──
+    for(const fl of T.flippers){
+      const tip = sim.flipperTip(fl);
+      const ang = Math.atan2(tip.ty - fl.py, tip.tx - fl.px);
+      aCtx.save();
+      aCtx.translate(fl.px, fl.py); aCtx.rotate(ang);
+      aCtx.beginPath();
+      aCtx.arc(0, 0, fl.r0, Math.PI / 2, Math.PI * 1.5);
+      aCtx.lineTo(fl.len, -fl.r1);
+      aCtx.arc(fl.len, 0, fl.r1, -Math.PI / 2, Math.PI / 2);
+      aCtx.closePath();
+      const fg = aCtx.createLinearGradient(0, -fl.r0, 0, fl.r0);
+      fg.addColorStop(0, '#e8f6ff'); fg.addColorStop(1, '#6a86b8');
+      aCtx.fillStyle = fg; aCtx.fill();
+      aCtx.shadowBlur = fl.held ? 16 : 8; aCtx.shadowColor = '#00f5ff';
+      aCtx.strokeStyle = fl.held ? '#ffffff' : '#00f5ff'; aCtx.lineWidth = 2.5; aCtx.stroke();
+      aCtx.restore();
+      disc(fl.px, fl.py, 3, '#0a1230');
+    }
+    // ── THE PLUNGER ──
+    const py0 = 700 + S.charge * 14;
+    aCtx.strokeStyle = S.charging ? '#ffd700' : 'rgba(0,245,255,0.6)'; aCtx.lineWidth = 2;
+    aCtx.beginPath();
+    for(let i = 0; i <= 8; i++){ const y = py0 + i * (PB.H + 10 - py0) / 8; aCtx.lineTo(i % 2 ? 326 : 340, y); }
+    aCtx.stroke();
+    aCtx.fillStyle = S.charging ? '#ffd700' : '#9fe6ff';
+    aCtx.fillRect(320, py0 - 2, 26, 5);
+
+    // ── BALLS (and their trails) ──
+    for(const b of sim.balls){
+      let tr = trails.get(b.id);
+      if(!tr){ tr = []; trails.set(b.id, tr); }
+      if(dt > 0){ tr.push([b.x, b.y]); if(tr.length > 7) tr.shift(); }
+      for(let i = 0; i < tr.length - 1; i++){
+        aCtx.globalAlpha = (i + 1) / tr.length * 0.28;
+        disc(tr[i][0], tr[i][1], PB.BALL_R * (0.5 + 0.5 * i / tr.length), '#9fe6ff');
+      }
+      aCtx.globalAlpha = 1;
+      const bg = aCtx.createRadialGradient(b.x - 3, b.y - 3, 1, b.x, b.y, PB.BALL_R);
+      bg.addColorStop(0, '#ffffff'); bg.addColorStop(0.35, '#d6e2f2'); bg.addColorStop(0.8, '#7f8fb0'); bg.addColorStop(1, '#3a4460');
+      aCtx.save(); aCtx.shadowBlur = 10; aCtx.shadowColor = '#9fe6ff';
+      disc(b.x, b.y, PB.BALL_R, bg);
+      aCtx.restore();
+    }
+    for(const id of [...trails.keys()]) if(!sim.balls.some(b => b.id === id)) trails.delete(id);
+    done();
+
+    // ── IN SCREEN SPACE: words (never squashed) ──
+    aCtx.textAlign = 'center';
+    aCtx.font = '900 13px Orbitron, sans-serif';
+    T.lanes.forEach((ln, i) => {
+      aCtx.fillStyle = ln.lit ? '#ff2bd6' : 'rgba(255,255,255,0.28)';
+      aCtx.fillText(letters[i], sx(ln.x), sy(PB.LANE_Y0) - 4);
+    });
+    if(S.save > 0){
+      const blink = S.save > 2 || (glowT % 0.3 < 0.18);
+      aCtx.font = '700 10px Orbitron, sans-serif';
+      aCtx.fillStyle = blink ? '#39ff14' : 'rgba(57,255,20,0.25)';
+      aCtx.fillText('SHOOT AGAIN', sx(165), sy(706));
+    }
+  }
+
+  function drawPanels(){
+    aCtx.textAlign = 'center';
+    // LEFT: the ball, the multiplier, N·E·O·N.
+    const L = OX / 2;
+    aCtx.font = '700 9px Orbitron, sans-serif'; aCtx.fillStyle = 'rgba(234,246,255,0.55)';
+    aCtx.fillText('BALL', L, 40);
+    aCtx.font = '900 22px Orbitron, sans-serif'; aCtx.fillStyle = '#eaf6ff';
+    aCtx.fillText(String(S.ballNo), L, 66);
+    const left = S.ballsLeft;
+    for(let i = 0; i < Math.min(5, left); i++) disc(L - (Math.min(5, left) - 1) * 7 + i * 14, 84, 4.5, '#cfd9ea');
+    aCtx.font = '700 9px Orbitron, sans-serif'; aCtx.fillStyle = 'rgba(234,246,255,0.55)';
+    aCtx.fillText('MULTIPLIER', L, 124);
+    aCtx.font = '900 30px Orbitron, sans-serif'; aCtx.fillStyle = S.mult > 1 ? '#ff2bd6' : '#eaf6ff';
+    aCtx.fillText('×' + S.mult, L, 158);
+    aCtx.font = '700 9px Orbitron, sans-serif'; aCtx.fillStyle = 'rgba(234,246,255,0.55)';
+    aCtx.fillText('LIGHT N·E·O·N', L, 196);
+    aCtx.fillText('FOR ×' + Math.min(PB.MULT_MAX, S.mult + 1), L, 210);
+    // RIGHT: the core and the kickbacks.
+    const R = W - OX / 2;
+    aCtx.fillStyle = 'rgba(234,246,255,0.55)';
+    aCtx.fillText(S.multiball ? 'JACKPOT' : 'CORE', R, 40);
+    aCtx.font = '900 20px Orbitron, sans-serif';
+    aCtx.fillStyle = S.multiball ? '#ffd700' : '#39ff14';
+    aCtx.fillText(S.multiball ? 'LIVE' : `${S.coreHits}/${PB.CORE_HITS}`, R, 66);
+    aCtx.font = '700 9px Orbitron, sans-serif'; aCtx.fillStyle = 'rgba(234,246,255,0.55)';
+    aCtx.fillText('KICKBACK', R, 110);
+    T.kickbacks.forEach((k, i) => {
+      aCtx.fillStyle = k.lit ? '#39ff14' : 'rgba(57,255,20,0.18)';
+      aCtx.font = '900 14px Orbitron, sans-serif';
+      aCtx.fillText(k.side, R - 12 + i * 24, 132);
+    });
+    aCtx.font = '700 9px Orbitron, sans-serif'; aCtx.fillStyle = 'rgba(234,246,255,0.55)';
+    aCtx.fillText('TARGETS', R, 176);
+    for(let i = 0; i < 3; i++) disc(R - 14 + i * 14, 192, 4.5, i < 3 - S.bankUp ? '#ffd700' : 'rgba(255,215,0,0.2)');
+    if(S.charging){
+      aCtx.fillStyle = 'rgba(234,246,255,0.55)'; aCtx.fillText('PLUNGER', R, 236);
+      aCtx.fillStyle = 'rgba(255,215,0,0.2)'; aCtx.fillRect(R - 30, 244, 60, 8);
+      aCtx.fillStyle = '#ffd700'; aCtx.fillRect(R - 30, 244, 60 * S.charge, 8);
+    }
+  }
+
+  function loop(){
+    if(round.ended && !pops.length && !sparks.length) return;
+    gameLoopId = requestAnimationFrame(loop);
+    const now = gNow();
+    const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
+    if(dt > 0) glowT += dt;
+    const ev = round.frame(dt);
+    for(const e of ev){
+      if(e.pts > 0 && e.x != null) pops.push({ x: sx(e.x), y: sy(e.y), text: '+' + e.pts, t: 0.9, big: e.pts >= 15 });
+      if(e.type === 'bumperhit' || e.type === 'jackpot' || e.type === 'multiball'){
+        const n = e.type === 'bumperhit' ? 8 : 26;
+        for(let i = 0; i < n; i++){ const a = Math.random() * Math.PI * 2, v = 1 + Math.random() * 3; sparks.push({ x: sx(e.x), y: sy(e.y), vx: Math.cos(a) * v, vy: Math.sin(a) * v * K, t: 1, c: e.type === 'jackpot' ? '#ffd700' : '#ff2bd6' }); }
+      }
+      if(e.type === 'multiball') banner = { text: 'MULTIBALL', t: 1.6 };
+      else if(e.type === 'jackpot') banner = { text: 'JACKPOT', t: 1.1 };
+      else if(e.type === 'neon') banner = { text: 'N·E·O·N', t: 1.2 };
+      else if(e.type === 'skill') banner = { text: 'SKILL SHOT', t: 1.3 };
+      else if(e.type === 'saved') banner = { text: 'BALL SAVED', t: 1.2 };
+      else if(e.type === 'absorb') banner = { text: 'SHIELD SAVE', t: 1.3 };
+      else if(e.type === 'extra') banner = { text: 'EXTRA BALL', t: 1.4 };
+      else if(e.type === 'nextball') banner = { text: 'BALL ' + e.n, t: 1.3 };
+      else if(e.type === 'kickback') banner = { text: 'KICKBACK', t: 0.9 };
+    }
+
+    aCtx.clearRect(0, 0, W, H);
+    aCtx.fillStyle = '#04050d'; aCtx.fillRect(0, 0, W, H);
+    // The side panels' frames.
+    aCtx.fillStyle = 'rgba(255,255,255,0.025)';
+    aCtx.fillRect(0, 0, OX - 6, H); aCtx.fillRect(W - OX + 6, 0, OX - 6, H);
+    drawTable(dt);
+    drawPanels();
+
+    for(let i = sparks.length - 1; i >= 0; i--){
+      const p = sparks[i];
+      if(dt > 0){ p.x += p.vx; p.y += p.vy; p.vx *= 0.93; p.vy *= 0.93; p.t -= dt * 2; }
+      if(p.t <= 0){ sparks.splice(i, 1); continue; }
+      aCtx.globalAlpha = p.t; aCtx.fillStyle = p.c; aCtx.fillRect(p.x - 1.5, p.y - 1.5, 3, 3);
+    }
+    aCtx.globalAlpha = 1;
+    aCtx.textAlign = 'center';
+    for(let i = pops.length - 1; i >= 0; i--){
+      const p = pops[i];
+      if(dt > 0){ p.t -= dt; p.y -= dt * 22; }
+      if(p.t <= 0){ pops.splice(i, 1); continue; }
+      aCtx.globalAlpha = Math.min(1, p.t * 2);
+      aCtx.font = (p.big ? '900 15px' : '700 11px') + ' Orbitron, sans-serif';
+      aCtx.fillStyle = p.big ? '#ffd700' : '#eaf6ff';
+      aCtx.fillText(p.text, p.x, p.y);
+    }
+    aCtx.globalAlpha = 1;
+    if(banner.t > 0){
+      if(dt > 0) banner.t -= dt;
+      aCtx.save();
+      aCtx.globalAlpha = Math.min(1, banner.t * 1.6);
+      aCtx.font = '900 28px Orbitron, sans-serif';
+      aCtx.fillStyle = '#eaf6ff';
+      aCtx.shadowBlur = 18; aCtx.shadowColor = '#ff2bd6';
+      aCtx.fillText(banner.text, W / 2, H * 0.52);
+      aCtx.restore();
+    }
+  }
+  gameLoopId = requestAnimationFrame(loop);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  🚀 3D MISSIONS, PART VIII · 🎱 NEON PINBALL 3D — a table in the city
+// ══════════════════════════════════════════════════════════════════════
+// The same pbRound() as the 2D build (§ 30), drawn as a real table: walls
+// that stand up, bumpers with lit caps, a chrome ball, a spinning reactor
+// core and a backbox that carries the ball, the multiplier and the core in
+// the arcade's block type. The camera is FIXED behind the flippers (the
+// never-yaw rule, § 3) — nothing but the flippers and the ball ever turns.
+(function(){
+'use strict';
+
+const P = window.PI3D;
+if(!P) return;
+const K = P.kit;
+const { begin3d, runLoop, mine } = K;
+const drawText3D = K.drawText3D;
+
+P.games.pinball = function(){
+  const w = begin3d({
+    ease: 0.1,
+    env:  { zenith:'#05031a', horizon:'#3a0a4a', ground:'#05040f', intensity: 1.25 },
+    fog:  { color:'#0c0620', density: 0.0048 },
+    sun:  { dir:[-0.35, -0.9, -0.45], color:'#8f7dff', intensity: 0.65 },
+    grade:{ exposure: 0.95, bloom: 0.46, threshold: 1.6, knee: 0.5, radius: 0.9,
+            vignette: 0.46, aberration: 0.4, grain: 0.026, scanline: 0.012, saturation: 1.14 }
+  });
+  if(!w) return;
+  const r = w.r;
+  const round = pbRound();
+  const S = round.S, sim = round.sim, T = sim.T;
+  const U = 1 / 20;                                   // table units → world
+  const X = x => (x - 180) * U, Z = y => (y - 360) * U;
+  const WALL_H = 0.62, me = mine();
+  let spin = 0, glowT = 0;
+
+  w.buildCity({ seed: 31031, count: 64, spread: 112, hole: 26, y: -11 });
+
+  const EM = { arc: '#ff2bd6', wall: '#3d7bff', lane: '#00f5ff', gate: '#ffd700', sling: '#1fb7ff', apron: '#3d7bff' };
+  function wall(s){
+    const c = s.arc ? EM.arc : s.gate ? EM.gate : s.lane ? EM.lane : s.sling ? EM.sling : s.apron ? EM.apron : EM.wall;
+    const h = s.lane ? 0.5 : WALL_H;
+    const a = [X(s.ax), h / 2, Z(s.ay)], b = [X(s.bx), h / 2, Z(s.by)];
+    const wd = s.lane ? 0.34 : 0.2;
+    r.beam(a, b, wd, { height: h, color: '#0a0f24', metallic: 0.7, roughness: 0.32, rim: 1.1, emissive: c, emissiveStrength: 0.35, detail: 0 });
+    // A hot rim along the top of every wall: the table's neon.
+    r.beam([a[0], h + 0.02, a[2]], [b[0], h + 0.02, b[2]], wd * 1.1, { height: 0.05, color: '#ffffff', emissive: c, emissiveStrength: s.arc ? 1.9 : 1.4, detail: 0 });
+  }
+
+  runLoop(dt => {
+    const ev = round.frame(dt);
+    if(dt > 0){ spin += dt * 1.6; glowT += dt; }
+    for(const e of ev){
+      if(e.type === 'bumperhit'){ w.burst([X(e.x), 0.9, Z(e.y)], '#ff2bd6', 12, { speed: 6, life: 0.45 }); }
+      else if(e.type === 'jackpot'){ w.burst([X(e.x), 1, Z(e.y)], '#ffd700', 40, { speed: 11, life: 0.8 }); w.pop([X(e.x), 2.6, Z(e.y)], 'JACKPOT +' + e.pts, '#ffd700'); w.kick(1.3); }
+      else if(e.type === 'multiball'){ w.burst([X(e.x), 1, Z(e.y)], '#39ff14', 50, { speed: 12, life: 0.9 }); w.pop([0, 3, Z(300)], 'MULTIBALL', '#39ff14'); w.kick(1.8); }
+      else if(e.type === 'neon'){ w.pop([0, 2.4, Z(90)], 'NEON', '#ff2bd6'); }
+      else if(e.type === 'mult'){ w.pop([0, 3.2, Z(200)], 'MULTIPLIER X' + e.mult, '#ff2bd6'); }
+      else if(e.type === 'skill'){ w.pop([X(e.x), 2.4, Z(110)], 'SKILL SHOT', '#ffd700'); }
+      else if(e.type === 'bank'){ w.pop([X(300), 2.2, Z(360)], 'TARGETS +' + e.pts, '#ffd700'); }
+      else if(e.type === 'saved' || e.type === 'absorb'){ w.pop([0, 2.4, Z(640)], e.type === 'saved' ? 'BALL SAVED' : 'SHIELD', '#39ff14'); }
+      else if(e.type === 'extra'){ w.pop([0, 2.8, Z(400)], 'EXTRA BALL', '#00f5ff'); }
+      else if(e.type === 'drain'){ w.burst([X(e.x), 0.6, Z(712)], '#ff4d6d', 22, { speed: 7, life: 0.6 }); w.kick(0.8); }
+      else if(e.type === 'kickback'){ w.burst([X(e.x), 0.6, Z(630)], '#39ff14', 18, { speed: 8, life: 0.5 }); }
+      else if(e.type === 'nextball'){ w.pop([0, 2.6, Z(560)], 'BALL ' + e.n, '#eaf6ff'); }
+    }
+
+    // A FIXED camera behind the flippers, high enough to see the top lanes
+    // and the backbox over the whole length of the table.
+    w.goal.eye[0] = 0; w.goal.eye[1] = 25; w.goal.eye[2] = 27.5;
+    w.goal.target[0] = 0; w.goal.target[1] = -1; w.goal.target[2] = 0.4;
+    w.goal.fov = 55;
+    w.step(dt);
+
+    w.begin();
+    w.drawStars();
+    w.drawCity(0);
+
+    // ── THE CABINET AND THE PLAYFIELD ──
+    r.draw('slab', { pos:[0, -0.9, 0.2], scale:[18.6, 1.4, 37.6], color:'#120a26', metallic: 0.6, roughness: 0.34, rim: 0.9, emissive:'#6b2bd6', emissiveStrength: 0.12 });
+    r.draw('box', { pos:[0, -0.19, 0], scale:[17.0, 0.04, 36.2], color:'#070818', metallic: 0.35, roughness: 0.42, rim: 0.3 });
+    for(let x = 36; x < 348; x += 48){
+      r.beam([X(x), -0.16, Z(20)], [X(x), -0.16, Z(718)], 0.03, { height: 0.02, color:'#101a40', emissive:'#2a4dff', emissiveStrength: 0.35, detail: 0 });
+    }
+    for(let y = 48; y < 720; y += 48){
+      r.beam([X(14), -0.16, Z(y)], [X(346), -0.16, Z(y)], 0.03, { height: 0.02, color:'#101a40', emissive:'#2a4dff', emissiveStrength: 0.35, detail: 0 });
+    }
+    // The plunger lane glows faintly.
+    r.draw('box', { pos:[X(333), -0.15, Z(480)], scale:[1.4, 0.02, 22.4], color:'#04151c', emissive:'#00f5ff', emissiveStrength: 0.14 });
+
+    // ── THE BACKBOX ──
+    r.draw('slab', { pos:[0, 2.3, Z(-26)], scale:[18.6, 4.8, 0.6], color:'#0d0820', metallic: 0.65, roughness: 0.3, rim: 1.2, emissive:'#ff2bd6', emissiveStrength: 0.1 });
+    r.beam([X(0), 4.75, Z(-26) + 0.32], [X(360), 4.75, Z(-26) + 0.32], 0.12, { height: 0.08, color:'#ffffff', emissive:'#ff2bd6', emissiveStrength: 2.0, detail: 0 });
+    drawText3D(r, 'NEON PINBALL', [0, 3.35, Z(-26) + 0.35], 0.2, { color:'#ffd6f6', emissiveStrength: 1.5 });
+    const status = S.multiball ? `BALL ${S.ballNo}  X${S.mult}  JACKPOT` : `BALL ${S.ballNo}  X${S.mult}  CORE ${S.coreHits}/${PB.CORE_HITS}`;
+    drawText3D(r, status, [0, 1.35, Z(-26) + 0.35], 0.13, { color: S.multiball ? '#ffe680' : '#bfffd0', emissiveStrength: 1.2 });
+
+    // ── WALLS, LANES, POSTS ──
+    for(const s of T.walls) if(!s.plunger) wall(s);
+    for(const p of T.posts){
+      const rr = p.r * U * 2;
+      r.draw('cylinder', { pos:[X(p.x), 0.3, Z(p.y)], scale:[rr, 0.62, rr], color:'#0b1a3a', metallic: 0.7, roughness: 0.3, rim: 1,
+                           emissive: p.kind === 'post' ? '#00f5ff' : '#1fb7ff', emissiveStrength: p.kind === 'post' ? 0.8 : 0.5 });
+    }
+    // Slingshot faces, lit when they kick.
+    for(const s of T.slings){
+      const f = Math.min(1, s.flash / 0.18);
+      r.beam([X(s.ax), 0.24, Z(s.ay)], [X(s.bx), 0.24, Z(s.by)], 0.14, { height: 0.44, color:'#0b1830', metallic: 0.6, roughness: 0.3, emissive: '#00f5ff', emissiveStrength: 0.45 + f * 1.6, detail: 0 });
+      r.beam([X(s.ax), 0.48, Z(s.ay)], [X(s.bx), 0.48, Z(s.by)], 0.16, { height: 0.04, color:'#ffffff', emissive: '#00f5ff', emissiveStrength: 1.2 + f * 1.4, detail: 0 });
+    }
+    // The N·E·O·N lanes: a lit floor panel and its letter in the block type.
+    const letters = ['N', 'E', 'O', 'N'];
+    T.lanes.forEach((ln, i) => {
+      const skill = S.skillOpen && S.skill === i && (glowT % 0.5 < 0.25);
+      const on = ln.lit || ln.flash > 0;
+      r.draw('box', { pos:[X(ln.x), -0.14, Z(110)], scale:[1.3, 0.02, 1.7], color:'#1a0620',
+                      emissive: skill ? '#ffd700' : '#ff2bd6', emissiveStrength: on ? 1.5 : skill ? 1.0 : 0.12 });
+      // Standing up behind its lane, facing the camera, so it reads at a glance.
+      drawText3D(r, letters[i], [X(ln.x), 0.95, Z(PB.LANE_Y0 - 6)], 0.13, { depth: 0.08,
+                  color: ln.lit ? '#ffd6f6' : '#6a5a78', emissiveStrength: ln.lit ? 1.8 : 0.35 });
+    });
+    // Kickback arrows in the outlanes: lit green, spent dark.
+    for(const k of T.kickbacks){
+      r.draw('cone', { pos:[X((k.x0 + k.x1) / 2), 0.05, Z(614)], rot:[-Math.PI / 2, 0, 0], scale:[0.55, 0.7, 0.2],
+                       color:'#062a0a', emissive:'#39ff14', emissiveStrength: k.lit ? (k.flash > 0 ? 2.2 : 1.1) : 0.08 });
+    }
+    // SHOOT AGAIN between the flippers while the ball save runs.
+    if(S.save > 0 && (S.save > 2 || glowT % 0.3 < 0.18)){
+      r.draw('box', { pos:[0, -0.14, Z(700)], scale:[2.4, 0.02, 0.5], color:'#062a0a', emissive:'#39ff14', emissiveStrength: 1.5 });
+    }
+
+    // ── STARS ──
+    for(const st of T.stars){
+      const f = st.flash > 0;
+      r.draw('thintorus', { pos:[X(st.x), -0.12, Z(st.y)], scale: 1.05, color:'#1a0a2a', emissive:'#b35cff', emissiveStrength: f ? 2.2 : 0.7 });
+      if(f) r.glow([X(st.x), 0.2, Z(st.y)], 0.9, '#b35cff', 0.8);
+    }
+    // ── TARGETS ──
+    for(const t of T.targets){
+      const f = t.flash > 0;
+      if(t.bank){
+        const yc = (t.ay + t.by) / 2;
+        r.draw('slab', { pos:[X(t.ax) - 0.1, t.down ? -0.34 : 0.34, Z(yc)], scale:[0.2, 0.7, 1.2],
+                         color:'#2a2006', metallic: 0.4, roughness: 0.35, emissive:'#ffd700', emissiveStrength: t.down ? 0.05 : f ? 2.0 : 0.9 });
+      }else{
+        r.draw('slab', { pos:[X((t.ax + t.bx) / 2), 0.26, Z(t.ay)], scale:[1.1, 0.52, 0.2],
+                         color:'#2a2006', metallic: 0.4, roughness: 0.35, emissive:'#ffd700', emissiveStrength: f ? 2.0 : t.lit ? 1.2 : 0.3 });
+      }
+    }
+    // ── THE REACTOR CORE ──
+    if(T.core){
+      const c = T.core, f = c.flash > 0;
+      const pulse = 0.5 + 0.5 * Math.sin(glowT * (S.multiball ? 12 : 3.5));
+      r.draw('core', { pos:[X(c.x), 0.55, Z(c.y)], rot:[0, spin, 0], scale: 1.25, color:'#0a2a12', metallic: 0.6, roughness: 0.3, rim: 1.1,
+                       emissive: S.multiball ? '#ffd700' : '#39ff14', emissiveStrength: f ? 2.0 : 0.6 + pulse * 0.6 });
+      for(let i = 0; i < PB.CORE_HITS; i++){
+        const a = spin * 0.5 + i * Math.PI * 2 / PB.CORE_HITS;
+        const lit = S.multiball || i < S.coreHits;
+        r.draw('sphere', { pos:[X(c.x) + Math.cos(a) * 1.0, 0.08, Z(c.y) + Math.sin(a) * 1.0], scale: 0.2,
+                           color:'#0a2a12', emissive:'#39ff14', emissiveStrength: lit ? 1.6 : 0.1 });
+      }
+      r.light({ pos:[X(c.x), 1.6, Z(c.y)], color: S.multiball ? '#ffd700' : '#39ff14', intensity: 16 + (f ? 60 : 0) + pulse * 10, range: 5 });
+    }
+    // ── BUMPERS ──
+    for(const bp of T.bumpers){
+      const f = Math.min(1, bp.flash / 0.2), rr = bp.r * U * 2;
+      r.draw('cylinder', { pos:[X(bp.x), 0.28, Z(bp.y)], scale:[rr, 0.56, rr], color:'#2a0628', metallic: 0.55, roughness: 0.3, rim: 1,
+                           emissive:'#ff2bd6', emissiveStrength: 0.35 + f * 0.9 });
+      r.draw('thintorus', { pos:[X(bp.x), 0.6, Z(bp.y)], scale: (bp.r * U) / 0.45 * 1.05, color:'#ffffff', emissive:'#ff2bd6', emissiveStrength: 1.1 + f * 1.6 });
+      r.draw('sphere', { pos:[X(bp.x), 0.6, Z(bp.y)], scale:[rr * 0.72, 0.28, rr * 0.72], color:'#ffb8f2', emissive:'#ff2bd6', emissiveStrength: 0.5 + f * 1.4 });
+      if(f > 0) r.light({ pos:[X(bp.x), 1.3, Z(bp.y)], color:'#ff2bd6', intensity: 80 * f, range: 5 });
+    }
+    // ── FLIPPERS ──
+    for(const fl of T.flippers){
+      const tip = sim.flipperTip(fl);
+      const a = Math.atan2(tip.ty - fl.py, tip.tx - fl.px);
+      const cx = (fl.px + tip.tx) / 2, cy = (fl.py + tip.ty) / 2;
+      const len = (fl.len + fl.r0 + fl.r1) * U;
+      r.draw('pill', { pos:[X(cx), 0.2, Z(cy)], rot:[0, -a, 0], scale:[len, 0.36, fl.r0 * U * 2],
+                       color:'#dfe9f7', metallic: 0.72, roughness: 0.22, rim: 1.0, emissive: me, emissiveStrength: fl.held ? 0.35 : 0.12 });
+      r.draw('box', { pos:[X(cx), 0.4, Z(cy)], rot:[0, -a, 0], scale:[len * 0.8, 0.03, 0.12],
+                      color:'#ffffff', emissive:'#00f5ff', emissiveStrength: fl.held ? 2.0 : 1.0 });
+      r.draw('cylinder', { pos:[X(fl.px), 0.25, Z(fl.py)], scale:[0.24, 0.5, 0.24], color:'#0a1230', metallic: 0.8, roughness: 0.3 });
+    }
+    // ── THE PLUNGER ──
+    r.draw('cylinder', { pos:[X(333), 0.28, Z(716 + S.charge * 14)], rot:[Math.PI / 2, 0, 0], scale:[0.36, 1.1, 0.36],
+                         color:'#cfd9ea', metallic: 0.8, roughness: 0.25, emissive: S.charging ? '#ffd700' : '#00f5ff', emissiveStrength: S.charging ? 0.9 : 0.25 });
+    // ── BALLS ──
+    let lights = 0;
+    for(const b of sim.balls){
+      r.draw('sphere', { pos:[X(b.x), 0.4, Z(b.y)], scale: PB.BALL_R * U * 2, color:'#e8eef8', metallic: 0.72, roughness: 0.16, rim: 1.1,
+                         emissive:'#9fe6ff', emissiveStrength: 0.08 });
+      // A small lamp rides over each ball in play (not one parked on the
+      // plunger: beside the lane's chrome walls it bloomed into a glare).
+      if(!b.lane && lights++ < 2) r.light({ pos:[X(b.x), 2.0, Z(b.y)], color:'#bfefff', intensity: 20, range: 4.5 });
+    }
+    r.light({ pos:[-9, 14, -10], color:'#ff4dd8', intensity: 260, range: 60 });
+    r.light({ pos:[ 9, 14,  12], color:'#4d8bff', intensity: 240, range: 60 });
+    w.end();
+  });
+};
+
+})();

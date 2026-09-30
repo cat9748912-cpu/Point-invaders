@@ -24,18 +24,18 @@
      in the manifest below and on og.jpg itself — bump it with a new mission.
      The canonical link is also what 📣 Share Score sends (shareRun() in
      app.js), so moving the site to a new address is one edit, here. -->
-<meta name="description" content="30 free arcade missions in 2D or full 3D: live duels, a 20-chapter campaign, Boss Rush and party mode. No download, no signup — play as a guest in seconds.">
+<meta name="description" content="31 free arcade missions in 2D or full 3D: live duels, a 20-chapter campaign, Boss Rush and party mode. No download, no signup — play as a guest in seconds.">
 <link rel="canonical" href="https://cat9748912-cpu.github.io/Point-invaders/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Point Invaders">
 <meta property="og:url" content="https://cat9748912-cpu.github.io/Point-invaders/">
 <meta property="og:title" content="Point Invaders — a free neon arcade in your browser">
-<meta property="og:description" content="30 free arcade missions in 2D or full 3D: live duels, a 20-chapter campaign, Boss Rush and party mode. No download, no signup — play as a guest in seconds.">
+<meta property="og:description" content="31 free arcade missions in 2D or full 3D: live duels, a 20-chapter campaign, Boss Rush and party mode. No download, no signup — play as a guest in seconds.">
 <meta property="og:image" content="https://cat9748912-cpu.github.io/Point-invaders/og.jpg">
 <meta property="og:image:type" content="image/jpeg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Point Invaders — neon 3D arcade gameplay. 30 missions in 2D or 3D, live duels, free in the browser.">
+<meta property="og:image:alt" content="Point Invaders — neon 3D arcade gameplay. 31 missions in 2D or 3D, live duels, free in the browser.">
 <meta name="twitter:card" content="summary_large_image">
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
 
@@ -48,7 +48,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=54">
+<link rel="stylesheet" href="style.css?v=55">
 </head>
 <body>
 
@@ -115,6 +115,8 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <div class="field"><label class="input-label">Password (min 6)</label><input class="input" type="password" id="s-pass" placeholder="••••••••"></div>
         <button class="btn btn-primary btn-full btn-lg" id="btn-signup">Create Account →</button>
       </div>
+      <!-- § 28: signs in to a profile saved with Google, or starts a new one. -->
+      <button class="btn btn-google btn-full" id="btn-google" type="button"><svg class="g-logo" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg><span>Continue with Google</span></button>
       <div class="auth-err" id="auth-err"></div>
 
       <div class="auth-divider">or</div>
@@ -264,6 +266,8 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <div class="mp-banner-txt">
           <div class="mp-banner-title">BRICK LAB</div>
           <div class="mp-banner-sub">Build your own level for ANY mission — walls, mazes, courses, word lists — test it, and send it to a friend.</div>
+          <!-- ⭐ The gallery's Level of the Day (§ 29) — one tap plays it. -->
+          <button class="lab-lotd" id="lab-lotd" type="button" hidden></button>
         </div>
         <button class="btn btn-primary" id="btn-lab">🧱 OPEN THE LAB</button>
       </div>
@@ -500,6 +504,12 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
           <div class="gc-name" data-c="lime">COMMAND LINE</div>
           <div class="gc-desc">Type the command on each falling virus to kill the process before it reaches your shell!</div>
           <span class="gc-pts" data-c="lime">UP TO 1200 PTS</span>
+        </div>
+        <div class="game-card" data-game="pinball" data-c="pink">
+          <span class="gc-icon">🎱</span>
+          <div class="gc-name" data-c="pink">NEON PINBALL</div>
+          <div class="gc-desc">Launch, flip and light N·E·O·N — crack the reactor core for multiball!</div>
+          <span class="gc-pts" data-c="pink">UP TO 1200 PTS</span>
         </div>
       </div>
     </div>
@@ -1007,6 +1017,10 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <button class="btn btn-primary" id="btn-again">Play Again</button>
         <button class="btn btn-secondary" id="btn-hub">Hub</button>
       </div>
+      <!-- 💾 / 📲 One quiet line between the two exits and the extras: keep your
+           guest progress with Google, or put the arcade on your home screen.
+           Painted by resNudgePaint() in app.js (§ 28); hidden on most cards. -->
+      <div class="res-nudge" id="res-nudge" hidden></div>
       <!-- Everything you can do WITH the run that just ended, as one even grid
            under them: however many are showing, they share the row(s) equally. -->
       <div class="res-more">
@@ -1035,7 +1049,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      ══════════════════════════════════════════════════════════════ -->
 <!-- ══════════════════════════════════════════════
      📖 MISSION BRIEFING — what the ⓘ on a game card opens.
-     Summary, controls, a numbered tutorial and the tips, for all thirty.
+     Summary, controls, a numbered tutorial and the tips, for all thirty-one.
      Built by briefingHTML(); opened by openBriefing().
      ══════════════════════════════════════════════ -->
 <div class="fb-overlay brief-tint" id="brief-overlay" aria-hidden="true">
@@ -1246,6 +1260,11 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <div class="fb-title" id="lab-heading">🧱 BRICK LAB</div>
       <div class="fb-sub" id="lab-sub">Build a level for any mission · share it as a code</div>
     </div>
+    <!-- 🌐 § 29: your own levels, or everybody's. -->
+    <div class="lab-switch" role="tablist" aria-label="Brick Lab">
+      <button class="lab-sw on" id="lab-sw-build" type="button" role="tab" aria-selected="true">🧱 BUILD</button>
+      <button class="lab-sw" id="lab-sw-gallery" type="button" role="tab" aria-selected="false">🌐 GALLERY</button>
+    </div>
     <div id="lab-body"></div>
   </div>
 </div>
@@ -1392,6 +1411,14 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <button class="btn btn-secondary btn-full" id="btn-tutorial">🎓 Replay Guided Run</button>
     </section>
 
+    <!-- ── 📲 APP ── (§ 28) Shown only where this browser can install the
+         arcade, or explain how to (iPhone / iPad). Painted by instPaint(). -->
+    <section class="set-sec" aria-labelledby="set-app-h" id="set-app" hidden>
+      <div class="set-sec-h"><span id="set-app-h">📲 APP</span><em class="set-state" id="set-app-state"></em></div>
+      <p class="set-note" id="set-app-note">Put Point Invaders on your home screen — it opens full screen like an app, starts faster and keeps working offline.</p>
+      <button class="btn btn-secondary btn-full" id="btn-install" type="button">📲 Install Point Invaders</button>
+    </section>
+
     <!-- ── 💾 ACCOUNT ── the note, the badge and the steps depend on what kind
          of profile this is (local, guest or signed in), so paintSettings()
          writes them; the button's label and handler belong to refreshClaimUi(). -->
@@ -1495,6 +1522,10 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <div class="up-hint">2–20 characters · letters, numbers, _ and - only</div>
       </div>
 
+      <!-- § 28: one tap instead of an email and a password. -->
+      <button class="btn btn-google btn-full btn-lg" id="up-google" type="button"><svg class="g-logo" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg><span>Save with Google</span></button>
+      <div class="auth-divider up-or">or use an email</div>
+
       <div class="field">
         <label class="input-label" for="up-email">Email</label>
         <input class="input" type="email" id="up-email" placeholder="you@email.com" autocomplete="email">
@@ -1516,6 +1547,44 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
   </div>
 </div>
 
+<!-- ══════════════════════════════════════════════════════════════
+     📲 ADD TO HOME SCREEN — iPhone and iPad have no install prompt, so
+     this says where Safari keeps it (§ 28).
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay inst-tint" id="inst-overlay" aria-hidden="true">
+  <div class="fb-modal inst-modal" role="dialog" aria-modal="true" aria-labelledby="inst-heading">
+    <button class="fb-close" id="inst-close" aria-label="Close">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="inst-heading">📲 ADD TO HOME SCREEN</div>
+      <div class="fb-sub">Two taps · opens full screen · works offline</div>
+    </div>
+    <div class="inst-body" id="inst-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     🆔 CALLSIGN — a Google account signing in for the first time has
+     no profile yet; this names it before the hub opens (§ 28).
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay up-tint" id="cs-overlay" aria-hidden="true">
+  <div class="fb-modal cs-modal" role="dialog" aria-modal="true" aria-labelledby="cs-heading">
+    <div class="fb-head">
+      <div class="fb-title" id="cs-heading">🆔 PICK YOUR CALLSIGN</div>
+      <div class="fb-sub" id="cs-sub">New Google account · one last step</div>
+    </div>
+    <div class="fb-body">
+      <div class="field">
+        <label class="input-label" for="cs-name">Username</label>
+        <input class="input" type="text" id="cs-name" maxlength="20" placeholder="CoolPlayer99" autocomplete="off">
+        <div class="up-hint">2–20 characters · letters, numbers, _ and - only · shown on the leaderboard</div>
+      </div>
+      <div class="fb-err" id="cs-err"></div>
+      <button class="btn btn-primary btn-full btn-lg" id="cs-go" type="button">Enter the Grid →</button>
+      <button class="btn btn-secondary btn-full cs-cancel" id="cs-cancel" type="button">Cancel · sign out</button>
+    </div>
+  </div>
+</div>
+
 <!-- One script. The 3D layer — the WebGL2 renderer, the mode switch and all
      eighteen missions' 3D builds — is appended inside app.js rather than loaded
      beside it: it reads this file's board constants and shared helpers, so it
@@ -1523,7 +1592,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=54"></script>
+<script src="app.js?v=55"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker
@@ -1583,7 +1652,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
   const manifest = {
     name: 'Point Invaders — Arcade Hub',
     short_name: 'Point Invaders',
-    description: 'A neon arcade hub: 30 missions in 2D or 3D, head-to-head duels, a story campaign and a live leaderboard.',
+    description: 'A neon arcade hub: 31 missions in 2D or 3D, head-to-head duels, a story campaign and a live leaderboard.',
     start_url: dir,
     scope: dir,
     display: 'fullscreen',
