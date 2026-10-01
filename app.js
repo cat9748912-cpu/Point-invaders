@@ -44788,44 +44788,19 @@ function statsEvent(key){
 //
 // What it shows is anonymous totals and nothing else, so it is not a secret —
 // but it is not linked from anywhere either. The rule this section asks for
-// makes `stats` readable by anyone; see ST_RULE for how to lock it to one uid.
+// makes `stats` readable by anyone; to keep it to yourself, set its ".read" to
+// "auth != null && auth.uid === '<your uid>'" in the Console.
 var stDash = { data: null, err: null, range: 30, ref: null, busy: false };
 var ST_LANES = [
   ['grid', 'Mission grid'], ['daily', 'Daily Hack'], ['chal', 'Rival challenges'], ['link', 'Challenge links'],
   ['camp', 'Campaign'], ['anom', 'Weekly Anomaly'], ['endless', 'Endless'], ['rush', 'Boss Rush'],
   ['party', 'Party mode'], ['heat', 'Heat runs'], ['lab', 'Brick Lab']
 ];
-// The rule the Console needs, exactly as it should be pasted: inside "rules",
-// beside "players". Writes: signed-in (a guest counts), never a delete, a
-// counter only ever steps up by one (seconds by up to fifteen minutes), keys
-// shaped like the ones this code writes. Reads: open — every number here is
-// anonymous. To keep the panel to yourself, swap ".read": true for
-// ".read": "auth != null && auth.uid === '<your uid>'".
-var ST_RULE = `"stats": {
-  ".read": true,
-  "m": {
-    "$gid": {
-      ".validate": "$gid.length <= 16 && $gid.matches(/^[a-z0-9]+$/)",
-      "secs": {
-        ".write": "auth != null && newData.exists()",
-        ".validate": "newData.isNumber() && newData.val() >= (data.exists() ? data.val() : 0) && newData.val() <= (data.exists() ? data.val() : 0) + 900"
-      },
-      "$k": {
-        ".write": "auth != null && newData.exists()",
-        ".validate": "$k.length <= 8 && $k.matches(/^[a-z0-9]+$/) && newData.isNumber() && newData.val() === (data.exists() ? data.val() : 0) + 1"
-      }
-    }
-  },
-  "d": {
-    "$day": {
-      ".validate": "$day.matches(/^20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/)",
-      "$k": {
-        ".write": "auth != null && newData.exists()",
-        ".validate": "$k.length <= 16 && $k.matches(/^[a-z0-9_]+$/) && newData.isNumber() && newData.val() === (data.exists() ? data.val() : 0) + 1"
-      }
-    }
-  }
-},`;
+// The `stats` rule lives in the Firebase Console (Realtime Database → Rules).
+// A copy of the whole rules file is kept beside the project in
+// _firebase/database.rules.json — not a deploy file. Writes: signed-in (a
+// guest counts), never a delete, a counter only ever steps up by one (seconds
+// by up to fifteen minutes), keys shaped like the ones this code writes.
 
 function stDashOpen(){
   const ov = document.getElementById('stats-overlay');
@@ -44992,30 +44967,6 @@ function stGrowthHTML(S, span, pct){
       `</div>` +
     `</div>`;
 }
-// Which of the Console rules this build asks for are in place. `stats` is
-// known the moment this panel reads; `lab` (the gallery) is probed once.
-var stLabRule = null;     // null unknown · true in place · false refused
-function stRulesHTML(){
-  if(stLabRule === null && typeof db === 'object' && db){
-    stLabRule = 'probing';
-    try{
-      withTimeout(db.ref('lab/d').limitToLast(1).once('value'), NET_WAIT)
-        .then(() => { stLabRule = true; }, e => { stLabRule = /PERMISSION|permission/.test(String(e && (e.code || e.message))) ? false : null; })
-        .finally(() => { if(document.getElementById('stats-overlay')?.classList.contains('show')) stDashRender(); });
-    }catch(e){ stLabRule = null; }
-  }
-  const state = v => v === true ? '<span class="st-chip">✔ IN PLACE</span>' : v === false ? '<span class="st-chip bad">✖ NOT ADDED</span>' : '<span class="st-chip warn">… CHECKING</span>';
-  const lab = typeof GAL_RULE === 'string' ? GAL_RULE : '';
-  return `<div class="st-sec"><div class="st-h">Console rules <span>Realtime Database → Rules</span></div>` +
-      `<div class="st-fun"><div><strong>stats</strong> — this panel ${state(true)}</div></div>` +
-      `<div class="st-fun"><div><strong>lab</strong> — the Brick Lab gallery ${state(stLabRule === 'probing' ? null : stLabRule)}</div>` +
-        (stLabRule === false ? `<div>Paste this inside <code>"rules"</code> next to <code>"players"</code>, press Publish, reload.</div>` +
-           `<pre class="st-rule" id="st-lab-rule">${esc(lab)}</pre>` +
-           `<button class="btn btn-secondary btn-sm" id="st-lab-copy" type="button">📋 Copy the lab rule</button>` : '') +
-      `</div>` +
-    `</div>`;
-}
-
 function stDashRender(){
   const body = document.getElementById('st-body');
   if(!body) return;
@@ -45027,28 +44978,9 @@ function stDashRender(){
       `<div class="st-setup">` +
         `<div class="st-setup-h">${denied ? '🔒 The database is refusing <code>stats</code>' : '📡 Could not reach the database'}</div>` +
         (denied
-          ? `<p>The counters need one rule before they can be stored or read. In the Firebase Console open <strong>Realtime Database → Rules</strong>, paste this inside <code>"rules"</code> next to <code>"players"</code>, press <strong>Publish</strong>, then reload this page.</p>` +
-            `<pre class="st-rule" id="st-rule">${esc(ST_RULE)}</pre>` +
-            `<button class="btn btn-secondary btn-sm" id="st-copy" type="button">📋 Copy the rule</button>` +
-            (typeof GAL_RULE === 'string'
-              ? `<p style="margin-top:14px">The 🌐 Brick Lab gallery needs one more, pasted the same way:</p>` +
-                `<pre class="st-rule" id="st-lab-rule">${esc(GAL_RULE)}</pre>` +
-                `<button class="btn btn-secondary btn-sm" id="st-lab-copy" type="button">📋 Copy the lab rule</button>`
-              : '')
+          ? `<p>The play counters need the <code>"stats"</code> block in the Firebase Console (<strong>Realtime Database → Rules</strong>). If it was removed or changed, paste the rules back from <code>_firebase/database.rules.json</code>, press <strong>Publish</strong> and reload this page.</p>`
           : `<p>${esc(stDash.err)} — check the connection and reopen the panel.</p>`) +
       `</div>`;
-    const lc0 = document.getElementById('st-lab-copy');
-    if(lc0) lc0.onclick = async () => {
-      try{ await navigator.clipboard.writeText(GAL_RULE); lc0.textContent = '✔ Copied'; }
-      catch(e){ const r = document.createRange(); r.selectNodeContents(document.getElementById('st-lab-rule'));
-                const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); lc0.textContent = 'Selected — copy it by hand'; }
-    };
-    const cp = document.getElementById('st-copy');
-    if(cp) cp.onclick = async () => {
-      try{ await navigator.clipboard.writeText(ST_RULE); cp.textContent = '✔ Copied'; }
-      catch(e){ const r = document.createRange(); r.selectNodeContents(document.getElementById('st-rule'));
-                const s = getSelection(); s.removeAllRanges(); s.addRange(r); cp.textContent = 'Selected — copy it by hand'; }
-    };
     return;
   }
   if(!stDash.data){ body.innerHTML = `<div class="lb-empty">Reading the counters…</div>`; return; }
@@ -45101,14 +45033,7 @@ function stDashRender(){
       `</div>` +
     `</div>` +
     stGrowthHTML(S, span, pct) +
-    stRulesHTML() +
     `<div class="st-foot">Anonymous counters only: no names, no accounts, no device ids. Local play and offline rounds are not counted.</div>`;
-  const lc = document.getElementById('st-lab-copy');
-  if(lc) lc.onclick = async () => {
-    try{ await navigator.clipboard.writeText(GAL_RULE); lc.textContent = '✔ Copied'; }
-    catch(e){ const r = document.createRange(); r.selectNodeContents(document.getElementById('st-lab-rule'));
-              const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); lc.textContent = 'Selected — copy it by hand'; }
-  };
   // Hover: one tooltip for the chart, fed from the bar under the pointer.
   const wrap = document.getElementById('st-chart-wrap'), tip = document.getElementById('st-tip');
   if(wrap && wrap.clientWidth){
@@ -49297,7 +49222,7 @@ try{
 //   · YOU have scored on it at least once (a TEST RUN), so every level on the
 //     shelf has been played by the person who made it,
 //   · not already on the shelf (same mission, same layout — names aside),
-//   · one publish a minute (the database enforces it, see GAL_RULE).
+//   · one publish a minute (the database enforces it: the `lab` rule's w/<uid>).
 //
 // DATA (all under the NEW top-level node `lab`, readable by anyone):
 //   lab/d/<id>     { g: mission, c: PIL1 code, n: name, b: author, u: uid, t: time }
@@ -49308,10 +49233,11 @@ try{
 //                      opens the gallery first that UTC day
 //   lab/w/<uid>        the last publish time (the one-a-minute brake)
 //
-// ⚠️ A NEW TOP-LEVEL NODE: the database refuses it until the rule below is
-// pasted into the Console (see [[firebase-rtdb-rules-allowlist]] in the
-// notes). Until then the gallery says it is not open yet, publishing is
-// refused, and the rule text is on the ?stats panel for the owner.
+// ⚠️ A NEW TOP-LEVEL NODE: the database refuses it unless the Console rules
+// carry the `lab` block (a copy of the whole rules file is in
+// _firebase/database.rules.json beside the project, not deployed). Without it
+// the gallery says it is not open yet and publishing is refused; nothing else
+// is affected.
 //
 // ⚠️ LOAD ORDER: § 25 (renderLab, the editor, labFinish) and enterHub call in
 // here, so every name they reach is a var or a function declaration.
@@ -49321,54 +49247,6 @@ var GAL = { state: 'idle', items: [], byId: Object.create(null), days: {}, lotd:
 var GAL_TTL = 60000, GAL_PAGE = 40, GAL_HIDE_AT = 3;
 var GAL_PLAYED_KEY = 'pi_gal_played', GAL_PUB_KEY = 'pi_gal_pub', GAL_HIDE_KEY = 'pi_gal_hidden';
 var GAL_BAD_SUB = null, GAL_BAD_WORD = null;
-
-// The rule, exactly as it should be pasted: inside "rules", beside "players".
-var GAL_RULE = `"lab": {
-  ".read": true,
-  "d": {
-    ".indexOn": ["t"],
-    "$id": {
-      ".write": "auth != null && ((!data.exists() && newData.child('u').val() === auth.uid && newData.parent().parent().child('w/' + auth.uid).val() === now) || (data.exists() && !newData.exists() && data.child('u').val() === auth.uid))",
-      ".validate": "newData.hasChildren(['g', 'c', 'n', 'b', 'u', 't']) && newData.child('g').isString() && newData.child('g').val().matches(/^[a-z0-9]+$/) && newData.child('g').val().length <= 16 && newData.child('c').isString() && newData.child('c').val().beginsWith('PIL1.') && newData.child('c').val().length <= 2400 && newData.child('n').isString() && newData.child('n').val().length <= 32 && newData.child('b').isString() && newData.child('b').val().length <= 24 && newData.child('t').val() === now",
-      "$other": { ".validate": "$other.matches(/^(g|c|n|b|u|t)$/)" }
-    }
-  },
-  "w": {
-    "$uid": {
-      ".write": "auth != null && auth.uid === $uid",
-      ".validate": "newData.val() === now && (!data.exists() || data.val() < now - 60000)"
-    }
-  },
-  "l": {
-    "$id": {
-      "$uid": {
-        ".write": "auth != null && auth.uid === $uid && (!newData.exists() || root.child('lab/d/' + $id).exists())",
-        ".validate": "newData.val() === true"
-      }
-    }
-  },
-  "p": {
-    "$id": {
-      ".write": "auth != null && root.child('lab/d/' + $id).exists()",
-      ".validate": "newData.isNumber() && newData.val() === (data.exists() ? data.val() : 0) + 1"
-    }
-  },
-  "f": {
-    "$id": {
-      "$uid": {
-        ".write": "auth != null && auth.uid === $uid && !data.exists()",
-        ".validate": "newData.val() === true"
-      }
-    }
-  },
-  "day": {
-    "$day": {
-      ".write": "auth != null && !data.exists()",
-      ".validate": "$day.matches(/^20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) && newData.isString() && root.child('lab/d/' + newData.val()).exists()"
-    }
-  }
-},`;
-
 // ── THE NAME FILTER ──
 // Names are public. Two lists, stored encoded so the source does not carry
 // them in plain text: stems refused anywhere in the name (leetspeak folded,
