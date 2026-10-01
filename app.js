@@ -55207,4 +55207,5953 @@ P.ow.arena = function(){
 };
 
 })();
+// ══════════════════════════════════════════════
+//  🌐 OPEN WORLD · THE FLIGHT KIT
+// ══════════════════════════════════════════════
+// Five worlds fly rather than drive: Click Frenzy's sky-dock, Math Blitz's
+// answer gates, Reaction's beacons, Flappy Drone's pylon field and Defrag's
+// data volume. They share one craft — the Nebula's interceptor and its
+// handling (stick deflection is a turn RATE, not a pointer the nose snaps
+// to) — one chase camera, a tower test that knows about height, and the ring
+// gates three of them fly through.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const KIT = P.owKit;
+const { V, TAU, ease, wrapAng, basisYPR, basisLook, plume } = KIT;
+const { clamp } = P.kit;
+
+function makeFlyer(o){
+  o = o || {};
+  const yaw = o.yaw || 0;
+  return { p: o.p ? V.copy(o.p) : [0, 0, 0], yaw, pitch: 0, bank: 0, roll: 0,
+           cruise: o.speed || 40, speed: o.speed || 40, energy: 100, boostK: 0,
+           inv: 0, hit: 0, B: basisYPR(yaw, 0, 0), cam: null, scale: o.scale || 1.5 };
+}
+
+// One frame of flight. `level` (a half-life) eases the nose back to the
+// horizon when the stick is let go: these worlds are about getting somewhere,
+// and a craft that holds a dive for ever flies into the floor. `floor` and
+// `ceiling` are soft — the nose is flattened, nothing is hurt.
+function flyStep(f, I, dt, o){
+  o = o || {};
+  const soft = v => Math.sign(v) * Math.pow(Math.max(0, Math.abs(v) - 0.06) / 0.94, 1.35);
+  const yawRate = -soft(I.ax) * (o.yawRate || 1.6);
+  const pitchRate = o.noPitch ? 0 : -soft(I.ay) * (o.pitchRate || 1.25);
+  f.yaw = wrapAng(f.yaw + yawRate * dt);
+  const maxP = o.maxPitch || 1.2;
+  f.pitch = clamp(f.pitch + pitchRate * dt, -maxP, maxP);
+  if(o.level && Math.abs(I.ay) < 0.1) f.pitch += (0 - f.pitch) * ease(dt, o.level);
+  f.bank += (clamp(-yawRate * 0.5, -0.9, 0.9) - f.bank) * ease(dt, 0.12);
+  if(I.roll && !o.noRoll) f.roll += I.roll * 6.2 * dt;
+  else f.roll += (Math.round(f.roll / TAU) * TAU - f.roll) * ease(dt, 0.18);
+  const boosting = !o.noBoost && I.boost && f.energy > 2;
+  f.energy = clamp(f.energy + (boosting ? -(o.drain || 28) : (o.regen || 13)) * dt, 0, 100);
+  const want = boosting ? f.cruise * (o.boostMul || 2.2) : (I.brake ? f.cruise * 0.35 : f.cruise);
+  f.speed += (want - f.speed) * ease(dt, boosting ? 0.25 : 0.4);
+  f.boostK = clamp((f.speed - f.cruise) / (f.cruise * 1.2), 0, 1);
+  f.B = basisYPR(f.yaw, f.pitch, f.bank + f.roll);
+  f.p = V.madd(f.p, f.B.f, f.speed * dt);
+  f.inv = Math.max(0, f.inv - dt);
+  f.hit = Math.max(0, f.hit - dt);
+  if(o.floor != null && f.p[1] < o.floor){ f.p[1] = o.floor; if(f.pitch < 0) f.pitch *= 0.4; }
+  if(o.ceiling != null && f.p[1] > o.ceiling){ f.p[1] = o.ceiling; if(f.pitch > 0) f.pitch *= 0.4; }
+  return boosting;
+}
+
+// The Nebula's chase rig: behind and above, eased in the craft's own frame so
+// it holds still on screen while a turn swings the world round it. It looks a
+// little higher than the Nebula's (`lift`), so the craft sits low in the frame
+// and a target level with it far ahead shows above it rather than behind it.
+function flyCam(w, f, dt, o){
+  o = o || {};
+  const Bc = basisYPR(f.yaw, f.pitch, f.bank * 0.35);
+  const goalOff = V.add(V.mul(Bc.f, -((o.back || 7.2) + f.boostK * 2.6)), V.mul(Bc.u, o.up || 2.15));
+  const goalTgt = V.add(V.mul(f.B.f, 30), V.mul(Bc.u, o.lift != null ? o.lift : 3.2));
+  if(!f.cam) f.cam = { off: goalOff, tgt: goalTgt, up: Bc.u };
+  else if(dt > 0){
+    f.cam.off = V.lerp(f.cam.off, goalOff, ease(dt, o.half || 0.075));
+    f.cam.tgt = V.lerp(f.cam.tgt, goalTgt, ease(dt, 0.06));
+    f.cam.up = V.norm(V.lerp(f.cam.up, Bc.u, ease(dt, 0.1)));
+  }
+  w.cam.eye = V.add(f.p, f.cam.off);
+  w.cam.target = V.add(f.p, f.cam.tgt);
+  w.goal.eye = w.cam.eye; w.goal.target = w.cam.target;
+  w.goal.fov = (o.fov || 62) + f.boostK * 12;
+  w.up = f.cam.up;
+}
+
+function drawFlyer(w, f, col, o){
+  o = o || {};
+  const r = w.r, B = f.B, SC = f.scale;
+  if(!(f.inv > 0 && Math.sin(w.t * 40) > 0)){
+    r.draw(o.geo || 'ship', { pos: f.p, m3: B.m3, scale: SC, color: f.hit > 0 ? '#ff8a8a' : (o.color || '#a9b1bf'),
+                              metallic: 0.62, roughness: 0.3, rim: 0.7, emissive: col, emissiveStrength: 0.004, accent: 0 });
+  }
+  for(const s of [-1, 1]){
+    const ep = V.add(f.p, V.add(V.add(V.mul(B.r, s * 0.36 * SC), V.mul(B.u, -0.02 * SC)), V.mul(B.f, -0.86 * SC)));
+    plume(w, ep, V.mul(B.f, -1), { len: 1.0 + f.boostK * 1.8, width: 0.3 + f.boostK * 0.08, color: f.boostK > 0.3 ? '#8fe6ff' : '#5ec8ff',
+                                   gain: 0.7 + f.boostK * 0.35, glow: 0.8, ph: s * 5 });
+  }
+  r.light({ pos: V.add(f.p, V.add(V.mul(B.u, 3), V.mul(B.f, 2))), color: '#cfe0ff', intensity: 110, range: 22 });
+}
+
+// A city tower in the way of something in the AIR: the ground kit's footprint
+// test, plus the tower's height.
+function towerAt(city, p, rad){
+  let hit = null;
+  city.near(p, b => {
+    if(hit || p[1] - rad > b.h) return;
+    if(Math.abs(p[0] - b.p[0]) < b.w * 0.5 + rad && Math.abs(p[2] - b.p[2]) < b.d * 0.5 + rad) hit = b;
+  });
+  return hit;
+}
+// Out of a tower along the shallower face, the heading turned off the wall.
+function bounceOff(f, b, rad){
+  const dx = f.p[0] - b.p[0], dz = f.p[2] - b.p[2];
+  const px = b.w * 0.5 + rad - Math.abs(dx), pz = b.d * 0.5 + rad - Math.abs(dz), py = b.h + rad - f.p[1];
+  if(py < px && py < pz){ f.p[1] = b.h + rad + 0.1; f.pitch = Math.max(f.pitch, 0.25); return; }
+  const fw = [-Math.sin(f.yaw), 0, -Math.cos(f.yaw)];
+  if(px < pz){ f.p[0] = b.p[0] + Math.sign(dx || 1) * (b.w * 0.5 + rad + 0.1); fw[0] = -fw[0]; }
+  else{ f.p[2] = b.p[2] + Math.sign(dz || 1) * (b.d * 0.5 + rad + 0.1); fw[2] = -fw[2]; }
+  f.yaw = Math.atan2(-fw[0], -fw[2]);
+  f.speed = Math.min(f.speed, f.cruise * 0.6);
+}
+
+// A standing ring, its opening facing along n. 'torus' lies in XZ with its
+// axis on local Y, so the basis puts Y along n.
+function ringM3(n){
+  const b = basisLook(n, Math.abs(n[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0]);
+  return [b.r[0], b.r[1], b.r[2], n[0], n[1], n[2], b.u[0], b.u[1], b.u[2]];
+}
+function drawRing(w, p, n, rad, col, k, o){
+  o = o || {};
+  const m3 = ringM3(n);
+  const s = rad / 0.4;
+  w.r.draw(o.thin ? 'thintorus' : 'torus', { pos: p, m3, scale: o.thin ? [rad / 0.45, s * 0.6, rad / 0.45] : s,
+                                             color: o.color || '#d8e4f0', metallic: 0.7, roughness: 0.3, rim: 0.8,
+                                             emissive: col, emissiveStrength: (k == null ? 1 : k) * (o.thin ? 2.4 : 1.2) });
+  if(o.glow !== false) w.r.glow(p, rad * 1.1, col, 0.18 * (k == null ? 1 : k));
+}
+// Did a craft moving a → b pass through the disc of a ring (centre c, normal
+// n, radius rad)? Returns +1 / −1 for the side it came from, 0 for a miss.
+function throughRing(a, b, c, n, rad){
+  const da = V.dot(V.sub(a, c), n), db = V.dot(V.sub(b, c), n);
+  if(da === db || (da > 0) === (db > 0)) return 0;
+  const t = da / (da - db);
+  const q = V.lerp(a, b, t);
+  return V.d2(q, c) < rad * rad ? (da > 0 ? 1 : -1) : 0;
+}
+
+P.owFly = { makeFlyer, flyStep, flyCam, drawFlyer, towerAt, bounceOff, ringM3, drawRing, throughRing };
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🌐 OPEN WORLD · THE DRIVING KIT
+// ══════════════════════════════════════════════
+// The worlds where you go somewhere and DO something there — flip a
+// monolith, tune a tower, vent a reactor, haul a packet — need a rover that
+// can stop, not the runner's that never does. W/S (the stick's up/down) is
+// the throttle, A/D steers, SHIFT boosts; a mouse held on the ground drives
+// at the cursor, the way Dodge Cores runs at it. Turning is tied to speed,
+// so nothing spins on the spot.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, ease, wrapAng } = P.owKit;
+const { screenToGround, drawRover, chaseCam } = P.owGround;
+const { clamp } = P.kit;
+
+function makeRover(o){
+  o = o || {};
+  return { p: o.p ? V.copy(o.p) : [0, 0, 0], yaw: o.yaw || 0, speed: 0, max: o.max || 26, bank: 0,
+           boostE: 100, boosting: false, inv: 0, hit: 0, odo: 0 };
+}
+function driveStep(me, I, dt, hud, o){
+  o = o || {};
+  let steer = I.ax, thr = -I.ly;
+  if(o.mouseDrive !== false && I.device === 'mouse' && I.mDown && hud && hud.cam){
+    const g = screenToGround(hud, (I.mx + 1) / 2 * hud.W, (I.my + 1) / 2 * hud.H, 0);
+    if(g){
+      const d = V.sub(g, me.p), l = Math.hypot(d[0], d[2]);
+      if(l > 2.5){
+        const want = Math.atan2(-d[0], -d[2]);
+        steer = clamp(-wrapAng(want - me.yaw) * 2.2, -1, 1);
+        thr = clamp(l / 14, 0.3, 1);
+      }else thr = 0;
+    }
+  }
+  const boosting = !o.noBoost && I.boost && me.boostE > 2 && thr > 0.1;
+  me.boostE = clamp(me.boostE + (boosting ? -(o.drain || 30) : (o.regen || 11)) * dt, 0, 100);
+  me.boosting = boosting;
+  const max = me.max * (boosting ? (o.boostMul || 1.6) : 1);
+  const want = thr >= 0 ? thr * max : thr * me.max * 0.45;
+  me.speed += (want - me.speed) * ease(dt, Math.abs(want) < Math.abs(me.speed) ? (o.brake || 0.22) : (o.accel || 0.35));
+  const turnK = clamp(Math.abs(me.speed) / 8, 0.35, 1);
+  me.yaw = wrapAng(me.yaw - steer * (o.turn || 2.3) * turnK * (me.speed < -0.5 ? -1 : 1) * dt);
+  me.bank += (clamp(steer * 0.45 * turnK, -0.5, 0.5) - me.bank) * ease(dt, 0.1);
+  me.p = V.madd(me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], me.speed * dt);
+  me.odo += Math.abs(me.speed) * dt;
+  me.inv = Math.max(0, me.inv - dt);
+  me.hit = Math.max(0, me.hit - dt);
+  return thr;
+}
+// Off a city tower along its shallower face, the speed scrubbed.
+function slideOut(me, city, rad){
+  const b = city.hit(me.p, rad);
+  if(!b) return null;
+  const dx = me.p[0] - b.p[0], dz = me.p[2] - b.p[2];
+  if(Math.abs(dx) / (b.w / 2) > Math.abs(dz) / (b.d / 2)) me.p[0] = b.p[0] + Math.sign(dx || 1) * (b.w / 2 + rad + 0.05);
+  else me.p[2] = b.p[2] + Math.sign(dz || 1) * (b.d / 2 + rad + 0.05);
+  me.speed *= 0.5;
+  return b;
+}
+// Out of a round post (a monolith, a tower base): radius `rad` + the rover's.
+function pushOutCircle(me, c, rad){
+  const dx = me.p[0] - c[0], dz = me.p[2] - c[2], l = Math.hypot(dx, dz);
+  if(l >= rad || l < 1e-4) return false;
+  me.p[0] = c[0] + dx / l * rad; me.p[2] = c[2] + dz / l * rad;
+  me.speed *= 0.6;
+  return true;
+}
+function roverCam(w, me, dt, o){
+  chaseCam(w, me.p, me.yaw, Object.assign({ back: 11, up: 5.4, ahead: 14, fov: 62, half: 0.1, tgtUp: 0.5 }, o), dt);
+}
+function roverDraw(w, me, col, o){
+  if(me.inv > 0 && Math.sin(w.t * 30) > 0) return;
+  drawRover(w, me.p, me.yaw, col, Object.assign({ bank: me.bank, boost: me.boosting ? 1 : 0, hit: me.hit > 0 }, o));
+}
+
+// A wide ring on the ground as a circle of soft dots: a torus scaled to a
+// big radius grows a tube as thick as a kerb.
+function dotRing(w, p, rad, col, k){
+  const n = Math.max(16, Math.min(56, Math.round(rad * 2.4)));
+  for(let i = 0; i < n; i++){
+    const a = i / n * Math.PI * 2;
+    w.r.glow([p[0] + Math.cos(a) * rad, 0.25, p[2] + Math.sin(a) * rad], 0.55, col, 0.9 * (k == null ? 1 : k));
+  }
+}
+
+// Every touch that lands on the board, counted as it happens. The shared input
+// only sees a finger that is still down when the frame polls, and a quick tap
+// on a slow phone can start and end between two frames. Touches on the
+// world's own touch buttons are left to them.
+function tapCounter(cfg){
+  const cv = aCanvas;
+  const buttons = P.owKit.touchButtons(cfg || 'fly');
+  let n = 0;
+  const on = e => {
+    if(!e.isTrusted) return;
+    const rc = cv.getBoundingClientRect();
+    for(const t of e.changedTouches){
+      const u = (t.clientX - rc.left) / Math.max(1, rc.width), v = (t.clientY - rc.top) / Math.max(1, rc.height);
+      if(!buttons.some(b => Math.hypot(u - b.u, (v - b.v) * (rc.height / Math.max(1, rc.width))) < b.r)) n++;
+    }
+  };
+  if(cv) cv.addEventListener('touchstart', on, { passive: true });
+  const prev = onStopGame;
+  onStopGame = () => { try{ if(cv) cv.removeEventListener('touchstart', on); }catch(e){} if(prev) prev(); };
+  return { take(){ const k = n; n = 0; return k; } };
+}
+
+P.owDrive = { makeRover, driveStep, slideOut, pushOutCircle, roverCam, roverDraw, dotRing, tapCounter };
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🖱️ CLICK FRENZY · OPEN WORLD — SKY-DOCK OVERLOAD
+// ══════════════════════════════════════════════
+// The classic is ten seconds of hammering one button. Here the button is a
+// reactor core adrift over a dusk city, and there are always more of them:
+// fly at one, hold it in the reticle, and hammer — every click pumps charge
+// into it (eight points a click, as ever) until it overloads. Each core vents
+// on its own clock, so the frenzy is choosing the next one while you click.
+// Nothing shoots back; the towers and the docks only get in the way.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround || !P.owFly) return;
+const { V, TAU, ease, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, makeCity } = P.owGround;
+const { makeFlyer, flyStep, flyCam, drawFlyer, towerAt, bounceOff } = P.owFly;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const LOCK_R = 36;
+
+P.ow.click = function(){
+  const G = groundBegin({ sky: 'dusk', input: { mouseSteer: true, mouseGain: 1.15 }, far: 1700 });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: FLY · TAP FIRE FAST ON A LOCKED CORE · BOOST',
+                 'MOUSE / WASD: FLY · CLICK / SPACE FAST: OVERLOAD THE LOCKED CORE · SHIFT: BOOST');
+
+  const me = makeFlyer({ p: [0, 46, 0], speed: 36 });
+  let score = 0, clicks = 0, overloads = 0, vented = 0, chain = 0, bestChain = 0, over = false, finished = false;
+  let msg = '', msgT = 0, wasFire = false, holdT = 0, zap = 0, lock = null, spawnT = 0, elapsed = 0;
+  const cores = [];
+  const taps = P.owDrive ? P.owDrive.tapCounter('fly') : { take: () => 0 };
+  const city = makeCity({ seed: 1717, density: 0.34, cell: 84, clear: 70, hMin: 18, hMax: 115, radius: 900, towerColor: '#100818' });
+  // Floating docks: slabs hung over the city, rings of light at their berths.
+  const docks = makeField({
+    cell: 190, dims: 2, seed: 6161, radius: 760,
+    gen(cx, cy, cz, g){
+      if(g() < 0.45) return [];
+      const p = [(cx + 0.25 + g() * 0.5) * 190, 40 + g() * 70, (cz + 0.25 + g() * 0.5) * 190];
+      if(Math.hypot(p[0], p[2]) < 80) return [];
+      return [{ p, w: 26 + g() * 18, d: 14 + g() * 10, yaw: g() * Math.PI, ph: g() * 6, col: P.owGround.NEONS[(g() * 6) | 0] }];
+    }
+  });
+  const total = Math.round(100 * (typeof getTimeModifier === 'function' ? getTimeModifier() : 1));
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#ffb35c,#ff5ab4)';
+  const clock = owClock(100, () => end('clock'), left => { bar.style.width = Math.max(0, left / Math.max(1, total) * 100) + '%'; });
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  function spawnCore(ahead){
+    const fwd = [me.B.f[0], 0, me.B.f[2]];
+    const a = Math.random() * TAU;
+    let dir = V.norm(V.add(V.mul(V.norm(fwd), ahead ? 1.4 : 0.5), [Math.cos(a), 0, Math.sin(a)]));
+    const d = ahead ? rr(110, 190) : rr(140, 300);
+    const p = V.add(me.p, V.mul(dir, d));
+    p[1] = clamp(me.p[1] + rr(-30, 40), 22, 130);
+    const big = Math.random() < 0.18;
+    const life = (big ? rr(22, 28) : rr(15, 21)) * clamp(1.1 - elapsed / 260, 0.7, 1.1) / Math.sqrt(diff);
+    cores.push({ p, v: [rr(-4, 4), rr(-0.6, 0.6), rr(-4, 4)], big, need: Math.round((big ? 22 : 12) + elapsed / 14), charge: 0,
+                 vent: life, life, flash: 0, ph: Math.random() * TAU });
+  }
+  for(let i = 0; i < 5; i++) spawnCore(i < 2);
+
+  // One click's worth of charge into a core.
+  function pump(c, held){
+    c.charge++;
+    clicks++;
+    c.flash = 0.08;
+    zap = 0.07;
+    score += 8; setLive(score);
+    snd(held ? 'tick' : 'click', { semi: Math.min(12, c.charge / c.need * 12) });
+    fx.sparks(c.p, 4, '#ffe0a0', 0.9, 10);
+    if(c.charge >= c.need) overload(c);
+  }
+  function overload(c){
+    const i = cores.indexOf(c);
+    if(i < 0) return;
+    cores.splice(i, 1);
+    overloads++;
+    chain++; bestChain = Math.max(bestChain, chain);
+    const bonus = (c.big ? 90 : 40) + Math.round(Math.max(0, c.vent) * 4) + Math.min(60, chain * 6);
+    score += bonus; setLive(score);
+    fx.explode(c.p, c.big ? 5 : 3.4, { color: '#ffb35c', ringColor: '#ff5ab4', debris: 6 });
+    snd('bigExplode');
+    w.kick(c.big ? 1.2 : 0.7);
+    w.pop(V.add(c.p, [0, 5, 0]), '+' + bonus + (chain > 1 ? ' ×' + chain : ''), '#ffd27a', { size: 16 });
+    if(lock === c) lock = null;
+  }
+  function vent(c){
+    const i = cores.indexOf(c);
+    if(i >= 0) cores.splice(i, 1);
+    vented++;
+    if(chain > 1) say('CORE VENTED — CHAIN BROKEN', 1.6);
+    chain = 0;
+    for(let k = 0; k < 6; k++) fx.puff(V.add(c.p, [rr(-2, 2), rr(0, 3), rr(-2, 2)]), '#b8c8d8', 2.2, 1.6, [rr(-2, 2), rr(3, 7), rr(-2, 2)]);
+    snd('glitch');
+    if(lock === c) lock = null;
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('click', score, {
+      '📡 Shift': why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
+      '🖱️ Clicks': clicks,
+      '💥 Cores Overloaded': overloads,
+      '💨 Cores Vented': vented,
+      '⛓ Best Chain': bestChain + '×',
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  // Test hooks (console / harness only).
+  P.owDebug = {
+    state: () => ({ score, clicks, overloads, vented, chain, cores: cores.length, lock: !!lock, p: me.p.map(Math.round) }),
+    coreAhead(d){ spawnCore(true); const c = cores[cores.length - 1]; c.p = V.madd(me.p, me.B.f, d || 20); c.v = [0, 0, 0]; return c.need; },
+    click(n){ for(let k = 0; k < (n || 1); k++){ if(lock) pump(lock, false); } }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      elapsed += dt;
+      flyStep(me, I, dt, { level: 1.4, floor: 6, ceiling: 190 });
+      city.update(me.p);
+      docks.update(me.p);
+      const tb = towerAt(city, me.p, 1.6);
+      if(tb && me.inv <= 0){ bounceOff(me, tb, 1.6); me.hit = 0.3; me.inv = 0.5; snd('bounceWall'); w.kick(0.6); fx.sparks(me.p, 8, '#ffc08a', 1, 12); }
+      docks.near(me.p, d => {
+        const dx = me.p[0] - d.p[0], dy = me.p[1] - d.p[1], dz = me.p[2] - d.p[2];
+        const c = Math.cos(d.yaw), s = Math.sin(d.yaw), lx = dx * c - dz * s, lz = dx * s + dz * c;
+        if(Math.abs(lx) < d.w / 2 + 1.4 && Math.abs(lz) < d.d / 2 + 1.4 && Math.abs(dy) < 2.6){
+          me.p[1] = d.p[1] + Math.sign(dy || 1) * 2.7;
+          me.pitch = Math.sign(dy || 1) * 0.2;
+          if(me.inv <= 0){ me.hit = 0.25; me.inv = 0.4; snd('bounceWall'); }
+        }
+      });
+      // The lock: the nearest core inside the cone ahead.
+      lock = null;
+      let best = 1e9;
+      for(const c of cores){
+        const d = V.sub(c.p, me.p), l = V.len(d);
+        if(l > LOCK_R + (c.big ? 6 : 0)) continue;
+        const dot = V.dot(d, me.B.f) / Math.max(l, 1e-3);
+        if(dot < 0.5 && l > 9) continue;
+        if(l < best){ best = l; lock = c; }
+      }
+      const tapped = taps.take();
+      const clicks = I.device === 'touch' ? tapped : (I.fire && !wasFire ? 1 : 0);
+      wasFire = I.fire;
+      if(lock){
+        if(clicks){ for(let k = 0; k < clicks && lock; k++) pump(lock, false); holdT = 0; }
+        else if(I.fire){ holdT += dt; if(holdT > 0.34){ holdT = 0; pump(lock, true); } }
+      }else if(clicks) snd('ui');
+      // Cores: drift, bob, vent.
+      for(let i = cores.length - 1; i >= 0; i--){
+        const c = cores[i];
+        c.p = V.madd(c.p, c.v, dt);
+        c.flash = Math.max(0, c.flash - dt);
+        c.vent -= dt;
+        if(c.vent <= 0){ vent(c); continue; }
+        if(V.d2(c.p, me.p) > 520 * 520){ cores.splice(i, 1); continue; }
+      }
+      spawnT -= dt;
+      const want = Math.min(8, 5 + Math.floor(elapsed / 30));
+      if(cores.length < want && spawnT <= 0){ spawnCore(Math.random() < 0.6); spawnT = 0.8; }
+    }
+    zap = Math.max(0, zap - dt);
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    flyCam(w, me, dt, { fov: 62 });
+    w.step(dt);
+
+    // ── DRAW ──
+    w.begin();
+    drawFloor(w, { step: 8, radius: 220, color: '#5a1a3a', glow: 0.9, major: 5, floor: '#0a0410', rough: 0.25 });
+    city.draw(w);
+    const eye = w.cam.eye;
+    docks.each(d => {
+      if(V.d2(d.p, eye) > 700 * 700 || !r.viewDepth(d.p, 1.3)) return;
+      r.draw('slab', { pos: d.p, rot: [0, d.yaw, 0], scale: [d.w, 1.6, d.d], color: '#1a1424', metallic: 0.7, roughness: 0.35, rim: 0.6 });
+      const c = Math.cos(d.yaw), s = Math.sin(d.yaw);
+      for(const k of [-1, 1]){
+        const a = [d.p[0] + c * k * d.w / 2 - s * d.d / 2, d.p[1] + 0.9, d.p[2] - s * k * d.w / 2 - c * d.d / 2];
+        const b = [d.p[0] + c * k * d.w / 2 + s * d.d / 2, d.p[1] + 0.9, d.p[2] - s * k * d.w / 2 + c * d.d / 2];
+        r.beam(a, b, 0.2, { color: d.col, emissive: d.col, emissiveStrength: 2.4 });
+      }
+      r.draw('thintorus', { pos: [d.p[0], d.p[1] + 1, d.p[2]], scale: [7, 1, 7], color: d.col, emissive: d.col, emissiveStrength: 1.6 + Math.sin(w.t * 2 + d.ph) * 0.6 });
+    });
+    let nl = 0;
+    for(const c of cores){
+      if(V.d2(c.p, eye) > 650 * 650) continue;
+      const k = c.charge / c.need, urgent = c.vent / c.life;
+      const s = (c.big ? 4.2 : 3) * (1 + 0.06 * Math.sin(w.t * (6 + k * 18) + c.ph)) * (1 + k * 0.25);
+      const hot = k > 0.66 ? '#ffffff' : k > 0.33 ? '#ffd27a' : '#ff9a4a';
+      const pos = [c.p[0], c.p[1] + Math.sin(w.t * 1.3 + c.ph) * 0.8, c.p[2]];
+      if(r.viewDepth(pos, 1.3)){
+        r.draw('core', { pos, rot: [w.t * 0.6 + c.ph, w.t * (0.8 + k * 3), 0], scale: s, color: c.flash > 0 ? '#ffffff' : '#c9b8a8', metallic: 0.5, roughness: 0.3, rim: 0.9,
+                         emissive: hot, emissiveStrength: 0.8 + k * 2.4 });
+        // The vent ring: it closes as the core's clock runs down.
+        r.draw('thintorus', { pos, rot: [Math.PI / 2, w.t, 0], scale: [s * 2.6 * (0.45 + urgent * 0.55), 1, s * 2.6 * (0.45 + urgent * 0.55)],
+                              color: urgent < 0.3 ? '#ff3a3a' : '#7ff7ff', emissive: urgent < 0.3 ? '#ff3a3a' : '#7ff7ff', emissiveStrength: 2.2 });
+      }
+      r.glow(pos, s * (1.4 + k), hot, 0.7 + k);
+      if(nl++ < 3) r.light({ pos, color: '#ffb36a', intensity: 70 + k * 120, range: 18 });
+    }
+    if(lock && zap > 0){
+      const nose = V.madd(me.p, me.B.f, 1.6 * me.scale);
+      r.streak(nose, lock.p, 0.32, colour, 3.4, 0);
+      r.glow(lock.p, 2.4, '#ffffff', 1.6);
+    }
+    if(!over || finished === false) drawFlyer(w, me, colour);
+    fx.draw();
+    w.end();
+
+    // ── HUD ──
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    hud.radar(70, Ht - 74, 54, me.p, me.B.f, 260, cores.map(c => ({ p: c.p, c: c.vent / c.life < 0.3 ? '#ff4a4a' : '#ffb35c', s: c.big ? 3.4 : 2.6, tick: true })));
+    const near = cores.slice().sort((a, b) => V.d2(a.p, me.p) - V.d2(b.p, me.p));
+    for(let i = 0; i < Math.min(4, near.length); i++){
+      const c = near[i];
+      if(c === lock) continue;
+      const q = hud.proj(c.p);
+      if(q.on) hud.bracket(c.p, c.big ? 5 : 3.6, c.vent / c.life < 0.3 ? '#ff6a6a' : '#ffd27a', Math.ceil(c.vent) + 's', { dist: Math.sqrt(V.d2(c.p, me.p)), alpha: 0.7 });
+      else hud.edgeArrow(c.p, '#ffb35c', null);
+    }
+    if(lock){
+      const q = hud.bracket(lock.p, lock.big ? 5 : 3.6, '#ffffff', 'OVERLOAD', { lock: true });
+      if(q.on){
+        hud.bar(q.x - 40, q.y + 34, 80, 7, lock.charge / lock.need, '#ffd27a');
+        hud.text(q.x, q.y + 52, 'CLICK! ' + lock.charge + ' / ' + lock.need, { size: 11, color: '#ffe8b0' });
+      }
+    }else{
+      const aimP = hud.proj(V.madd(me.p, me.B.f, 60));
+      if(aimP.on) hud.crosshair(aimP.x, aimP.y, '#ffd8b0', 8);
+    }
+    hud.text(Wd - 16, Ht - 40, chain > 1 ? 'CHAIN ×' + chain : '', { size: 13, align: 'right', color: '#ffd27a' });
+    hud.text(Wd - 16, Ht - 20, '💥 ' + overloads, { size: 13, align: 'right', color: '#ffb35c' });
+    hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, me.energy / 100, '#ffb35c', 'BOOST');
+    if(msgT > 0) hud.text(Wd / 2, 26, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🔢 MATH BLITZ · OPEN WORLD — ANSWER GATES
+// ══════════════════════════════════════════════
+// The classic is a sum and a text box. Here the sum hangs at the top of the
+// sky and its answers float ahead of you as gates: read it, pick the right
+// number, fly through it. A wrong gate costs clock time, the way a wrong
+// answer always did; a slow one lets the gates dissolve and the next sum
+// arrives. The faster you answer, the more each one pays.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround || !P.owFly) return;
+const { V, TAU, drawFloor, owClock } = P.owKit;
+const { groundBegin, makeCity } = P.owGround;
+const { makeFlyer, flyStep, flyCam, drawFlyer, towerAt, bounceOff, drawRing, throughRing } = P.owFly;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const RAD = 6.5;                               // a gate's opening
+
+P.ow.math = function(){
+  const G = groundBegin({ sky: 'violet', input: { mouseSteer: true, mouseGain: 1.15 }, far: 1600 });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: FLY THROUGH THE RIGHT ANSWER · BOOST', 'MOUSE / WASD: FLY THROUGH THE GATE WITH THE RIGHT ANSWER · SHIFT: BOOST');
+
+  const me = makeFlyer({ p: [0, 40, 0], speed: 34 });
+  let score = 0, right = 0, wrong = 0, missed = 0, streak = 0, bestStreak = 0, over = false, finished = false;
+  let msg = '', msgT = 0, q = null, gates = [], qT = 0, qLife = 12, solved = 0, flashT = 0, flashCol = '#39ff88';
+  const city = makeCity({ seed: 2424, density: 0.14, cell: 120, clear: 90, hMin: 20, hMax: 80, radius: 900, towerColor: '#0c0818' });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#a855f7,#5ee7ff)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  // The classic's sums (two numbers from 2 to 13, + − ×), then two-step ones.
+  function makeSum(){
+    const R = (typeof dailyRand === 'function') ? dailyRand : Math.random;
+    const n = () => Math.floor(R() * 12) + 2;
+    const ops = ['+', '-', '×'];
+    let a = n(), b = n(), op = ops[Math.floor(R() * 3)];
+    let text = a + ' ' + op + ' ' + b, ans = op === '+' ? a + b : op === '-' ? a - b : a * b;
+    if(solved >= 8 && R() < 0.4){
+      const c = Math.floor(R() * 9) + 2, op2 = R() < 0.5 ? '+' : '-';
+      text = '(' + text + ') ' + op2 + ' ' + c;
+      ans = op2 === '+' ? ans + c : ans - c;
+    }
+    // Decoys near the answer — the believable mistakes.
+    const opts = new Set([ans]);
+    const near = [1, -1, 2, -2, 10, -10, 3, -3, 5, -5];
+    const want = solved >= 12 ? 4 : 3;
+    while(opts.size < want){
+      const d = near[Math.floor(Math.random() * near.length)] * (Math.random() < 0.3 ? 2 : 1);
+      opts.add(ans + d);
+    }
+    return { text, ans, opts: [...opts].sort(() => Math.random() - 0.5) };
+  }
+  function placeGates(){
+    const fwd = V.norm([me.B.f[0], 0, me.B.f[2]]);
+    const side = [-fwd[2], 0, fwd[0]];
+    const c = V.add(V.madd(me.p, fwd, 140 + Math.min(60, me.speed)), [0, 0, 0]);
+    c[1] = clamp(me.p[1] + rr(-10, 10), 18, 110);
+    const n = q.opts.length;
+    gates = q.opts.map((v, i) => {
+      const lat = (i - (n - 1) / 2) * 17 + rr(-2, 2);
+      const p = V.add(V.madd(c, side, lat), [0, rr(-6, 6) + (i % 2 ? 4 : -4), 0]);
+      return { p, n: V.mul(fwd, -1), v, ok: v === q.ans, hit: 0 };
+    });
+  }
+  function nextSum(){
+    q = makeSum();
+    qLife = Math.max(6, 12 - solved * 0.2) / Math.sqrt(diff);
+    qT = qLife;
+    placeGates();
+  }
+  nextSum();
+
+  function answer(g){
+    if(g.ok){
+      right++; solved++;
+      streak++; bestStreak = Math.max(bestStreak, streak);
+      const pts = 40 + Math.round(qT * 4) + Math.min(80, streak * 8);
+      score += pts; setLive(score);
+      snd('correct');
+      fx.explode(g.p, 2.2, { color: '#39ff88', debris: 0, smoke: 0 });
+      w.pop(V.add(g.p, [0, 8, 0]), '+' + pts + ' ✔ ' + q.ans, '#9dffc4', { size: 16 });
+      flashCol = '#39ff88';
+    }else{
+      wrong++;
+      streak = 0;
+      clock.add(-Math.min(3, Math.max(0, clock.left - 1)));
+      snd('wrong');
+      w.kick(0.6);
+      fx.sparks(g.p, 16, '#ff4a4a', 1.2, 14);
+      w.pop(V.add(g.p, [0, 8, 0]), '✖ ' + g.v + ' — it was ' + q.ans + ' · −3s', '#ff8a8a', { size: 15 });
+      flashCol = '#ff4a4a';
+    }
+    flashT = 0.35;
+    nextSum();
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('math', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
+      '✔ Correct Gates': right,
+      '✖ Wrong Gates': wrong,
+      '💨 Let Dissolve': missed,
+      '⛓ Best Streak': bestStreak,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, right, wrong, missed, streak, q: q && q.text, ans: q && q.ans, gates: gates.length }),
+    passCorrect(){ const g = gates.find(x => x.ok); if(g) answer(g); },
+    passWrong(){ const g = gates.find(x => !x.ok); if(g) answer(g); }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      const prev = V.copy(me.p);
+      flyStep(me, I, dt, { level: 1.2, floor: 8, ceiling: 160 });
+      city.update(me.p);
+      const tb = towerAt(city, me.p, 1.6);
+      if(tb && me.inv <= 0){ bounceOff(me, tb, 1.6); me.hit = 0.3; me.inv = 0.5; snd('bounceWall'); w.kick(0.6); }
+      for(const g of gates){
+        if(throughRing(prev, me.p, g.p, g.n, RAD) !== 0){ answer(g); break; }
+      }
+      qT -= dt;
+      if(qT <= 0){
+        missed++; streak = 0;
+        snd('glitch');
+        say('TOO SLOW — it was ' + q.ans, 1.8);
+        for(const g of gates) fx.sparks(g.p, 6, '#8a7aff', 1, 8);
+        nextSum();
+      }else{
+        // Gates left far behind (or far off to a side) follow you round.
+        const c = gates[0].p, d = V.sub(c, me.p);
+        const ahead = V.dot(V.norm([d[0], 0, d[2]]), V.norm([me.B.f[0], 0, me.B.f[2]]));
+        if(V.len(d) > 360 || (ahead < -0.2 && V.len(d) > 60)) placeGates();
+      }
+    }
+    flashT = Math.max(0, flashT - dt);
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    flyCam(w, me, dt, { fov: 62 });
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 8, radius: 220, color: '#3a1d6e', glow: 0.95, major: 5, floor: '#05030b', rough: 0.25 });
+    city.draw(w);
+    const urgent = qT / qLife;
+    for(const g of gates){
+      const col = urgent < 0.25 ? '#ff7a9a' : '#5ee7ff';
+      drawRing(w, g.p, g.n, RAD, col, 0.9 + 0.3 * Math.sin(w.t * 4));
+      // A pylon under each gate, so its height reads against the floor.
+      r.streak([g.p[0], 0, g.p[2]], [g.p[0], g.p[1] - RAD, g.p[2]], 0.12, col, 0.35, 0);
+    }
+    drawFlyer(w, me, colour);
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    hud.radar(70, Ht - 74, 54, me.p, me.B.f, 220, gates.map(g => ({ p: g.p, c: '#5ee7ff', s: 2.6, tick: true })));
+    // The sum, big, and its clock under it.
+    hud.text(Wd / 2, 30, q.text + ' = ?', { size: 26, color: flashT > 0 ? flashCol : '#ffffff', blur: 12 });
+    hud.bar(Wd / 2 - 80, 50, 160, 6, urgent, urgent < 0.25 ? '#ff5a7a' : '#a855f7');
+    for(const g of gates){
+      const qp = hud.proj(g.p);
+      if(qp.on){
+        const sz = clamp(2200 / Math.max(qp.z, 1), 15, 48);
+        hud.text(qp.x, qp.y, String(g.v), { size: sz, color: '#ffffff', blur: 10 });
+      }else hud.edgeArrow(g.p, '#5ee7ff', String(g.v));
+    }
+    hud.text(Wd - 16, Ht - 40, streak > 1 ? 'STREAK ×' + streak : '', { size: 13, align: 'right', color: '#9dffc4' });
+    hud.text(Wd - 16, Ht - 20, '✔ ' + right + '  ✖ ' + wrong, { size: 13, align: 'right', color: '#d8c8ff' });
+    hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, me.energy / 100, '#a855f7', 'BOOST');
+    if(msgT > 0) hud.text(Wd / 2, 74, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  ⚡ REACTION TIME · OPEN WORLD — BEACON BURN
+// ══════════════════════════════════════════════
+// The classic waits for green and punishes the twitch that comes too soon.
+// Out here a beacon ignites somewhere in open space — ahead, above, behind
+// you — amber while it arms, green the instant it goes live. Turn, burn and
+// be there: reach it on green and the time it took you is your score; reach
+// it while it is still amber and it jumps away, the false start the classic
+// always punished. Leave it too long and it dies.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owFly) return;
+const { V, TAU, makeField, makeDust, drawBodies, owBegin, owClock } = P.owKit;
+const { makeFlyer, flyStep, flyCam, drawFlyer } = P.owFly;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const REACH = 8;
+
+P.ow.reaction = function(){
+  const G = owBegin({
+    space: { seed: 31, a: '#0e8a6a', b: '#1a3fae', c: '#7aff9a', dir: [-0.4, 0.3, -0.86], amount: 0.85, dust: 0.7, galaxy: 0.8 },
+    input: { mouseSteer: true, mouseGain: 1.2 }, far: 12000, near: 0.3
+  });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: TURN · BOOST: BURN · WAIT FOR GREEN', 'MOUSE / WASD: TURN · SHIFT: BURN · REACH THE BEACON ONLY ONCE IT IS GREEN');
+
+  const me = makeFlyer({ p: [0, 0, 0], speed: 42 });
+  let score = 0, caught = 0, early = 0, died = 0, streak = 0, bestStreak = 0, over = false, finished = false;
+  let msg = '', msgT = 0, last = null, bestMs = 0, beacon = null, gap = 0.6, flash = 0, elapsed = 0;
+  const rocks = makeField({
+    cell: 220, dims: 3, seed: 515, radius: 700,
+    gen(cx, cy, cz, g){
+      const items = [];
+      const n = Math.floor(g() * 3);
+      for(let i = 0; i < n; i++) items.push({ p: [(cx + g()) * 220, (cy + g()) * 220, (cz + g()) * 220], s: 2 + Math.pow(g(), 3) * 16,
+                                              g: ['rock', 'rock2', 'rock3', 'rock4'][(g() * 4) | 0], rot: [g() * 6, g() * 6, 0] });
+      return items;
+    }
+  });
+  const BODIES = [
+    { kind: 'gas', off: [-2800, 600, -5600], size: 2200, color: '#3a8a7a', ring: 2.1, ringRot: [0.5, 0, -0.3], rot: [0.5, 0, -0.3], halo: '#7affc4', par: 0.004 },
+    { kind: 'sun', off: [3600, 1500, 2600], size: 200, color: '#e8fff0', gain: 3.0, par: 0 }
+  ];
+  const dust = makeDust(60, 80);
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#39ff88,#00f5ff)';
+  const total = Math.round(100 * (typeof getTimeModifier === 'function' ? getTimeModifier() : 1));
+  const clock = owClock(100, () => end('clock'), left => { bar.style.width = Math.max(0, left / Math.max(1, total) * 100) + '%'; });
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  // Anywhere round you — ahead is likelier, behind is never ruled out.
+  function ignite(){
+    let d;
+    do{ d = V.norm([rr(-1, 1), rr(-0.7, 0.7), rr(-1, 1)]); }while(V.dot(d, me.B.f) < -0.85 && Math.random() < 0.5);
+    const dist = rr(85, 150);
+    const arm = rr(1.0, 2.8);
+    const live = Math.max(3.4, 6.2 - elapsed * 0.02) / Math.sqrt(diff);
+    beacon = { p: V.madd(me.p, d, dist), arm, armT: arm, live, liveT: 0, state: 'arm', ph: Math.random() * TAU };
+    snd('charge');
+  }
+  function reach(){
+    const b = beacon;
+    if(b.state === 'arm'){
+      early++;
+      streak = 0;
+      snd('wrong');
+      say('TOO EARLY — wait for green', 1.6);
+      fx.sparks(b.p, 14, '#ffb35c', 1.2, 14);
+      w.kick(0.5);
+      beacon = null; gap = 0.5;
+      return;
+    }
+    caught++;
+    streak++; bestStreak = Math.max(bestStreak, streak);
+    const ms = Math.round(b.liveT * 1000);
+    last = ms;
+    if(!bestMs || ms < bestMs) bestMs = ms;
+    const pts = 30 + Math.round(120 * clamp(1 - b.liveT / b.live, 0, 1)) + Math.min(50, streak * 5);
+    score += pts; setLive(score);
+    snd('success');
+    fx.explode(b.p, 2.8, { color: '#39ff88', ringColor: '#9dffc4', debris: 0, smoke: 0 });
+    w.pop(V.add(b.p, [0, 5, 0]), ms + ' ms · +' + pts, '#9dffc4', { size: 16 });
+    flash = 0.4;
+    beacon = null; gap = rr(0.3, 0.9);
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('reaction', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
+      '🟢 Beacons Reached': caught,
+      '⚡ Best Reach': caught ? bestMs + ' ms' : '—',
+      '🟠 False Starts': early,
+      '💀 Burned Out': died,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, caught, early, died, streak, beacon: beacon && beacon.state, dist: beacon ? Math.round(Math.sqrt(V.d2(beacon.p, me.p))) : null }),
+    goGreen(){ if(beacon && beacon.state === 'arm'){ beacon.armT = 0; } },
+    reachNow(){ if(beacon) reach(); }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      elapsed += dt;
+      flyStep(me, I, dt, { yawRate: 1.8, pitchRate: 1.5, boostMul: 2.4 });
+      rocks.update(me.p);
+      if(!beacon){ gap -= dt; if(gap <= 0) ignite(); }
+      else{
+        const b = beacon;
+        if(b.state === 'arm'){
+          b.armT -= dt;
+          if(b.armT <= 0){ b.state = 'live'; snd('go'); }
+        }else{
+          b.liveT += dt;
+          if(b.liveT >= b.live){
+            died++; streak = 0;
+            snd('glitch');
+            say('BEACON BURNED OUT', 1.4);
+            fx.sparks(b.p, 10, '#7aff9a', 1, 8);
+            beacon = null; gap = 0.6;
+          }
+        }
+        if(beacon && V.d2(beacon.p, me.p) < REACH * REACH) reach();
+      }
+    }
+    flash = Math.max(0, flash - dt);
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    flyCam(w, me, dt, { fov: 64 });
+    w.step(dt);
+
+    w.begin();
+    drawBodies(w, BODIES);
+    const eye = w.cam.eye;
+    rocks.each(it => {
+      const d2 = V.d2(it.p, eye);
+      if(d2 > 650 * 650 || !r.viewDepth(it.p, 1.2 + it.s / Math.max(30, Math.sqrt(d2)))) return;
+      r.draw(it.g, { pos: it.p, rot: [it.rot[0] + w.t * 0.05, it.rot[1], 0], scale: it.s, color: '#5f6a66', metallic: 0.05, roughness: 0.9, rim: 0.35 });
+    });
+    if(beacon){
+      const b = beacon;
+      const green = b.state === 'live';
+      const col = green ? '#39ff88' : '#ffb35c';
+      const k = green ? 1 - b.liveT / b.live : 1 - b.armT / b.arm;
+      const pulse = 1 + 0.15 * Math.sin(w.t * (green ? 10 : 4) + b.ph);
+      r.draw('sphere', { pos: b.p, scale: 2.2 * pulse, color: col, emissive: col, emissiveStrength: green ? 3.2 : 1.6 });
+      r.draw('thintorus', { pos: b.p, rot: [w.t * 1.1, w.t * 0.7, 0], scale: [9 * (green ? 0.4 + 0.6 * k : 1), 1, 9 * (green ? 0.4 + 0.6 * k : 1)], color: col, emissive: col, emissiveStrength: 2.4 });
+      r.draw('thintorus', { pos: b.p, rot: [Math.PI / 2, 0, w.t], scale: [REACH * 2.2, 1, REACH * 2.2], color: col, emissive: col, emissiveStrength: green ? 1.6 : 0.8 });
+      r.glow(b.p, 7 * pulse, col, green ? 1.6 : 0.8);
+      // A pillar of light, so it can be found from anywhere.
+      r.streak(V.add(b.p, [0, -60, 0]), V.add(b.p, [0, 60, 0]), 0.9, col, green ? 1.2 : 0.5, 0);
+      r.light({ pos: b.p, color: col, intensity: green ? 260 : 120, range: 40 });
+    }
+    drawFlyer(w, me, colour);
+    dust(w, V.mul(me.B.f, me.speed), { len: 0.045, max: 7, gain: 0.42, width: 0.03 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    hud.radar(70, Ht - 74, 54, me.p, me.B.f, 170, beacon ? [{ p: beacon.p, c: beacon.state === 'live' ? '#39ff88' : '#ffb35c', s: 3.4, tick: true }] : []);
+    if(beacon){
+      const green = beacon.state === 'live';
+      const col = green ? '#39ff88' : '#ffb35c';
+      const d = Math.sqrt(V.d2(beacon.p, me.p));
+      const q = hud.bracket(beacon.p, 6, col, green ? 'GO!' : 'ARMING…', { dist: d, lock: green });
+      if(!q.on) hud.edgeArrow(beacon.p, col, green ? 'GO' : 'WAIT');
+      if(green) hud.bar(Wd / 2 - 80, 46, 160, 6, 1 - beacon.liveT / beacon.live, '#39ff88');
+    }
+    hud.text(Wd / 2, 28, beacon && beacon.state === 'live' ? '🟢 GREEN — BURN!' : beacon ? '🟠 WAIT FOR GREEN…' : '…', { size: 15, color: beacon && beacon.state === 'live' ? '#9dffc4' : '#ffd8a0' });
+    if(last != null) hud.text(Wd - 16, Ht - 40, 'LAST ' + last + ' ms', { size: 13, align: 'right', color: flash > 0 ? '#ffffff' : '#9dffc4' });
+    hud.text(Wd - 16, Ht - 20, '🟢 ' + caught + (streak > 1 ? '  ×' + streak : ''), { size: 13, align: 'right', color: '#9dffc4' });
+    hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, me.energy / 100, '#39ff88', 'BURN');
+    if(msgT > 0) hud.text(Wd / 2, 70, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🐦 FLAPPY DRONE · OPEN WORLD — THE PYLON FIELD
+// ══════════════════════════════════════════════
+// Gravity and a flap, as ever — but the firewall columns no longer come at
+// you down a corridor. They stand all over an icy plain, each with its gap
+// facing whichever way it faces, among bare pylons and floating rings. Steer
+// where you like: go round a wall if you must, thread its gap if you want the
+// points. The floor is as hard as it always was.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround || !P.owFly) return;
+const { V, TAU, wrapAng, ease, makeField, drawFloor, owClock, basisYPR } = P.owKit;
+const { groundBegin, chaseCam, makeCity } = P.owGround;
+const { drawRing, throughRing } = P.owFly;
+const { mine, clamp, runLoop } = P.kit;
+const CELL = 42, WALL_W = 12, WALL_T = 1.8, TOP = 46;
+
+P.ow.flappy = function(){
+  const G = groundBegin({ sky: 'ice', input: { mouseSteer: true, mouseGain: 1.2, spaceJumps: true, touch: 'drive' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: STEER · JUMP BUTTON: FLAP', 'A/D or MOUSE: STEER · SPACE / CLICK: FLAP · SHIFT: SPRINT');
+  inp.altLabel = 'FLAP';
+
+  const me = { p: [0, 12, 0], yaw: 0, vy: 0, speed: 24, shields: 3, inv: 0, bank: 0, tilt: 0, dist: 0, energy: 100 };
+  let score = 0, threaded = 0, rings = 0, streak = 0, bestStreak = 0, over = false, finished = false, msg = '', msgT = 0, wasFlap = false;
+  const taps = P.owDrive ? P.owDrive.tapCounter('drive') : { take: () => 0 };
+  const field = makeField({
+    cell: CELL, dims: 2, seed: 7171, radius: 340,
+    gen(cx, cy, cz, g){
+      const items = [];
+      const x = (cx + 0.5) * CELL, z = (cz + 0.5) * CELL;
+      if(Math.hypot(x, z) < 40) return items;
+      const roll = g(), yaw = g() * Math.PI;
+      if(roll < 0.42){
+        const gh = 11 - Math.min(3, Math.abs(cx + cz) * 0.004) + g() * 2;
+        items.push({ t: 'gate', p: [x + (g() - 0.5) * 14, 0, z + (g() - 0.5) * 14], yaw, gy: 9 + g() * 20, gh, passed: false });
+      }else if(roll < 0.66){
+        items.push({ t: 'pylon', p: [x + (g() - 0.5) * 24, 0, z + (g() - 0.5) * 24], r: 1.3 + g() * 0.8, h: 16 + g() * 30 });
+      }
+      if(g() < 0.4){
+        const a = g() * TAU;
+        items.push({ t: 'ring', p: [x + Math.cos(a) * 14, 5 + g() * 22, z + Math.sin(a) * 14], n: [Math.sin(yaw), 0, Math.cos(yaw)], got: false });
+      }
+      return items;
+    }
+  });
+  const city = makeCity({ seed: 909, density: 0.08, cell: 150, clear: 200, hMin: 40, hMax: 110, radius: 900, towerColor: '#06101c' });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#46c8ff,#ffffff)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  // A point in a gate's own frame: x along the wall, z through it.
+  const local = (p, o) => {
+    const dx = p[0] - o.p[0], dz = p[2] - o.p[2], c = Math.cos(o.yaw), s = Math.sin(o.yaw);
+    return [dx * c - dz * s, dx * s + dz * c];
+  };
+  function crash(at, why){
+    if(me.inv > 0 || over) return;
+    me.shields--;
+    me.inv = 1.5;
+    streak = 0;
+    snd('hurt'); w.kick(1.1);
+    fx.explode(at, 1.1, { color: '#7fe8ff', debris: 3, smoke: 1, ring: false });
+    bar.style.width = (Math.max(0, me.shields) / 3 * 100) + '%';
+    say(why, 1.4);
+    if(me.shields <= 0){
+      if(survivedFatal()){ me.shields = 1; bar.style.width = '33%'; say('SHIELD ABSORBED', 1.6); return; }
+      over = true;
+      snd('bigExplode');
+      fx.explode(me.p, 2.4, { color: colour });
+      gLater(() => finish('crash'), 1200);
+    }
+  }
+  function thread(o){
+    o.passed = true;
+    threaded++;
+    streak++; bestStreak = Math.max(bestStreak, streak);
+    const pts = 40 + Math.min(40, streak * 5);
+    score += pts; setLive(score);
+    snd('score');
+    w.pop([o.p[0], o.gy + o.gh, o.p[2]], '+' + pts + ' THREADED', '#bff6ff', { size: 14 });
+    fx.sparks([o.p[0], o.gy, o.p[2]], 10, '#bff6ff', 1, 10);
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('flappy', score, {
+      '📡 Flight': why === 'clock' ? 'CLOCK EXPIRED' : 'DOWNED',
+      '🧱 Gaps Threaded': threaded,
+      '⭕ Rings': rings,
+      '📏 Distance': Math.round(me.dist) + ' m',
+      '⛓ Best Streak': bestStreak,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, threaded, rings, shields: me.shields, y: Math.round(me.p[1]), dist: Math.round(me.dist) }),
+    lose(){ me.inv = 0; crash(me.p, 'TEST'); },
+    thread(){ let g = null; field.each(o => { if(!g && o.t === 'gate' && !o.passed) g = o; }); if(g) thread(g); return !!g; }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      me.inv = Math.max(0, me.inv - dt);
+      const steer = clamp(I.ax, -1, 1);
+      me.yaw = wrapAng(me.yaw - steer * 1.7 * dt);
+      me.bank += (clamp(steer * 0.6, -0.7, 0.7) - me.bank) * ease(dt, 0.1);
+      const flap = I.jumpHit || taps.take() > 0 || (I.device !== 'touch' && I.fire && !wasFlap);
+      wasFlap = I.fire;
+      if(flap){ me.vy = 9.2; snd('flap'); fx.puff([me.p[0], me.p[1] - 0.6, me.p[2]], '#bfe8ff', 0.5, 0.5, [0, -2, 0]); }
+      me.vy = Math.max(-26, me.vy - 23 * dt);
+      const sprint = I.boost && me.energy > 2;
+      me.energy = clamp(me.energy + (sprint ? -30 : 12) * dt, 0, 100);
+      const base = Math.min(34, 24 + me.dist * 0.003) * Math.min(1.25, diff);
+      me.speed += ((sprint ? base * 1.5 : base) - me.speed) * ease(dt, 0.4);
+      me.tilt += (clamp(me.vy * 0.05, -0.5, 0.45) - me.tilt) * ease(dt, 0.08);
+      const prev = V.copy(me.p);
+      const f = [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)];
+      me.p = V.add(V.madd(me.p, f, me.speed * dt), [0, me.vy * dt, 0]);
+      me.dist += me.speed * dt;
+      me.payT = (me.payT || 0) + me.speed * dt;
+      if(me.payT > 10){ me.payT = 0; score += 1; setLive(score); }
+      if(me.p[1] > TOP){ me.p[1] = TOP; me.vy = Math.min(me.vy, 0); }
+      if(me.p[1] < 0.9){ me.p[1] = 0.9; me.vy = 8; crash(me.p, 'HIT THE FLOOR'); }
+      field.update(me.p);
+      city.update(me.p);
+      field.near(me.p, o => {
+        if(o.t === 'gate'){
+          const a = local(prev, o), b = local(me.p, o);
+          const inWall = Math.abs(b[0]) < WALL_W / 2 + 0.6 && Math.abs(b[1]) < WALL_T / 2 + 0.7;
+          const lo = o.gy - o.gh / 2, hi = o.gy + o.gh / 2;
+          if(inWall && (me.p[1] < lo + 0.5 || me.p[1] > hi - 0.5) && me.p[1] < hi + 14){
+            crash(me.p, 'FIREWALL');
+            me.p = V.madd(prev, f, -1.5);
+          }else if(!o.passed && (a[1] > 0) !== (b[1] > 0) && Math.abs(b[0]) < WALL_W / 2 && me.p[1] > lo && me.p[1] < hi) thread(o);
+        }else if(o.t === 'pylon'){
+          if((me.p[0] - o.p[0]) ** 2 + (me.p[2] - o.p[2]) ** 2 < (o.r + 0.9) ** 2 && me.p[1] < o.h){ crash(me.p, 'PYLON'); me.p = V.madd(prev, f, -1.5); }
+        }else if(o.t === 'ring' && !o.got){
+          if(throughRing(prev, me.p, o.p, o.n, 4.2) !== 0){
+            o.got = true; rings++; score += 15; setLive(score); snd('coin');
+            fx.glowPop(o.p, '#ffd700', 2.4, 0.35);
+          }
+        }
+      });
+      if(city.hit(me.p, 0.8) && me.p[1] < 60){ crash(me.p, 'TOWER'); me.p = V.madd(prev, f, -2); me.yaw += Math.PI * 0.5; }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    chaseCam(w, me.p, me.yaw, { back: 10, up: 3.2, ahead: 18, fov: 64, half: 0.09, tgtUp: 0.5 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 170, color: '#15507a', glow: 0.9, major: 5, floor: '#030a14', rough: 0.2 });
+    city.draw(w);
+    const eye = w.cam.eye;
+    field.each(o => {
+      if(V.d2(o.p, eye) > 260 * 260) return;
+      if(o.t === 'gate'){
+        if(!r.viewDepth([o.p[0], o.gy, o.p[2]], 1.6)) return;
+        const lo = o.gy - o.gh / 2, hi = o.gy + o.gh / 2, top = hi + 14;
+        const col = o.passed ? '#39ff88' : '#ff3a6a';
+        r.draw('cube', { pos: [o.p[0], lo / 2, o.p[2]], rot: [0, o.yaw, 0], scale: [WALL_W, lo, WALL_T], color: '#16202e', metallic: 0.7, roughness: 0.35 });
+        r.draw('cube', { pos: [o.p[0], (hi + top) / 2, o.p[2]], rot: [0, o.yaw, 0], scale: [WALL_W, top - hi, WALL_T], color: '#16202e', metallic: 0.7, roughness: 0.35 });
+        r.draw('box', { pos: [o.p[0], lo, o.p[2]], rot: [0, o.yaw, 0], scale: [WALL_W * 1.01, 0.22, WALL_T * 1.05], color: col, emissive: col, emissiveStrength: 2.6 });
+        r.draw('box', { pos: [o.p[0], hi, o.p[2]], rot: [0, o.yaw, 0], scale: [WALL_W * 1.01, 0.22, WALL_T * 1.05], color: col, emissive: col, emissiveStrength: 2.6 });
+      }else if(o.t === 'pylon'){
+        if(!r.viewDepth([o.p[0], o.h / 2, o.p[2]], 1.6)) return;
+        r.draw('cylinder', { pos: [o.p[0], o.h / 2, o.p[2]], scale: [o.r * 2, o.h, o.r * 2], color: '#1a2434', metallic: 0.8, roughness: 0.3 });
+        r.draw('box', { pos: [o.p[0], o.h + 0.2, o.p[2]], scale: [o.r * 2.2, 0.3, o.r * 2.2], color: '#7fe8ff', emissive: '#7fe8ff', emissiveStrength: 2.2 });
+      }else if(o.t === 'ring' && !o.got){
+        if(!r.viewDepth(o.p, 1.3)) return;
+        drawRing(w, o.p, o.n, 4.2, '#ffd700', 1);
+      }
+    });
+    if(!(me.inv > 0 && Math.sin(w.t * 30) > 0)){
+      const B = basisYPR(me.yaw, me.tilt, me.bank);
+      r.draw('drone', { pos: me.p, m3: B.m3, scale: 1.8, color: '#c9d4e2', metallic: 0.6, roughness: 0.3, rim: 0.9, emissive: colour, emissiveStrength: 0.5 });
+      r.glow(me.p, 2.4, colour, 0.6);
+    }
+    // Its shadow, so height reads.
+    r.draw('thintorus', { pos: [me.p[0], 0.08, me.p[2]], scale: [2.4, 1, 2.4], color: '#000000', emissive: colour, emissiveStrength: clamp(1.4 - me.p[1] / 30, 0.2, 1.4) });
+    r.light({ pos: [me.p[0], me.p[1] + 4, me.p[2] + 2], color: '#d8f0ff', intensity: 100, range: 22 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = [];
+    field.each(o => { if(V.d2(o.p, me.p) > 160 * 160) return; if(o.t === 'gate' && !o.passed) rad.push({ p: o.p, c: '#ff3a6a', s: 2.4 }); else if(o.t === 'ring' && !o.got) rad.push({ p: o.p, c: '#ffd700', s: 1.8 }); });
+    hud.radar(70, Ht - 74, 54, me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], 120, rad);
+    hud.text(Wd - 16, Ht - 40, 'ALT ' + Math.round(me.p[1]) + ' m', { size: 13, align: 'right', color: '#bff6ff' });
+    hud.text(Wd - 16, Ht - 20, '♦'.repeat(Math.max(0, me.shields)) + '◊'.repeat(Math.max(0, 3 - me.shields)), { size: 14, align: 'right', color: '#7fe8ff' });
+    if(streak > 1) hud.text(Wd / 2, 52, 'STREAK ×' + streak, { size: 12, color: '#bff6ff' });
+    hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, me.energy / 100, '#46c8ff', 'SPRINT');
+    if(msgT > 0) hud.text(Wd / 2, 26, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  ☄️ METEOR DEFENSE · OPEN WORLD — STATION ADRIFT
+// ══════════════════════════════════════════════
+// The classic defends three servers along the bottom of a screen. Here they
+// ride the arms of a station adrift in open space, and the rogue code comes
+// in as rock from every direction — above, below, behind. You are the
+// battery on the hub: look round, tap where the meteor is, and the shell
+// flies out and bursts there. A blast still takes time to travel, so lead
+// the far ones. Lose all three servers and the station goes dark.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit) return;
+const { V, TAU, wrapAng, ease, basisYPR, makeDust, drawBodies, owBegin, owClock } = P.owKit;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const SHELL_SP = 95, BLAST = 9.5, ARM = 11;
+
+P.ow.meteor = function(){
+  const G = owBegin({
+    space: { seed: 77, a: '#6a2a10', b: '#1a2f6e', c: '#ffb36a', dir: [0.5, 0.2, -0.84], amount: 0.9, dust: 0.8, galaxy: 1.0 },
+    input: { touch: 'tap' }, far: 12000, near: 0.3
+  });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('DRAG LEFT SIDE: LOOK · TAP A METEOR: FIRE THERE', 'WASD / ←↑↓→ / SCREEN EDGES: LOOK · CLICK A METEOR: FIRE THERE · SPACE: FIRE AT THE RETICLE');
+
+  const C = [0, 0, 0];
+  const servers = [0, 1, 2].map(i => {
+    const a = i / 3 * TAU;
+    return { i, a, p: [Math.cos(a) * ARM, 0, Math.sin(a) * ARM], hp: 3, dead: false, flash: 0 };
+  });
+  const view = { yaw: 0, pitch: 0.12 };
+  let score = 0, kills = 0, shots = 0, over = false, finished = false, msg = '', msgT = 0;
+  let spawnT = 1.5, elapsed = 0, reload = 0, spin = 0;
+  const meteors = [], shells = [], blasts = [], taps = [];
+  const BODIES = [
+    { kind: 'gas', off: [3000, -1200, -5200], size: 2600, color: '#b0704a', ring: 2.2, ringRot: [0.3, 0, -0.5], rot: [0.3, 0, -0.5], halo: '#ffb070', par: 0 },
+    { kind: 'moon', off: [-2600, 800, -4200], size: 260, color: '#8a8580', v: '2', par: 0 },
+    { kind: 'sun', off: [-3800, 1400, 2400], size: 220, color: '#fff0da', gain: 3.4, par: 0 }
+  ];
+  const dust = makeDust(40, 90);
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#ffb36a,#ff4a4a)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  // Taps on a touch screen fire where they land (the left half is the look
+  // stick, read by the shared input).
+  const cv = aCanvas;
+  const onTouch = e => {
+    if(!e.isTrusted) return;
+    const rc = cv.getBoundingClientRect();
+    for(const t of e.changedTouches){
+      const u = (t.clientX - rc.left) / Math.max(1, rc.width), v = (t.clientY - rc.top) / Math.max(1, rc.height);
+      if(u >= 0.5) taps.push([u * 2 - 1, v * 2 - 1]);
+    }
+  };
+  if(cv) cv.addEventListener('touchstart', onTouch, { passive: true });
+  const prevStop = onStopGame;
+  onStopGame = () => { try{ if(cv) cv.removeEventListener('touchstart', onTouch); }catch(e){} if(prevStop) prevStop(); };
+
+  const liveServers = () => servers.filter(s => !s.dead);
+  function spawnMeteor(big){
+    const live = liveServers();
+    if(!live.length) return;
+    const tgt = live[(Math.random() * live.length) | 0];
+    let d;
+    do{ d = V.norm([rr(-1, 1), rr(-0.8, 0.8), rr(-1, 1)]); }while(V.len(d) < 0.1);
+    const p = V.madd(C, d, rr(240, 300));
+    const s = big ? rr(4.2, 5.4) : rr(2, 3.4);
+    const sp = (big ? rr(7, 10) : rr(10, 15)) * Math.min(1.5, diff) * (1 + Math.min(0.6, elapsed / 200));
+    // Aimed at a server, with a little miss in it.
+    const aim = V.add(tgt.p, [rr(-2, 2), rr(-2, 2), rr(-2, 2)]);
+    meteors.push({ p, v: V.mul(V.norm(V.sub(aim, p)), sp), s, big, tgt, rot: [Math.random() * 6, Math.random() * 6, 0], spin: [rr(-1, 1), rr(-1, 1), 0],
+                   g: ['rock', 'rock2', 'rock3', 'rock5'][(Math.random() * 4) | 0] });
+  }
+  // The ray under a screen point (−1..1), from the camera.
+  function rayAt(nx, ny){
+    const Cc = hud.cam;
+    if(!Cc) return V.copy(view.f || [0, 0, -1]);
+    const asp = hud.W / hud.H;
+    return V.norm(V.add(V.add(Cc.f, V.mul(Cc.r, nx * Cc.th * asp)), V.mul(Cc.u, -ny * Cc.th)));
+  }
+  // A shell's fuse is set at launch: the meteor nearest the ray, else 90 out.
+  function fire(dir){
+    if(reload > 0 || over) return;
+    reload = 0.2;
+    shots++;
+    const muzzle = V.madd([C[0], 3.2, C[2]], dir, 3);
+    let fuse = 90, best = 1e9;
+    for(const m of meteors){
+      const rel = V.sub(m.p, muzzle), along = V.dot(rel, dir);
+      if(along < 4) continue;
+      // Where the meteor will be when the shell gets there.
+      const ahead = V.madd(m.p, m.v, along / SHELL_SP);
+      const a2 = V.dot(V.sub(ahead, muzzle), dir);
+      const off = V.len(V.sub(V.sub(ahead, muzzle), V.mul(dir, a2)));
+      if(off < BLAST * 1.1 + m.s && a2 < best){ best = a2; fuse = a2; }
+    }
+    shells.push({ p: muzzle, v: V.mul(dir, SHELL_SP), left: fuse });
+    snd('shoot', { semi: -4 });
+    fx.flash(muzzle, '#ffd8a0', 0.8, 0.08);
+  }
+  function burst(p){
+    blasts.push({ p, t: 0 });
+    fx.explode(p, 2.2, { color: '#ffb36a', debris: 0, smoke: 1, ringColor: '#ffd27a' });
+    snd('explode');
+  }
+  function killMeteor(i, inBlast){
+    const m = meteors[i];
+    meteors.splice(i, 1);
+    kills++;
+    const pts = m.big ? 40 : 25;
+    score += pts; setLive(score);
+    fx.explode(m.p, m.s * 0.8, { color: '#ff8a3a', debrisGeo: 'rock2', debrisColor: '#4a3a30' });
+    w.pop(V.add(m.p, [0, m.s + 2, 0]), '+' + pts, '#ffd27a', { size: 13 });
+    if(inBlast) inBlast.n = (inBlast.n || 0) + 1;
+    // A big one breaks into two that keep coming.
+    if(m.big){
+      for(const k of [-1, 1]){
+        const side = V.norm(V.cross(m.v, [0, 1, 0]));
+        meteors.push({ p: V.madd(m.p, side, k * 3), v: V.add(m.v, V.mul(side, k * 3)), s: m.s * 0.5, big: false, tgt: m.tgt,
+                       rot: [0, 0, 0], spin: [rr(-2, 2), rr(-2, 2), 0], g: 'rock2' });
+      }
+    }
+  }
+  function impact(m){
+    const s = m.tgt;
+    fx.explode(m.p, m.s, { color: '#ff6a2a', debrisGeo: 'slab', debrisColor: '#3a3e48' });
+    snd('bigExplode');
+    w.kick(1.4);
+    if(s.dead) return;
+    s.hp -= m.big ? 2 : 1;
+    s.flash = 0.4;
+    if(s.hp <= 0){
+      s.dead = true;
+      fx.explode(s.p, 4, { color: '#ff7a2a', debrisGeo: 'slab', debrisColor: '#4a4f58' });
+      say('🖥 SERVER ' + (s.i + 1) + ' LOST', 2.4);
+      if(!liveServers().length){
+        if(survivedFatal()){ s.dead = false; s.hp = 1; say('SHIELD ABSORBED', 1.6); return; }
+        over = true;
+        gLater(() => finish('lost'), 1500);
+      }
+    }else say('⚠ SERVER ' + (s.i + 1) + ' HIT', 1.4);
+    bar.style.width = (servers.reduce((a, x) => a + Math.max(0, x.hp), 0) / 9 * 100) + '%';
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    const left = liveServers().length;
+    const bonus = left * 100;
+    score += bonus;
+    owFinish('meteor', score, {
+      '📡 Watch': why === 'clock' ? 'CLOCK EXPIRED' : 'STATION DARK',
+      '☄️ Meteors Destroyed': kills,
+      '🎯 Shells Fired': shots,
+      '🖥 Servers Standing': left + ' (+' + bonus + ')',
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, kills, meteors: meteors.length, servers: servers.map(s => s.hp), shells: shells.length }),
+    lose(){ const s = servers.find(x => !x.dead); if(s){ s.hp = 1; impact({ p: V.copy(s.p), s: 2, big: false, tgt: s }); } },
+    spawn(n){ for(let i = 0; i < (n || 1); i++) spawnMeteor(i % 3 === 0); },
+    blastAll(){ for(const m of meteors.slice()) burst(V.copy(m.p)); }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      elapsed += dt;
+      reload = Math.max(0, reload - dt);
+      // Look: keys / stick, plus the screen edges for a mouse.
+      let lx = I.lx, ly = I.ly;
+      if(I.device === 'mouse' && I.mouseOn){
+        const ex = Math.abs(I.mx) > 0.78 ? (I.mx - Math.sign(I.mx) * 0.78) / 0.22 : 0;
+        const ey = Math.abs(I.my) > 0.8 ? (I.my - Math.sign(I.my) * 0.8) / 0.2 : 0;
+        lx += ex; ly += ey;
+      }
+      view.yaw = wrapAng(view.yaw - clamp(lx, -1, 1) * 1.7 * dt);
+      view.pitch = clamp(view.pitch - clamp(ly, -1, 1) * 1.3 * dt, -1.35, 1.35);
+      // Fire: a click goes where the pointer is; keys and the pad at the reticle.
+      if(I.fire && I.device === 'mouse' && I.mouseOn) fire(rayAt(I.mx, I.my));
+      else if(I.fire && I.device !== 'touch' && hud.cam) fire(hud.cam.f);
+      while(taps.length){ const t = taps.shift(); if(reload > 0) reload = 0; fire(rayAt(t[0], t[1])); }
+      spawnT -= dt;
+      if(spawnT <= 0){
+        spawnMeteor(Math.random() < 0.18 + Math.min(0.2, elapsed / 600));
+        if(elapsed > 50 && Math.random() < 0.3) spawnMeteor(false);
+        spawnT = Math.max(0.75, 2.4 - elapsed * 0.014) / Math.sqrt(diff);
+      }
+    }
+    if(dt > 0){
+      spin += dt * 0.05;
+      for(let i = shells.length - 1; i >= 0; i--){
+        const s = shells[i];
+        const step = SHELL_SP * dt;
+        s.p = V.madd(s.p, V.norm(s.v), step);
+        s.left -= step;
+        if(s.left <= 0){ shells.splice(i, 1); burst(s.p); }
+      }
+      for(let i = blasts.length - 1; i >= 0; i--){
+        const b = blasts[i];
+        b.t += dt;
+        const rad = BLAST * Math.min(1, b.t / 0.3);
+        for(let j = meteors.length - 1; j >= 0; j--){
+          if(V.d2(meteors[j].p, b.p) < (rad + meteors[j].s * 0.6) ** 2) killMeteor(j, b);
+        }
+        if(b.t > 0.6){
+          if(b.n > 1){ const bonus = (b.n - 1) * 15; score += bonus; setLive(score); w.pop(V.add(b.p, [0, 6, 0]), '×' + b.n + ' +' + bonus, '#ffffff', { size: 15 }); snd('combo'); }
+          blasts.splice(i, 1);
+        }
+      }
+      for(let i = meteors.length - 1; i >= 0; i--){
+        const m = meteors[i];
+        m.p = V.madd(m.p, m.v, dt);
+        m.rot[0] += m.spin[0] * dt; m.rot[1] += m.spin[1] * dt;
+        if(V.d2(m.p, m.tgt.p) < (2.6 + m.s * 0.5) ** 2 || V.d2(m.p, C) < (3.5 + m.s * 0.5) ** 2){ meteors.splice(i, 1); impact(m); }
+      }
+      for(const s of servers) s.flash = Math.max(0, s.flash - dt);
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    // ── CAMERA ── on the battery, looking out along the view.
+    const B = basisYPR(view.yaw, view.pitch, 0);
+    view.f = B.f;
+    w.cam.eye = V.add([C[0], 7.2, C[2]], V.mul(B.f, -5.5));
+    w.cam.target = V.add(w.cam.eye, V.mul(B.f, 40));
+    w.goal.eye = w.cam.eye; w.goal.target = w.cam.target; w.goal.fov = 66;
+    w.up = [0, 1, 0];
+    w.step(dt);
+
+    w.begin();
+    drawBodies(w, BODIES);
+    // The station: a hub, a ring, three arms and their servers.
+    r.draw('cylinder', { pos: [0, 0, 0], scale: [5, 5, 5], color: '#3a404c', metallic: 0.7, roughness: 0.35, rim: 0.6 });
+    r.draw('torus', { pos: [0, 0, 0], rot: [0, spin, 0], scale: 30, color: '#4a5260', metallic: 0.75, roughness: 0.3, rim: 0.5, emissive: '#7fe8ff', emissiveStrength: 0.15 });
+    r.draw('turret', { pos: [0, 2.8, 0], rot: [0, view.yaw, 0], scale: 1.5, color: '#c9d1dd', metallic: 0.6, roughness: 0.3, rim: 0.7, emissive: colour, emissiveStrength: 0.2 });
+    for(const s of servers){
+      r.beam([0, 0, 0], s.p, 0.7, { color: '#5a606c', metallic: 0.7, roughness: 0.4 });
+      if(s.dead){ r.glow(s.p, 2.4, '#ff5a2a', 0.4 + 0.3 * Math.sin(w.t * 7 + s.i)); continue; }
+      const col = s.hp >= 3 ? '#39ff88' : s.hp === 2 ? '#ffd700' : '#ff4a4a';
+      r.draw('rack', { pos: s.p, rot: [0, -s.a + Math.PI / 2, 0], scale: 2.6, color: s.flash > 0 ? '#ffffff' : '#8a94a6', metallic: 0.6, roughness: 0.35, emissive: col, emissiveStrength: 0.6 });
+      r.glow(V.add(s.p, [0, 2.4, 0]), 1.6, col, 0.9);
+      r.light({ pos: V.add(s.p, [0, 3, 0]), color: col, intensity: 60, range: 12 });
+    }
+    r.light({ pos: [0, 8, 0], color: '#cfe0ff', intensity: 140, range: 30 });
+    for(const m of meteors){
+      if(!r.viewDepth(m.p, 1.3)) continue;
+      r.draw(m.g, { pos: m.p, rot: m.rot, scale: m.s, color: '#5a4038', metallic: 0.1, roughness: 0.85, rim: 0.4, emissive: '#ff6a10', emissiveStrength: 0.9, detail: 10.92 });
+      r.glow(m.p, m.s * 1.4, '#ff7a2a', 0.5);
+      r.streak(V.madd(m.p, V.norm(m.v), -m.s * 4), m.p, m.s * 0.6, '#ff9a4a', 0.9, 1);
+    }
+    for(const s of shells){ r.glow(s.p, 0.9, '#ffe0a0', 2.4); r.streak(V.madd(s.p, V.norm(s.v), -4), s.p, 0.3, '#ffd27a', 2.6, 0.9); }
+    for(const b of blasts){
+      const k = Math.min(1, b.t / 0.3), a = 1 - b.t / 0.6;
+      r.glow(b.p, BLAST * 1.4 * k, '#ffb36a', 1.4 * a);
+      r.draw('lowsphere', { pos: b.p, scale: BLAST * 2 * k, color: '#ffd27a', emissive: '#ff8a3a', emissiveStrength: 1.2 * a, alpha: 0.18 * a, blend: true });
+    }
+    dust(w, [0, 0, 0], { gain: 0.2 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    hud.radar(70, Ht - 74, 54, C, B.f, 300, meteors.map(m => ({ p: m.p, c: m.big ? '#ff4a4a' : '#ffb36a', s: m.big ? 3.2 : 2.2, tick: true })));
+    hud.crosshair(Wd / 2, Ht / 2, '#ffd8b0', 9);
+    if(I.device === 'mouse' && I.mouseOn) hud.crosshair((I.mx + 1) / 2 * Wd, (I.my + 1) / 2 * Ht, '#ffffff', 6);
+    const close = meteors.slice().sort((a, b) => V.d2(a.p, C) - V.d2(b.p, C)).slice(0, 6);
+    for(const m of close){
+      const d = Math.sqrt(V.d2(m.p, C));
+      const q = hud.proj(m.p);
+      if(q.on) hud.bracket(m.p, m.s * 1.3, d < 80 ? '#ff4a4a' : '#ffb36a', null, { dist: d, alpha: 0.75 });
+      else if(d < 160) hud.edgeArrow(m.p, d < 80 ? '#ff4a4a' : '#ffb36a', null);
+    }
+    hud.text(Wd - 16, Ht - 20, servers.map(s => s.dead ? '▫' : '▮'.repeat(s.hp)).join('  '), { size: 13, align: 'right', color: '#9dffc4' });
+    hud.text(Wd - 16, Ht - 40, '☄ ' + kills, { size: 13, align: 'right', color: '#ffd27a' });
+    if(msgT > 0) hud.text(Wd / 2, 26, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🧠 MEMORY MATCH · OPEN WORLD — THE MONOLITH FIELD
+// ══════════════════════════════════════════════
+// The classic is sixteen tiles on a board. Here the tiles are monoliths
+// standing all over an endless field, three pairs to every stretch of it.
+// Drive into one and it turns, showing its sign; drive into a second — the
+// same sign and both are cleared, a different one and both turn back. The
+// skill is the same as ever, only now it is remembering WHERE.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround || !P.owDrive) return;
+const { V, TAU, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, groundRing } = P.owGround;
+const { makeRover, driveStep, pushOutCircle, roverCam, roverDraw } = P.owDrive;
+const { mine, clamp, runLoop } = P.kit;
+const CELL = 78;
+const SYMS = [
+  { geo: 'sphere',    col: '#ff2d9a', glyph: '●', s: 1.5 },
+  { geo: 'cube',      col: '#ffd700', glyph: '■', s: 1.4 },
+  { geo: 'cone',      col: '#39ff88', glyph: '▲', s: 1.9 },
+  { geo: 'torus',     col: '#00f5ff', glyph: '◯', s: 3.2 },
+  { geo: 'cylinder',  col: '#ff6600', glyph: '▮', s: 1.5 },
+  { geo: 'pill',      col: '#a855f7', glyph: '⬬', s: 1.6 },
+  { geo: 'core',      col: '#ff4a4a', glyph: '✦', s: 1.6 },
+  { geo: 'drone',     col: '#7fe8ff', glyph: '✣', s: 1.5 }
+];
+const SLOTS = [[0.2, 0.25], [0.5, 0.2], [0.8, 0.3], [0.25, 0.72], [0.55, 0.8], [0.82, 0.7]];
+
+P.ow.memory = function(){
+  const G = groundBegin({ sky: 'night', input: { touch: 'drive' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  setControlHint('STICK: DRIVE · DRIVE INTO A MONOLITH TO TURN IT', 'W/S: THROTTLE · A/D: STEER · HOLD THE MOUSE ON THE GROUND: DRIVE THERE · SHIFT: BOOST');
+
+  const me = makeRover({ max: 24 });
+  let score = 0, pairs = 0, misses = 0, remembered = 0, fields = 0, streak = 0, bestStreak = 0, over = false, finished = false;
+  let msg = '', msgT = 0, open = [], closeT = 0, touching = null;
+  const cleared = new Map();                     // cell key → pairs matched there
+  const field = makeField({
+    cell: CELL, dims: 2, seed: 8484, radius: 470,
+    gen(cx, cy, cz, g, k){
+      const items = [];
+      if(cx === 0 && cz === 0) return items;     // the start: open ground
+      const picks = [];
+      while(picks.length < 3){ const s = (g() * SYMS.length) | 0; if(!picks.includes(s)) picks.push(s); }
+      const deck = [picks[0], picks[0], picks[1], picks[1], picks[2], picks[2]];
+      for(let i = deck.length - 1; i > 0; i--){ const j = (g() * (i + 1)) | 0; const t = deck[i]; deck[i] = deck[j]; deck[j] = t; }
+      SLOTS.forEach((sl, i) => {
+        items.push({ t: 'mono', cell: k, p: [(cx + sl[0] + (g() - 0.5) * 0.12) * CELL, 0, (cz + sl[1] + (g() - 0.5) * 0.12) * CELL],
+                     sym: deck[i], state: 'hidden', seen: false, yaw: g() * Math.PI, ph: g() * TAU, turn: 0 });
+      });
+      return items;
+    }
+  });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#00f5ff,#a855f7)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  function flip(m){
+    if(m.state !== 'hidden' || closeT > 0 || open.length >= 2) return;
+    m.state = 'open'; m.turn = 0;
+    open.push(m);
+    snd('flip');
+    fx.sparks([m.p[0], 6, m.p[2]], 8, SYMS[m.sym].col, 1, 8);
+    if(open.length === 2){
+      const [a, b] = open;
+      if(a.sym === b.sym) match(a, b);
+      else{
+        misses++;
+        streak = 0;
+        a.seen = b.seen = true;
+        closeT = 1.15;
+        snd('wrong');
+        say('NO MATCH — remember where they stand', 1.6);
+      }
+    }
+  }
+  function match(a, b){
+    pairs++;
+    streak++; bestStreak = Math.max(bestStreak, streak);
+    const mem = a.seen || b.seen;
+    if(mem) remembered++;
+    const pts = 50 + Math.min(60, streak * 10) + (mem ? 30 : 0);
+    score += pts; setLive(score);
+    snd('match');
+    for(const m of [a, b]){
+      fx.explode([m.p[0], 4, m.p[2]], 1.8, { color: SYMS[m.sym].col, debris: 0, smoke: 0 });
+      field.kill(m);
+      m.state = 'done';
+    }
+    w.pop([(a.p[0] + b.p[0]) / 2, 9, (a.p[2] + b.p[2]) / 2], '+' + pts + (mem ? ' REMEMBERED' : ''), SYMS[a.sym].col, { size: 15 });
+    open = [];
+    const n = (cleared.get(a.cell) || 0) + 1;
+    cleared.set(a.cell, n);
+    if(n === 3){
+      fields++;
+      score += 100; setLive(score);
+      snd('success');
+      say('🏁 FIELD CLEARED +100', 2);
+    }
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('memory', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
+      '🧩 Pairs Matched': pairs,
+      '🧠 Remembered': remembered,
+      '✖ Mismatches': misses,
+      '🏁 Fields Cleared': fields,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, pairs, misses, remembered, fields, open: open.length, p: me.p.map(Math.round) }),
+    matchPair(){
+      const by = new Map(); let pair = null;
+      field.each(m => { if(pair || m.state !== 'hidden') return; const k = m.cell + ':' + m.sym; if(by.has(k)) pair = [by.get(k), m]; else by.set(k, m); });
+      if(pair){ closeT = 0; open = []; flip(pair[0]); flip(pair[1]); }
+      return !!pair;
+    },
+    mismatch(){
+      const hid = []; field.each(m => { if(m.state === 'hidden') hid.push(m); });
+      const a = hid[0], b = hid.find(m => m.sym !== a.sym);
+      if(a && b){ closeT = 0; open = []; flip(a); flip(b); }
+    }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      driveStep(me, I, dt, hud);
+      field.update(me.p);
+      let near = null;
+      field.near(me.p, m => {
+        if(m.state === 'done') return;
+        pushOutCircle(me, m.p, 2.9);
+        if(V.d2(m.p, me.p) < 3.4 * 3.4) near = m;
+      });
+      if(near && near !== touching) flip(near);
+      touching = near;
+      if(closeT > 0){
+        closeT -= dt;
+        if(closeT <= 0){ for(const m of open) if(m.state === 'open') m.state = 'hidden'; open = []; snd('flip', { semi: -5 }); }
+      }
+      // A lone open monolith left far behind turns back on its own.
+      if(open.length === 1 && V.d2(open[0].p, me.p) > 260 * 260){ open[0].state = 'hidden'; open[0].seen = true; open = []; }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    roverCam(w, me, dt, { back: 13, up: 7 });
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 170, color: '#0f3a5a', glow: 0.85, major: 13, floor: '#03060c', rough: 0.24 });
+    const eye = w.cam.eye;
+    let nl = 0;
+    field.each(m => {
+      if(V.d2(m.p, eye) > 260 * 260 || !r.viewDepth([m.p[0], 4, m.p[2]], 1.4)) return;
+      const S = SYMS[m.sym];
+      const up = m.state === 'open';
+      if(up) m.turn = Math.min(1, m.turn + (w.dt || 0) * 3);
+      const tint = up ? S.col : '#2a3a5a';
+      r.draw('slab', { pos: [m.p[0], 4, m.p[2]], rot: [0, m.yaw + (up ? m.turn * Math.PI : 0), 0], scale: [3, 8, 1.3], color: '#10141e', metallic: 0.75, roughness: 0.32, rim: 0.7,
+                       emissive: tint, emissiveStrength: up ? 0.35 : 0.06 });
+      r.draw('box', { pos: [m.p[0], 8.1, m.p[2]], rot: [0, m.yaw, 0], scale: [3.1, 0.22, 1.4], color: up ? tint : '#46c8ff', emissive: up ? tint : '#46c8ff', emissiveStrength: up ? 2.6 : 2.0 });
+      if(up){
+        const y = 11 + Math.sin(w.t * 2 + m.ph) * 0.4;
+        r.draw(S.geo, { pos: [m.p[0], y, m.p[2]], rot: [S.geo === 'torus' ? Math.PI / 2 : 0, w.t * 1.5, 0], scale: S.s, color: S.col, metallic: 0.4, roughness: 0.3, emissive: S.col, emissiveStrength: 1.4 });
+        r.glow([m.p[0], y, m.p[2]], 3, S.col, 0.9);
+        groundRing(w, m.p, 3.4, S.col, 1);
+        if(nl++ < 2) r.light({ pos: [m.p[0], 9, m.p[2]], color: S.col, intensity: 90, range: 18 });
+      }else{
+        r.glow([m.p[0], 8.4, m.p[2]], 2.2, '#7fe8ff', 0.45 + 0.2 * Math.sin(w.t * 2 + m.ph));
+      }
+    });
+    roverDraw(w, me, colour);
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = [];
+    field.each(m => { if(V.d2(m.p, me.p) < 75 * 75 || m.state === 'open') rad.push({ p: m.p, c: m.state === 'open' ? SYMS[m.sym].col : '#4a6a8a', s: m.state === 'open' ? 3.2 : 2 }); });
+    hud.radar(70, Ht - 74, 54, me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], 70, rad);
+    if(open.length === 1){
+      const S = SYMS[open[0].sym];
+      hud.text(Wd / 2, 28, 'OPEN ' + S.glyph + '  — find its twin', { size: 16, color: S.col });
+      if(!hud.proj(open[0].p).on) hud.edgeArrow(open[0].p, S.col, S.glyph);
+    }else if(closeT > 0) hud.text(Wd / 2, 28, '✖ ' + SYMS[open[0].sym].glyph + ' ≠ ' + SYMS[open[1].sym].glyph, { size: 16, color: '#ff8a8a' });
+    hud.text(Wd - 16, Ht - 40, streak > 1 ? 'STREAK ×' + streak : '', { size: 13, align: 'right', color: '#9dffc4' });
+    hud.text(Wd - 16, Ht - 20, '🧩 ' + pairs, { size: 14, align: 'right', color: '#bff6ff' });
+    hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, me.boostE / 100, '#00f5ff', 'BOOST');
+    if(msgT > 0) hud.text(Wd / 2, 56, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  📻 FREQUENCY · OPEN WORLD — TOWERS IN THE DARK
+// ══════════════════════════════════════════════
+// The classic is one waveform and two sliders. Out here every radio tower in
+// an endless dark broadcasts its own: drive into a tower's range and stop,
+// and the dials come up — frequency and amplitude, the classic's two — and a
+// match held inside the margin for a second and a half tunes it in. Then on
+// to the next mast blinking on the horizon. The later towers drift.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround || !P.owDrive) return;
+const { V, TAU, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, groundRing, beacon } = P.owGround;
+const { makeRover, driveStep, pushOutCircle, roverCam, roverDraw, dotRing } = P.owDrive;
+const { mine, clamp, runLoop } = P.kit;
+const CELL = 150, RANGE = 17, HOLD = 1.5;
+const F0 = 1, F1 = 4, A0 = 0.25, A1 = 1;
+const FTOL = 0.13, ATOL = 0.07;
+
+P.ow.freq = function(){
+  const G = groundBegin({ sky: 'night', env: { zenith: '#02030a', horizon: '#0e1430', intensity: 0.8 }, fog: { color: '#03050e', density: 0.0075 }, input: { touch: 'drive' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: DRIVE · STOP IN RANGE, THEN STICK: TUNE · BOOST: LEAVE',
+                 'W/S A/D: DRIVE · STOP IN A TOWER\'S RANGE TO TUNE: A/D FREQUENCY, W/S AMPLITUDE (OR THE MOUSE) · SHIFT: LEAVE');
+
+  const me = makeRover({ max: 26 });
+  const dial = { f: 2.5, a: 0.6 };
+  let score = 0, tuned = 0, streak = 0, bestStreak = 0, over = false, finished = false, msg = '', msgT = 0;
+  let tuning = null, holdT = 0, tuneT = 0, stillT = 0, blocked = null, elapsed = 0;
+  const towers = makeField({
+    cell: CELL, dims: 2, seed: 4545, radius: 760,
+    gen(cx, cy, cz, g){
+      if(g() < 0.3 || (cx === 0 && cz === 0)) return [];
+      const p = [(cx + 0.2 + g() * 0.6) * CELL, 0, (cz + 0.2 + g() * 0.6) * CELL];
+      return [{ p, f: F0 + 0.2 + g() * (F1 - F0 - 0.4), a: A0 + 0.1 + g() * (A1 - A0 - 0.2), h: 28 + g() * 26, ph: g() * TAU,
+                drift: Math.hypot(cx, cz) > 2 && g() < 0.5, done: false }];
+    }
+  });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#00f5ff,#39ff88)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  // What the tower is sending right now (a drifting one wanders).
+  const tf = t => t.f + (t.drift ? Math.sin(w.t * 0.5 + t.ph) * 0.22 : 0);
+  function lockIn(t){
+    t.done = true;
+    tuned++;
+    streak++; bestStreak = Math.max(bestStreak, streak);
+    const pts = 150 + Math.round(Math.max(0, 90 - tuneT * 9)) + Math.min(80, (streak - 1) * 20);
+    score += pts; setLive(score);
+    snd('success');
+    w.pop([t.p[0], t.h + 4, t.p[2]], '+' + pts + ' TUNED', '#9dffc4', { size: 16 });
+    fx.explode([t.p[0], t.h, t.p[2]], 2.2, { color: '#39ff88', debris: 0, smoke: 0 });
+    tuning = null; holdT = 0; blocked = t;
+  }
+  function leave(){
+    if(!tuning) return;
+    blocked = tuning; tuning = null; holdT = 0;
+    streak = 0;
+    snd('uiBack');
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('freq', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
+      '📻 Towers Tuned': tuned,
+      '⛓ Best Streak': bestStreak,
+      '📏 Distance': Math.round(me.odo) + ' m',
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, tuned, tuning: !!tuning, f: +dial.f.toFixed(2), a: +dial.a.toFixed(2) }),
+    tuneNearest(){
+      let best = null, bd = 1e12;
+      towers.each(t => { if(t.done) return; const d = V.d2(t.p, me.p); if(d < bd){ bd = d; best = t; } });
+      if(!best) return false;
+      me.p = [best.p[0] + 6, 0, best.p[2]]; me.speed = 0;
+      tuning = best; tuneT = 0; dial.f = tf(best); dial.a = best.a; holdT = HOLD;
+      return true;
+    }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      elapsed += dt;
+      towers.update(me.p);
+      if(!tuning){
+        driveStep(me, I, dt, hud);
+        let inRange = null;
+        towers.near(me.p, t => {
+          pushOutCircle(me, t.p, 2.6);
+          if(!t.done && V.d2(t.p, me.p) < RANGE * RANGE) inRange = t;
+        });
+        if(blocked && (!inRange || inRange !== blocked)) blocked = null;
+        if(inRange && inRange !== blocked && Math.abs(me.speed) < 3.5){
+          stillT += dt;
+          if(stillT > 0.35){ tuning = inRange; tuneT = 0; holdT = 0; stillT = 0; snd('toggle'); }
+        }else stillT = 0;
+      }else{
+        // Tuning: the rover holds; the stick, the keys or the mouse turn the dials.
+        me.speed *= Math.max(0, 1 - 6 * dt);
+        tuneT += dt;
+        if(I.device === 'mouse' && I.mouseOn){
+          dial.f += (F0 + (I.mx + 1) / 2 * (F1 - F0) - dial.f) * Math.min(1, dt * 10);
+          dial.a += (A0 + (1 - (I.my + 1) / 2) * (A1 - A0) - dial.a) * Math.min(1, dt * 10);
+        }else{
+          dial.f = clamp(dial.f + I.lx * 0.9 * dt, F0, F1);
+          dial.a = clamp(dial.a - I.ly * 0.45 * dt, A0, A1);
+        }
+        const ok = Math.abs(dial.f - tf(tuning)) < FTOL && Math.abs(dial.a - tuning.a) < ATOL;
+        if(ok){ holdT += dt; if(((holdT * 6) | 0) !== (((holdT - dt) * 6) | 0)) snd('tick', { semi: holdT * 8 }); }
+        else holdT = Math.max(0, holdT - dt * 2);
+        if(holdT >= HOLD) lockIn(tuning);
+        else if(I.boost || I.altHit) leave();
+      }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    roverCam(w, me, dt, tuning ? { back: 18, up: 9, ahead: 0, fov: 58 } : { back: 12, up: 6 });
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 8, radius: 200, color: '#0a2a3a', glow: 0.7, major: 6, floor: '#020308', rough: 0.3 });
+    const eye = w.cam.eye;
+    let nl = 0;
+    towers.each(t => {
+      if(V.d2(t.p, eye) > 700 * 700) return;
+      const col = t.done ? '#39ff88' : t === tuning ? '#ffffff' : '#00f5ff';
+      const blink = 0.5 + 0.5 * Math.sin(w.t * 3 + t.ph);
+      beacon(w, t.p, col, t.h + 30, t.done ? 0.8 : 0.35 + blink * 0.3);
+      if(!r.viewDepth([t.p[0], t.h / 2, t.p[2]], 1.5)) return;
+      r.draw('cylinder', { pos: [t.p[0], t.h / 2, t.p[2]], scale: [1.4, t.h, 1.4], color: '#1a2230', metallic: 0.85, roughness: 0.3, rim: 0.7 });
+      for(let k = 1; k <= 3; k++) r.draw('torus', { pos: [t.p[0], t.h * k / 4, t.p[2]], scale: 4 - k * 0.7, color: '#2a3446', metallic: 0.8, roughness: 0.3, emissive: col, emissiveStrength: 0.4 });
+      r.draw('sphere', { pos: [t.p[0], t.h + 1, t.p[2]], scale: 1.6, color: col, emissive: col, emissiveStrength: 1.5 + blink * 2 });
+      // The broadcast: rings swelling off the mast at its own frequency.
+      const per = 1 / tf(t);
+      for(let k = 0; k < 3; k++){
+        const a = ((w.t / per + k / 3) % 1);
+        r.draw('thintorus', { pos: [t.p[0], t.h + 1, t.p[2]], scale: [4 + a * 30 * t.a, 1, 4 + a * 30 * t.a], color: col, emissive: col, emissiveStrength: 1.6 * (1 - a) });
+      }
+      if(!t.done) dotRing(w, t.p, RANGE, col, t === tuning ? 1.2 : 0.55);
+      if(nl++ < 3) r.light({ pos: [t.p[0], t.h, t.p[2]], color: col, intensity: 120, range: 40 });
+    });
+    roverDraw(w, me, colour);
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H, ctx = hud.ctx;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = [];
+    let next = null, nd = 1e12;
+    towers.each(t => {
+      const d = V.d2(t.p, me.p);
+      if(!t.done && d < nd){ nd = d; next = t; }
+      if(d < 420 * 420) rad.push({ p: t.p, c: t.done ? '#39ff88' : '#00f5ff', s: 2.8 });
+    });
+    hud.radar(70, Ht - 74, 54, me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], 320, rad);
+    if(tuning){
+      // The scope: the tower's wave and yours.
+      const pw = Math.min(360, Wd - 40), ph = 96, px = Wd / 2 - pw / 2, py = Ht - ph - 34;
+      ctx.fillStyle = 'rgba(3,10,20,0.72)'; ctx.fillRect(px, py, pw, ph);
+      ctx.strokeStyle = 'rgba(120,220,255,0.35)'; ctx.strokeRect(px + 0.5, py + 0.5, pw - 1, ph - 1);
+      const wave = (f, a, col, dash, wid) => {
+        ctx.save(); ctx.beginPath();
+        for(let i = 0; i <= 120; i++){
+          const x = i / 120, y = py + ph / 2 - Math.sin(x * TAU * f + w.t * 2) * a * (ph / 2 - 8);
+          if(i === 0) ctx.moveTo(px + x * pw, y); else ctx.lineTo(px + x * pw, y);
+        }
+        ctx.strokeStyle = col; ctx.lineWidth = wid; ctx.shadowColor = col; ctx.shadowBlur = 8;
+        if(dash) ctx.setLineDash([5, 4]);
+        ctx.stroke(); ctx.restore();
+      };
+      wave(tf(tuning), tuning.a, 'rgba(255,255,255,0.85)', true, 1.6);
+      const ok = Math.abs(dial.f - tf(tuning)) < FTOL && Math.abs(dial.a - tuning.a) < ATOL;
+      wave(dial.f, dial.a, ok ? '#39ff88' : colour, false, 2.2);
+      hud.text(px + 8, py - 10, 'FREQ ' + dial.f.toFixed(2) + '  ·  AMP ' + dial.a.toFixed(2), { size: 11, align: 'left', color: '#bff6ff' });
+      hud.text(px + pw - 8, py - 10, ok ? 'LOCKED — HOLD' : 'MATCH THE DASHED WAVE', { size: 11, align: 'right', color: ok ? '#9dffc4' : '#ffd8a0' });
+      hud.bar(px, py + ph + 6, pw, 6, holdT / HOLD, '#39ff88');
+      hud.text(Wd / 2, 28, tuning.drift ? '📻 DRIFTING SIGNAL — follow it' : '📻 TUNING', { size: 14, color: '#bff6ff' });
+    }else if(next){
+      const d = Math.sqrt(nd);
+      if(!hud.proj(next.p).on) hud.edgeArrow(next.p, '#00f5ff', Math.round(d) + 'm');
+      if(d < RANGE) hud.text(Wd / 2, 28, 'STOP TO TUNE', { size: 14, color: '#bff6ff' });
+    }
+    hud.text(Wd - 16, Ht - 20, '📻 ' + tuned, { size: 14, align: 'right', color: '#9dffc4' });
+    if(!tuning) hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, me.boostE / 100, '#00f5ff', 'BOOST');
+    if(msgT > 0) hud.text(Wd / 2, 56, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  ❄️ COOLANT · OPEN WORLD — CITY MELTDOWN
+// ══════════════════════════════════════════════
+// The classic flies a shaft on a core that heats while it burns. Out here the
+// heat is everywhere: reactors all over a dense city are running away, a few
+// at a time. Reach one, stop in its ring and hold to vent it — the hotter it
+// was, the more it pays — before it blows and takes a piece of the grid with
+// it. Your own core still heats on the burn: boost too long and you stall.
+// The blue cells in the street cool you down.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround || !P.owDrive) return;
+const { V, TAU, ihash, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, makeCity, groundRing } = P.owGround;
+const { makeRover, driveStep, slideOut, pushOutCircle, roverCam, roverDraw } = P.owDrive;
+const { mine, clamp, runLoop, seeded } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const RC = 115, RSEED = 2323, VENT_R = 8;
+
+// Where a reactor-field cell keeps its reactor — a pure function of the cell,
+// so the city can leave room for it before either is generated.
+function reactorIn(cx, cz){
+  const g = seeded(ihash(cx, 0, cz, RSEED));
+  if(g() < 0.32 || (cx === 0 && cz === 0)) return null;
+  return [(cx + 0.25 + g() * 0.5) * RC, 0, (cz + 0.25 + g() * 0.5) * RC];
+}
+
+P.ow.coolant = function(){
+  const G = groundBegin({ sky: 'toxic', env: { horizon: '#2a6a8a', zenith: '#020a12' }, fog: { color: '#04121a' }, sun: { color: '#8ad8ff' }, input: { touch: 'drive' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: DRIVE · HOLD FIRE IN A RING: VENT · BOOST (HEATS YOU)', 'W/S A/D: DRIVE · SPACE / CLICK HELD IN A REACTOR RING: VENT · SHIFT: BOOST (HEATS YOUR CORE)');
+
+  const me = makeRover({ max: 25 });
+  let heat = 0, stall = 0, grid = 3;
+  let score = 0, vented = 0, blown = 0, cells = 0, streak = 0, bestStreak = 0, over = false, finished = false, msg = '', msgT = 0, elapsed = 0;
+  let venting = null;
+  const reactors = makeField({
+    cell: RC, dims: 2, seed: RSEED + 1, radius: 620,
+    gen(cx, cy, cz, g){
+      const items = [];
+      const p = reactorIn(cx, cz);
+      if(p) items.push({ t: 'reactor', p, heat: 0, on: false, peak: 0, ph: g() * TAU });
+      // Coolant cells along the streets.
+      const n = Math.floor(g() * 3);
+      for(let i = 0; i < n; i++) items.push({ t: 'cell', p: [(cx + g()) * RC, 0.9, (cz + g()) * RC], ph: g() * TAU });
+      return items;
+    }
+  });
+  const city = makeCity({
+    seed: 1919, density: 0.5, cell: 62, clear: 45, hMin: 14, hMax: 75, radius: 640, towerColor: '#0a1218',
+    skip(x, z){
+      const cx = Math.floor(x / RC), cz = Math.floor(z / RC);
+      for(let dx = -1; dx <= 1; dx++) for(let dz = -1; dz <= 1; dz++){
+        const p = reactorIn(cx + dx, cz + dz);
+        if(p && Math.hypot(p[0] - x, p[2] - z) < 26) return true;
+      }
+      return false;
+    }
+  });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#00f5ff,#46c8ff)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+  const heatCol = h => h > 75 ? '#ff3a2a' : h > 50 ? '#ff8a2a' : h > 25 ? '#ffd27a' : '#7fe8ff';
+
+  function activate(){
+    const cand = [];
+    reactors.each(it => { if(it.t === 'reactor' && !it.on){ const d = V.d2(it.p, me.p); if(d > 50 * 50 && d < 280 * 280) cand.push(it); } });
+    if(!cand.length) return;
+    const it = cand[(Math.random() * cand.length) | 0];
+    it.on = true; it.heat = rr(18, 45); it.rate = rr(2.2, 3.4) * Math.min(1.5, diff) * (1 + Math.min(0.5, elapsed / 240));
+    snd('alarm');
+  }
+  function ventDone(it){
+    it.on = false;
+    vented++;
+    streak++; bestStreak = Math.max(bestStreak, streak);
+    const pts = 40 + Math.round(it.peak * 0.8) + Math.min(60, (streak - 1) * 10);
+    score += pts; setLive(score);
+    snd('success');
+    w.pop([it.p[0], 10, it.p[2]], '+' + pts + ' VENTED', '#9ff0ff', { size: 15 });
+    for(let k = 0; k < 8; k++) fx.puff([it.p[0] + rr(-2, 2), 8, it.p[2] + rr(-2, 2)], '#d8f4ff', 2.6, 2, [rr(-1, 1), rr(5, 9), rr(-1, 1)]);
+    venting = null;
+  }
+  function blow(it){
+    it.on = false;
+    reactors.kill(it);
+    blown++;
+    streak = 0;
+    grid--;
+    fx.explode([it.p[0], 4, it.p[2]], 7, { color: '#ff6a2a', debrisGeo: 'slab', debrisColor: '#2a2a30', ringNormal: [0, 1, 0] });
+    snd('bigExplode');
+    w.kick(2);
+    say('💥 REACTOR LOST — grid ' + Math.max(0, grid) + '/3', 2.4);
+    if(V.d2(it.p, me.p) < 26 * 26){ me.speed = 0; me.inv = 1.2; me.hit = 0.4; }
+    if(venting === it) venting = null;
+    bar.style.width = (Math.max(0, grid) / 3 * 100) + '%';
+    if(grid <= 0){
+      if(survivedFatal()){ grid = 1; bar.style.width = '33%'; say('SHIELD ABSORBED', 1.6); return; }
+      over = true;
+      gLater(() => finish('meltdown'), 1400);
+    }
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('coolant', score, {
+      '📡 Shift': why === 'clock' ? 'CLOCK EXPIRED' : 'GRID MELTDOWN',
+      '❄️ Reactors Vented': vented,
+      '💥 Reactors Lost': blown,
+      '🧊 Coolant Cells': cells,
+      '⛓ Best Streak': bestStreak,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  const active = () => { const a = []; reactors.each(it => { if(it.t === 'reactor' && it.on) a.push(it); }); return a; };
+  P.owDebug = {
+    state: () => ({ score, vented, blown, grid, heat: Math.round(heat), active: active().length, venting: !!venting }),
+    lose(){ if(!active().length) activate(); const a = active()[0]; if(a) blow(a); else{ grid--; if(grid <= 0){ over = true; gLater(() => finish('meltdown'), 1400); } } },
+    ventNearest(){ const a = active().sort((x, y) => V.d2(x.p, me.p) - V.d2(y.p, me.p))[0]; if(a){ a.peak = a.heat; ventDone(a); } return !!a; },
+    blowNearest(){ const a = active()[0]; if(a) blow(a); return !!a; }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      elapsed += dt;
+      stall = Math.max(0, stall - dt);
+      const thr = driveStep(me, stall > 0 ? { ax: I.ax, ly: 0, boost: false, device: I.device } : I, dt, hud, { noBoost: stall > 0 });
+      if(stall > 0) me.speed *= Math.max(0, 1 - 3 * dt);
+      heat = clamp(heat + (me.boosting ? 30 : -11) * dt + (venting ? 8 * dt : 0), 0, 100);
+      if(heat >= 100 && stall <= 0){ stall = 2.5; heat = 60; snd('glitch'); say('🔥 CORE STALL — coast to cool', 2); w.kick(0.8); }
+      reactors.update(me.p);
+      city.update(me.p);
+      if(slideOut(me, city, 1.2) && me.inv <= 0){ me.hit = 0.2; snd('bounceWall'); }
+      // Venting: stopped in a ring, fire held.
+      let ring = null;
+      reactors.near(me.p, it => {
+        if(it.t === 'reactor'){
+          pushOutCircle(me, it.p, 3.4);
+          if(it.on && V.d2(it.p, me.p) < VENT_R * VENT_R) ring = it;
+        }else if(V.d2(it.p, me.p) < 2.4 * 2.4){
+          reactors.kill(it); cells++; heat = Math.max(0, heat - 45); score += 10; setLive(score);
+          snd('freeze'); fx.glowPop(it.p, '#7fe8ff', 2, 0.35);
+        }
+      });
+      if(ring && I.fire && Math.abs(me.speed) < 7 && stall <= 0){
+        if(venting !== ring){ venting = ring; ring.peak = ring.heat; snd('charge'); }
+        ring.heat -= 42 * dt;
+        if(Math.random() < dt * 14) fx.puff([ring.p[0] + rr(-1.5, 1.5), 7, ring.p[2] + rr(-1.5, 1.5)], '#e0f6ff', 1.6, 1.4, [rr(-1, 1), rr(6, 10), rr(-1, 1)]);
+        if(ring.heat <= 0){ ring.heat = 0; ventDone(ring); }
+      }else venting = null;
+      // The rest run away.
+      const act = active();
+      for(const it of act){
+        if(it === venting) continue;
+        it.heat += it.rate * dt;
+        if(it.heat >= 100) blow(it);
+      }
+      const want = Math.min(6, 3 + Math.floor(elapsed / 35));
+      if(act.length < want && Math.random() < dt * 1.5) activate();
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    roverCam(w, me, dt, { back: 12, up: 7 });
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 170, color: '#0f4a5a', glow: 0.8, major: 6, floor: '#020a0e', rough: 0.25 });
+    city.draw(w);
+    const eye = w.cam.eye;
+    let nl = 0;
+    reactors.each(it => {
+      if(V.d2(it.p, eye) > 420 * 420) return;
+      if(it.t === 'cell'){
+        if(!r.viewDepth(it.p, 1.2)) return;
+        const y = 0.9 + Math.sin(w.t * 3 + it.ph) * 0.2;
+        r.draw('pill', { pos: [it.p[0], y, it.p[2]], rot: [0, w.t, 0.4], scale: [0.7, 1.2, 0.7], color: '#7fe8ff', emissive: '#46c8ff', emissiveStrength: 1.6 });
+        r.glow([it.p[0], y, it.p[2]], 1.4, '#7fe8ff', 0.6);
+        return;
+      }
+      if(!r.viewDepth([it.p[0], 5, it.p[2]], 1.4)) return;
+      const h = it.on ? it.heat : 0, col = it.on ? heatCol(h) : '#3a5a6a';
+      const shake = h > 80 ? Math.sin(w.t * 60) * 0.12 * (h - 80) / 20 : 0;
+      r.draw('cylinder', { pos: [it.p[0], 2.5, it.p[2]], scale: [6, 5, 6], color: '#1e2630', metallic: 0.8, roughness: 0.35, rim: 0.6 });
+      r.draw('core', { pos: [it.p[0] + shake, 7, it.p[2]], rot: [0, w.t * (it.on ? 0.5 + h / 40 : 0.2), 0], scale: 3.2, color: '#8a96a8', metallic: 0.5, roughness: 0.3,
+                       emissive: col, emissiveStrength: it.on ? 0.6 + h / 40 : 0.2 });
+      for(const s of [-1, 1]) r.draw('cylinder', { pos: [it.p[0] + s * 4.2, 4, it.p[2]], scale: [1.6, 8, 1.6], color: '#2a3440', metallic: 0.7, roughness: 0.4 });
+      if(it.on){
+        r.glow([it.p[0], 7, it.p[2]], 4 + h / 25, col, 0.5 + h / 80);
+        groundRing(w, it.p, VENT_R, col, it === venting ? 1.6 : 0.8);
+        if(h > 60 && Math.random() < 0.3) fx.puff([it.p[0], 10, it.p[2]], '#3a3a40', 1.6, 1.6, [rr(-1, 1), 4, rr(-1, 1)]);
+        if(nl++ < 3) r.light({ pos: [it.p[0], 9, it.p[2]], color: col, intensity: 80 + h * 1.5, range: 26 });
+      }
+    });
+    roverDraw(w, me, colour, { color: stall > 0 ? '#ff9a7a' : undefined });
+    if(me.boosting || heat > 70) r.glow([me.p[0], 1.4, me.p[2]], 1.6 + heat / 50, heatCol(heat), 0.5);
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const act = active();
+    hud.radar(70, Ht - 74, 54, me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], 220, act.map(it => ({ p: it.p, c: heatCol(it.heat), s: 3 })));
+    const near = act.sort((a, b) => V.d2(a.p, me.p) - V.d2(b.p, me.p)).slice(0, 4);
+    for(const it of near){
+      const q = hud.proj([it.p[0], 9, it.p[2]]);
+      if(q.on) hud.bracket([it.p[0], 9, it.p[2]], 5, heatCol(it.heat), Math.round(it.heat) + '%', { dist: Math.sqrt(V.d2(it.p, me.p)), alpha: 0.85 });
+      else hud.edgeArrow(it.p, heatCol(it.heat), Math.round(it.heat) + '%');
+    }
+    if(venting) hud.text(Wd / 2, 28, '❄ VENTING ' + Math.round(venting.heat) + '%', { size: 15, color: '#bff6ff' });
+    else if(stall > 0) hud.text(Wd / 2, 28, '🔥 STALLED', { size: 15, color: '#ff8a6a' });
+    hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, heat / 100, heatCol(heat), 'YOUR CORE HEAT');
+    hud.text(Wd - 16, Ht - 40, '❄ ' + vented, { size: 13, align: 'right', color: '#bff6ff' });
+    hud.text(Wd - 16, Ht - 20, 'GRID ' + '▮'.repeat(Math.max(0, grid)) + '▯'.repeat(Math.max(0, 3 - grid)), { size: 13, align: 'right', color: grid > 1 ? '#9dffc4' : '#ff8a8a' });
+    if(msgT > 0) hud.text(Wd / 2, 56, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  📦 PACKET SORT · OPEN WORLD — THE HAUL ROUTE
+// ══════════════════════════════════════════════
+// The classic drags packets into ports while the sorting rule flips every
+// twenty seconds. Out here the packets lie scattered across the plain and the
+// ports are towers, each with a colour AND a shape: scoop up to three, haul
+// them to the tower the rule says, and every one that fits is taken. The rule
+// still flips — by colour, by shape, or shifted one colour along — and the
+// strip at the top always says which.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround || !P.owDrive) return;
+const { V, TAU, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, groundRing, beacon, makeCity } = P.owGround;
+const { makeRover, driveStep, slideOut, pushOutCircle, roverCam, roverDraw } = P.owDrive;
+const { mine, clamp, runLoop } = P.kit;
+const COLS = ['#ff2d9a', '#ffd700', '#39ff88', '#00f5ff'];
+const SHAPES = [{ geo: 'cube', g: '■', s: 1 }, { geo: 'sphere', g: '●', s: 1.1 }, { geo: 'cone', g: '▲', s: 1.3 }, { geo: 'pill', g: '⬬', s: 1.1 }];
+const RULES = ['colour', 'shape', 'shift'];
+const RULE_TXT = { colour: 'BY COLOUR', shape: 'BY SHAPE', shift: 'COLOUR, SHIFTED ONE →' };
+const PC = 130, CAP = 3, PORT_R = 9, FLIP = 20;
+const mod = (a, n) => ((a % n) + n) % n;
+
+P.ow.sorter = function(){
+  const G = groundBegin({ sky: 'dusk', input: { touch: 'drive' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  setControlHint('STICK: DRIVE OVER PACKETS, THEN INTO THE RIGHT PORT', 'W/S A/D or HOLD THE MOUSE: DRIVE · SCOOP PACKETS, DELIVER AT THE PORT THE RULE NAMES · SHIFT: BOOST');
+
+  const me = makeRover({ max: 26 });
+  let score = 0, delivered = 0, drops = 0, bestDrop = 0, over = false, finished = false, msg = '', msgT = 0;
+  let ruleI = 0, ruleT = FLIP, carry = [], elapsed = 0, inPort = null;
+  const ports = makeField({
+    cell: PC, dims: 2, seed: 3131, radius: 760,
+    gen(cx, cy, cz, g){
+      return [{ t: 'port', p: [(cx + 0.3 + g() * 0.4) * PC, 0, (cz + 0.3 + g() * 0.4) * PC], c: mod(cx * 3 + cz * 5, 4), s: mod(cx * 5 + cz * 3 + 1, 4), ph: g() * TAU }];
+    }
+  });
+  const packets = makeField({
+    cell: 44, dims: 2, seed: 3232, radius: 360,
+    gen(cx, cy, cz, g){
+      const items = [];
+      const n = Math.floor(g() * 3.2);
+      for(let i = 0; i < n; i++) items.push({ p: [(cx + g()) * 44, 0, (cz + g()) * 44], c: (g() * 4) | 0, s: (g() * 4) | 0, ph: g() * TAU });
+      return items;
+    }
+  });
+  const city = makeCity({ seed: 3333, density: 0.12, cell: 110, clear: 70, hMin: 20, hMax: 60, radius: 700, towerColor: '#120a14',
+                          skip(x, z){ const cx = Math.floor(x / PC), cz = Math.floor(z / PC); return Math.abs(x - (cx + 0.5) * PC) < 40 && Math.abs(z - (cz + 0.5) * PC) < 40; } });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#ff2d9a,#ffd700,#39ff88,#00f5ff)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  const rule = () => RULES[ruleI];
+  const fits = (pk, port) => rule() === 'colour' ? pk.c === port.c : rule() === 'shape' ? pk.s === port.s : mod(pk.c + 1, 4) === port.c;
+  function deliver(port){
+    const keep = [], took = [];
+    for(const pk of carry) (fits(pk, port) ? took : keep).push(pk);
+    if(!took.length){ snd('deny'); say('NONE OF YOURS FIT THIS PORT — ' + RULE_TXT[rule()], 1.8); return; }
+    carry = keep;
+    delivered += took.length;
+    drops++;
+    bestDrop = Math.max(bestDrop, took.length);
+    const pts = took.length * 30 + (took.length - 1) * 15;
+    score += pts; setLive(score);
+    snd(took.length > 1 ? 'combo' : 'score');
+    w.pop([port.p[0], 14, port.p[2]], '+' + pts + (took.length > 1 ? ' ×' + took.length : ''), COLS[port.c], { size: 16 });
+    for(const pk of took) fx.glowPop([port.p[0], 9, port.p[2]], COLS[pk.c], 2.2, 0.4);
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('sorter', score, {
+      '📡 Shift': why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
+      '📦 Packets Delivered': delivered,
+      '🚚 Drops': drops,
+      '🏅 Best Drop': bestDrop + ' at once',
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, delivered, carry: carry.length, rule: rule(), ruleT: Math.round(ruleT) }),
+    deliverNow(){
+      let port = null, bd = 1e12;
+      ports.each(pt => { const d = V.d2(pt.p, me.p); if(d < bd){ bd = d; port = pt; } });
+      if(!port) return false;
+      const c = rule() === 'shift' ? mod(port.c - 1, 4) : port.c;
+      carry = [{ c, s: port.s }, { c, s: port.s }, { c: mod(c + 2, 4), s: mod(port.s + 2, 4) }];
+      deliver(port);
+      return true;
+    },
+    flip(){ ruleT = 0.01; }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      elapsed += dt;
+      ruleT -= dt;
+      if(ruleT <= 0){
+        ruleT = FLIP;
+        let n = ruleI;
+        while(n === ruleI) n = (Math.random() * RULES.length) | 0;
+        ruleI = n;
+        snd('alarm');
+        say('🔁 RULE FLIP — ' + RULE_TXT[rule()], 2.4);
+      }
+      driveStep(me, I, dt, hud);
+      ports.update(me.p);
+      packets.update(me.p);
+      city.update(me.p);
+      if(slideOut(me, city, 1.2)) me.hit = 0.15;
+      let port = null;
+      ports.near(me.p, pt => {
+        pushOutCircle(me, pt.p, 3.6);
+        if(V.d2(pt.p, me.p) < PORT_R * PORT_R) port = pt;
+      });
+      if(port && port !== inPort && carry.length) deliver(port);
+      inPort = port;
+      if(carry.length < CAP){
+        packets.near(me.p, pk => {
+          if(carry.length >= CAP || V.d2(pk.p, me.p) > 2.6 * 2.6) return;
+          packets.kill(pk);
+          carry.push({ c: pk.c, s: pk.s });
+          snd('pickup');
+          fx.glowPop([pk.p[0], 1, pk.p[2]], COLS[pk.c], 1.4, 0.25);
+          if(carry.length === CAP) say('HOLD FULL — find a port', 1.4);
+        });
+      }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    roverCam(w, me, dt, { back: 12, up: 6.5 });
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 170, color: '#4a1a40', glow: 0.85, major: 5, floor: '#08040a', rough: 0.25 });
+    city.draw(w);
+    const eye = w.cam.eye;
+    let nl = 0;
+    ports.each(pt => {
+      if(V.d2(pt.p, eye) > 650 * 650) return;
+      const col = COLS[pt.c], S = SHAPES[pt.s];
+      const any = carry.some(pk => fits(pk, pt));
+      beacon(w, pt.p, col, 70, any ? 1 : 0.35);
+      if(!r.viewDepth([pt.p[0], 6, pt.p[2]], 1.4)) return;
+      r.draw('techblock', { pos: [pt.p[0], 3, pt.p[2]], scale: [5, 6, 5], color: '#1a1a26', metallic: 0.7, roughness: 0.35, emissive: col, emissiveStrength: 0.15 });
+      r.draw(S.geo, { pos: [pt.p[0], 9.5 + Math.sin(w.t * 2 + pt.ph) * 0.4, pt.p[2]], rot: [0, w.t, 0], scale: S.s * 2.6, color: col, emissive: col, emissiveStrength: 1.4 });
+      groundRing(w, pt.p, PORT_R, col, any ? 1.3 : 0.5);
+      if(nl++ < 3) r.light({ pos: [pt.p[0], 10, pt.p[2]], color: col, intensity: 90, range: 24 });
+    });
+    packets.each(pk => {
+      if(V.d2(pk.p, eye) > 170 * 170 || !r.viewDepth(pk.p, 1.2)) return;
+      const y = 0.9 + Math.sin(w.t * 3 + pk.ph) * 0.2, S = SHAPES[pk.s];
+      r.draw(S.geo, { pos: [pk.p[0], y, pk.p[2]], rot: [0, w.t * 1.3 + pk.ph, 0], scale: S.s * 0.9, color: COLS[pk.c], emissive: COLS[pk.c], emissiveStrength: 1.3 });
+    });
+    roverDraw(w, me, colour);
+    // The load, stacked over the rover.
+    carry.forEach((pk, i) => {
+      const S = SHAPES[pk.s];
+      r.draw(S.geo, { pos: [me.p[0], 2.6 + i * 1.3, me.p[2]], rot: [0, w.t * 2, 0], scale: S.s * 0.75, color: COLS[pk.c], emissive: COLS[pk.c], emissiveStrength: 1.5 });
+    });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = [];
+    ports.each(pt => { if(V.d2(pt.p, me.p) < 380 * 380) rad.push({ p: pt.p, c: COLS[pt.c], s: 3.4, shape: 'diamond' }); });
+    packets.each(pk => { if(V.d2(pk.p, me.p) < 120 * 120) rad.push({ p: pk.p, c: COLS[pk.c], s: 1.5 }); });
+    hud.radar(70, Ht - 74, 54, me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], 260, rad);
+    hud.text(Wd / 2, 26, 'RULE: ' + RULE_TXT[rule()] + '  ·  flips in ' + Math.ceil(ruleT) + 's', { size: 14, color: ruleT < 4 ? '#ffd27a' : '#ffffff' });
+    // Where the load can go.
+    if(carry.length){
+      let best = null, bd = 1e12;
+      ports.each(pt => { if(!carry.some(pk => fits(pk, pt))) return; const d = V.d2(pt.p, me.p); if(d < bd){ bd = d; best = pt; } });
+      if(best && !hud.proj([best.p[0], 9, best.p[2]]).on) hud.edgeArrow(best.p, COLS[best.c], SHAPES[best.s].g);
+    }
+    let x = Wd - 16;
+    for(let i = CAP - 1; i >= 0; i--){
+      const pk = carry[i];
+      hud.text(x, Ht - 22, pk ? SHAPES[pk.s].g : '·', { size: 18, align: 'right', color: pk ? COLS[pk.c] : '#3a4a5a' });
+      x -= 24;
+    }
+    hud.text(Wd - 16, Ht - 46, '📦 ' + delivered, { size: 13, align: 'right', color: '#ffe8b0' });
+    hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, me.boostE / 100, '#ffd700', 'BOOST');
+    if(msgT > 0) hud.text(Wd / 2, 52, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  📡 SIGNAL TRACE · OPEN WORLD — THE FOX HUNT
+// ══════════════════════════════════════════════
+// The classic deduces a hidden cipher from probes that answer "warmer" in
+// pegs. Out here the hidden thing is a transmitter somewhere on a dusk plain,
+// and the deduction is the same: a signal meter, a bearing needle that only
+// settles when you stop and listen, and a handful of PROBES — each one a
+// clean fix on its direction and its range, and there are never enough. Run
+// it down, and the next one starts transmitting.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround || !P.owDrive) return;
+const { V, TAU, wrapAng, drawFloor, owClock } = P.owKit;
+const { groundBegin, makeCity, groundRing } = P.owGround;
+const { makeRover, driveStep, slideOut, roverCam, roverDraw } = P.owDrive;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const PROBES = 6, FOUND = 7, HEAR = 440;
+
+P.ow.trace = function(){
+  const G = groundBegin({ sky: 'dusk', env: { horizon: '#6a2a5a' }, input: { touch: 'drive' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  setControlHint('STICK: DRIVE · ALT: PROBE · STOP TO STEADY THE NEEDLE', 'W/S A/D or HOLD THE MOUSE: DRIVE · F / RIGHT-CLICK: PROBE · STOP TO STEADY THE NEEDLE · SHIFT: BOOST');
+  inp.altLabel = 'PROBE';
+
+  const me = makeRover({ max: 27 });
+  let score = 0, found = 0, probesUsed = 0, over = false, finished = false, msg = '', msgT = 0;
+  let tx = null, huntT = 0, probes = PROBES, steady = 0, needle = 0, needleT = 0, sig = 0, probeT = 0, probeBand = '', tickT = 0;
+  const city = makeCity({ seed: 4141, density: 0.16, cell: 100, clear: 60, hMin: 16, hMax: 70, radius: 720, towerColor: '#140814' });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#ff5ab4,#ffd27a)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  function hide(){
+    for(let k = 0; k < 40; k++){
+      const a = Math.random() * TAU, d = rr(170, 320);
+      const p = [me.p[0] + Math.cos(a) * d, 0, me.p[2] + Math.sin(a) * d];
+      city.update(p);
+      if(!city.hit(p, 6)){ tx = { p, ph: Math.random() * TAU }; break; }
+    }
+    if(!tx) tx = { p: [me.p[0] + 200, 0, me.p[2]], ph: 0 };
+    huntT = 0; probes = PROBES; probeT = 0;
+    snd('glitch');
+    say('📡 A NEW TRANSMITTER IS ON THE AIR', 2.2);
+  }
+  hide();
+  const band = d => d < 25 ? 'BURNING' : d < 70 ? 'HOT' : d < 150 ? 'WARM' : d < 260 ? 'COOL' : 'COLD';
+  function probe(){
+    if(probes <= 0){ snd('deny'); say('NO PROBES LEFT — trust the needle', 1.6); return; }
+    probes--; probesUsed++;
+    probeT = 2.6;
+    probeBand = band(Math.sqrt(V.d2(tx.p, me.p)));
+    snd('node');
+    fx.flash([me.p[0], 2, me.p[2]], '#ffd27a', 1.4, 0.2);
+  }
+  function caught(){
+    found++;
+    const pts = 150 + Math.round(Math.max(0, 150 - huntT * 4)) + probes * 20;
+    score += pts; setLive(score);
+    snd('success');
+    fx.explode([tx.p[0], 3, tx.p[2]], 2.6, { color: '#ffd27a', debris: 4 });
+    w.pop([tx.p[0], 8, tx.p[2]], '+' + pts + ' FOUND', '#ffd27a', { size: 16 });
+    tx = null;
+    gLater(() => { if(!over) hide(); }, 900);
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('trace', score, {
+      '📡 Hunt': why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
+      '🦊 Transmitters Found': found,
+      '🔎 Probes Spent': probesUsed,
+      '📏 Distance': Math.round(me.odo) + ' m',
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, found, probes, sig: Math.round(sig * 100), dist: tx ? Math.round(Math.sqrt(V.d2(tx.p, me.p))) : null }),
+    probe(){ if(tx) probe(); },
+    findNow(){ if(tx){ me.p = [tx.p[0] + 3, 0, tx.p[2]]; caught(); return true; } return false; }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      driveStep(me, I, dt, hud);
+      city.update(me.p);
+      if(slideOut(me, city, 1.2)) me.hit = 0.15;
+      probeT = Math.max(0, probeT - dt);
+      if(tx){
+        huntT += dt;
+        if(I.altHit) probe();
+        const d = Math.sqrt(V.d2(tx.p, me.p));
+        // Listening: the needle and the meter settle while you hold still.
+        steady = clamp(steady + (Math.abs(me.speed) < 3 ? dt * 1.2 : -dt * 2), 0, 1);
+        const truth = clamp(1 - d / HEAR, 0, 1);
+        sig += (truth + (Math.random() - 0.5) * 0.25 * (1 - steady) - sig) * Math.min(1, dt * 4);
+        needleT -= dt;
+        if(needleT <= 0){
+          needleT = 0.18;
+          const bearing = Math.atan2(-(tx.p[0] - me.p[0]), -(tx.p[2] - me.p[2]));
+          const noise = (0.25 + 1.1 * (1 - truth)) * (1 - steady * 0.8) * (probeT > 0 ? 0 : 1);
+          const goal = wrapAng(bearing - me.yaw + rr(-noise, noise));
+          needle = wrapAng(needle + wrapAng(goal - needle) * 0.5);
+        }
+        tickT -= dt;
+        if(tickT <= 0){ tickT = 0.12 + (1 - truth) * 1.1; snd('tick', { semi: truth * 12 }); }
+        if(d < FOUND) caught();
+      }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    roverCam(w, me, dt, { back: 12, up: 6 });
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 170, color: '#5a1a4a', glow: 0.8, major: 5, floor: '#0a040a', rough: 0.25 });
+    city.draw(w);
+    if(tx){
+      const d = Math.sqrt(V.d2(tx.p, w.cam.eye));
+      if(d < 60){
+        // Close enough to see: a mast and its dish, pulsing.
+        const k = clamp(1 - d / 60, 0, 1);
+        r.draw('cylinder', { pos: [tx.p[0], 2.5, tx.p[2]], scale: [0.6, 5, 0.6], color: '#2a2a36', metallic: 0.8, roughness: 0.3 });
+        r.draw('turret', { pos: [tx.p[0], 5.4, tx.p[2]], rot: [0, w.t * 0.7, 0], scale: 1.2, color: '#9a8aa8', metallic: 0.6, roughness: 0.3, emissive: '#ffd27a', emissiveStrength: 0.6 * k });
+        r.glow([tx.p[0], 6, tx.p[2]], 2 + Math.sin(w.t * 8) * 0.5, '#ffd27a', 1.2 * k);
+        groundRing(w, tx.p, FOUND, '#ffd27a', k);
+      }
+      if(probeT > 0){
+        // The probe's fix: a line along the ground toward it, fading.
+        const dir = V.norm([tx.p[0] - me.p[0], 0, tx.p[2] - me.p[2]]);
+        const a = probeT / 2.6;
+        for(let i = 1; i <= 8; i++) r.glow(V.add(V.madd(me.p, dir, i * 6), [0, 0.4, 0]), 0.9, '#ffd27a', 1.6 * a);
+        r.streak(V.add(me.p, [0, 0.4, 0]), V.add(V.madd(me.p, dir, 50), [0, 0.4, 0]), 0.35, '#ffd27a', 1.6 * a, 0.2);
+      }
+    }
+    roverDraw(w, me, colour);
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H, ctx = hud.ctx;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    hud.radar(70, Ht - 74, 54, me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], 200, probeT > 0 && tx ? [{ p: tx.p, c: '#ffd27a', s: 3 }] : []);
+    // The direction finder: a dial at the top, the needle relative to the nose.
+    const cx = Wd / 2, cy = 58, R = 38;
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = 'rgba(10,4,14,0.6)'; ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,180,220,0.5)'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy - R + 6); ctx.stroke();
+    const na = -needle - Math.PI / 2;
+    ctx.strokeStyle = probeT > 0 ? '#ffd27a' : '#ff5ab4'; ctx.shadowColor = ctx.strokeStyle; ctx.shadowBlur = 8; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(na) * (R - 6), cy + Math.sin(na) * (R - 6)); ctx.stroke();
+    ctx.restore();
+    hud.text(cx, cy + R + 12, steady > 0.8 ? 'STEADY' : 'LISTENING…', { size: 9, color: steady > 0.8 ? '#9dffc4' : '#ffb8d8' });
+    hud.bar(cx + R + 16, cy - 4, 120, 8, sig, '#ff5ab4', 'SIGNAL');
+    if(probeT > 0) hud.text(cx - R - 16, cy, probeBand, { size: 15, align: 'right', color: '#ffd27a' });
+    hud.text(Wd - 16, Ht - 40, 'PROBES ' + '●'.repeat(probes) + '○'.repeat(Math.max(0, PROBES - probes)), { size: 12, align: 'right', color: '#ffd27a' });
+    hud.text(Wd - 16, Ht - 20, '🦊 ' + found + '  ·  ' + Math.round(huntT) + 's', { size: 13, align: 'right', color: '#ffe8b0' });
+    hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, me.boostE / 100, '#ff5ab4', 'BOOST');
+    if(msgT > 0) hud.text(Wd / 2, 118, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🔓 NODE HACKER · OPEN WORLD — THE SEQUENCE RUN
+// ══════════════════════════════════════════════
+// The classic pulses a sequence on a keypad and asks for it back. Here every
+// mainframe is a ring of network nodes standing out on the grid: watch them
+// light in order, then DRIVE the sequence — into each node's ring in turn —
+// before the trace closes on you. A wrong node feeds the trace; a finished
+// sequence hacks the mainframe, and the next one is a step longer.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround || !P.owDrive) return;
+const { V, TAU, drawFloor, owClock } = P.owKit;
+const { groundBegin, groundRing, beacon, makeCity } = P.owGround;
+const { makeRover, driveStep, slideOut, pushOutCircle, roverCam, roverDraw } = P.owDrive;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const NODE_COLS = ['#00f5ff', '#ff2d9a', '#ffd700', '#39ff88'];
+const GLYPHS = 'ABCDEFGH';
+const RING = 5.2, ON = 0.62, GAP = 0.26;
+
+P.ow.hacker = function(){
+  const G = groundBegin({ sky: 'night', env: { horizon: '#103a3a' }, input: { touch: 'drive' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: DRIVE · WATCH, THEN DRIVE THROUGH THE NODES IN ORDER · ALT: REPLAY', 'W/S A/D or HOLD THE MOUSE: DRIVE · WATCH THE PULSE, THEN DRIVE INTO THE NODES IN ORDER · F: SHOW IT AGAIN (+TRACE)');
+  inp.altLabel = 'SHOW';
+
+  const me = makeRover({ max: 25 });
+  let score = 0, hacked = 0, traced = 0, wrongs = 0, bestLen = 0, over = false, finished = false, msg = '', msgT = 0;
+  let len = 3, nodes = [], seq = [], phase = 'show', showT = 0, step = 0, trace = 0, inside = null, flash = null, flashT = 0;
+  const city = makeCity({ seed: 5252, density: 0.1, cell: 130, clear: 150, hMin: 20, hMax: 60, radius: 760, towerColor: '#061212' });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '0%';
+  bar.style.background = 'linear-gradient(90deg,#39ff88,#ffd700,#ff2d6a)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  function mainframe(){
+    // A ring of eight nodes ahead of the rover.
+    const f = [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)];
+    const c = V.madd(me.p, f, 55);
+    const a0 = Math.random() * TAU;
+    nodes = [];
+    for(let i = 0; i < 8; i++){
+      const a = a0 + i / 8 * TAU + rr(-0.2, 0.2), d = rr(22, 40);
+      const p = [c[0] + Math.cos(a) * d, 0, c[2] + Math.sin(a) * d];
+      city.update(p);
+      if(city.hit(p, 4)) p[0] += 12;
+      nodes.push({ p, col: NODE_COLS[i % 4], g: GLYPHS[i], lit: 0 });
+    }
+    seq = [];
+    while(seq.length < len){
+      const n = (Math.random() * 8) | 0;
+      if(seq.length && seq[seq.length - 1] === n) continue;
+      seq.push(n);
+    }
+    step = 0; trace = 0; inside = null;
+    startShow();
+  }
+  function startShow(){ phase = 'show'; showT = 0; snd('wave'); }
+  function enter(i){
+    if(phase !== 'replay') return;
+    const n = nodes[i];
+    if(i === seq[step]){
+      step++;
+      n.lit = 0.5;
+      snd('node', { semi: i * 2 });
+      fx.sparks([n.p[0], 5, n.p[2]], 8, n.col, 1, 10);
+      if(step >= seq.length) win();
+    }else{
+      wrongs++;
+      trace += 22;
+      flash = n; flashT = 0.5;
+      snd('wrong');
+      w.kick(0.5);
+      say('✖ WRONG NODE — the trace jumps', 1.4);
+    }
+  }
+  function win(){
+    hacked++;
+    bestLen = Math.max(bestLen, len);
+    const pts = 40 * len + Math.round((100 - trace) * 1.5);
+    score += pts; setLive(score);
+    snd('success');
+    for(const n of nodes) fx.explode([n.p[0], 5, n.p[2]], 1.2, { color: n.col, debris: 0, smoke: 0 });
+    say('🔓 MAINFRAME HACKED +' + pts + ' — the next is ' + (len + 1) + ' long', 2.4);
+    len++;
+    phase = 'done';
+    gLater(() => { if(!over) mainframe(); }, 1300);
+  }
+  function caught(){
+    traced++;
+    snd('alarm');
+    w.kick(1);
+    say('🚨 TRACED — mainframe locked out', 2.2);
+    len = Math.max(3, len - 1);
+    phase = 'done';
+    gLater(() => { if(!over) mainframe(); }, 1500);
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('hacker', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
+      '🔓 Mainframes Hacked': hacked,
+      '🧬 Longest Sequence': bestLen,
+      '🚨 Traced': traced,
+      '✖ Wrong Nodes': wrongs,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, hacked, traced, phase, step, len, trace: Math.round(trace) }),
+    skipShow(){ if(phase === 'show') showT = 1e3; },
+    replayCorrect(){ if(phase === 'show') showT = 1e3; phase = 'replay'; for(const i of seq.slice(step)) enter(i); },
+    wrongNode(){ if(phase !== 'replay') return; const i = (seq[step] + 1) % 8; enter(i); }
+  };
+  mainframe();
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      driveStep(me, I, dt, hud);
+      city.update(me.p);
+      if(slideOut(me, city, 1.2)) me.hit = 0.15;
+      if(phase === 'show'){
+        showT += dt;
+        const per = ON + GAP, k = Math.floor(showT / per);
+        if(k < seq.length){
+          const n = nodes[seq[k]];
+          const on = showT - k * per < ON;
+          if(on && n.lit <= 0){ snd('node', { semi: seq[k] * 2 }); }
+          n.lit = on ? 0.12 : 0;
+        }else{ phase = 'replay'; snd('go'); }
+      }else if(phase === 'replay'){
+        trace += 100 / (18 + len * 4) * Math.min(1.4, diff) * dt;
+        if(I.altHit){ trace += 18; startShow(); }
+        if(trace >= 100) caught();
+      }
+      let here = null;
+      nodes.forEach((n, i) => {
+        pushOutCircle(me, n.p, 1.9);
+        if(V.d2(n.p, me.p) < RING * RING) here = i;
+      });
+      if(here != null && here !== inside) enter(here);
+      inside = here;
+      bar.style.width = clamp(trace, 0, 100) + '%';
+    }
+    for(const n of nodes) n.lit = Math.max(0, n.lit - dt);
+    flashT = Math.max(0, flashT - dt);
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    roverCam(w, me, dt, phase === 'show' ? { back: 22, up: 18, ahead: 26, fov: 62 } : { back: 13, up: 8 });
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 170, color: '#0f5a4a', glow: 0.85, major: 5, floor: '#020a08', rough: 0.25 });
+    city.draw(w);
+    let nl = 0;
+    nodes.forEach((n, i) => {
+      const lit = n.lit > 0 || (flash === n && flashT > 0);
+      const col = flash === n && flashT > 0 ? '#ff3a3a' : n.col;
+      const doneHere = phase === 'replay' && seq.slice(0, step).includes(i);
+      r.draw('cylinder', { pos: [n.p[0], 2, n.p[2]], scale: [2.4, 4, 2.4], color: '#14201e', metallic: 0.8, roughness: 0.3, emissive: col, emissiveStrength: lit ? 0.6 : 0.05 });
+      r.draw('sphere', { pos: [n.p[0], 5, n.p[2]], scale: lit ? 2.4 : 1.5, color: col, emissive: col, emissiveStrength: lit ? 3.4 : doneHere ? 1.2 : 0.5 });
+      groundRing(w, n.p, RING, col, lit ? 1.6 : 0.4);
+      if(lit){
+        beacon(w, n.p, col, 50, 1.4);
+        r.glow([n.p[0], 5, n.p[2]], 5, col, 1.4);
+        if(nl++ < 2) r.light({ pos: [n.p[0], 7, n.p[2]], color: col, intensity: 200, range: 30 });
+      }
+    });
+    roverDraw(w, me, colour);
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    hud.radar(70, Ht - 74, 54, me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], 90, nodes.map(n => ({ p: n.p, c: n.col, s: 2.6 })));
+    nodes.forEach(n => {
+      const q = hud.proj([n.p[0], 8, n.p[2]]);
+      if(q.on) hud.text(q.x, q.y, n.g, { size: 15, color: n.col });
+    });
+    const head = phase === 'show' ? '👁 WATCH THE PULSE — ' + seq.length + ' STEPS' : phase === 'replay' ? '⌁ DRIVE IT: ' + step + ' / ' + seq.length : '';
+    hud.text(Wd / 2, 28, head, { size: 15, color: phase === 'show' ? '#ffd27a' : '#9dffc4' });
+    if(phase === 'replay'){
+      let s = '';
+      for(let i = 0; i < seq.length; i++) s += i < step ? nodes[seq[i]].g + ' ' : '• ';
+      hud.text(Wd / 2, 50, s, { size: 13, color: '#bff6ff' });
+      hud.bar(Wd / 2 - 80, 64, 160, 6, trace / 100, trace > 70 ? '#ff2d6a' : '#ffd700', 'TRACE');
+    }
+    hud.text(Wd - 16, Ht - 20, '🔓 ' + hacked + '  ·  NEXT ' + len, { size: 13, align: 'right', color: '#9dffc4' });
+    hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, me.boostE / 100, '#39ff88', 'BOOST');
+    if(msgT > 0) hud.text(Wd / 2, 90, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🏓 CYBER PONG · OPEN WORLD — A RALLY WITH NO WALLS
+// ══════════════════════════════════════════════
+// The classic rally bounces between two walls. This one has none: two hover
+// paddles on an endless floor, and a ball that goes wherever it was sent.
+// The droid never hits it back at you — it hits it to where you are NOT, so
+// every return is a chase. Angle still comes off where the ball strikes your
+// paddle; get past the droid and the point is yours.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, wrapAng, ease, drawFloor, owClock } = P.owKit;
+const { groundBegin, followCam, screenToGround, groundRing } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const HALF = 3.6, BALL_R = 0.9, MISS = 9;
+
+P.ow.pong = function(){
+  const G = groundBegin({ sky: 'violet', input: { touch: 'tap' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: MOVE YOUR PADDLE INTO THE BALL', 'WASD / ARROWS or THE MOUSE: MOVE YOUR PADDLE · THE BALL LEAVES AT THE ANGLE IT STRIKES');
+
+  const me = { p: [0, 0, 8], v: [0, 0, 0], face: 0, flash: 0 };
+  const ai = { p: [0, 0, -30], v: [0, 0, 0], face: Math.PI, flash: 0, err: 0 };
+  const ball = { p: [0, 1.1, -2], v: [0, 0, -24], sp: 24, to: 'ai', live: false, trail: [] };
+  let score = 0, lives = 3, rally = 0, bestRally = 0, returns = 0, aiMisses = 0, over = false, finished = false, msg = '', msgT = 0;
+  let serveT = 1.2, server = 'me';
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#a855f7,#00f5ff)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  // The paddle's long axis, perpendicular to the way it faces.
+  const axis = pd => [Math.cos(pd.face), 0, -Math.sin(pd.face)];
+  const facing = pd => [-Math.sin(pd.face), 0, -Math.cos(pd.face)];
+  function serve(){
+    const from = server === 'me' ? me : ai, to = server === 'me' ? ai : me;
+    const d = V.norm([to.p[0] - from.p[0], 0, to.p[2] - from.p[2]]);
+    ball.p = V.add(V.madd(from.p, d, 2.4), [0, 1.1, 0]);
+    ball.sp = 24 * Math.min(1.3, diff);
+    ball.v = V.mul(d, ball.sp);
+    ball.to = server === 'me' ? 'ai' : 'me';
+    ball.live = true;
+    rally = 0;
+    snd('go');
+  }
+  // Paddle vs ball: the closest point on the paddle's segment.
+  function strike(pd){
+    const ax = axis(pd);
+    const rel = V.sub([ball.p[0], 0, ball.p[2]], pd.p);
+    const along = clamp(V.dot(rel, ax), -HALF, HALF);
+    const cp = V.madd(pd.p, ax, along);
+    const d = Math.hypot(ball.p[0] - cp[0], ball.p[2] - cp[2]);
+    if(d > BALL_R + 0.75) return null;
+    const n = facing(pd);
+    if(V.dot(ball.v, n) > 0) return null;          // already leaving
+    return along / HALF;                           // −1 … 1 along the paddle
+  }
+  function playerReturn(off){
+    returns++; rally++; bestRally = Math.max(bestRally, rally);
+    const n = facing(me);
+    const a = Math.atan2(n[0], n[2]) + off * 0.75;
+    ball.sp = Math.min(62, ball.sp + 1.6);
+    // A pinch of where the droid is, so a return can be aimed past it.
+    let dir = [Math.sin(a), 0, Math.cos(a)];
+    dir = V.norm(V.add(dir, V.mul(V.norm([ai.p[0] - me.p[0], 0, ai.p[2] - me.p[2]]), 0.25)));
+    ball.v = V.add(V.mul(dir, ball.sp), V.mul(me.v, 0.25));
+    ball.to = 'ai';
+    me.flash = 0.15;
+    const pts = 10 + Math.min(30, rally * 2);
+    score += pts; setLive(score);
+    snd('bounce', { semi: Math.min(12, rally) });
+    fx.sparks(ball.p, 10, colour, 1, 12);
+    // The droid decides now how well it will read this one.
+    ai.err = (Math.random() < 0.12 * diff * (1 + rally * 0.04) ? 1 : 0) * rr(4, 7) * (Math.random() < 0.5 ? -1 : 1);
+  }
+  function aiReturn(){
+    rally++;
+    // Away from you: somewhere you have to run to.
+    const side = V.norm(V.cross([me.p[0] - ai.p[0], 0, me.p[2] - ai.p[2]], [0, 1, 0]));
+    const lat = rr(7, 16) * (Math.random() < 0.5 ? -1 : 1) * Math.min(1.4, diff);
+    const aim = V.add(me.p, V.mul(side, lat));
+    const d = V.norm([aim[0] - ai.p[0], 0, aim[2] - ai.p[2]]);
+    ball.sp = Math.min(62, ball.sp + 1.2);
+    ball.v = V.mul(d, ball.sp);
+    ball.to = 'me';
+    ai.flash = 0.15;
+    snd('bounceWall');
+    fx.sparks(ball.p, 8, '#ff2d9a', 1, 10);
+  }
+  function point(winner){
+    ball.live = false;
+    if(winner === 'me'){
+      aiMisses++;
+      const pts = 100 + Math.min(150, rally * 10);
+      score += pts; setLive(score);
+      snd('success');
+      w.pop(V.add(ball.p, [0, 4, 0]), '+' + pts + ' POINT', '#9dffc4', { size: 17 });
+      say('THE DROID MISSED — rally ' + rally, 1.8);
+      server = 'me';
+    }else{
+      lives--;
+      snd('hurt');
+      w.kick(0.8);
+      bar.style.width = (Math.max(0, lives) / 3 * 100) + '%';
+      say('MISSED IT — ' + Math.max(0, lives) + ' left', 1.8);
+      if(lives <= 0){
+        if(survivedFatal()){ lives = 1; bar.style.width = '33%'; say('SHIELD ABSORBED', 1.6); }
+        else{ over = true; gLater(() => finish('out'), 1000); return; }
+      }
+      server = 'ai';
+    }
+    fx.explode(ball.p, 1.4, { color: winner === 'me' ? '#39ff88' : '#ff4a4a', debris: 0, smoke: 0 });
+    serveT = 1.3;
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('pong', score, {
+      '📡 Match': why === 'clock' ? 'CLOCK EXPIRED' : 'OUT OF BALLS',
+      '🏓 Returns': returns,
+      '🤖 Droid Misses': aiMisses,
+      '⛓ Longest Rally': bestRally,
+      '❤ Balls Left': Math.max(0, lives),
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, lives, rally, returns, aiMisses, to: ball.to, live: ball.live }),
+    lose(){ ball.live = true; point('ai'); },
+    playerHit(){ if(ball.live){ ball.p = V.add(me.p, [0, 1.1, -1]); ball.v = [0, 0, 10]; me.face = Math.atan2(-(ai.p[0] - me.p[0]), -(ai.p[2] - me.p[2])); playerReturn(0.3); } },
+    aiMiss(){ if(ball.live) point('me'); },
+    playerMiss(){ if(ball.live) point('ai'); }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      // You: keys / stick, or the paddle chases the mouse on the floor.
+      let mx = I.lx, mz = I.ly;
+      if(I.device === 'mouse' && I.mouseOn && hud.cam){
+        const g = screenToGround(hud, (I.mx + 1) / 2 * hud.W, (I.my + 1) / 2 * hud.H, 0);
+        if(g){ const d = V.sub(g, me.p), l = Math.hypot(d[0], d[2]); mx = l > 0.6 ? d[0] / l * Math.min(1, l / 4) : 0; mz = l > 0.6 ? d[2] / l * Math.min(1, l / 4) : 0; }
+      }
+      const ml = Math.hypot(mx, mz); if(ml > 1){ mx /= ml; mz /= ml; }
+      me.v = V.lerp(me.v, [mx * 27, 0, mz * 27], ease(dt, 0.07));
+      me.p = V.madd(me.p, me.v, dt);
+      // Both paddles turn to face the ball's way in.
+      const turnTo = (pd, tgt, k) => { const want = Math.atan2(-(tgt[0] - pd.p[0]), -(tgt[2] - pd.p[2])); pd.face = wrapAng(pd.face + wrapAng(want - pd.face) * Math.min(1, dt * k)); };
+      turnTo(me, ball.live ? ball.p : ai.p, 10);
+      turnTo(ai, ball.live ? ball.p : me.p, 8);
+      // The droid: run to where the ball will cross it, keep a distance from you.
+      let goal;
+      if(ball.live && ball.to === 'ai'){
+        const t = Math.max(0, V.dot(V.sub(ai.p, ball.p), V.norm(ball.v)) / Math.max(ball.sp, 1));
+        goal = V.madd([ball.p[0], 0, ball.p[2]], ball.v, Math.min(t, 2.5));
+        goal = V.add(goal, V.mul(V.norm(V.cross(ball.v, [0, 1, 0])), ai.err));
+      }else{
+        const away = V.norm([ai.p[0] - me.p[0], 0, ai.p[2] - me.p[2]]);
+        goal = V.madd(me.p, away, 34);
+      }
+      const gd = V.sub(goal, ai.p), gl = Math.hypot(gd[0], gd[2]);
+      const aiSp = 22 * Math.min(1.3, diff);
+      ai.v = V.lerp(ai.v, gl > 0.4 ? [gd[0] / gl * Math.min(aiSp, gl * 4), 0, gd[2] / gl * Math.min(aiSp, gl * 4)] : [0, 0, 0], ease(dt, 0.12));
+      ai.p = V.madd(ai.p, ai.v, dt);
+      me.flash = Math.max(0, me.flash - dt); ai.flash = Math.max(0, ai.flash - dt);
+
+      if(!ball.live){ serveT -= dt; if(serveT <= 0) serve(); }
+      else{
+        ball.p = V.madd(ball.p, ball.v, dt);
+        ball.p[1] = 1.1 + Math.abs(Math.sin(w.t * 5)) * 0.4;
+        ball.trail.unshift(V.copy(ball.p)); if(ball.trail.length > 10) ball.trail.pop();
+        if(ball.to === 'ai'){
+          const hit = strike(ai);
+          if(hit != null) aiReturn();
+          else if(V.dot(V.sub(ball.p, ai.p), V.norm(ball.v)) > MISS) point('me');
+        }else{
+          const hit = strike(me);
+          if(hit != null) playerReturn(hit);
+          else if(V.dot(V.sub(ball.p, me.p), V.norm(ball.v)) > MISS) point('ai');
+        }
+      }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    // The camera holds you and the ball both.
+    const mid = ball.live ? V.lerp(me.p, [ball.p[0], 0, ball.p[2]], 0.35) : me.p;
+    followCam(w, mid, { height: 44, back: 28, look: 4, fov: 54, half: 0.14 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 170, color: '#3a1d6e', glow: 1.0, major: 5, floor: '#05030b', rough: 0.2 });
+    const drawPaddle = (pd, col, mineToo) => {
+      r.draw('paddle', { pos: [pd.p[0], 1.1, pd.p[2]], rot: [0, pd.face + Math.PI / 2, 0], scale: [1.1, 1.4, HALF * 2.1], color: pd.flash > 0 ? '#ffffff' : '#c9d1dd',
+                         metallic: 0.6, roughness: 0.3, rim: 0.8, emissive: col, emissiveStrength: mineToo ? 0.9 : 0.7 });
+      r.glow([pd.p[0], 1.1, pd.p[2]], 3.4, col, 0.5);
+      groundRing(w, pd.p, 2.2, col, 0.6);
+      r.light({ pos: [pd.p[0], 5, pd.p[2]], color: col, intensity: 90, range: 18 });
+    };
+    drawPaddle(me, colour, true);
+    drawPaddle(ai, '#ff2d9a', false);
+    if(ball.live){
+      r.draw('sphere', { pos: ball.p, scale: BALL_R * 2, color: '#ffffff', emissive: '#e8f6ff', emissiveStrength: 2.4 });
+      r.glow(ball.p, 2.2, '#bff6ff', 1.2);
+      for(let i = 1; i < ball.trail.length; i++) r.streak(ball.trail[i], ball.trail[i - 1], 0.5 * (1 - i / 10), ball.to === 'ai' ? colour : '#ff2d9a', 1.6 * (1 - i / 10), 0);
+      // Where it is going to cross you.
+      if(ball.to === 'me'){
+        const t = Math.max(0, V.dot(V.sub(me.p, ball.p), V.norm(ball.v)) / Math.max(ball.sp, 1));
+        const land = V.madd([ball.p[0], 0, ball.p[2]], ball.v, t);
+        groundRing(w, land, 1.3, '#ffd27a', 0.8);
+      }
+    }
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    hud.radar(70, Ht - 74, 54, me.p, [0, 0, -1], 70, [{ p: ai.p, c: '#ff2d9a', s: 3 }].concat(ball.live ? [{ p: ball.p, c: '#ffffff', s: 2.4 }] : []));
+    if(ball.live && !hud.proj(ball.p).on) hud.edgeArrow(ball.p, '#ffffff', 'BALL');
+    if(!hud.proj(ai.p).on) hud.edgeArrow(ai.p, '#ff2d9a', 'DROID');
+    hud.text(Wd / 2, 26, ball.live ? 'RALLY ' + rally : server === 'me' ? 'YOUR SERVE…' : 'DROID SERVES…', { size: 15, color: '#ffffff' });
+    hud.text(Wd - 16, Ht - 40, '🤖 ' + aiMisses + ' missed', { size: 13, align: 'right', color: '#ff8ac8' });
+    hud.text(Wd - 16, Ht - 20, '●'.repeat(Math.max(0, lives)) + '○'.repeat(Math.max(0, 3 - lives)), { size: 15, align: 'right', color: '#ffffff' });
+    if(msgT > 0) hud.text(Wd / 2, 52, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🧊 ICE BREAKER · OPEN WORLD — THE ENDLESS CEILING
+// ══════════════════════════════════════════════
+// The classic is a wall of ice between two side walls. This one has no sides:
+// the ceiling of bricks runs on for ever in both directions, and nothing
+// banks the ball back to you. Send it in at an angle and it travels — so you
+// travel too, the paddle chasing it along an endless line. Break through and
+// the back wall still returns it; the deeper rows are harder ice.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, ihash, ease, drawFloor, owClock } = P.owKit;
+const { groundBegin, screenToGround } = P.owGround;
+const { mine, clamp, runLoop, seeded } = P.kit;
+const BW = 4.4, BD = 2.4, ROWS = 18, Z0 = -22, R = 0.75, CH = 12;
+const ZBACK = Z0 - ROWS * BD - 1.5;
+const ICE = ['#7fe8ff', '#a855f7', '#ff2d9a'];
+
+P.ow.breaker = function(){
+  const G = groundBegin({ sky: 'ice', input: { touch: 'tap' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK / DRAG: SLIDE THE PADDLE · TAP: LAUNCH', 'A/D, ←/→ or THE MOUSE: SLIDE THE PADDLE · SPACE / CLICK: LAUNCH · NO WALLS — CHASE THE BALL');
+
+  const pad = { x: 0, v: 0, w: 7, wideT: 0, flash: 0 };
+  let balls = [], lives = 3, score = 0, broken = 0, combo = 0, bestCombo = 0, over = false, finished = false, msg = '', msgT = 0;
+  let held = true, heldT = 1.6, caps = [], camX = 0;
+  const live = new Map(), gone = new Set(), loaded = new Set();
+  const key = (c, row) => c + ',' + row;
+  // The ice, as a pure function of the column and row: gaps, gold, depth.
+  function brickAt(c, row){
+    const g = seeded(ihash(c, row, 0, 4747));
+    const v = g();
+    const band = 0.5 + 0.5 * Math.sin(c * 0.37) * Math.cos(row * 0.9 + c * 0.11);
+    if(v < 0.06 + band * 0.06) return null;
+    const hp = row < 5 ? 1 : row < 11 ? 2 : 3;
+    return { hp, max: hp, gold: g() < 0.05 };
+  }
+  function loadChunk(cc){
+    if(loaded.has(cc)) return;
+    loaded.add(cc);
+    for(let c = cc * CH; c < cc * CH + CH; c++){
+      for(let row = 0; row < ROWS; row++){
+        const k = key(c, row);
+        if(gone.has(k)) continue;
+        const b = brickAt(c, row);
+        if(b) live.set(k, Object.assign(b, { c, row }));
+      }
+    }
+  }
+  function unloadChunk(cc){
+    loaded.delete(cc);
+    for(let c = cc * CH; c < cc * CH + CH; c++) for(let row = 0; row < ROWS; row++) live.delete(key(c, row));
+  }
+  const bx = c => (c + 0.5) * BW, bz = row => Z0 - (row + 0.5) * BD;
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#7fe8ff,#a855f7)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  function newBall(){ balls = [{ p: [pad.x, 1, -1.6], v: [0, 0, 0], sp: 30 * Math.min(1.3, diff) }]; held = true; heldT = 1.6; }
+  newBall();
+  function launch(){
+    if(!held) return;
+    held = false;
+    const b = balls[0];
+    const a = (Math.random() - 0.5) * 0.8;
+    b.v = [Math.sin(a) * b.sp, 0, -Math.cos(a) * b.sp];
+    snd('go');
+  }
+  function hitBrick(br, b){
+    br.hp--;
+    score += 5;
+    if(br.hp <= 0){
+      const k = key(br.c, br.row);
+      live.delete(k); gone.add(k);
+      broken++;
+      combo++; bestCombo = Math.max(bestCombo, combo);
+      const pts = 10 * br.max + Math.min(40, combo * 2);
+      score += pts;
+      snd('brick', { semi: Math.min(12, combo) });
+      fx.explode([bx(br.c), 1, bz(br.row)], 1.1, { color: br.gold ? '#ffd700' : ICE[br.max - 1], debris: 3, debrisGeo: 'slab', debrisColor: '#cfe8ff', smoke: 0, ring: false, grav: 20 });
+      if(br.gold) caps.push({ p: [bx(br.c), 1, bz(br.row)], k: Math.random() < 0.5 ? 'wide' : 'multi' });
+      if(combo > 0 && combo % 10 === 0) w.pop([bx(br.c), 4, bz(br.row)], '×' + combo + ' COMBO', '#ffd27a', { size: 15 });
+    }else{
+      snd('shatter', { semi: -4 });
+      fx.sparks([bx(br.c), 1, bz(br.row)], 6, '#dff8ff', 0.8, 8);
+    }
+    setLive(score);
+  }
+  // Circle vs the bricks around it: reflect on the shallower axis of the first hit.
+  function collide(b){
+    const c0 = Math.floor((b.p[0] - R) / BW), c1 = Math.floor((b.p[0] + R) / BW);
+    const r0 = Math.floor((Z0 - (b.p[2] + R)) / BD), r1 = Math.floor((Z0 - (b.p[2] - R)) / BD);
+    for(let c = c0; c <= c1; c++) for(let row = Math.max(0, r0); row <= Math.min(ROWS - 1, r1); row++){
+      const br = live.get(key(c, row));
+      if(!br) continue;
+      const cx = bx(c), cz = bz(row);
+      const dx = b.p[0] - cx, dz = b.p[2] - cz;
+      const px = BW / 2 + R - Math.abs(dx), pz = BD / 2 + R - Math.abs(dz);
+      if(px <= 0 || pz <= 0) continue;
+      if(px < pz){ b.p[0] += Math.sign(dx || 1) * px; b.v[0] = Math.abs(b.v[0]) * Math.sign(dx || 1); }
+      else{ b.p[2] += Math.sign(dz || 1) * pz; b.v[2] = Math.abs(b.v[2]) * Math.sign(dz || 1); }
+      hitBrick(br, b);
+      return true;
+    }
+    return false;
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('breaker', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'OUT OF BALLS',
+      '🧊 Ice Broken': broken,
+      '⛓ Best Combo': bestCombo,
+      '❤ Balls Left': Math.max(0, lives),
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, broken, lives, balls: balls.length, held, bricks: live.size, x: Math.round(pad.x) }),
+    launch(){ launch(); },
+    lose(){ held = false; balls = [{ p: [pad.x, 1, 9], v: [0, 0, 10], sp: 30 }]; },
+    breakSome(n){ let k = 0; for(const br of [...live.values()]){ if(k >= (n || 5)) break; if(br.row < 3){ br.hp = 1; hitBrick(br, balls[0]); k++; } } return k; },
+    loseBall(){ if(!held && balls[0]) balls[0].p[2] = 9; }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      // The paddle: keys / stick, or it follows the mouse along the line.
+      let want = I.lx * 46;
+      if(I.device === 'mouse' && I.mouseOn && hud.cam){
+        const g = screenToGround(hud, (I.mx + 1) / 2 * hud.W, (I.my + 1) / 2 * hud.H, 0);
+        if(g) want = clamp((g[0] - pad.x) * 9, -60, 60);
+      }else if(I.stick){
+        want = clamp((I.stick.x - I.stick.x0) / 0.2, -1, 1) * 46;
+      }
+      pad.v += (want - pad.v) * ease(dt, 0.05);
+      pad.x += pad.v * dt;
+      pad.wideT = Math.max(0, pad.wideT - dt);
+      pad.w += ((pad.wideT > 0 ? 11 : 7) - pad.w) * ease(dt, 0.2);
+      pad.flash = Math.max(0, pad.flash - dt);
+      const cc = Math.floor(pad.x / (CH * BW));
+      for(let k = -4; k <= 4; k++) loadChunk(cc + k);
+      for(const c of [...loaded]) if(Math.abs(c - cc) > 7) unloadChunk(c);
+      if(held){
+        balls[0].p = [pad.x, 1, -1.6];
+        heldT -= dt;
+        if(I.fire || I.jumpHit || heldT <= 0) launch();
+      }else{
+        for(let i = balls.length - 1; i >= 0; i--){
+          const b = balls[i];
+          const steps = Math.max(1, Math.ceil(b.sp * dt / 0.6));
+          for(let s = 0; s < steps; s++){
+            b.p[0] += b.v[0] * dt / steps; b.p[2] += b.v[2] * dt / steps;
+            if(b.p[2] < ZBACK + R){ b.p[2] = ZBACK + R; b.v[2] = Math.abs(b.v[2]); snd('bounceWall'); }
+            collide(b);
+            // The paddle.
+            if(b.v[2] > 0 && b.p[2] > -1.2 - R && b.p[2] < 0.4 && Math.abs(b.p[0] - pad.x) < pad.w / 2 + R){
+              const off = clamp((b.p[0] - pad.x) / (pad.w / 2), -1, 1);
+              b.sp = Math.min(58, b.sp + 0.5);
+              const a = off * 1.05;
+              b.v = [Math.sin(a) * b.sp + pad.v * 0.12, 0, -Math.cos(a) * b.sp];
+              const l = Math.hypot(b.v[0], b.v[2]); b.v[0] *= b.sp / l; b.v[2] *= b.sp / l;
+              b.p[2] = -1.2 - R;
+              combo = 0;
+              pad.flash = 0.12;
+              snd('bounce');
+            }
+          }
+          if(b.p[2] > 6){
+            balls.splice(i, 1);
+            fx.sparks(b.p, 10, '#ff6a8a', 1, 10);
+            if(!balls.length){
+              lives--;
+              combo = 0;
+              snd('hurt'); w.kick(0.6);
+              bar.style.width = (Math.max(0, lives) / 3 * 100) + '%';
+              if(lives <= 0){
+                if(survivedFatal()){ lives = 1; bar.style.width = '33%'; say('SHIELD ABSORBED', 1.6); newBall(); }
+                else{ over = true; gLater(() => finish('out'), 900); }
+              }else{ say('BALL LOST — ' + lives + ' left', 1.6); newBall(); }
+            }
+          }
+        }
+      }
+      for(let i = caps.length - 1; i >= 0; i--){
+        const cp = caps[i];
+        cp.p[2] += 12 * dt;
+        if(cp.p[2] > -1.6 && cp.p[2] < 0.6 && Math.abs(cp.p[0] - pad.x) < pad.w / 2 + 1){
+          caps.splice(i, 1);
+          snd('powerup');
+          if(cp.k === 'wide'){ pad.wideT = 12; say('↔ WIDE PADDLE', 1.6); }
+          else if(balls.length && !held){
+            const b0 = balls[0];
+            for(const a of [-0.5, 0.5]) balls.push({ p: V.copy(b0.p), v: [Math.sin(a) * b0.sp, 0, -Math.cos(a) * b0.sp], sp: b0.sp });
+            say('✳ MULTI-BALL', 1.6);
+          }
+        }else if(cp.p[2] > 8) caps.splice(i, 1);
+      }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    // The camera rides between the paddle and the ball it is chasing.
+    const lead = balls.length ? balls[0].p[0] : pad.x;
+    if(dt > 0) camX += (pad.x * 0.6 + lead * 0.4 - camX) * ease(dt, 0.18);
+    w.cam.eye = [camX, 30, 24]; w.cam.target = [camX, 0, -22];
+    w.goal.eye = w.cam.eye; w.goal.target = w.cam.target; w.goal.fov = 56;
+    w.up = [0, 1, 0];
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: BW, radius: 120, color: '#15507a', glow: 0.8, major: 6, floor: '#030a14', rough: 0.2 });
+    // The back wall: the far side of the ceiling.
+    r.draw('box', { pos: [camX, 2, ZBACK - 0.6], scale: [240, 4, 0.6], color: '#0e1a2a', metallic: 0.7, roughness: 0.3, emissive: '#46c8ff', emissiveStrength: 0.15 });
+    r.beam([camX - 120, 4.1, ZBACK - 0.4], [camX + 120, 4.1, ZBACK - 0.4], 0.2, { color: '#7fe8ff', emissive: '#7fe8ff', emissiveStrength: 2.2 });
+    const c0 = Math.floor((camX - 75) / BW), c1 = Math.floor((camX + 75) / BW);
+    for(let c = c0; c <= c1; c++) for(let row = 0; row < ROWS; row++){
+      const br = live.get(key(c, row));
+      if(!br) continue;
+      const col = br.gold ? '#ffd700' : ICE[br.max - 1];
+      const k = br.hp / br.max;
+      r.draw('slab', { pos: [bx(c), 1, bz(row)], scale: [BW - 0.4, 1.6, BD - 0.4], color: '#dff4ff', metallic: 0.2, roughness: 0.15, rim: 0.9,
+                       emissive: col, emissiveStrength: 0.35 + 0.9 * k });
+    }
+    // The paddle.
+    r.draw('paddle', { pos: [pad.x, 1, -0.6], rot: [0, Math.PI / 2, 0], scale: [1.2, 1.3, pad.w], color: pad.flash > 0 ? '#ffffff' : '#c9d1dd', metallic: 0.6, roughness: 0.3, rim: 0.8, emissive: colour, emissiveStrength: 0.8 });
+    r.glow([pad.x, 1, -0.6], pad.w * 0.5, colour, 0.4);
+    r.light({ pos: [pad.x, 6, 2], color: '#d8f0ff', intensity: 120, range: 26 });
+    let nl = 0;
+    for(const b of balls){
+      r.draw('sphere', { pos: b.p, scale: R * 2, color: '#ffffff', emissive: '#e8f6ff', emissiveStrength: 2.4 });
+      r.glow(b.p, 2, '#bff6ff', 1.1);
+      if(!held) r.streak(V.madd(b.p, V.norm(b.v), -3), b.p, 0.5, '#bff6ff', 1.2, 1);
+      if(nl++ < 2) r.light({ pos: [b.p[0], 4, b.p[2]], color: '#bff6ff', intensity: 60, range: 14 });
+    }
+    for(const cp of caps){
+      const col = cp.k === 'wide' ? '#39ff88' : '#ffd700';
+      r.draw('pill', { pos: cp.p, rot: [0, 0, Math.PI / 2], scale: [0.9, 1.6, 0.9], color: col, emissive: col, emissiveStrength: 1.8 });
+      r.glow(cp.p, 1.8, col, 0.8);
+    }
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    for(const b of balls){ if(!hud.proj(b.p).on) hud.edgeArrow(b.p, '#ffffff', 'BALL'); }
+    if(held) hud.text(Wd / 2, Ht * 0.6, 'SPACE / CLICK TO LAUNCH', { size: 13, color: '#bff6ff', alpha: 0.8 });
+    hud.text(Wd / 2, 26, combo > 2 ? 'COMBO ×' + combo : '', { size: 15, color: '#ffd27a' });
+    hud.text(Wd - 16, Ht - 40, '🧊 ' + broken, { size: 13, align: 'right', color: '#bff6ff' });
+    hud.text(Wd - 16, Ht - 20, '●'.repeat(Math.max(0, lives)) + '○'.repeat(Math.max(0, 3 - lives)), { size: 15, align: 'right', color: '#ffffff' });
+    if(msgT > 0) hud.text(Wd / 2, 52, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🎱 NEON PINBALL · OPEN WORLD — THE ENDLESS TABLE
+// ══════════════════════════════════════════════
+// The classic table has a top, two sides and a drain. This one only has the
+// drain. It runs downhill for ever, and your flippers ride down it with the
+// ball — sliding across to stay under it, sinking a little further every
+// second — while the bumpers, the stars and the drop-target banks rise out of
+// the table behind them. Pull the plunger, keep it alive, and drop a full
+// bank to raise the multiplier. There are no walls: a ball that gets away
+// sideways is as gone as one down the middle.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, ease, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, groundRing } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const BR = 0.62, GRAV = 30, VMAX = 62, DESC = 4.2, FOLLOW = 17;
+const FL = { len: 4.6, r0: 0.55, r1: 0.32, rest: 0.49, up: -0.52, wUp: 22, wDown: 13, e: 0.28, half: 5.2 };
+const RISE = 6.5;                     // bumpers stand only this far above the flippers
+
+P.ow.pinball = function(){
+  const G = groundBegin({ sky: 'violet', env: { horizon: '#5a1a7a' }, input: { touch: 'tap' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('LEFT / RIGHT HALF: FLIPPERS · HOLD TO PULL THE PLUNGER', 'A / ← : LEFT FLIPPER · D / → : RIGHT · SPACE: BOTH, OR HOLD TO PULL THE PLUNGER · MOUSE BUTTONS: FLIPPERS');
+
+  const car = { x: 0, z: 0, vx: 0 };
+  const flip = [{ s: 1, a: FL.rest, w: 0 }, { s: -1, a: FL.rest, w: 0 }];
+  const ball = { x: 0, z: -1.6, vx: 0, vz: 0, held: true, charge: 0, heldT: 3 };
+  let score = 0, balls = 3, mult = 1, bumps = 0, banks = 0, over = false, finished = false, msg = '', msgT = 0, descended = 0, saveT = 0;
+  const table = makeField({
+    cell: 24, dims: 2, seed: 6363, radius: 150,
+    gen(cx, cy, cz, g){
+      const items = [];
+      const x0 = cx * 24, z0 = cz * 24;
+      if(cz >= -1 && Math.abs(cx) <= 1) return items;      // the launch lane
+      const roll = g();
+      if(roll < 0.55){
+        const n = 1 + (g() < 0.4 ? 1 : 0);
+        for(let i = 0; i < n; i++) items.push({ t: 'bump', p: [x0 + 4 + g() * 16, 0, z0 + 4 + g() * 16], r: 1.3 + g() * 0.4, flash: 0, ph: g() * TAU });
+      }else if(roll < 0.78){
+        const bank = { hits: 0 };
+        const x = x0 + 5 + g() * 10, z = z0 + 6 + g() * 12;
+        for(let i = 0; i < 3; i++) items.push({ t: 'target', p: [x + i * 2.2, 0, z], r: 0.75, down: false, bank, flash: 0 });
+      }
+      if(g() < 0.5){
+        const x = x0 + 4 + g() * 16, z = z0 + 4 + g() * 16, a = g() * TAU;
+        for(let i = 0; i < 4; i++) items.push({ t: 'star', p: [x + Math.cos(a) * i * 2, 0, z + Math.sin(a) * i * 2], lit: 0 });
+      }
+      return items;
+    }
+  });
+  // Touch: a tap on a half kicks that flipper up for a moment, so a quick tap
+  // on a slow phone still flips, and any tap pulls the plunger.
+  const kick = [0, 0];
+  let tapped = 0;
+  const cv = aCanvas;
+  const onTouch = e => {
+    if(!e.isTrusted) return;
+    const rc = cv.getBoundingClientRect();
+    for(const t of e.changedTouches){ kick[(t.clientX - rc.left) / Math.max(1, rc.width) < 0.5 ? 0 : 1] = 0.16; tapped++; }
+  };
+  if(cv) cv.addEventListener('touchstart', onTouch, { passive: true });
+  const prevStop = onStopGame;
+  onStopGame = () => { try{ if(cv) cv.removeEventListener('touchstart', onTouch); }catch(e){} if(prevStop) prevStop(); };
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#ff2bd6,#00f5ff)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  const pivot = f => [car.x - f.s * FL.half, car.z - 0.8];
+  const tipOf = f => { const p = pivot(f); return [p[0] + f.s * Math.cos(f.a) * FL.len, p[1] + Math.sin(f.a) * FL.len]; };
+  const award = (pts, at, label, col) => {
+    score += pts * mult; setLive(score);
+    if(label) w.pop([at[0], 3, at[1]], '+' + pts * mult + ' ' + label, col || '#ffd27a', { size: 14 });
+  };
+  // Ball vs a flipper's capsule; the flipper's surface speed goes into the bounce.
+  function hitFlipper(f){
+    const a = pivot(f), b = tipOf(f);
+    const abx = b[0] - a[0], abz = b[1] - a[1], L2 = abx * abx + abz * abz;
+    const t = clamp(((ball.x - a[0]) * abx + (ball.z - a[1]) * abz) / L2, 0, 1);
+    const cx = a[0] + abx * t, cz = a[1] + abz * t;
+    const rad = FL.r0 + (FL.r1 - FL.r0) * t;
+    const dx = ball.x - cx, dz = ball.z - cz, d = Math.hypot(dx, dz);
+    if(d >= rad + BR || d < 1e-6) return;
+    const nx = dx / d, nz = dz / d;
+    ball.x = cx + nx * (rad + BR); ball.z = cz + nz * (rad + BR);
+    const rx = cx - a[0], rz = cz - a[1];
+    const svx = -f.s * f.w * rz + car.vx, svz = f.s * f.w * rx + DESC;
+    const rvx = ball.vx - svx, rvz = ball.vz - svz, vn = rvx * nx + rvz * nz;
+    if(vn < 0){
+      ball.vx -= (1 + FL.e) * vn * nx; ball.vz -= (1 + FL.e) * vn * nz;
+      if(Math.abs(vn) > 8) snd('bounce', { semi: -6 });
+    }
+  }
+  function hitItem(it){
+    const dx = ball.x - it.p[0], dz = ball.z - it.p[2], d = Math.hypot(dx, dz);
+    if(it.t === 'star'){ if(d < 1 && it.lit <= 0){ it.lit = 3; award(5, [it.p[0], it.p[2]]); snd('coin'); } return; }
+    if(it.t === 'target' && it.down) return;
+    const rad = it.r + BR;
+    if(d >= rad || d < 1e-6) return;
+    const nx = dx / d, nz = dz / d;
+    ball.x = it.p[0] + nx * rad; ball.z = it.p[2] + nz * rad;
+    const vn = ball.vx * nx + ball.vz * nz;
+    if(vn < 0){ ball.vx -= 1.8 * vn * nx; ball.vz -= 1.8 * vn * nz; }
+    if(it.t === 'bump'){
+      ball.vx += nx * 13; ball.vz += nz * 13;
+      it.flash = 0.15;
+      bumps++;
+      award(10, [it.p[0], it.p[2]]);
+      snd('bounceWall', { semi: 4 });
+      fx.sparks([it.p[0], 1.2, it.p[2]], 6, '#ff2bd6', 0.8, 10);
+    }else{
+      it.down = true; it.flash = 0.3;
+      it.bank.hits++;
+      award(25, [it.p[0], it.p[2]], 'TARGET', '#ffd700');
+      snd('hit');
+      if(it.bank.hits === 3){
+        banks++;
+        award(100, [it.p[0], it.p[2]], 'BANK!', '#39ff88');
+        if(mult < 4){ mult++; say('✦ MULTIPLIER ×' + mult, 2); }
+        snd('levelUp');
+      }
+    }
+  }
+  function drain(){
+    balls--;
+    mult = 1;
+    snd('gameOver');
+    w.kick(0.8);
+    bar.style.width = (Math.max(0, balls) / 3 * 100) + '%';
+    if(balls <= 0){
+      if(survivedFatal()){ balls = 1; bar.style.width = '33%'; say('SHIELD ABSORBED', 1.6); }
+      else{ over = true; gLater(() => finish('drain'), 900); return; }
+    }else say('DRAINED — ' + balls + ' left', 1.8);
+    ball.held = true; ball.charge = 0; ball.heldT = 3;
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('pinball', score, {
+      '📡 Game': why === 'clock' ? 'CLOCK EXPIRED' : 'LAST BALL DRAINED',
+      '💥 Bumper Hits': bumps,
+      '🎯 Banks Dropped': banks,
+      '📏 Table Descended': Math.round(descended) + ' m',
+      '🎱 Balls Left': Math.max(0, balls),
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, balls, mult, bumps, banks, held: ball.held, x: +ball.x.toFixed(1), z: +(ball.z - car.z).toFixed(1) }),
+    launch(){ if(ball.held){ ball.held = false; ball.vx = rr(-4, 4); ball.vz = -40; saveT = 4; } },
+    bumpers(n){ let k = 0; table.each(it => { if(k < (n || 3) && it.t === 'bump'){ ball.x = it.p[0] + it.r + BR - 0.1; ball.z = it.p[2]; ball.vx = -5; ball.vz = 0; hitItem(it); k++; } }); return k; },
+    bank(){ let done = false; table.each(it => { if(!done && it.t === 'target' && !it.down && it.bank.hits === 0){ done = true; table.each(o => { if(o.t === 'target' && o.bank === it.bank){ ball.x = o.p[0] + 1.2; ball.z = o.p[2]; ball.vx = -4; ball.vz = 0; hitItem(o); } }); } }); return done; },
+    drain(){ if(!ball.held) drain(); },
+    lose(){ ball.held = false; saveT = 0; drain(); }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      const k = I.keys || {};
+      const pad = I.pad || {};
+      const both = !ball.held && !!k.Space;
+      kick[0] = Math.max(0, kick[0] - dt); kick[1] = Math.max(0, kick[1] - dt);
+      const L = both || k.KeyA || k.ArrowLeft || k.KeyZ || (I.mDown && I.device === 'mouse') || !!I.stick || kick[0] > 0 || (pad.lt || 0) > 0.3;
+      const Rt = both || k.KeyD || k.ArrowRight || k.KeyM || k.Slash || (I.mRight && I.device === 'mouse') || !!I.tFire || kick[1] > 0 || (pad.rt || 0) > 0.3;
+      // The carriage: down the table for ever, across to stay under the ball.
+      car.z += DESC * dt;
+      descended += DESC * dt;
+      // Only while the ball is well up the table: a carriage that kept sliding
+      // under a ball resting on a flipper would roll it into the drain.
+      const track = ball.held ? 0 : clamp((car.z - 8 - ball.z) / 10, 0, 1);
+      const want = clamp((ball.x - car.x) * 3, -FOLLOW, FOLLOW) * track;
+      car.vx += (want - car.vx) * ease(dt, 0.12);
+      car.x += car.vx * dt;
+      if(((descended / 2) | 0) !== (((descended - DESC * dt) / 2) | 0)){ score += 1; setLive(score); }
+      table.update([car.x, 0, car.z - 20]);
+      const tapsNow = tapped; tapped = 0;
+      if(ball.held){
+        ball.x = car.x; ball.z = car.z - 1.9; ball.vx = car.vx; ball.vz = DESC;
+        const pull = I.fire || I.jumpHit || !!k.Space;
+        if(tapsNow && !pull && ball.charge < 0.05) ball.charge = 0.55;
+        if(pull) ball.charge = Math.min(1, ball.charge + dt / 0.9);
+        ball.heldT -= dt;
+        if((!pull && ball.charge > 0.05) || ball.heldT <= 0){
+          ball.held = false;
+          ball.vz = -(26 + 30 * (ball.charge || 0.5));
+          ball.vx = rr(-5, 5);
+          ball.charge = 0;
+          saveT = 4;
+          snd('missile');
+        }
+      }
+      // The flippers, then the ball in sub-steps so nothing thin is skipped.
+      const steps = Math.max(2, Math.ceil(Math.hypot(ball.vx, ball.vz) * dt / 0.28));
+      const h = dt / steps;
+      for(let s = 0; s < steps; s++){
+        for(const [i, f] of flip.entries()){
+          const on = i === 0 ? L : Rt;
+          const target = on ? FL.up : FL.rest;
+          const wmax = on ? FL.wUp : FL.wDown;
+          const prev = f.a;
+          f.a += clamp(target - f.a, -wmax * h, wmax * h);
+          f.w = (f.a - prev) / h;
+        }
+        if(ball.held) break;
+        ball.vz += GRAV * Math.min(1.25, diff) * h;
+        const sp = Math.hypot(ball.vx, ball.vz);
+        if(sp > VMAX){ ball.vx *= VMAX / sp; ball.vz *= VMAX / sp; }
+        ball.x += ball.vx * h; ball.z += ball.vz * h;
+        hitFlipper(flip[0]); hitFlipper(flip[1]);
+        table.near([ball.x, 0, ball.z], it => { if(it.t === 'star' || it.p[2] < car.z - RISE) hitItem(it); });
+      }
+      for(const [i, f] of flip.entries()){
+        const on = i === 0 ? L : Rt;
+        if(on && !f.was) snd('click', { semi: -8 });
+        f.was = on;
+      }
+      saveT = Math.max(0, saveT - dt);
+      if(!ball.held && (ball.z > car.z + 3.2 || Math.abs(ball.x - car.x) > 34 && ball.z > car.z - 4)){
+        if(saveT > 0){ ball.held = true; ball.charge = 0; ball.heldT = 2; say('BALL SAVED', 1.4); snd('shield'); }
+        else drain();
+      }
+      table.each(it => { if(it.flash > 0) it.flash -= dt; if(it.lit > 0) it.lit -= dt; });
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    // Behind the flippers, looking up the table.
+    w.cam.eye = [car.x, 23, car.z + 19];
+    w.cam.target = [car.x * 0.7 + ball.x * 0.3, 0, car.z - 15];
+    w.goal.eye = w.cam.eye; w.goal.target = w.cam.target; w.goal.fov = 58;
+    w.up = [0, 1, 0];
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 4, radius: 120, color: '#4a1a6e', glow: 0.9, major: 6, floor: '#07030e', rough: 0.15, metal: 0.9 });
+    const zLine = car.z - RISE;
+    let nl = 0;
+    table.each(it => {
+      const dz = it.p[2] - car.z;
+      if(dz < -90 || dz > 30 || Math.abs(it.p[0] - car.x) > 70) return;
+      const up = it.p[2] < zLine;
+      if(it.t === 'bump'){
+        const h = up ? 1.8 : 0.15, col = '#ff2bd6';
+        r.draw('cylinder', { pos: [it.p[0], h / 2, it.p[2]], scale: [it.r * 2, h, it.r * 2], color: it.flash > 0 ? '#ffffff' : '#2a1030', metallic: 0.7, roughness: 0.3, emissive: col, emissiveStrength: up ? (it.flash > 0 ? 3 : 0.8) : 0.2 });
+        if(up){
+          r.draw('thintorus', { pos: [it.p[0], h + 0.1, it.p[2]], scale: [it.r * 2.3, 1, it.r * 2.3], color: col, emissive: col, emissiveStrength: 2 + (it.flash > 0 ? 3 : 0) });
+          r.glow([it.p[0], h, it.p[2]], it.r * 1.5, col, it.flash > 0 ? 1.6 : 0.5);
+          if(it.flash > 0 && nl++ < 3) r.light({ pos: [it.p[0], 3, it.p[2]], color: col, intensity: 140, range: 12 });
+        }
+      }else if(it.t === 'target'){
+        const col = '#ffd700';
+        if(!it.down) r.draw('slab', { pos: [it.p[0], up ? 0.8 : 0.1, it.p[2]], scale: [1.4, up ? 1.6 : 0.2, 0.5], color: '#3a3010', metallic: 0.6, roughness: 0.3, emissive: col, emissiveStrength: up ? 1.4 : 0.3 });
+        else r.glow([it.p[0], 0.2, it.p[2]], 0.8, col, 0.4);
+      }else{
+        const col = it.lit > 0 ? '#ffffff' : '#00f5ff';
+        r.glow([it.p[0], 0.15, it.p[2]], 0.7, col, it.lit > 0 ? 1.8 : 0.6);
+      }
+    });
+    // The flippers.
+    for(const f of flip){
+      const a = pivot(f), b = tipOf(f);
+      r.beam([a[0], 0.7, a[1]], [b[0], 0.7, b[1]], 0.9, { geo: 'pill', color: '#d8e0ec', metallic: 0.6, roughness: 0.3, emissive: colour, emissiveStrength: 0.5, height: 1.1 });
+      r.draw('cylinder', { pos: [a[0], 0.7, a[1]], scale: [1.2, 1.3, 1.2], color: '#3a3e48', metallic: 0.8, roughness: 0.3 });
+    }
+    groundRing(w, [car.x, 0, car.z + 0.6], 3.2, saveT > 0 ? '#39ff88' : '#ff4a6a', 0.6);
+    r.light({ pos: [car.x, 8, car.z + 4], color: '#e8d8ff', intensity: 160, range: 30 });
+    // The ball.
+    const bp = [ball.x, BR, ball.z];
+    r.draw('sphere', { pos: bp, scale: BR * 2, color: '#e8eef8', metallic: 0.9, roughness: 0.12, rim: 1.1, emissive: '#9fe6ff', emissiveStrength: 0.1 });
+    r.glow(bp, 1.2, '#bff6ff', 0.6);
+    r.light({ pos: [ball.x, 2.4, ball.z], color: '#bfefff', intensity: 40, range: 6 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    if(!hud.proj(bp).on) hud.edgeArrow(bp, '#ffffff', 'BALL');
+    if(ball.held){
+      hud.text(Wd / 2, Ht * 0.62, 'HOLD SPACE / FIRE — PULL THE PLUNGER', { size: 12, color: '#ffd8ff', alpha: 0.85 });
+      hud.bar(Wd / 2 - 60, Ht * 0.62 + 14, 120, 6, ball.charge, '#ff2bd6');
+    }
+    hud.text(Wd / 2, 26, mult > 1 ? 'MULTIPLIER ×' + mult : '', { size: 15, color: '#39ff88' });
+    hud.text(Wd - 16, Ht - 40, '💥 ' + bumps + '  🎯 ' + banks, { size: 13, align: 'right', color: '#ffd8ff' });
+    hud.text(Wd - 16, Ht - 20, '●'.repeat(Math.max(0, balls)) + '○'.repeat(Math.max(0, 3 - balls)), { size: 15, align: 'right', color: '#ffffff' });
+    if(msgT > 0) hud.text(Wd / 2, 52, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    if(I.device === 'touch'){
+      hud.text(Wd * 0.25, Ht * 0.85, '◀ FLIP', { size: 12, color: '#ffd8ff', alpha: 0.35 });
+      hud.text(Wd * 0.75, Ht * 0.85, 'FLIP ▶', { size: 12, color: '#ffd8ff', alpha: 0.35 });
+    }
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  📡 UPLINK · OPEN WORLD — THE ARTILLERY RUN
+// ══════════════════════════════════════════════
+// The classic lobs one shot over one firewall in a crosswind. Out here you
+// drive the launcher: relay dishes and moving convoys sit at every range
+// across an endless plain, towers stand between, and the wind keeps
+// changing its mind. Point and click (or tap) where the shell should land,
+// or hold FIRE to wind the range out like the classic's drag; the wind does
+// the rest, so lead it. The longer the shot, the more it pays.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround || !P.owDrive) return;
+const { V, TAU, wrapAng, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, makeCity, groundRing, screenToGround } = P.owGround;
+const { makeRover, driveStep, slideOut, roverCam, roverDraw } = P.owDrive;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const GRAV = 26, RMIN = 12, RMAX = 170, BLAST = 5.5, RELOAD = 0.75;
+
+P.ow.uplink = function(){
+  const G = groundBegin({ sky: 'ember', input: { touch: 'tap' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: DRIVE · TAP WHERE THE SHELL SHOULD LAND', 'W/S A/D: DRIVE · CLICK WHERE THE SHELL SHOULD LAND · or HOLD SPACE TO SET THE RANGE, RELEASE TO LOB · Q/E: TURN THE LAUNCHER');
+
+  const me = makeRover({ max: 22 });
+  let score = 0, hits = 0, shots = 0, longest = 0, over = false, finished = false, msg = '', msgT = 0;
+  let reload = 0, aimYaw = 0, aimOff = 0, charge = 0, charging = false, wind = [0, 0, 0], windT = 0, wasFire = false;
+  const shells = [], taps = [];
+  const targets = makeField({
+    cell: 110, dims: 2, seed: 7373, radius: 560,
+    gen(cx, cy, cz, g){
+      if(g() < 0.25 || (cx === 0 && cz === 0)) return [];
+      const p = [(cx + 0.2 + g() * 0.6) * 110, 0, (cz + 0.2 + g() * 0.6) * 110];
+      const convoy = g() < 0.3;
+      return [{ p, home: V.copy(p), k: convoy ? 'convoy' : 'dish', yaw: g() * TAU, ph: g() * TAU, sp: 4 + g() * 4 }];
+    }
+  });
+  const city = makeCity({ seed: 7474, density: 0.24, cell: 80, clear: 40, hMin: 12, hMax: 45, radius: 640, towerColor: '#140a06' });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#ff8a3a,#ffd27a)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  const cv = aCanvas;
+  const onTouch = e => {
+    if(!e.isTrusted) return;
+    const rc = cv.getBoundingClientRect();
+    for(const t of e.changedTouches){ const u = (t.clientX - rc.left) / Math.max(1, rc.width); if(u >= 0.5) taps.push([t.clientX - rc.left, t.clientY - rc.top]); }
+  };
+  if(cv) cv.addEventListener('touchstart', onTouch, { passive: true });
+  const prevStop = onStopGame;
+  onStopGame = () => { try{ if(cv) cv.removeEventListener('touchstart', onTouch); }catch(e){} if(prevStop) prevStop(); };
+
+  const muzzle = () => [me.p[0], 2.6, me.p[2]];
+  // At 45°, the speed that lands a shell `range` away on flat ground (no wind).
+  function lob(yaw, range){
+    if(reload > 0 || over) return;
+    range = clamp(range, RMIN, RMAX);
+    reload = RELOAD;
+    shots++;
+    const v0 = Math.sqrt(GRAV * range);
+    const d = [-Math.sin(yaw), 0, -Math.cos(yaw)];
+    shells.push({ p: muzzle(), v: [d[0] * v0 * Math.SQRT1_2, v0 * Math.SQRT1_2, d[2] * v0 * Math.SQRT1_2], from: V.copy(me.p) });
+    snd('missile');
+    fx.flash(muzzle(), '#ffd27a', 1.2, 0.1);
+    w.kick(0.3);
+  }
+  function landing(yaw, range){
+    const d = [-Math.sin(yaw), 0, -Math.cos(yaw)];
+    return V.add(me.p, V.mul(d, clamp(range, RMIN, RMAX)));
+  }
+  function boom(p, from){
+    fx.explode([p[0], 0.8, p[2]], 2.4, { color: '#ff8a3a', debrisGeo: 'rock2', debrisColor: '#3a2a20', ringNormal: [0, 1, 0], grav: 20 });
+    snd('explode');
+    let n = 0;
+    targets.near(p, t => {
+      if(Math.hypot(t.p[0] - p[0], t.p[2] - p[2]) > BLAST + (t.k === 'convoy' ? 1.6 : 2.2)) return;
+      targets.kill(t);
+      n++; hits++;
+      const range = Math.hypot(t.p[0] - from[0], t.p[2] - from[2]);
+      longest = Math.max(longest, range);
+      const pts = 25 + Math.round(range * 0.5) + (t.k === 'convoy' ? 30 : 0);
+      score += pts; setLive(score);
+      fx.explode([t.p[0], 2, t.p[2]], 3.2, { color: '#ffb36a', debrisGeo: 'slab', debrisColor: '#4a4f58' });
+      snd('bigExplode');
+      w.pop([t.p[0], 7, t.p[2]], '+' + pts + ' · ' + Math.round(range) + ' m', '#ffd27a', { size: 15 });
+    });
+    if(n > 1){ score += 40 * (n - 1); setLive(score); say('×' + n + ' IN ONE SHELL', 1.6); }
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('uplink', score, {
+      '📡 Barrage': why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
+      '🎯 Targets Hit': hits,
+      '💣 Shells Lobbed': shots,
+      '📏 Longest Hit': Math.round(longest) + ' m',
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, hits, shots, shells: shells.length, wind: wind.map(v => +v.toFixed(1)) }),
+    hitNearest(){ let best = null, bd = 1e12; targets.each(t => { const d = V.d2(t.p, me.p); if(d < bd){ bd = d; best = t; } }); if(best){ boom(V.copy(best.p), me.p); return true; } return false; },
+    lobAt(range){ reload = 0; lob(aimYaw, range || 60); }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      driveStep(me, I, dt, hud, { mouseDrive: false });
+      city.update(me.p);
+      targets.update(me.p);
+      if(slideOut(me, city, 1.3)) me.hit = 0.15;
+      reload = Math.max(0, reload - dt);
+      windT -= dt;
+      if(windT <= 0){
+        windT = 18;
+        const a = Math.random() * TAU, s = rr(1, 6) * Math.min(1.4, diff);
+        wind = [Math.cos(a) * s, 0, Math.sin(a) * s];
+        say('🌬 THE WIND SHIFTS', 1.6);
+      }
+      // Aim: the mouse on the ground, else the launcher's own yaw (Q/E) off the nose.
+      let aimRange = null;
+      if(I.device === 'mouse' && I.mouseOn && hud.cam){
+        const g = screenToGround(hud, (I.mx + 1) / 2 * hud.W, (I.my + 1) / 2 * hud.H, 0);
+        if(g){ aimYaw = Math.atan2(-(g[0] - me.p[0]), -(g[2] - me.p[2])); aimRange = Math.hypot(g[0] - me.p[0], g[2] - me.p[2]); }
+        if(I.fire && !wasFire && aimRange != null) lob(aimYaw, aimRange);
+      }else{
+        const k = I.keys || {};
+        const turn = (k.KeyE ? 1 : 0) - (k.KeyQ ? 1 : 0) + (I.pad ? I.pad.rx : 0);
+        aimOff = wrapAng(aimOff - turn * 1.6 * dt);
+        aimYaw = wrapAng(me.yaw + aimOff);
+        if(I.fire && I.device !== 'touch'){ charging = true; charge = Math.min(1, charge + dt / 1.4); }
+        else if(charging){ charging = false; lob(aimYaw, RMIN + charge * (RMAX - RMIN)); charge = 0; }
+      }
+      wasFire = I.fire;
+      while(taps.length && hud.cam){
+        const t = taps.shift();
+        const g = screenToGround(hud, t[0], t[1], 0);
+        if(g){ aimYaw = Math.atan2(-(g[0] - me.p[0]), -(g[2] - me.p[2])); reload = Math.min(reload, 0.2); lob(aimYaw, Math.hypot(g[0] - me.p[0], g[2] - me.p[2])); }
+      }
+      me.aimRange = aimRange != null ? aimRange : (charging ? RMIN + charge * (RMAX - RMIN) : null);
+      // Convoys drive their beat.
+      targets.each(t => { if(t.k === 'convoy'){ t.ph += dt * t.sp / 30; t.p = [t.home[0] + Math.cos(t.ph) * 30, 0, t.home[2] + Math.sin(t.ph * 2) * 12]; t.yaw = Math.atan2(-(-Math.sin(t.ph) * 30), -(Math.cos(t.ph * 2) * 24)); } });
+    }
+    if(dt > 0){
+      for(let i = shells.length - 1; i >= 0; i--){
+        const s = shells[i];
+        s.v = V.add(s.v, [wind[0] * dt, -GRAV * dt, wind[2] * dt]);
+        s.p = V.madd(s.p, s.v, dt);
+        const tb = city.hit(s.p, 0.3);
+        if((tb && s.p[1] < tb.h) || s.p[1] <= 0){ shells.splice(i, 1); boom([s.p[0], 0, s.p[2]], s.from); }
+      }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    roverCam(w, me, dt, { back: 15, up: 10, ahead: 20, fov: 60 });
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 180, color: '#5a2a0a', glow: 0.8, major: 6, floor: '#0a0503', rough: 0.3 });
+    city.draw(w);
+    const eye = w.cam.eye;
+    let nl = 0;
+    targets.each(t => {
+      if(V.d2(t.p, eye) > 500 * 500 || !r.viewDepth([t.p[0], 3, t.p[2]], 1.4)) return;
+      if(t.k === 'dish'){
+        r.draw('cylinder', { pos: [t.p[0], 2, t.p[2]], scale: [1.2, 4, 1.2], color: '#2a2a34', metallic: 0.8, roughness: 0.3 });
+        r.draw('turret', { pos: [t.p[0], 4.4, t.p[2]], rot: [0, t.yaw + w.t * 0.3, 0], scale: 2, color: '#b8b0a8', metallic: 0.6, roughness: 0.3, emissive: '#ff4a4a', emissiveStrength: 0.4 });
+        r.glow([t.p[0], 6.6, t.p[2]], 1.2, '#ff4a4a', 0.6 + 0.4 * Math.sin(w.t * 4 + t.ph));
+      }else{
+        r.draw('tank', { pos: [t.p[0], 1.2, t.p[2]], rot: [0, t.yaw, 0], scale: 2.4, color: '#4a4038', metallic: 0.6, roughness: 0.4, emissive: '#ff8a3a', emissiveStrength: 0.25 });
+      }
+      groundRing(w, t.p, 2.4, '#ff4a4a', 0.45);
+      if(nl++ < 2) r.light({ pos: [t.p[0], 6, t.p[2]], color: '#ff6a4a', intensity: 60, range: 16 });
+    });
+    for(const s of shells){ r.glow(s.p, 0.9, '#ffe0a0', 2); r.streak(V.madd(s.p, V.norm(s.v), -3), s.p, 0.32, '#ffb36a', 2, 0.9); }
+    // The launcher, its barrel on the aim, and the arc it would fly with no wind.
+    roverDraw(w, me, colour);
+    const ad = [-Math.sin(aimYaw), 0, -Math.cos(aimYaw)];
+    r.beam(muzzle(), V.add(muzzle(), [ad[0] * 2.4, 2.4, ad[2] * 2.4]), 0.45, { color: '#c9d1dd', metallic: 0.7, roughness: 0.3 });
+    if(me.aimRange != null){
+      const land = landing(aimYaw, me.aimRange), range = clamp(me.aimRange, RMIN, RMAX);
+      const v0 = Math.sqrt(GRAV * range) * Math.SQRT1_2;
+      for(let i = 1; i < 16; i++){
+        const t = i / 16 * (2 * v0 / GRAV);
+        const q = [me.p[0] + ad[0] * v0 * t, 2.6 + v0 * t - GRAV * t * t / 2, me.p[2] + ad[2] * v0 * t];
+        r.glow(q, 0.35, '#ffd27a', 0.8);
+      }
+      groundRing(w, land, BLAST, reload > 0 ? '#8a6a4a' : '#ffd27a', 1.0);
+    }
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H, ctx = hud.ctx;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = [];
+    targets.each(t => { if(V.d2(t.p, me.p) < 260 * 260) rad.push({ p: t.p, c: t.k === 'convoy' ? '#ffb36a' : '#ff4a4a', s: 2.6 }); });
+    hud.radar(70, Ht - 74, 54, me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], RMAX, rad);
+    // The wind sock: drawn relative to where the camera looks.
+    const ws = Math.hypot(wind[0], wind[2]);
+    const camYaw = hud.cam ? Math.atan2(-hud.cam.f[0], -hud.cam.f[2]) : me.yaw;
+    const wa = Math.atan2(-wind[0], -wind[2]) - camYaw;
+    const cx = Wd - 60, cy = 60;
+    ctx.save();
+    ctx.translate(cx, cy); ctx.rotate(-wa - Math.PI / 2);
+    ctx.strokeStyle = '#bff6ff'; ctx.fillStyle = '#bff6ff'; ctx.shadowColor = '#bff6ff'; ctx.shadowBlur = 6; ctx.lineWidth = 2.4;
+    const L = 8 + ws * 4;
+    ctx.beginPath(); ctx.moveTo(-L, 0); ctx.lineTo(L, 0); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(L + 6, 0); ctx.lineTo(L - 3, -6); ctx.lineTo(L - 3, 6); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    hud.text(cx, cy + 34, '🌬 ' + ws.toFixed(1), { size: 11, color: '#bff6ff' });
+    if(me.aimRange != null) hud.text(Wd / 2, 26, Math.round(clamp(me.aimRange, RMIN, RMAX)) + ' m' + (reload > 0 ? ' · RELOADING' : ''), { size: 14, color: reload > 0 ? '#c8a888' : '#ffd27a' });
+    hud.text(Wd - 16, Ht - 40, '🎯 ' + hits, { size: 13, align: 'right', color: '#ffd27a' });
+    hud.text(Wd - 16, Ht - 20, 'LONGEST ' + Math.round(longest) + ' m', { size: 12, align: 'right', color: '#ffe8c8' });
+    hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, me.boostE / 100, '#ff8a3a', 'BOOST');
+    if(msgT > 0) hud.text(Wd / 2, 52, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🧱 MATRIX DROP · OPEN WORLD — THE ENDLESS FLOOR
+// ══════════════════════════════════════════════
+// The classic well is ten wide. This one has no walls at all: the blocks fall
+// on an endless floor, you steer each one anywhere over it, and they stack up
+// in three dimensions. Any ten in a row — along either axis, at any height —
+// clear, and what stood on them drops. Several at once pay far more than one,
+// as ever. Build too high (ten levels) and the stack topples.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, ease, drawFloor, owClock } = P.owKit;
+const { groundBegin, followCam } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+const S = 2, TOP = 10, RUN = 10;
+const PIECES = [
+  { n: 'I', c: '#00f5ff', b: [[-1, 0], [0, 0], [1, 0], [2, 0]] },
+  { n: 'O', c: '#ffd700', b: [[0, 0], [1, 0], [0, 1], [1, 1]] },
+  { n: 'T', c: '#a855f7', b: [[-1, 0], [0, 0], [1, 0], [0, 1]] },
+  { n: 'S', c: '#39ff88', b: [[0, 0], [1, 0], [-1, 1], [0, 1]] },
+  { n: 'Z', c: '#ff2d6a', b: [[-1, 0], [0, 0], [0, 1], [1, 1]] },
+  { n: 'J', c: '#4d8bff', b: [[-1, 0], [0, 0], [1, 0], [1, 1]] },
+  { n: 'L', c: '#ff8a3a', b: [[-1, 0], [0, 0], [1, 0], [-1, 1]] }
+];
+
+P.ow.tetris = function(){
+  const G = groundBegin({ sky: 'night', env: { horizon: '#1a2a6a' }, input: { touch: 'drive' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: MOVE · ALT: ROTATE · JUMP: DROP · BOOST: FALL FASTER', 'WASD / ARROWS: MOVE OVER THE FLOOR · Q/E: ROTATE · SPACE: DROP · SHIFT: FALL FASTER');
+  inp.altLabel = 'ROT';
+
+  const grid = new Map();                          // "x,y,z" → colour
+  const tops = new Map();                          // "x,z" → height of the column
+  const K = (x, y, z) => x + ',' + y + ',' + z, C = (x, z) => x + ',' + z;
+  let score = 0, lines = 0, pieces = 0, best = 0, lives = 3, over = false, finished = false, msg = '', msgT = 0;
+  let cur = null, next = (Math.random() * 7) | 0, fallT = 0, moveT = 0, lastDir = null, camP = [0, 0, 0];
+  const flashes = [];
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#00f5ff,#a855f7,#ffd700)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  const height = (x, z) => tops.get(C(x, z)) || 0;
+  const cells = pc => pc.b.map(([a, b]) => { let u = a, v = b; for(let i = 0; i < pc.rot; i++){ const t = u; u = -v; v = t; } return [pc.x + u, pc.z + v]; });
+  const fits = (pc, y) => y >= 0 && cells(pc).every(([x, z]) => !grid.has(K(x, y, z)));
+  const restY = pc => { let y = pc.y; while(fits(pc, y - 1)) y--; return y; };
+  function spawn(){
+    const t = next;
+    next = (Math.random() * 7) | 0;
+    const x = cur ? cur.x : 0, z = cur ? cur.z : 0;
+    const pc = { t, b: PIECES[t].b, c: PIECES[t].c, x, z, rot: 0, y: 0 };
+    let h = 0;
+    for(const [cx, cz] of cells(pc)) h = Math.max(h, height(cx, cz));
+    pc.y = h + 7;
+    cur = pc;
+    fallT = 0;
+  }
+  // Every run through a cell at level y, along x and along z: ten or more clear.
+  function runAt(x, y, z, dx, dz){
+    let a = 0, b = 0;
+    while(grid.has(K(x - (a + 1) * dx, y, z - (a + 1) * dz))) a++;
+    while(grid.has(K(x + (b + 1) * dx, y, z + (b + 1) * dz))) b++;
+    return { n: a + b + 1, from: [x - a * dx, z - a * dz] };
+  }
+  function land(){
+    const y = cur.y;
+    const placed = cells(cur);
+    let topped = false;
+    for(const [x, z] of placed){
+      grid.set(K(x, y, z), cur.c);
+      tops.set(C(x, z), Math.max(height(x, z), y + 1));
+      if(y + 1 > TOP) topped = true;
+    }
+    pieces++;
+    score += 5; setLive(score);
+    snd('land');
+    // Lines.
+    const kill = new Set();
+    let runs = 0;
+    for(const [x, z] of placed){
+      for(const [dx, dz] of [[1, 0], [0, 1]]){
+        const rn = runAt(x, y, z, dx, dz);
+        if(rn.n >= RUN){
+          const key = rn.from.join(',') + ':' + dx + ',' + dz + ':' + y;
+          if(!kill.has('R' + key)){ kill.add('R' + key); runs++; }
+          for(let i = 0; i < rn.n; i++) kill.add(K(rn.from[0] + i * dx, y, rn.from[1] + i * dz));
+        }
+      }
+    }
+    const gone = [...kill].filter(k => k[0] !== 'R');
+    if(runs){
+      lines += runs;
+      best = Math.max(best, runs);
+      const pts = Math.round(100 * runs * (1 + (runs - 1) * 0.5));
+      score += pts; setLive(score);
+      snd(runs > 1 ? 'combo' : 'lineClear');
+      for(const k of gone){
+        const [x, yy, z] = k.split(',').map(Number);
+        grid.delete(k);
+        flashes.push({ p: [x * S, yy * S + S / 2, z * S], t: 0 });
+      }
+      // What stood on a cleared cell drops into it.
+      for(const k of gone){
+        const [x, yy, z] = k.split(',').map(Number);
+        let h = height(x, z);
+        for(let yv = yy + 1; yv < h; yv++){
+          const c = grid.get(K(x, yv, z));
+          grid.delete(K(x, yv, z));
+          if(c) grid.set(K(x, yv - 1, z), c);
+        }
+        let t = 0; for(let yv = 0; yv < h + 1; yv++) if(grid.has(K(x, yv, z))) t = yv + 1;
+        tops.set(C(x, z), t);
+      }
+      const at = [cur.x * S, y * S + 4, cur.z * S];
+      w.pop(at, (runs > 1 ? runs + ' LINES · ' : 'LINE · ') + '+' + pts, '#ffd27a', { size: 17 });
+      fx.explode(at, 1.6 + runs * 0.6, { color: '#ffd27a', debris: 0, smoke: 0 });
+    }
+    if(topped){
+      // The column that went over the top topples: its blocks shatter.
+      lives--;
+      snd('shatter'); w.kick(1);
+      for(const [x, z] of placed){
+        const h = height(x, z);
+        for(let yv = 0; yv < h; yv++){ if(grid.delete(K(x, yv, z))) fx.sparks([x * S, yv * S + 1, z * S], 3, '#ff8a8a', 0.8, 8); }
+        tops.set(C(x, z), 0);
+      }
+      bar.style.width = (Math.max(0, lives) / 3 * 100) + '%';
+      say('⚠ TOPPLED — ' + Math.max(0, lives) + ' left', 2);
+      if(lives <= 0){
+        if(survivedFatal()){ lives = 1; bar.style.width = '33%'; say('SHIELD ABSORBED', 1.6); }
+        else{ over = true; gLater(() => finish('topple'), 900); return; }
+      }
+    }
+    spawn();
+  }
+  function tryMove(dx, dz){
+    const t = Object.assign({}, cur, { x: cur.x + dx, z: cur.z + dz });
+    if(fits(t, cur.y)){ cur.x += dx; cur.z += dz; snd('move'); }
+  }
+  function tryRotate(d){
+    const t = Object.assign({}, cur, { rot: (cur.rot + d + 4) % 4 });
+    for(const [kx, kz] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]){
+      t.x = cur.x + kx; t.z = cur.z + kz;
+      if(fits(t, cur.y)){ cur.rot = t.rot; cur.x = t.x; cur.z = t.z; snd('rotate'); return; }
+    }
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('tetris', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'TOPPLED',
+      '🧱 Lines Cleared': lines,
+      '✦ Best Drop': best + (best === 1 ? ' line' : ' lines'),
+      '🔷 Pieces Placed': pieces,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, lines, pieces, lives, blocks: grid.size, piece: cur && PIECES[cur.t].n, y: cur && cur.y }),
+    // Lay nine in a row and drop an I piece into the tenth.
+    line(){
+      const x0 = cur.x + 6, z0 = cur.z + 6;
+      for(let i = 0; i < 9; i++){ grid.set(K(x0 + i, 0, z0), '#888888'); tops.set(C(x0 + i, z0), 1); }
+      cur = { t: 0, b: PIECES[0].b, c: PIECES[0].c, x: x0 + 10, z: z0, rot: 0, y: 0 };
+      land();
+      return lines;
+    },
+    drop(){ cur.y = restY(cur); land(); },
+    lose(){ for(const [x, z] of cells(cur)){ for(let y = 0; y < TOP; y++) grid.set(K(x, y, z), '#666666'); tops.set(C(x, z), TOP); } cur.y = TOP; land(); }
+  };
+  spawn();
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over && cur){
+      // Moves: an edge steps once, a held direction repeats.
+      const k = I.keys || {}, pr = I.pressed || {};
+      let dx = 0, dz = 0;
+      if(I.lx < -0.5) dx = -1; else if(I.lx > 0.5) dx = 1;
+      if(I.ly < -0.5) dz = -1; else if(I.ly > 0.5) dz = 1;
+      const dir = dx || dz ? dx + ',' + dz : null;
+      if(dir !== lastDir){ moveT = 0; if(dir) tryMove(dx, dz); }
+      else if(dir){ moveT += dt; if(moveT > 0.22){ moveT -= 0.075; tryMove(dx, dz); } }
+      lastDir = dir;
+      if(pr.KeyE || pr.KeyR || I.altHit) tryRotate(1);
+      if(pr.KeyQ) tryRotate(-1);
+      if(pr.Space || I.jumpHit){ cur.y = restY(cur); land(); }
+      else{
+        const rate = Math.max(0.16, 0.75 - pieces * 0.006) / Math.min(1.5, diff);
+        fallT += dt * (I.boost ? 6 : 1);
+        if(fallT >= rate){
+          fallT = 0;
+          if(fits(cur, cur.y - 1)) cur.y--;
+          else land();
+        }
+      }
+    }
+    for(let i = flashes.length - 1; i >= 0; i--){ flashes[i].t += dt; if(flashes[i].t > 0.5) flashes.splice(i, 1); }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    if(cur && dt > 0) camP = V.lerp(camP, [cur.x * S, 0, cur.z * S], ease(dt, 0.15));
+    followCam(w, camP, { height: 34, back: 24, look: 2, fov: 56, half: 0.1 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: S, radius: 90, color: '#13306a', glow: 0.7, major: RUN, floor: '#03040c', rough: 0.2 });
+    const eye = w.cam.eye;
+    for(const [k, c] of grid){
+      const [x, y, z] = k.split(',').map(Number);
+      const p = [x * S, y * S + S / 2, z * S];
+      if(V.d2(p, eye) > 110 * 110) continue;
+      r.draw('cube', { pos: p, scale: S * 0.96, color: c, metallic: 0.3, roughness: 0.35, rim: 0.7, emissive: c, emissiveStrength: 0.35 });
+    }
+    // Rows that are close: a guide line under every run of six or more.
+    if(cur){
+      const ghost = restY(cur);
+      for(const [x, z] of cells(cur)){
+        r.draw('cube', { pos: [x * S, cur.y * S + S / 2, z * S], scale: S * 0.96, color: cur.c, metallic: 0.3, roughness: 0.3, emissive: cur.c, emissiveStrength: 1.2 });
+        r.draw('cube', { pos: [x * S, ghost * S + S / 2, z * S], scale: S * 0.9, color: cur.c, emissive: cur.c, emissiveStrength: 0.6, alpha: 0.25, blend: true });
+        r.streak([x * S, ghost * S + S, z * S], [x * S, cur.y * S, z * S], 0.08, cur.c, 0.6, 0);
+      }
+      for(const [x, z] of cells(cur)){
+        for(const [dx, dz] of [[1, 0], [0, 1]]){
+          const rn = runAt(x, ghost, z, dx, dz);
+          if(rn.n >= 6){
+            const a = [rn.from[0] * S - dx * S / 2, ghost * S + 0.1, rn.from[1] * S - dz * S / 2];
+            r.beam(a, [a[0] + dx * RUN * S, a[1], a[2] + dz * RUN * S], 0.25, { color: '#ffd27a', emissive: '#ffd27a', emissiveStrength: 1.4 * Math.min(1, rn.n / RUN) });
+          }
+        }
+      }
+      r.light({ pos: [cur.x * S, cur.y * S + 6, cur.z * S], color: cur.c, intensity: 120, range: 30 });
+    }
+    // The ceiling: ten levels up, a faint lid.
+    if(cur) r.draw('thintorus', { pos: [cur.x * S, TOP * S, cur.z * S], scale: [10, 1, 10], color: '#ff4a6a', emissive: '#ff4a6a', emissiveStrength: 0.8 });
+    for(const f of flashes) r.glow(f.p, 2.4, '#ffffff', 2 * (1 - f.t / 0.5));
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.text(Wd / 2, 26, 'TEN IN A ROW CLEARS · ' + lines + ' cleared', { size: 13, color: '#bff6ff' });
+    if(cur) hud.text(Wd - 16, Ht - 62, 'NEXT ' + PIECES[next].n, { size: 14, align: 'right', color: PIECES[next].c });
+    hud.text(Wd - 16, Ht - 40, 'HEIGHT ' + (cur ? Math.max(...cells(cur).map(([x, z]) => height(x, z))) : 0) + ' / ' + TOP, { size: 12, align: 'right', color: '#ffb8c8' });
+    hud.text(Wd - 16, Ht - 20, '▮'.repeat(Math.max(0, lives)) + '▯'.repeat(Math.max(0, 3 - lives)), { size: 14, align: 'right', color: '#bff6ff' });
+    if(msgT > 0) hud.text(Wd / 2, 52, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🔷 CORE MERGE · OPEN WORLD — YOU ARE A CORE
+// ══════════════════════════════════════════════
+// The classic pushes cores together on a lattice: two of a height fuse into
+// one taller. Out here the lattice is gone and the core is YOU, rolling over
+// an endless plain among thousands of others. Touch one your own size and you
+// fuse — twice the core, twice the size. The smaller ones bounce off you. The
+// bigger ones hunt you, and a touch from one halves you.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, ease, drawFloor, owClock } = P.owKit;
+const { groundBegin, followCam, screenToGround, groundRing } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const PAL = ['#00f5ff', '#39ff88', '#ffd700', '#ff8a3a', '#ff2d6a', '#ff2bd6', '#a855f7', '#4d8bff'];
+const lg = v => Math.round(Math.log2(v));
+const rad = v => 1.1 + 0.5 * lg(v);
+const colOf = v => PAL[lg(v) % PAL.length];
+
+P.ow.merge = function(){
+  const G = groundBegin({ sky: 'night', env: { horizon: '#2a1060' }, input: { touch: 'fly' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: ROLL · FUSE WITH YOUR SIZE · NEVER TOUCH BIGGER', 'WASD / ARROWS or HOLD THE MOUSE: ROLL · TOUCH A CORE YOUR OWN SIZE TO FUSE · NEVER TOUCH A BIGGER ONE · SHIFT: DASH');
+
+  const me = { p: [0, 0, 0], v: [0, 0, 0], val: 2, inv: 0, dash: 0, dashCd: 0, roll: [0, 0, 0] };
+  let score = 0, merges = 0, lives = 3, peak = 2, bumps = 0, over = false, finished = false, msg = '', msgT = 0;
+  const cores = [];
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#00f5ff,#a855f7)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  function spawn(force){
+    const a = Math.random() * TAU, d = rr(45, 150);
+    const p = [me.p[0] + Math.cos(a) * d, 0, me.p[2] + Math.sin(a) * d];
+    const u = Math.random();
+    let val = me.val;
+    if(force === 'equal'){ val = me.val; }
+    else if(u < 0.4) val = me.val;
+    else if(u < 0.66) val = Math.max(2, me.val / 2);
+    else if(u < 0.76) val = Math.max(2, me.val / 4);
+    else if(u < 0.92) val = me.val * 2;
+    else val = me.val * 4;
+    cores.push({ p, v: [0, 0, 0], val, ph: Math.random() * TAU, turn: 0, head: Math.random() * TAU });
+  }
+  for(let i = 0; i < 26; i++) spawn(i < 8 ? 'equal' : null);
+
+  function fuse(c, i){
+    cores.splice(i, 1);
+    me.val *= 2;
+    merges++;
+    peak = Math.max(peak, me.val);
+    const pts = 30 + 10 * lg(me.val);
+    score += pts; setLive(score);
+    snd('match', { semi: Math.min(12, lg(me.val)) });
+    fx.explode([me.p[0], rad(me.val), me.p[2]], rad(me.val) * 0.8, { color: colOf(me.val), debris: 0, smoke: 0, ringNormal: [0, 1, 0] });
+    w.pop([me.p[0], rad(me.val) * 2 + 2, me.p[2]], me.val.toLocaleString() + ' · +' + pts, colOf(me.val), { size: 16 });
+  }
+  function bitten(c){
+    if(me.inv > 0 || over) return;
+    lives--;
+    me.val = Math.max(2, me.val / 2);
+    me.inv = 1.6;
+    const away = V.norm([me.p[0] - c.p[0], 0, me.p[2] - c.p[2]]);
+    me.v = V.mul(away, 40);
+    snd('hurt'); w.kick(1);
+    fx.sparks([me.p[0], 1, me.p[2]], 14, '#ff4a4a', 1.2, 14);
+    bar.style.width = (Math.max(0, lives) / 3 * 100) + '%';
+    say('✖ BITTEN BY A ' + c.val.toLocaleString() + ' — halved to ' + me.val, 2);
+    if(lives <= 0){
+      if(survivedFatal()){ lives = 1; bar.style.width = '33%'; say('SHIELD ABSORBED', 1.6); }
+      else{ over = true; gLater(() => finish('bitten'), 1000); }
+    }
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('merge', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'DEVOURED',
+      '🔷 Fusions': merges,
+      '🏔 Biggest Core': peak.toLocaleString(),
+      '💥 Bounced Off': bumps,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, val: me.val, merges, lives, cores: cores.length, equals: cores.filter(c => c.val === me.val).length }),
+    mergeOne(){ spawn('equal'); const c = cores[cores.length - 1]; c.p = V.add(me.p, [rad(me.val) * 1.5, 0, 0]); return true; },
+    lose(){ me.inv = 0; spawn(); const c = cores[cores.length - 1]; c.val = me.val * 4; bitten(c); },
+    bite(){ spawn(); const c = cores[cores.length - 1]; c.val = me.val * 4; bitten(c); }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      me.inv = Math.max(0, me.inv - dt);
+      me.dashCd = Math.max(0, me.dashCd - dt);
+      let mx = I.lx, mz = I.ly;
+      if(I.device === 'mouse' && I.mDown && hud.cam){
+        const g = screenToGround(hud, (I.mx + 1) / 2 * hud.W, (I.my + 1) / 2 * hud.H, 0);
+        if(g){ const d = V.sub(g, me.p), l = Math.hypot(d[0], d[2]); if(l > 1){ mx = d[0] / l; mz = d[2] / l; } }
+      }
+      const ml = Math.hypot(mx, mz); if(ml > 1){ mx /= ml; mz /= ml; }
+      if(I.boost && me.dashCd <= 0 && ml > 0.1){ me.dash = 0.25; me.dashCd = 2; snd('dash'); }
+      me.dash = Math.max(0, me.dash - dt);
+      const sp = Math.max(10, 21 - lg(me.val) * 0.6) * (me.dash > 0 ? 2.4 : 1);
+      me.v = V.lerp(me.v, [mx * sp, 0, mz * sp], ease(dt, me.dash > 0 ? 0.03 : 0.12));
+      me.p = V.madd(me.p, me.v, dt);
+      me.roll[0] += me.v[2] / rad(me.val) * dt; me.roll[2] -= me.v[0] / rad(me.val) * dt;
+      const R = rad(me.val);
+      let equals = 0;
+      for(let i = cores.length - 1; i >= 0; i--){
+        const c = cores[i];
+        const d = V.sub(me.p, c.p), l = Math.hypot(d[0], d[2]) || 1e-3, cr = rad(c.val);
+        if(c.val === me.val) equals++;
+        // Bigger ones hunt, smaller ones shy off, equals drift.
+        c.head += rr(-1, 1) * dt * 1.5;
+        let want = [Math.cos(c.head), 0, Math.sin(c.head)], csp = 5;
+        if(c.val > me.val && l < 38){ want = [d[0] / l, 0, d[2] / l]; csp = Math.max(7, sp * 0.62) * Math.min(1.3, diff); }
+        else if(c.val < me.val && l < 16){ want = [-d[0] / l, 0, -d[2] / l]; csp = 9; }
+        c.v = V.lerp(c.v, V.mul(want, csp), ease(dt, 0.5));
+        c.p = V.madd(c.p, c.v, dt);
+        if(l < R + cr - 0.3){
+          if(c.val === me.val){ fuse(c, i); continue; }
+          if(c.val < me.val){
+            bumps++;
+            const n = [-d[0] / l, 0, -d[2] / l];
+            c.p = V.madd(me.p, n, R + cr);
+            c.v = V.mul(n, 22);
+            snd('bounce', { semi: 6 });
+          }else bitten(c);
+        }
+        if(l > 220) cores.splice(i, 1);
+      }
+      if(cores.length < 26) spawn(equals < 6 ? 'equal' : null);
+      // Small fry go stale as you grow: they are cleared off the board.
+      for(let i = cores.length - 1; i >= 0; i--) if(cores[i].val < me.val / 8) cores.splice(i, 1);
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    const R = rad(me.val);
+    followCam(w, me.p, { height: 26 + R * 5, back: 18 + R * 3, look: 2, fov: 56, half: 0.14 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 180, color: '#2a1a6e', glow: 0.85, major: 5, floor: '#04030c', rough: 0.2 });
+    const eye = w.cam.eye;
+    let nl = 0;
+    for(const c of cores){
+      if(V.d2(c.p, eye) > 200 * 200) continue;
+      const cr = rad(c.val), col = colOf(c.val);
+      const pos = [c.p[0], cr, c.p[2]];
+      if(!r.viewDepth(pos, 1.3)) continue;
+      r.draw('sphere', { pos, scale: cr * 2, color: col, metallic: 0.3, roughness: 0.25, rim: 1, emissive: col, emissiveStrength: 0.55 });
+      const tag = c.val === me.val ? '#39ff88' : c.val > me.val ? '#ff3a3a' : '#5a6a7a';
+      r.draw('thintorus', { pos: [c.p[0], 0.1, c.p[2]], scale: [cr * 2.6, 1, cr * 2.6], color: tag, emissive: tag, emissiveStrength: c.val === me.val ? 2.2 : c.val > me.val ? 1.8 : 0.6 });
+      if(c.val > me.val && nl++ < 3) r.light({ pos: [c.p[0], cr * 2 + 2, c.p[2]], color: '#ff4a4a', intensity: 60, range: 14 });
+    }
+    if(!(me.inv > 0 && Math.sin(w.t * 30) > 0)){
+      const col = colOf(me.val);
+      r.draw('sphere', { pos: [me.p[0], R, me.p[2]], rot: me.roll, scale: R * 2, color: '#e8f0ff', metallic: 0.5, roughness: 0.2, rim: 1.2, emissive: col, emissiveStrength: 0.9 });
+      r.draw('torus', { pos: [me.p[0], R, me.p[2]], rot: [Math.PI / 2, w.t, 0], scale: R * 2.8, color: '#cfd8e8', metallic: 0.8, roughness: 0.25, emissive: colour, emissiveStrength: 0.6 });
+      r.glow([me.p[0], R, me.p[2]], R * 2, col, 0.6);
+    }
+    r.light({ pos: [me.p[0], R * 2 + 6, me.p[2] + 3], color: '#e0e8ff', intensity: 150, range: 30 + R * 4 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    hud.radar(70, Ht - 74, 54, me.p, [0, 0, -1], 80, cores.filter(c => c.val >= me.val / 2).map(c => ({ p: c.p, c: c.val === me.val ? '#39ff88' : c.val > me.val ? '#ff3a3a' : '#7a8a9a', s: c.val > me.val ? 3 : 2.2 })));
+    for(const c of cores){
+      if(V.d2(c.p, me.p) > 70 * 70) continue;
+      const q = hud.proj([c.p[0], rad(c.val) * 2 + 0.6, c.p[2]]);
+      if(q.on) hud.text(q.x, q.y - 6, c.val >= 1024 ? Math.round(c.val / 1024) + 'K' : String(c.val), { size: 11, color: c.val === me.val ? '#9dffc4' : c.val > me.val ? '#ff9a9a' : '#9aaaba' });
+    }
+    hud.text(Wd / 2, 26, 'YOU ARE ' + me.val.toLocaleString() + ' — fuse with a ' + me.val.toLocaleString(), { size: 14, color: colOf(me.val) });
+    hud.text(Wd - 16, Ht - 20, '◆'.repeat(Math.max(0, lives)) + '◇'.repeat(Math.max(0, 3 - lives)), { size: 14, align: 'right', color: '#bff6ff' });
+    hud.text(Wd - 16, Ht - 40, '🔷 ' + merges, { size: 13, align: 'right', color: '#bff6ff' });
+    if(msgT > 0) hud.text(Wd / 2, 52, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  💽 DEFRAG · OPEN WORLD — THE DATA VOLUME
+// ══════════════════════════════════════════════
+// The classic clears a board of sectors by reading the numbers. Out here the
+// drive is a volume you fly through, its files shattered into fragments that
+// drift in every direction. Rebuild one file at a time — fly through the
+// fragments of ITS colour. Some fragments are corrupt and look like any
+// other: the counter says how many are close (the classic's number), a SCAN
+// shows them for a moment, and touching one costs a drive.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owFly) return;
+const { V, TAU, makeField, makeDust, drawBodies, owBegin, owClock } = P.owKit;
+const { makeFlyer, flyStep, flyCam, drawFlyer } = P.owFly;
+const { mine, clamp, runLoop } = P.kit;
+const COLS = ['#00f5ff', '#ffd700', '#39ff88', '#ff2bd6', '#ff8a3a', '#a855f7'];
+const NAMES = ['CYAN', 'GOLD', 'GREEN', 'PINK', 'ORANGE', 'VIOLET'];
+const GRAB = 3.8, NEAR = 26, LAT = 40;
+
+P.ow.defrag = function(){
+  const G = owBegin({
+    space: { seed: 404, a: '#0e6a6a', b: '#0a1f4a', c: '#39ff88', dir: [0.2, 0.5, -0.84], amount: 0.7, dust: 0.6, galaxy: 0.5 },
+    input: { mouseSteer: true, mouseGain: 1.2 }, far: 9000, near: 0.3
+  });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  setControlHint('STICK: FLY · ALT: SCAN · BOOST', 'MOUSE / WASD: FLY THROUGH THE FILE\'S FRAGMENTS · F / RIGHT-CLICK: SCAN FOR CORRUPTION · SHIFT: BOOST');
+  inp.altLabel = 'SCAN';
+
+  const me = makeFlyer({ p: [0, 0, 0], speed: 30 });
+  let score = 0, files = 0, frags = 0, drives = 3, corrupt = 0, over = false, finished = false, msg = '', msgT = 0;
+  let fc = 0, need = 5, got = 0, scanT = 0, scanCd = 0, nearBad = 0;
+  const vol = makeField({
+    cell: 70, dims: 3, seed: 9090, radius: 330,
+    gen(cx, cy, cz, g){
+      const items = [];
+      const n = 3 + Math.floor(g() * 4);
+      for(let i = 0; i < n; i++){
+        const p = [(cx + g()) * 70, (cy + g()) * 70, (cz + g()) * 70];
+        if(V.len(p) < 18) continue;
+        items.push({ p, c: (g() * 6) | 0, bad: g() < 0.13, rot: [g() * 6, g() * 6, 0], ph: g() * TAU });
+      }
+      return items;
+    }
+  });
+  const BODIES = [{ kind: 'gas', off: [-2400, -500, -4800], size: 1800, color: '#1a6a7a', ring: 2, ringRot: [0.6, 0, 0.2], rot: [0.6, 0, 0.2], halo: '#5affd8', par: 0.004 }];
+  const dust = makeDust(50, 70);
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#39ff88,#00f5ff)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  function nextFile(){
+    let n = fc;
+    while(n === fc) n = (Math.random() * 6) | 0;
+    fc = n; got = 0;
+    need = Math.min(10, 5 + files);
+    snd('wave');
+    say('💽 FILE ' + (files + 1) + ' — ' + NAMES[fc] + ' · ' + need + ' fragments', 2.4);
+  }
+  function grab(it){
+    vol.kill(it);
+    if(it.bad){
+      corrupt++;
+      drives--;
+      got = Math.max(0, got - 2);
+      snd('glitch'); w.kick(1.2);
+      fx.explode(it.p, 2.4, { color: '#ff3a3a', debris: 4, debrisGeo: 'slab', debrisColor: '#3a1a1a' });
+      me.hit = 0.4; me.inv = 1;
+      bar.style.width = (Math.max(0, drives) / 3 * 100) + '%';
+      say('☠ CORRUPT SECTOR — ' + Math.max(0, drives) + ' drives left', 2);
+      if(drives <= 0){
+        if(survivedFatal()){ drives = 1; bar.style.width = '33%'; say('SHIELD ABSORBED', 1.6); }
+        else{ over = true; gLater(() => finish('corrupt'), 1000); }
+      }
+      return;
+    }
+    got++; frags++;
+    score += 12; setLive(score);
+    snd('pickup', { semi: got });
+    fx.glowPop(it.p, COLS[it.c], 2, 0.3);
+    if(got >= need){
+      files++;
+      const pts = 100 + need * 15;
+      score += pts; setLive(score);
+      snd('success');
+      w.pop(V.madd(me.p, me.B.f, 12), '💽 FILE REBUILT +' + pts, COLS[fc], { size: 16 });
+      nextFile();
+    }
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('defrag', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'DRIVES LOST',
+      '💽 Files Rebuilt': files,
+      '🧩 Fragments': frags,
+      '☠ Corrupt Sectors Hit': corrupt,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, files, got, need, drives, nearBad, fc: NAMES[fc] }),
+    collect(n){ let k = 0; vol.each(it => { if(k < (n || 1) && !it.bad && it.c === fc){ grab(it); k++; } }); return k; },
+    lose(){ me.inv = 0; grab({ bad: true, p: V.copy(me.p), c: 0, id: 'test' + Math.random() }); },
+    hitBad(){ let done = false; vol.each(it => { if(!done && it.bad){ done = true; grab(it); } }); return done; }
+  };
+  nextFile();
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      flyStep(me, I, dt, { yawRate: 1.7, pitchRate: 1.4 });
+      vol.update(me.p);
+      scanT = Math.max(0, scanT - dt); scanCd = Math.max(0, scanCd - dt);
+      if(I.altHit){
+        if(scanCd > 0){ snd('deny'); }
+        else{ scanT = 4; scanCd = 7; snd('node'); fx.flash(me.p, '#ff6a6a', 2, 0.25); }
+      }
+      nearBad = 0;
+      vol.near(me.p, it => {
+        const d2 = V.d2(it.p, me.p);
+        if(it.bad && d2 < NEAR * NEAR) nearBad++;
+        // Another file's fragments drift straight through you.
+        if(d2 < GRAB * GRAB && (it.bad ? me.inv <= 0 : it.c === fc)) grab(it);
+      });
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    flyCam(w, me, dt, { fov: 64 });
+    w.step(dt);
+
+    w.begin();
+    drawBodies(w, BODIES);
+    // The lattice: the drive's own grid, standing still while you fly through it.
+    const gx = Math.round(me.p[0] / LAT) * LAT, gy = Math.round(me.p[1] / LAT) * LAT, gz = Math.round(me.p[2] / LAT) * LAT;
+    for(let i = -2; i <= 2; i++) for(let j = -2; j <= 2; j++){
+      const k = 0.35 - 0.06 * (Math.abs(i) + Math.abs(j));
+      r.streak([gx - 100, gy + i * LAT, gz + j * LAT], [gx + 100, gy + i * LAT, gz + j * LAT], -0.06, '#1a8a7a', k, 0);
+      r.streak([gx + i * LAT, gy - 100, gz + j * LAT], [gx + i * LAT, gy + 100, gz + j * LAT], -0.06, '#1a8a7a', k, 0);
+      r.streak([gx + i * LAT, gy + j * LAT, gz - 100], [gx + i * LAT, gy + j * LAT, gz + 100], -0.06, '#1a8a7a', k, 0);
+    }
+    const eye = w.cam.eye;
+    let nl = 0;
+    vol.each(it => {
+      const d2 = V.d2(it.p, eye);
+      if(d2 > 300 * 300 || !r.viewDepth(it.p, 1.2)) return;
+      // Corrupt fragments wear a random file's colour — unless scanned, or
+      // for the odd frame where the glitch shows through.
+      const glitch = it.bad && (scanT > 0 || Math.sin(w.t * 1.7 + it.ph * 7) > 0.985);
+      const col = glitch ? '#ff2a2a' : COLS[it.c];
+      const mineFile = !it.bad && it.c === fc;
+      const s = mineFile ? 1.5 : 1.2;
+      r.draw('cube', { pos: it.p, rot: [it.rot[0] + w.t * 0.6, it.rot[1] + w.t * 0.9, 0], scale: s, color: col, metallic: 0.3, roughness: 0.3, emissive: col,
+                       emissiveStrength: mineFile ? 1.8 : glitch ? 2.4 : 0.7, detail: 0 });
+      if(mineFile || glitch) r.glow(it.p, s * 1.8, col, mineFile ? 0.7 : 1);
+      if(glitch && nl++ < 2) r.light({ pos: it.p, color: '#ff3a3a', intensity: 60, range: 12 });
+    });
+    if(scanT > 0) r.draw('lowsphere', { pos: me.p, scale: 2 * NEAR * (1 - scanT / 4 * 0.2), color: '#ff6a6a', emissive: '#ff4a4a', emissiveStrength: 0.4, alpha: 0.06 * scanT, blend: true });
+    drawFlyer(w, me, colour);
+    dust(w, V.mul(me.B.f, me.speed), { len: 0.045, max: 6, gain: 0.35, width: 0.03 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = [];
+    vol.each(it => { if(!it.bad && it.c === fc && V.d2(it.p, me.p) < 160 * 160) rad.push({ p: it.p, c: COLS[fc], s: 2.4, tick: true }); else if(it.bad && scanT > 0 && V.d2(it.p, me.p) < 90 * 90) rad.push({ p: it.p, c: '#ff3a3a', s: 2, tick: true }); });
+    hud.radar(70, Ht - 74, 54, me.p, me.B.f, 120, rad);
+    hud.text(Wd / 2, 26, '💽 ' + NAMES[fc] + '  ' + got + ' / ' + need, { size: 16, color: COLS[fc] });
+    hud.bar(Wd / 2 - 80, 42, 160, 6, got / need, COLS[fc]);
+    hud.text(Wd / 2, 62, nearBad ? '☠ ' + nearBad + ' CORRUPT NEARBY' : '· clear ·', { size: 12, color: nearBad ? '#ff8a8a' : '#7affc8' });
+    // The nearest fragment of the file, if it is off-screen.
+    let best = null, bd = 1e12;
+    vol.each(it => { if(!it.bad && it.c === fc){ const d = V.d2(it.p, me.p); if(d < bd){ bd = d; best = it; } } });
+    if(best && !hud.proj(best.p).on) hud.edgeArrow(best.p, COLS[fc], null);
+    hud.text(Wd - 16, Ht - 40, scanCd > 0 ? 'SCAN ' + Math.ceil(scanCd) + 's' : 'SCAN READY', { size: 12, align: 'right', color: scanCd > 0 ? '#8aa' : '#ff9a9a' });
+    hud.text(Wd - 16, Ht - 20, 'DRIVES ' + '▮'.repeat(Math.max(0, drives)) + '▯'.repeat(Math.max(0, 3 - drives)), { size: 13, align: 'right', color: '#9dffc4' });
+    hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, me.energy / 100, '#39ff88', 'BOOST');
+    if(msgT > 0) hud.text(Wd / 2, 84, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  ⚡ PATH · OPEN WORLD — CABLE ACROSS THE ENDLESS BOARD
+// ══════════════════════════════════════════════
+// The classic routes current through every live node once, never crossing
+// its own trace. Out here the board has no edge: you are the head of a power
+// cable crawling across it square by square, and every relay you reach is
+// powered and locks the cable in behind you — and overclocks the grid, so the
+// next relay pays more. Cross your own trace or run the spool dry and the
+// live cable shorts out back to the last relay, and the overclock with it.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, ihash, ease, drawFloor, owClock } = P.owKit;
+const { groundBegin, followCam, screenToGround, beacon } = P.owGround;
+const { mine, clamp, runLoop, seeded } = P.kit;
+const S = 4, SPOOL = 34, OC_MAX = 6;
+const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+
+P.ow.path = function(){
+  const G = groundBegin({ sky: 'night', env: { horizon: '#0a3a5a' }, input: { touch: 'tap' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: STEER THE CABLE · REACH THE RELAYS', 'WASD / ARROWS or THE MOUSE: STEER THE CABLE HEAD · REACH A RELAY BEFORE THE SPOOL RUNS DRY · NEVER CROSS YOUR TRACE');
+
+  // The board, as pure functions of the square.
+  // Memoised: the board is drawn and searched thousands of squares a frame.
+  const key = (x, z) => x + ',' + z;
+  const kinds = new Map();
+  const kindAt = (x, z) => {
+    const k = key(x, z);
+    let v = kinds.get(k);
+    if(v === undefined){
+      v = (Math.abs(x) + Math.abs(z) > 3 && seeded(ihash(x, z, 1, 5151))() < 0.03) ? 1
+        : (Math.abs(x) + Math.abs(z) > 2 && seeded(ihash(x, z, 2, 5252))() < 0.07) ? 2 : 0;
+      kinds.set(k, v);
+    }
+    return v;
+  };
+  const relayAt = (x, z) => kindAt(x, z) === 1;
+  const deadAt = (x, z) => kindAt(x, z) === 2;
+  const cable = new Map();                      // square → { locked, oc }
+  const powered = new Set();
+  let live = [];                                // squares laid since the last relay
+  let head = [0, 0], prev = [0, 0], dir = 0, want = 0, stepT = 0, pause = 0, last = [0, 0];
+  let score = 0, relays = 0, shorts = 0, oc = 1, bestOc = 1, laid = 0, over = false, finished = false, msg = '', msgT = 0;
+  cable.set(key(0, 0), { locked: true, oc: 1 });
+  powered.add(key(0, 0));
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#00f5ff,#ffd700)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+  const stepTime = () => Math.max(0.11, 0.17 - relays * 0.0015) / Math.min(1.3, diff);
+
+  function connect(x, z){
+    relays++;
+    powered.add(key(x, z));
+    for(const k of live){ const c = cable.get(k); if(c) c.locked = true; }
+    const left = SPOOL - live.length;
+    const pts = 15 * oc + Math.max(0, left);
+    score += pts; setLive(score);
+    oc = Math.min(OC_MAX, oc + 1); bestOc = Math.max(bestOc, oc);
+    live = [];
+    last = [x, z];
+    snd('success', { semi: oc });
+    const p = [x * S, 2, z * S];
+    fx.explode(p, 1.8, { color: '#ffd700', debris: 0, smoke: 0, ringNormal: [0, 1, 0] });
+    w.pop([p[0], 6, p[2]], '+' + pts + ' · OVERCLOCK ×' + oc, '#ffd700', { size: 15 });
+  }
+  function short(why){
+    shorts++;
+    for(const k of live) cable.delete(k);
+    live = [];
+    head = [last[0], last[1]]; prev = [last[0], last[1]];
+    oc = 1;
+    pause = 0.7;
+    snd('glitch'); w.kick(0.9);
+    fx.sparks([head[0] * S, 1, head[1] * S], 18, '#ff4a4a', 1.2, 14);
+    say(why + ' — back to the last relay, overclock lost', 2);
+    // Face a free way out.
+    for(let k = 0; k < 4; k++){
+      const d = (dir + k) % 4, nx = head[0] + DIRS[d][0], nz = head[1] + DIRS[d][1];
+      if(!cable.has(key(nx, nz)) && !deadAt(nx, nz)){ dir = want = d; break; }
+    }
+  }
+  function advance(){
+    if(want !== (dir + 2) % 4) dir = want;
+    const nx = head[0] + DIRS[dir][0], nz = head[1] + DIRS[dir][1];
+    prev = [head[0], head[1]];
+    if(cable.has(key(nx, nz))){ short('⚡ SHORT CIRCUIT'); return; }
+    if(deadAt(nx, nz)){ short('⚡ DEAD SQUARE'); return; }
+    head = [nx, nz];
+    cable.set(key(nx, nz), { locked: false, oc });
+    live.push(key(nx, nz));
+    laid++;
+    if(relayAt(nx, nz)) connect(nx, nz);
+    else if(live.length >= SPOOL) short('🧵 SPOOL RAN DRY');
+    else if(live.length > SPOOL - 6) snd('tick');
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('path', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
+      '⚡ Relays Powered': relays,
+      '⏫ Best Overclock': '×' + bestOc,
+      '🧵 Cable Laid': laid * S + ' m',
+      '💥 Shorts': shorts,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, relays, shorts, oc, live: live.length, head: head.slice() }),
+    connect(){ connect(head[0], head[1]); },
+    short(){ short('TEST'); }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      // Steering: the strongest axis of whatever is pushing.
+      let sx = I.lx, sz = I.ly;
+      if(I.device === 'mouse' && I.mouseOn && hud.cam){
+        const g = screenToGround(hud, (I.mx + 1) / 2 * hud.W, (I.my + 1) / 2 * hud.H, 0);
+        if(g){ const dx = g[0] - head[0] * S, dz = g[2] - head[1] * S; if(Math.hypot(dx, dz) > S * 1.5){ sx = dx; sz = dz; } else{ sx = 0; sz = 0; } }
+      }else if(I.stick){ sx = I.stick.x - I.stick.x0; sz = I.stick.y - I.stick.y0; if(Math.hypot(sx, sz) < 0.06){ sx = 0; sz = 0; } }
+      if(Math.abs(sx) > 0.3 || Math.abs(sz) > 0.3 || (I.device === 'mouse' && (sx || sz))){
+        const d = Math.abs(sx) > Math.abs(sz) ? (sx > 0 ? 1 : 3) : (sz > 0 ? 2 : 0);
+        if(d !== (dir + 2) % 4) want = d;
+      }
+      if(pause > 0) pause -= dt;
+      else{
+        stepT += dt;
+        const st = stepTime();
+        while(stepT >= st && !over){ stepT -= st; advance(); }
+      }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    const t = pause > 0 ? 1 : clamp(stepT / stepTime(), 0, 1);
+    const hp = [(prev[0] + (head[0] - prev[0]) * t) * S, 0, (prev[1] + (head[1] - prev[1]) * t) * S];
+    followCam(w, hp, { height: 42, back: 22, look: 3, fov: 54, half: 0.12 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: S, radius: 110, color: '#0f3a5a', glow: 0.7, major: 5, floor: '#020610', rough: 0.25 });
+    const R = 22, hx = Math.round(hp[0] / S), hz = Math.round(hp[2] / S);
+    let nl = 0;
+    for(let x = hx - R; x <= hx + R; x++) for(let z = hz - R; z <= hz + R; z++){
+      const p = [x * S, 0, z * S];
+      if(relayAt(x, z)){
+        const on = powered.has(key(x, z));
+        const col = on ? '#ffd700' : '#5ee7ff';
+        r.draw('cylinder', { pos: [p[0], 1, p[2]], scale: [2.2, 2, 2.2], color: '#1a2230', metallic: 0.8, roughness: 0.3 });
+        r.draw('core', { pos: [p[0], 2.8, p[2]], rot: [0, w.t * (on ? 2 : 0.5), 0], scale: 1.6, color: col, emissive: col, emissiveStrength: on ? 2.2 : 0.9 });
+        if(!on){ beacon(w, p, col, 26, 0.5 + 0.3 * Math.sin(w.t * 3 + x)); }
+        else if(nl++ < 3) r.light({ pos: [p[0], 5, p[2]], color: '#ffd700', intensity: 80, range: 16 });
+      }else if(deadAt(x, z)){
+        r.draw('cube', { pos: [p[0], 0.8, p[2]], scale: [S * 0.9, 1.6, S * 0.9], color: '#120c10', metallic: 0.4, roughness: 0.7, emissive: '#ff3a3a', emissiveStrength: 0.25 });
+      }
+    }
+    // The cable: a glowing run between squares, live in white, locked in its overclock's colour.
+    const OCC = ['#00f5ff', '#39ff88', '#ffd700', '#ff8a3a', '#ff2d6a', '#ff2bd6'];
+    for(const [k, c] of cable){
+      const [x, z] = k.split(',').map(Number);
+      if(Math.abs(x - hx) > R + 2 || Math.abs(z - hz) > R + 2) continue;
+      const col = c.locked ? OCC[(c.oc - 1) % OCC.length] : '#ffffff';
+      r.draw('box', { pos: [x * S, 0.35, z * S], scale: [1.2, 0.5, 1.2], color: col, emissive: col, emissiveStrength: c.locked ? 1.5 : 2.4 });
+      for(const [dx, dz] of [[1, 0], [0, 1]]){
+        const n = cable.get(key(x + dx, z + dz));
+        if(n) r.beam([x * S, 0.35, z * S], [(x + dx) * S, 0.35, (z + dz) * S], 0.6, { color: col, emissive: col, emissiveStrength: c.locked ? 1.4 : 2.2, height: 0.4 });
+      }
+    }
+    // The head.
+    r.draw('sphere', { pos: [hp[0], 1.2, hp[2]], scale: 2.2, color: '#ffffff', emissive: colour, emissiveStrength: 2.4 });
+    r.glow([hp[0], 1.2, hp[2]], 3.2, colour, 1.2);
+    r.light({ pos: [hp[0], 5, hp[2]], color: colour, intensity: 140, range: 24 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = [];
+    for(let x = hx - 16; x <= hx + 16; x++) for(let z = hz - 16; z <= hz + 16; z++){ if(relayAt(x, z) && !powered.has(key(x, z))) rad.push({ p: [x * S, 0, z * S], c: '#5ee7ff', s: 2.6 }); }
+    hud.radar(70, Ht - 74, 54, hp, [0, 0, -1], 15 * S, rad);
+    hud.text(Wd / 2, 26, 'OVERCLOCK ×' + oc, { size: 16, color: OCC[(oc - 1) % OCC.length] });
+    const left = SPOOL - live.length;
+    hud.bar(Wd / 2 - 80, 54, 160, 7, left / SPOOL, left < 8 ? '#ff4a4a' : '#00f5ff', 'SPOOL');
+    hud.text(Wd - 16, Ht - 40, '⚡ ' + relays, { size: 14, align: 'right', color: '#ffd700' });
+    hud.text(Wd - 16, Ht - 20, live.length + ' / ' + SPOOL + ' laid', { size: 12, align: 'right', color: '#bff6ff' });
+    if(msgT > 0) hud.text(Wd / 2, 80, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🏗️ SERVER STACK · OPEN WORLD — THE TOWER IN THE CITY
+// ══════════════════════════════════════════════
+// The classic stacks in a column with the slab always sliding in from the
+// same side. This tower stands in an open city, and its slabs swing in from
+// every compass point — north, then east, then a diagonal — so every drop is
+// read from a new angle. Whatever hangs over is cut off; a perfect drop cuts
+// nothing, and three in a row grow the slab back. A slab that misses the
+// tower falls into the street — three of those and the build is over.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, ease, drawFloor, owClock } = P.owKit;
+const { groundBegin, makeCity } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+const H = 1.2, BASE = 10, AMP = 13, PERFECT = 0.3;
+const PAL = ['#00f5ff', '#39ff88', '#ffd700', '#ff8a3a', '#ff2d6a', '#ff2bd6', '#a855f7', '#4d8bff'];
+const COMPASS = [[0, -1, 'N'], [1, 0, 'E'], [0, 1, 'S'], [-1, 0, 'W'], [1, -1, 'NE'], [1, 1, 'SE'], [-1, 1, 'SW'], [-1, -1, 'NW']];
+
+P.ow.stack = function(){
+  const G = groundBegin({ sky: 'dusk', input: { touch: 'tap' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('TAP: DROP THE SLAB', 'SPACE / CLICK: DROP THE SLAB · A PERFECT DROP CUTS NOTHING');
+
+  const slabs = [{ x: 0, z: 0, sx: BASE, sz: BASE, y: 0, c: '#3a4a5a' }];
+  let cur = null, ph = 0, perfects = 0, bestRun = 0, run = 0, score = 0, misses = 0, over = false, finished = false, msg = '', msgT = 0, wasFire = false;
+  let camA = Math.PI * 0.25, camH = 10;
+  const debris = [];
+  const taps = P.owDrive ? P.owDrive.tapCounter('tap') : { take: () => 0 };
+  const city = makeCity({ seed: 4444, density: 0.4, cell: 60, clear: 48, hMin: 20, hMax: 150, radius: 700, towerColor: '#100814' });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#ff8a3a,#ff2bd6)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  const top = () => slabs[slabs.length - 1];
+  function nextSlab(){
+    const t = top(), n = slabs.length;
+    const pool = n < 8 ? 4 : 8;
+    const k = n < 8 ? (n - 1) % 4 : (Math.random() * pool) | 0;
+    const [dx, dz, name] = COMPASS[k];
+    const l = Math.hypot(dx, dz);
+    cur = { ax: [dx / l, 0, dz / l], name, sx: t.sx, sz: t.sz, y: t.y + H, c: PAL[n % PAL.length] };
+    ph = -Math.PI / 2;                      // it starts out at the far end of its swing
+    snd('tick');
+  }
+  nextSlab();
+  const curPos = () => { const t = top(), o = Math.sin(ph) * AMP; return [t.x + cur.ax[0] * o, t.z + cur.ax[2] * o]; };
+  function drop(force){
+    const t = top();
+    let [x, z] = force ? [t.x, t.z] : curPos();
+    // A near-perfect drop snaps square.
+    const off = Math.hypot(x - t.x, z - t.z);
+    const perfect = off < PERFECT;
+    if(perfect){ x = t.x; z = t.z; }
+    const x0 = Math.max(x - cur.sx / 2, t.x - t.sx / 2), x1 = Math.min(x + cur.sx / 2, t.x + t.sx / 2);
+    const z0 = Math.max(z - cur.sz / 2, t.z - t.sz / 2), z1 = Math.min(z + cur.sz / 2, t.z + t.sz / 2);
+    if(x1 - x0 <= 0.05 || z1 - z0 <= 0.05){
+      // Missed the tower entirely.
+      debris.push({ p: [x, cur.y + H / 2, z], s: [cur.sx, H, cur.sz], v: [cur.ax[0] * 4, 0, cur.ax[2] * 4], rot: [0, 0, 0], spin: [1, 0, 2], c: cur.c, t: 0 });
+      misses++;
+      run = 0;
+      snd('gameOver'); w.kick(1.4);
+      bar.style.width = (Math.max(0, 3 - misses) / 3 * 100) + '%';
+      if(misses >= 3){
+        if(survivedFatal()){ misses = 2; bar.style.width = '33%'; say('SHIELD ABSORBED — the slab is gone, the tower stands', 2); nextSlab(); return; }
+        over = true;
+        cur = null;
+        gLater(() => finish('miss'), 1400);
+        return;
+      }
+      say('✖ MISSED THE TOWER — ' + (3 - misses) + ' left', 1.8);
+      nextSlab();
+      return;
+    }
+    // Whatever hangs over falls.
+    const cut = (ax0, ax1, az0, az1) => { if(ax1 - ax0 > 0.05 && az1 - az0 > 0.05) debris.push({ p: [(ax0 + ax1) / 2, cur.y + H / 2, (az0 + az1) / 2], s: [ax1 - ax0, H, az1 - az0], v: [Math.sign((ax0 + ax1) / 2 - (x0 + x1) / 2) * 3, 0, Math.sign((az0 + az1) / 2 - (z0 + z1) / 2) * 3], rot: [0, 0, 0], spin: [Math.random() * 3, 0, Math.random() * 3], c: cur.c, t: 0 }); };
+    if(!perfect){
+      const fx0 = x - cur.sx / 2, fx1 = x + cur.sx / 2, fz0 = z - cur.sz / 2, fz1 = z + cur.sz / 2;
+      cut(fx0, x0, fz0, fz1); cut(x1, fx1, fz0, fz1);
+      cut(x0, x1, fz0, z0); cut(x0, x1, z1, fz1);
+    }
+    let sx = x1 - x0, sz = z1 - z0;
+    const level = slabs.length;
+    let pts = 10 + level;
+    if(perfect){
+      perfects++; run++; bestRun = Math.max(bestRun, run);
+      pts += 25 + 10 * Math.min(5, run);
+      snd('combo', { semi: Math.min(12, run * 2) });
+      if(run % 3 === 0 && (sx < BASE || sz < BASE)){ sx = Math.min(BASE, sx + 1); sz = Math.min(BASE, sz + 1); say('✦ THREE PERFECT — THE SLAB GROWS', 1.8); }
+      fx.explode([(x0 + x1) / 2, cur.y + H, (z0 + z1) / 2], 2, { color: '#ffffff', debris: 0, smoke: 0, ringNormal: [0, 1, 0] });
+    }else{
+      run = 0;
+      snd('land', { semi: -Math.min(8, off * 2) });
+    }
+    score += pts; setLive(score);
+    w.pop([(x0 + x1) / 2, cur.y + 3, (z0 + z1) / 2], '+' + pts + (perfect ? ' PERFECT' : ''), perfect ? '#ffffff' : cur.c, { size: 14 });
+    slabs.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, sx, sz, y: cur.y, c: cur.c });
+    nextSlab();
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('stack', score, {
+      '📡 Build': why === 'clock' ? 'CLOCK EXPIRED' : 'THREE SLABS LOST',
+      '🏗️ Slabs Stacked': slabs.length - 1,
+      '📏 Height': Math.round((slabs.length - 1) * H) + ' m',
+      '✦ Perfect Drops': perfects,
+      '⛓ Best Perfect Run': bestRun,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, slabs: slabs.length - 1, perfects, run, misses, size: top().sx.toFixed(1) + '×' + top().sz.toFixed(1), from: cur && cur.name }),
+    perfect(){ if(cur) drop(true); },
+    lose(){ if(cur){ ph = Math.PI / 2; drop(false); } },
+    dropNow(){ if(cur) drop(false); }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over && cur){
+      const level = slabs.length;
+      ph += dt * Math.min(4.2, 1.5 + level * 0.045) * Math.min(1.4, diff);
+      const fire = I.device !== 'touch' && (I.fire || I.jumpHit);
+      if((fire && !wasFire) || taps.take() > 0) drop(false);
+      wasFire = fire;
+    }
+    for(let i = debris.length - 1; i >= 0; i--){
+      const d = debris[i];
+      if(dt <= 0) break;
+      d.t += dt;
+      d.v[1] -= 22 * dt;
+      d.p = V.madd(d.p, d.v, dt);
+      d.rot[0] += d.spin[0] * dt; d.rot[2] += d.spin[2] * dt;
+      if(d.t > 3.5) debris.splice(i, 1);
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    // The camera stands off the swing at an angle, rising with the tower.
+    const t = top();
+    const want = cur ? Math.atan2(cur.ax[0], cur.ax[2]) + Math.PI * 0.62 : camA;
+    if(dt > 0){
+      let dA = want - camA; while(dA > Math.PI) dA -= TAU; while(dA < -Math.PI) dA += TAU;
+      camA += dA * ease(dt, 0.5);
+      camH += (t.y + 10 - camH) * ease(dt, 0.4);
+    }
+    w.cam.eye = [t.x + Math.sin(camA) * 30, camH + 8, t.z + Math.cos(camA) * 30];
+    w.cam.target = [t.x, camH - 4, t.z];
+    w.goal.eye = w.cam.eye; w.goal.target = w.cam.target; w.goal.fov = 58;
+    w.up = [0, 1, 0];
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 8, radius: 220, color: '#5a1a4a', glow: 0.8, major: 5, floor: '#0a040a', rough: 0.25 });
+    city.draw(w);
+    const lo = Math.max(0, slabs.length - 60);
+    for(let i = lo; i < slabs.length; i++){
+      const s = slabs[i];
+      r.draw('slab', { pos: [s.x, s.y + H / 2, s.z], scale: [s.sx, H, s.sz], color: s.c, metallic: 0.5, roughness: 0.3, rim: 0.8, emissive: s.c, emissiveStrength: i === slabs.length - 1 ? 0.9 : 0.4 });
+    }
+    if(lo > 0){ const s = slabs[lo]; r.draw('cube', { pos: [s.x, s.y / 2, s.z], scale: [s.sx, s.y, s.sz], color: '#1a1424', metallic: 0.6, roughness: 0.4 }); }
+    if(cur){
+      const [x, z] = curPos();
+      r.draw('slab', { pos: [x, cur.y + H / 2, z], scale: [cur.sx, H, cur.sz], color: cur.c, metallic: 0.5, roughness: 0.3, rim: 0.9, emissive: cur.c, emissiveStrength: 1.4 });
+      // The swing's track, and where it came from.
+      const a = [t.x - cur.ax[0] * AMP, cur.y + H / 2, t.z - cur.ax[2] * AMP], b = [t.x + cur.ax[0] * AMP, cur.y + H / 2, t.z + cur.ax[2] * AMP];
+      r.streak(a, b, 0.12, cur.c, 0.5, 0);
+      r.light({ pos: [x, cur.y + 6, z], color: cur.c, intensity: 160, range: 30 });
+    }
+    for(const d of debris) r.draw('slab', { pos: d.p, rot: d.rot, scale: d.s, color: d.c, metallic: 0.5, roughness: 0.4, emissive: d.c, emissiveStrength: 0.3 });
+    r.light({ pos: [t.x + 10, t.y + 14, t.z + 10], color: '#ffe0d0', intensity: 200, range: 50 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.text(Wd / 2, 26, cur ? 'FROM THE ' + cur.name + '  ·  ' + (slabs.length - 1) + ' STACKED' : '', { size: 15, color: '#ffe8d8' });
+    if(run > 1) hud.text(Wd / 2, 48, 'PERFECT ×' + run, { size: 13, color: '#ffffff' });
+    hud.text(Wd - 16, Ht - 40, 'SLAB ' + t.sx.toFixed(1) + ' × ' + t.sz.toFixed(1), { size: 12, align: 'right', color: '#ffd8e8' });
+    hud.text(Wd - 16, Ht - 20, '📏 ' + Math.round((slabs.length - 1) * H) + ' m  ' + '▮'.repeat(Math.max(0, 3 - misses)) + '▯'.repeat(Math.min(3, misses)), { size: 13, align: 'right', color: '#ffe8d8' });
+    if(msgT > 0) hud.text(Wd / 2, 70, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  👾 MUNCHER · OPEN WORLD — THE MAZE THAT NEVER ENDS
+// ══════════════════════════════════════════════
+// The classic maze is one screen and you eat it bare. This one goes on for
+// ever in every direction, generated square by square so there is no dead
+// end anywhere in it — and every square holds a data bit. Eat your way out
+// while the four security daemons close in; a power core turns them, for a
+// few seconds, into something you can eat.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, ihash, ease, drawFloor, owClock } = P.owKit;
+const { groundBegin, followCam, screenToGround } = P.owGround;
+const { mine, clamp, runLoop, seeded } = P.kit;
+const S = 4, WALL = 0.34, VIEW = 13;
+const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+const GHOST = ['#ff2d6a', '#ff2bd6', '#00f5ff', '#ff8a3a'];
+
+P.ow.muncher = function(){
+  const G = groundBegin({ sky: 'night', env: { horizon: '#1a1060' }, input: { touch: 'tap' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: STEER THROUGH THE MAZE', 'WASD / ARROWS or THE MOUSE: STEER · EAT THE DATA, DODGE THE DAEMONS · A POWER CORE TURNS THEM');
+
+  // ── THE MAZE ── edges are open or walled by hash; a square left with one
+  // way in is given a second, so the maze has no dead ends at all.
+  const h01 = (i, j, k) => seeded(ihash(i, j, k, 3939))();
+  const memo = new Map();
+  const baseE = (i, j) => (Math.abs(i) <= 1 && Math.abs(j) <= 1) || h01(i, j, 0) >= WALL;   // (i,j)–(i+1,j)
+  const baseS = (i, j) => (Math.abs(i) <= 1 && Math.abs(j) <= 1) || h01(i, j, 1) >= WALL;   // (i,j)–(i,j+1)
+  const baseOpen = (i, j, d) => d === 0 ? baseS(i, j - 1) : d === 1 ? baseE(i, j) : d === 2 ? baseS(i, j) : baseE(i - 1, j);
+  function choice(i, j){
+    const k = i + ',' + j;
+    let v = memo.get(k);
+    if(v !== undefined) return v;
+    let deg = 0;
+    for(let d = 0; d < 4; d++) if(baseOpen(i, j, d)) deg++;
+    v = -1;
+    if(deg <= 1){
+      const s = (h01(i, j, 2) * 4) | 0;
+      for(let n = 0; n < 4; n++){ const d = (s + n) % 4; if(!baseOpen(i, j, d)){ v = d; break; } }
+    }
+    memo.set(k, v);
+    return v;
+  }
+  const open = (i, j, d) => baseOpen(i, j, d) || choice(i, j) === d || choice(i + DIRS[d][0], j + DIRS[d][1]) === (d + 2) % 4;
+  const isPower = (i, j) => (Math.abs(i) + Math.abs(j) > 4) && h01(i, j, 3) < 0.022;
+  const eaten = new Set();
+  const key = (i, j) => i + ',' + j;
+  eaten.add(key(0, 0));
+
+  // ── MOVERS ── square to square; `t` runs 0→1 along the current edge.
+  const mk = (i, j, d) => ({ i, j, d, t: 0, want: d });
+  const me = Object.assign(mk(0, 0, 1), { inv: 1.5 });
+  const pos = m => m.d < 0 ? [m.i * S, 0, m.j * S] : [(m.i + DIRS[m.d][0] * m.t) * S, 0, (m.j + DIRS[m.d][1] * m.t) * S];
+  let score = 0, bits = 0, powers = 0, ghostsEaten = 0, lives = 3, frightT = 0, chainK = 0, over = false, finished = false, msg = '', msgT = 0;
+  const ghosts = [];
+  function placeGhost(gh, near){
+    for(let k = 0; k < 60; k++){
+      const a = Math.random() * TAU, d = near ? 9 + Math.random() * 6 : 14 + Math.random() * 6;
+      const i = me.i + Math.round(Math.cos(a) * d), j = me.j + Math.round(Math.sin(a) * d);
+      let ways = 0; for(let q = 0; q < 4; q++) if(open(i, j, q)) ways++;
+      if(ways >= 2){ gh.i = i; gh.j = j; gh.t = 0; gh.d = -1; gh.away = 0; return; }
+    }
+  }
+  for(let g = 0; g < 4; g++){ const gh = Object.assign(mk(0, 0, -1), { c: GHOST[g], k: g, away: 0 }); placeGhost(gh, true); ghosts.push(gh); }
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#ffd700,#ff2d6a)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  // Reaching a square: eat what is on it, then pick the next edge.
+  function arrive(m, isMe){
+    if(isMe){
+      const k = key(m.i, m.j);
+      if(!eaten.has(k)){
+        eaten.add(k);
+        if(isPower(m.i, m.j)){
+          powers++;
+          score += 25;
+          frightT = Math.max(4, 7.5 - powers * 0.2);
+          chainK = 0;
+          snd('powerup');
+          say('⚡ POWER CORE — the daemons are yours', 2);
+          for(const gh of ghosts) if(gh.d >= 0 && gh.away <= 0) gh.d = (gh.d + 2) % 4, gh.t = 1 - gh.t, gh.i += DIRS[(gh.d + 2) % 4][0], gh.j += DIRS[(gh.d + 2) % 4][1];
+        }else{ bits++; score += 5; if(bits % 2 === 0) snd('eat'); }
+        setLive(score);
+      }
+      if(m.want >= 0 && open(m.i, m.j, m.want)) m.d = m.want;
+      else if(m.d < 0 || !open(m.i, m.j, m.d)) m.d = -1;
+    }
+  }
+  function ghostChoose(gh){
+    const opts = [];
+    for(let d = 0; d < 4; d++){ if(open(gh.i, gh.j, d) && (gh.d < 0 || d !== (gh.d + 2) % 4)) opts.push(d); }
+    if(!opts.length){ for(let d = 0; d < 4; d++) if(open(gh.i, gh.j, d)) opts.push(d); }
+    if(!opts.length){ gh.d = -1; return; }
+    if(frightT > 0){ gh.d = opts[(Math.random() * opts.length) | 0]; return; }
+    // Each daemon aims somewhere a little different: you, ahead of you, beside you.
+    const md = me.d >= 0 ? me.d : 1;
+    const off = [[0, 0], [DIRS[md][0] * 4, DIRS[md][1] * 4], [DIRS[(md + 1) % 4][0] * 3, DIRS[(md + 1) % 4][1] * 3], [-DIRS[md][0] * 2, -DIRS[md][1] * 2]][gh.k];
+    const ti = me.i + off[0], tj = me.j + off[1];
+    let best = opts[0], bd = 1e9;
+    for(const d of opts){ const ni = gh.i + DIRS[d][0], nj = gh.j + DIRS[d][1]; const dd = (ni - ti) ** 2 + (nj - tj) ** 2 + Math.random() * 0.5; if(dd < bd){ bd = dd; best = d; } }
+    gh.d = best;
+  }
+  function step(m, sp, dt, isMe){
+    if(m.d < 0){ if(isMe) arrive(m, true); else ghostChoose(m); if(m.d < 0) return; }
+    m.t += sp * dt;
+    while(m.t >= 1){
+      m.t -= 1;
+      m.i += DIRS[m.d][0]; m.j += DIRS[m.d][1];
+      if(isMe) arrive(m, true); else ghostChoose(m);
+      if(m.d < 0){ m.t = 0; break; }
+    }
+  }
+  function caught(){
+    if(me.inv > 0 || over) return;
+    lives--;
+    snd('gameOver'); w.kick(1.2);
+    fx.explode([...pos(me).slice(0, 1), 1.2, pos(me)[2]], 2, { color: colour, debris: 0 });
+    bar.style.width = (Math.max(0, lives) / 3 * 100) + '%';
+    if(lives <= 0){
+      if(survivedFatal()){ lives = 1; bar.style.width = '33%'; say('SHIELD ABSORBED', 1.6); }
+      else{ over = true; gLater(() => finish('caught'), 1100); return; }
+    }else say('CAUGHT — ' + lives + ' left', 1.8);
+    me.inv = 2;
+    for(const gh of ghosts) placeGhost(gh, false);
+  }
+  function eatGhost(gh){
+    ghostsEaten++;
+    const pts = 100 * Math.pow(2, Math.min(3, chainK));
+    chainK++;
+    score += pts; setLive(score);
+    snd('bigExplode');
+    const p = pos(gh);
+    fx.explode([p[0], 1.4, p[2]], 1.8, { color: gh.c, debris: 0, smoke: 0 });
+    w.pop([p[0], 4, p[2]], '+' + pts, '#ffffff', { size: 16 });
+    gh.away = 4;
+    gh.d = -1;
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('muncher', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'CAUGHT',
+      '💾 Data Bits': bits,
+      '⚡ Power Cores': powers,
+      '👾 Daemons Eaten': ghostsEaten,
+      '❤ Lives Left': Math.max(0, lives),
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, bits, powers, ghostsEaten, lives, fright: +frightT.toFixed(1), at: [me.i, me.j] }),
+    power(){ frightT = 7; chainK = 0; },
+    eatGhost(){ const gh = ghosts.find(g => g.away <= 0); if(gh){ frightT = Math.max(frightT, 3); eatGhost(gh); } },
+    die(){ me.inv = 0; caught(); },
+    lose(){ me.inv = 0; caught(); }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      me.inv = Math.max(0, me.inv - dt);
+      frightT = Math.max(0, frightT - dt);
+      // Steering: the strongest axis of keys / stick / mouse.
+      let sx = I.lx, sz = I.ly;
+      const mp = pos(me);
+      if(I.device === 'mouse' && I.mouseOn && hud.cam){
+        const g = screenToGround(hud, (I.mx + 1) / 2 * hud.W, (I.my + 1) / 2 * hud.H, 0);
+        if(g){ sx = g[0] - mp[0]; sz = g[2] - mp[2]; if(Math.hypot(sx, sz) < S * 0.8){ sx = 0; sz = 0; } }
+      }else if(I.stick){ sx = I.stick.x - I.stick.x0; sz = I.stick.y - I.stick.y0; if(Math.hypot(sx, sz) < 0.05){ sx = 0; sz = 0; } }
+      if(Math.abs(sx) > 0.3 || Math.abs(sz) > 0.3 || (I.device === 'mouse' && (sx || sz))){
+        me.want = Math.abs(sx) > Math.abs(sz) ? (sx > 0 ? 1 : 3) : (sz > 0 ? 2 : 0);
+        // A reversal is allowed at once, mid-edge.
+        if(me.d >= 0 && me.want === (me.d + 2) % 4){ me.i += DIRS[me.d][0]; me.j += DIRS[me.d][1]; me.d = me.want; me.t = 1 - me.t; }
+      }
+      step(me, 3.4, dt, true);
+      const gsp = (frightT > 0 ? 2.1 : 3.05) * Math.min(1.25, diff);
+      for(const gh of ghosts){
+        if(gh.away > 0){ gh.away -= dt; if(gh.away <= 0) placeGhost(gh, false); continue; }
+        step(gh, gsp, dt, false);
+        const gp = pos(gh);
+        if(Math.hypot(gp[0] - mp[0], gp[2] - mp[2]) < S * 0.55){ if(frightT > 0) eatGhost(gh); else caught(); }
+        if(Math.abs(gh.i - me.i) + Math.abs(gh.j - me.j) > 34) placeGhost(gh, false);
+      }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    const mp = pos(me);
+    followCam(w, mp, { height: 36, back: 17, look: 2, fov: 56, half: 0.1 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: S, radius: 80, color: '#141a5a', glow: 0.5, major: 100, floor: '#03030a', rough: 0.3 });
+    const ci = Math.round(mp[0] / S), cj = Math.round(mp[2] / S);
+    const wc = frightT > 0 ? '#4d8bff' : '#2a5aff';
+    for(let i = ci - VIEW; i <= ci + VIEW; i++) for(let j = cj - VIEW; j <= cj + VIEW; j++){
+      if(!open(i, j, 1)) r.draw('box', { pos: [(i + 0.5) * S, 0.8, j * S], scale: [0.5, 1.6, S + 0.5], color: '#0a0e2a', emissive: wc, emissiveStrength: 0.9 });
+      if(!open(i, j, 2)) r.draw('box', { pos: [i * S, 0.8, (j + 0.5) * S], scale: [S + 0.5, 1.6, 0.5], color: '#0a0e2a', emissive: wc, emissiveStrength: 0.9 });
+      if(!eaten.has(key(i, j))){
+        if(isPower(i, j)){
+          r.draw('sphere', { pos: [i * S, 1, j * S], scale: 1.2 + 0.2 * Math.sin(w.t * 6), color: '#ffffff', emissive: '#ffd700', emissiveStrength: 2.4 });
+          r.glow([i * S, 1, j * S], 2.2, '#ffd700', 1);
+        }else r.glow([i * S, 0.9, j * S], 0.55, '#ffe8a0', 1.1);
+      }
+    }
+    let nl = 0;
+    for(const gh of ghosts){
+      if(gh.away > 0) continue;
+      const p = pos(gh);
+      const scared = frightT > 0, blink = scared && frightT < 1.6 && Math.sin(w.t * 18) > 0;
+      const col = scared ? (blink ? '#ffffff' : '#4d8bff') : gh.c;
+      r.draw('pill', { pos: [p[0], 1.4 + Math.sin(w.t * 6 + gh.k) * 0.15, p[2]], scale: [2, 2.6, 2], color: col, metallic: 0.3, roughness: 0.3, emissive: col, emissiveStrength: 1 });
+      const f = gh.d >= 0 ? DIRS[gh.d] : [0, 1];
+      for(const s of [-1, 1]){
+        const e = [p[0] + f[0] * 0.8 + f[1] * s * 0.45, 1.9, p[2] + f[1] * 0.8 - f[0] * s * 0.45];
+        r.draw('lowsphere', { pos: e, scale: 0.45, color: '#ffffff', emissive: '#ffffff', emissiveStrength: 0.8 });
+      }
+      if(nl++ < 4) r.light({ pos: [p[0], 4, p[2]], color: col, intensity: 50, range: 10 });
+    }
+    if(!(me.inv > 0 && Math.sin(w.t * 30) > 0)){
+      const chomp = 1 + 0.12 * Math.abs(Math.sin(w.t * 14));
+      r.draw('sphere', { pos: [mp[0], 1.3, mp[2]], scale: 2.4 * chomp, color: '#ffe680', metallic: 0.2, roughness: 0.3, rim: 1, emissive: colour, emissiveStrength: 0.7 });
+      r.glow([mp[0], 1.3, mp[2]], 3, '#ffe680', 0.6);
+    }
+    r.light({ pos: [mp[0], 7, mp[2] + 2], color: '#fff0c0', intensity: 140, range: 28 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    hud.radar(70, Ht - 74, 54, mp, [0, 0, -1], 18 * S, ghosts.filter(g => g.away <= 0).map(g => ({ p: pos(g), c: frightT > 0 ? '#4d8bff' : g.c, s: 3 })));
+    for(const gh of ghosts){ if(gh.away > 0) continue; const p = pos(gh); if(!hud.proj(p).on && Math.hypot(p[0] - mp[0], p[2] - mp[2]) < 60) hud.edgeArrow(p, frightT > 0 ? '#4d8bff' : gh.c, null); }
+    if(frightT > 0) hud.bar(Wd / 2 - 70, 40, 140, 7, frightT / 7.5, '#4d8bff', 'POWER');
+    hud.text(Wd / 2, 24, '💾 ' + bits, { size: 15, color: '#ffe8a0' });
+    hud.text(Wd - 16, Ht - 40, '👾 ' + ghostsEaten, { size: 13, align: 'right', color: '#bff6ff' });
+    hud.text(Wd - 16, Ht - 20, '●'.repeat(Math.max(0, lives)) + '○'.repeat(Math.max(0, 3 - lives)), { size: 15, align: 'right', color: '#ffe680' });
+    if(msgT > 0) hud.text(Wd / 2, 64, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🤖 BATTLE BOTS · OPEN WORLD — THE SIEGE
+// ══════════════════════════════════════════════
+// The classic fights in lanes, spending RAM on units from a deck. Out here the
+// lanes are gone: an open battlefield studded with enemy outposts, each one
+// turning out defenders while you are near. Drive your command rover, spend
+// RAM, and drop units anywhere round you — drones, walkers, tanks — and they
+// march on whatever is closest. Deploy where you are losing; burn every post.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, ease, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, followCam, screenToGround, groundRing, beacon, makeCity } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const DEPLOY_R = 34, RAM_MAX = 100;
+const UNITS = [
+  { k: 'drone',  name: 'DRONE',  geo: 'drone', cost: 18, hp: 4,  sp: 13, range: 9,  dmg: 1, rate: 0.35, sc: 1.6, h: 2.2, key: '1' },
+  { k: 'walker', name: 'WALKER', geo: 'mech',  cost: 34, hp: 9,  sp: 7,  range: 16, dmg: 2, rate: 0.7,  sc: 2.4, h: 0,   key: '2' },
+  { k: 'tank',   name: 'TANK',   geo: 'tank',  cost: 58, hp: 18, sp: 4.5, range: 24, dmg: 5, rate: 1.4, sc: 2.6, h: 0,   key: '3' }
+];
+const FOE = { geo: 'drone', hp: 4, sp: 9, range: 12, dmg: 1, rate: 0.6, sc: 1.6, h: 2.2 };
+
+P.ow.battlebots = function(){
+  const G = groundBegin({ sky: 'ember', env: { horizon: '#6a3410' }, input: { touch: 'tap' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('LEFT: DRIVE · TAP A CARD, THEN THE GROUND: DEPLOY', 'WASD: DRIVE · 1 / 2 / 3 or Q/E: PICK A UNIT · CLICK THE GROUND: DEPLOY IT THERE · SPACE: DEPLOY AHEAD');
+
+  const me = { p: [0, 0, 0], v: [0, 0, 0], hp: 100, inv: 0, face: 0 };
+  let ram = 60, pick = 0, score = 0, burned = 0, kills = 0, deployed = 0, lost = 0, over = false, finished = false, msg = '', msgT = 0, wasFire = false;
+  const units = [], foes = [], shots = [], taps = [];
+  const posts = makeField({
+    cell: 150, dims: 2, seed: 8686, radius: 600,
+    gen(cx, cy, cz, g){
+      if(g() < 0.25 || (cx === 0 && cz === 0)) return [];
+      return [{ p: [(cx + 0.2 + g() * 0.6) * 150, 0, (cz + 0.2 + g() * 0.6) * 150], hp: 70, max: 70, spawnT: g() * 4, alive: 0, flash: 0, ph: g() * TAU }];
+    }
+  });
+  const city = makeCity({ seed: 8787, density: 0.12, cell: 120, clear: 60, hMin: 14, hMax: 50, radius: 600, towerColor: '#140806' });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#00f5ff,#39ff88)';
+  const clock = owClock(150, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  // Touch: a tap on the right half deploys where it lands.
+  const cv = aCanvas;
+  const onTouch = e => {
+    if(!e.isTrusted) return;
+    const rc = cv.getBoundingClientRect();
+    for(const t of e.changedTouches){
+      const x = t.clientX - rc.left, y = t.clientY - rc.top;
+      const card = deckAt(x, y);
+      if(card >= 0){ pick = card; snd('tab'); continue; }
+      if(x / Math.max(1, rc.width) >= 0.5) taps.push([x, y]);
+    }
+  };
+  if(cv) cv.addEventListener('touchstart', onTouch, { passive: true });
+  // The deck's three cards, where the HUD draws them (see the bottom of the frame).
+  const CW = 92;
+  function deckAt(x, y){
+    const x0 = hud.W / 2 - CW * 1.5 - 6;
+    if(y < hud.H - 64 || y > hud.H - 30) return -1;
+    for(let i = 0; i < 3; i++){ const cx = x0 + i * (CW + 6); if(x >= cx && x <= cx + CW) return i; }
+    return -1;
+  }
+  const prevStop = onStopGame;
+  onStopGame = () => { try{ if(cv) cv.removeEventListener('touchstart', onTouch); }catch(e){} if(prevStop) prevStop(); };
+
+  function deploy(at){
+    const U = UNITS[pick];
+    if(ram < U.cost){ snd('deny'); say('NOT ENOUGH RAM for a ' + U.name, 1.2); return false; }
+    let d = V.sub(at, me.p), l = Math.hypot(d[0], d[2]);
+    if(l > DEPLOY_R){ at = V.add(me.p, V.mul([d[0] / l, 0, d[2] / l], DEPLOY_R)); }
+    if(city.hit(at, 2)) at = V.add(me.p, [rr(-4, 4), 0, rr(-4, 4)]);
+    ram -= U.cost;
+    deployed++;
+    units.push({ U, p: [at[0], 0, at[2]], hp: U.hp, cool: rr(0, U.rate), face: me.face, flash: 0 });
+    snd('equip');
+    fx.flash([at[0], 1.5, at[2]], '#7fe8ff', 1.6, 0.25);
+    groundRingFlash.push({ p: [at[0], 0, at[2]], t: 0 });
+    return true;
+  }
+  const groundRingFlash = [];
+  function fire(from, tgt, dmg, mineSide, col){
+    const a = [from.p[0], (from.U || FOE).h + 1.4, from.p[2]];
+    const b = tgt.p ? [tgt.p[0], 1.4, tgt.p[2]] : tgt;
+    shots.push({ a, b, t: 0, dmg, tgt, mine: mineSide, col });
+    snd(mineSide ? 'shoot' : 'enemyShot', { semi: mineSide ? 4 : -4 });
+  }
+  function hurtPost(pt, dmg){
+    pt.hp -= dmg; pt.flash = 0.12;
+    if(pt.hp <= 0 && !pt.dead){
+      pt.dead = true;
+      posts.kill(pt);
+      burned++;
+      const pts = 150;
+      score += pts; setLive(score);
+      ram = Math.min(RAM_MAX, ram + 30);
+      fx.explode([pt.p[0], 4, pt.p[2]], 6, { color: '#ff7a2a', debrisGeo: 'slab', debrisColor: '#3a3e48' });
+      snd('bigExplode'); w.kick(1.4);
+      w.pop([pt.p[0], 12, pt.p[2]], '🔥 OUTPOST BURNED +' + pts, '#ffd27a', { size: 16 });
+    }
+  }
+  function hurtMe(dmg, at){
+    if(me.inv > 0 || over) return;
+    me.hp -= dmg;
+    snd('hurt'); w.kick(0.5);
+    fx.sparks(at, 6, '#ff6a6a', 1, 10);
+    bar.style.width = Math.max(0, me.hp) + '%';
+    if(me.hp <= 0){
+      if(survivedFatal()){ me.hp = 50; me.inv = 1.5; bar.style.width = '50%'; say('SHIELD ABSORBED', 1.6); }
+      else{ over = true; snd('bigExplode'); fx.explode([me.p[0], 1, me.p[2]], 3, { color: colour }); gLater(() => finish('down'), 1200); }
+    }
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('battlebots', score, {
+      '📡 Siege': why === 'clock' ? 'CLOCK EXPIRED' : 'COMMANDER DOWN',
+      '🔥 Outposts Burned': burned,
+      '💥 Defenders Destroyed': kills,
+      '🤖 Units Deployed': deployed + ' (' + lost + ' lost)',
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, ram: Math.round(ram), units: units.length, foes: foes.length, burned, kills, hp: me.hp }),
+    lose(){ me.inv = 0; hurtMe(200, [me.p[0], 1, me.p[2]]); },
+    deploy(k){ pick = k || 0; ram = RAM_MAX; return deploy(V.add(me.p, [0, 0, -10])); },
+    burnNearest(){ let best = null, bd = 1e12; posts.each(pt => { const d = V.d2(pt.p, me.p); if(d < bd){ bd = d; best = pt; } }); if(best) hurtPost(best, 999); return !!best; }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      me.inv = Math.max(0, me.inv - dt);
+      ram = Math.min(RAM_MAX, ram + (9 + burned * 0.5) * dt);
+      // Driving: world axes, the camera never turns.
+      let mx = I.lx, mz = I.ly;
+      const ml = Math.hypot(mx, mz); if(ml > 1){ mx /= ml; mz /= ml; }
+      me.v = V.lerp(me.v, [mx * 18, 0, mz * 18], ease(dt, 0.1));
+      const np = V.madd(me.p, me.v, dt);
+      if(!city.hit(np, 1.6)) me.p = np; else me.v = [0, 0, 0];
+      if(ml > 0.1) me.face = Math.atan2(-mx, -mz);
+      city.update(me.p);
+      posts.update(me.p);
+      // The deck.
+      const pr = I.pressed || {};
+      if(pr.Digit1 || pr.Numpad1) pick = 0;
+      if(pr.Digit2 || pr.Numpad2) pick = 1;
+      if(pr.Digit3 || pr.Numpad3) pick = 2;
+      if(pr.KeyE || I.altHit) pick = (pick + 1) % 3;
+      if(pr.KeyQ) pick = (pick + 2) % 3;
+      const click = I.fire && !wasFire;
+      wasFire = I.fire;
+      if(click){
+        if(I.device === 'mouse' && I.mouseOn && hud.cam){
+          const g = screenToGround(hud, (I.mx + 1) / 2 * hud.W, (I.my + 1) / 2 * hud.H, 0);
+          if(g) deploy(g);
+        }else if(I.device !== 'touch') deploy(V.add(me.p, [-Math.sin(me.face) * 10, 0, -Math.cos(me.face) * 10]));
+      }
+      while(taps.length && hud.cam){ const t = taps.shift(); const g = screenToGround(hud, t[0], t[1], 0); if(g) deploy(g); }
+      // Outposts turn out defenders while you are near.
+      posts.each(pt => {
+        pt.flash = Math.max(0, pt.flash - dt);
+        if(V.d2(pt.p, me.p) > 170 * 170) return;
+        pt.spawnT -= dt;
+        if(pt.spawnT <= 0 && pt.alive < 3 && foes.length < 18){
+          pt.spawnT = rr(5, 8) / Math.min(1.4, diff);
+          pt.alive++;
+          const a = Math.random() * TAU;
+          foes.push({ p: [pt.p[0] + Math.cos(a) * 7, 0, pt.p[2] + Math.sin(a) * 7], hp: FOE.hp, cool: rr(0.5, 1.5), post: pt, face: 0, flash: 0, ph: Math.random() * TAU });
+        }
+      });
+    }
+    if(dt > 0){
+      // Your units: march on the nearest thing to fight.
+      for(let i = units.length - 1; i >= 0; i--){
+        const u = units[i];
+        u.flash = Math.max(0, u.flash - dt);
+        let tgt = null, bd = 1e12, isPost = false;
+        for(const f of foes){ const d = V.d2(f.p, u.p); if(d < bd && d < 90 * 90){ bd = d; tgt = f; isPost = false; } }
+        if(!tgt) posts.each(pt => { if(pt.dead) return; const d = V.d2(pt.p, u.p); if(d < bd && d < 200 * 200){ bd = d; tgt = pt; isPost = true; } });
+        if(tgt){
+          const d = V.sub(tgt.p, u.p), l = Math.hypot(d[0], d[2]) || 1;
+          u.face = Math.atan2(-d[0], -d[2]);
+          const reach = u.U.range + (isPost ? 5 : 0);
+          if(l > reach){
+            const np = V.madd(u.p, [d[0] / l, 0, d[2] / l], u.U.sp * dt);
+            if(!city.hit(np, 1.5)) u.p = np; else u.p = V.madd(u.p, [-d[2] / l, 0, d[0] / l], u.U.sp * dt);
+          }
+          u.cool -= dt;
+          if(l <= reach + 1 && u.cool <= 0){ u.cool = u.U.rate; fire(u, tgt, u.U.dmg, true, '#7fe8ff'); }
+        }else{
+          // Nothing to fight: fall in near the rover.
+          const d = V.sub(me.p, u.p), l = Math.hypot(d[0], d[2]);
+          if(l > 12) u.p = V.madd(u.p, [d[0] / l, 0, d[2] / l], u.U.sp * dt);
+        }
+        if(u.hp <= 0){ units.splice(i, 1); lost++; fx.explode([u.p[0], 1.5, u.p[2]], 1.6, { color: '#7fe8ff', debrisGeo: 'slab', debrisColor: '#2a2e3a' }); snd('explode'); }
+      }
+      // Defenders: go for the nearest unit, else the rover.
+      for(let i = foes.length - 1; i >= 0; i--){
+        const f = foes[i];
+        f.flash = Math.max(0, f.flash - dt);
+        let tgt = me, bd = V.d2(me.p, f.p);
+        for(const u of units){ const d = V.d2(u.p, f.p); if(d < bd){ bd = d; tgt = u; } }
+        const d = V.sub(tgt.p, f.p), l = Math.hypot(d[0], d[2]) || 1;
+        f.face = Math.atan2(-d[0], -d[2]);
+        if(l > FOE.range){
+          const wob = [Math.cos(w.t * 2 + f.ph) * 0.4, 0, Math.sin(w.t * 2 + f.ph) * 0.4];
+          const np = V.madd(f.p, V.norm(V.add([d[0] / l, 0, d[2] / l], wob)), FOE.sp * Math.min(1.3, diff) * dt);
+          if(!city.hit(np, 1.2)) f.p = np;
+        }
+        f.cool -= dt;
+        if(l <= FOE.range + 1 && f.cool <= 0 && !over){ f.cool = FOE.rate * rr(0.8, 1.3) / Math.min(1.3, diff); fire(f, tgt, tgt === me ? 4 : FOE.dmg, false, '#ff4a4a'); }
+        if(f.hp <= 0){
+          foes.splice(i, 1);
+          if(f.post) f.post.alive = Math.max(0, f.post.alive - 1);
+          kills++;
+          score += 20; setLive(score);
+          ram = Math.min(RAM_MAX, ram + 4);
+          fx.explode([f.p[0], 2, f.p[2]], 1.4, { color: '#ff6a4a', debris: 2 });
+          snd('explode');
+        }else if(V.d2(f.p, me.p) > 260 * 260){ foes.splice(i, 1); if(f.post) f.post.alive = Math.max(0, f.post.alive - 1); }
+      }
+      // Shots land after a beat.
+      for(let i = shots.length - 1; i >= 0; i--){
+        const s = shots[i];
+        s.t += dt * 4;
+        if(s.t < 1) continue;
+        shots.splice(i, 1);
+        const T = s.tgt;
+        if(s.mine){
+          if(T.max){ if(!T.dead) hurtPost(T, s.dmg); }
+          else if(T.hp > 0){ T.hp -= s.dmg; T.flash = 0.1; }
+        }else if(T === me) hurtMe(s.dmg, s.b);
+        else if(T.hp > 0){ T.hp -= s.dmg; T.flash = 0.1; }
+        fx.sparks(s.b, 4, s.col, 0.8, 8);
+      }
+      for(let i = groundRingFlash.length - 1; i >= 0; i--){ groundRingFlash[i].t += dt; if(groundRingFlash[i].t > 0.6) groundRingFlash.splice(i, 1); }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    followCam(w, me.p, { height: 48, back: 30, look: 4, fov: 54, half: 0.12 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 8, radius: 200, color: '#5a2a0a', glow: 0.8, major: 6, floor: '#0a0503', rough: 0.3 });
+    city.draw(w);
+    const eye = w.cam.eye;
+    let nl = 0;
+    posts.each(pt => {
+      if(V.d2(pt.p, eye) > 500 * 500) return;
+      beacon(w, pt.p, '#ff4a4a', 60, 0.5 + 0.3 * Math.sin(w.t * 2 + pt.ph));
+      if(!r.viewDepth([pt.p[0], 5, pt.p[2]], 1.4)) return;
+      r.draw('techblock', { pos: [pt.p[0], 4, pt.p[2]], scale: [9, 8, 9], color: pt.flash > 0 ? '#ffffff' : '#2a1c18', metallic: 0.7, roughness: 0.4, emissive: '#ff4a4a', emissiveStrength: 0.35 });
+      r.draw('turret', { pos: [pt.p[0], 8.6, pt.p[2]], rot: [0, w.t * 0.6, 0], scale: 2.4, color: '#5a4a44', metallic: 0.6, roughness: 0.4, emissive: '#ff4a4a', emissiveStrength: 0.5 });
+      if(nl++ < 3) r.light({ pos: [pt.p[0], 12, pt.p[2]], color: '#ff5a4a', intensity: 120, range: 28 });
+    });
+    const drawBot = (b, U, col, enemy) => {
+      if(V.d2(b.p, eye) > 260 * 260) return;
+      const y = U.h ? U.h + Math.sin(w.t * 4 + (b.ph || 0)) * 0.3 : U.sc * 0.5;
+      r.draw(U.geo, { pos: [b.p[0], y, b.p[2]], rot: [0, b.face, 0], scale: U.sc, color: b.flash > 0 ? '#ffffff' : enemy ? '#3a2a2a' : '#c9d1dd',
+                      metallic: 0.65, roughness: 0.35, rim: 0.8, emissive: col, emissiveStrength: enemy ? 0.4 : 0.25, accent: enemy ? 2 : 0 });
+      r.glow([b.p[0], y, b.p[2]], 1.6, col, 0.45);
+    };
+    for(const u of units) drawBot(u, u.U, '#00f5ff', false);
+    for(const f of foes) drawBot(f, FOE, '#ff4a4a', true);
+    for(const s of shots){
+      const p = V.lerp(s.a, s.b, s.t);
+      r.streak(V.lerp(s.a, s.b, Math.max(0, s.t - 0.25)), p, 0.25, s.col, 2.4, 0.9);
+    }
+    for(const g of groundRingFlash) groundRing(w, g.p, 2 + g.t * 6, '#7fe8ff', 1.6 * (1 - g.t / 0.6));
+    // The command rover and its deploy radius.
+    if(!(me.inv > 0 && Math.sin(w.t * 30) > 0)) r.draw('tank', { pos: [me.p[0], 1.3, me.p[2]], rot: [0, me.face, 0], scale: 2.6, color: '#d8e0ec', metallic: 0.65, roughness: 0.3, rim: 0.8, emissive: colour, emissiveStrength: 0.4, accent: 0 });
+    if(P.owDrive) P.owDrive.dotRing(w, me.p, DEPLOY_R, colour, 0.5);
+    r.light({ pos: [me.p[0], 10, me.p[2] + 4], color: '#e0f0ff', intensity: 170, range: 40 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = [];
+    posts.each(pt => { if(V.d2(pt.p, me.p) < 300 * 300) rad.push({ p: pt.p, c: '#ff4a4a', s: 3.6, shape: 'diamond' }); });
+    for(const u of units) rad.push({ p: u.p, c: '#00f5ff', s: 1.6 });
+    for(const f of foes) rad.push({ p: f.p, c: '#ff9a6a', s: 1.6 });
+    hud.radar(70, Ht - 74, 54, me.p, [0, 0, -1], 220, rad);
+    let near = null, nd = 1e12;
+    posts.each(pt => { const d = V.d2(pt.p, me.p); if(d < nd){ nd = d; near = pt; } });
+    if(near){
+      const q = hud.proj([near.p[0], 10, near.p[2]]);
+      if(q.on) hud.bar(q.x - 30, q.y - 16, 60, 5, near.hp / near.max, '#ff4a4a');
+      else hud.edgeArrow(near.p, '#ff4a4a', 'POST');
+    }
+    // The deck: three cards and the RAM bar.
+    const cw = CW, x0 = Wd / 2 - cw * 1.5 - 6;
+    UNITS.forEach((U, i) => {
+      const x = x0 + i * (cw + 6), can = ram >= U.cost;
+      hud.panel(x, Ht - 64, cw, 34, U.key + ' ' + U.name, U.cost, i === pick ? '#7fe8ff' : can ? '#4a7a9a' : '#3a3a48');
+    });
+    hud.bar(Wd / 2 - 140, Ht - 20, 280, 8, ram / RAM_MAX, '#39ff88', 'RAM ' + Math.floor(ram));
+    hud.text(Wd - 16, Ht - 20, '🔥 ' + burned, { size: 14, align: 'right', color: '#ffd27a' });
+    if(msgT > 0) hud.text(Wd / 2, 26, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🕶️ ICE CUTTER · OPEN WORLD — THE FACILITY WITH NO OUTER WALL
+// ══════════════════════════════════════════════
+// The classic is one room of sweeping patrol beams. This facility never ends:
+// low walls in every direction, searchlight posts sweeping, drones walking
+// their beats with a cone of light ahead of them, and data caches tucked
+// among it all. Standing in any beam fills EXPOSURE; the dark drains it; the
+// walls throw shadows the beams cannot cross. Fill it and you are caught.
+// Stopping is usually the right move.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, ease, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, followCam, screenToGround, groundRing } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const CELL = 56;
+
+P.ow.cutter = function(){
+  const G = groundBegin({ sky: 'night', env: { zenith: '#020308', horizon: '#0a1830', intensity: 0.7 }, fog: { color: '#020409', density: 0.008 }, input: { touch: 'fly' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: CREEP · BOOST: RUN (LOUD) · STAY OUT OF THE LIGHT', 'WASD / ARROWS or HOLD THE MOUSE: CREEP · SHIFT: RUN (THE BEAMS SEE IT FASTER) · STAY IN THE DARK');
+
+  const me = { p: [0, 0, 0], v: [0, 0, 0], inv: 2 };
+  let exposure = 0, lives = 3, caches = 0, ghostRuns = 0, caught = 0, score = 0, over = false, finished = false, msg = '', msgT = 0, lit = false;
+  // Each cell: a few low walls, a searchlight post or a patrol drone, caches.
+  const fac = makeField({
+    cell: CELL, dims: 2, seed: 9191, radius: 280,
+    gen(cx, cy, cz, g){
+      const items = [];
+      const x0 = cx * CELL, z0 = cz * CELL;
+      const home = Math.abs(cx) <= 0 && Math.abs(cz) <= 0;
+      const nw = 1 + Math.floor(g() * 3);
+      for(let i = 0; i < nw; i++){
+        const horiz = g() < 0.5, len = 10 + g() * 18;
+        const x = x0 + 6 + g() * (CELL - 12), z = z0 + 6 + g() * (CELL - 12);
+        if(home && Math.hypot(x, z) < 12) continue;
+        items.push({ t: 'wall', x, z, hw: horiz ? len / 2 : 0.8, hd: horiz ? 0.8 : len / 2 });
+      }
+      if(!home){
+        const roll = g();
+        if(roll < 0.4) items.push({ t: 'light', p: [x0 + 10 + g() * (CELL - 20), 0, z0 + 10 + g() * (CELL - 20)], a0: g() * TAU, sweep: 0.6 + g() * 0.6, sp: 0.35 + g() * 0.4, range: 20 + g() * 6, half: 0.32 + g() * 0.12, ph: g() * TAU });
+        else if(roll < 0.75){
+          const c = [x0 + CELL / 2, 0, z0 + CELL / 2], s = 10 + g() * 8;
+          items.push({ t: 'drone', c, s, u: g() * 4, sp: 0.09 + g() * 0.06, range: 14, half: 0.42, dirn: g() < 0.5 ? 1 : -1 });
+        }
+      }
+      const nc = (g() < 0.7 ? 1 : 0) + (g() < 0.3 ? 1 : 0);
+      for(let i = 0; i < nc; i++){ if(!home) items.push({ t: 'cache', p: [x0 + 5 + g() * (CELL - 10), 0, z0 + 5 + g() * (CELL - 10)], ph: g() * TAU }); }
+      return items;
+    }
+  });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '0%';
+  bar.style.background = 'linear-gradient(90deg,#ffd27a,#ff2d6a)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  // A drone walks the perimeter of a square: u in 0..4 is the distance round it.
+  const droneAt = d => {
+    const u = ((d.u % 4) + 4) % 4, s = d.s, e = Math.floor(u), f = u - e;
+    const C = [[-s, -s], [s, -s], [s, s], [-s, s]];
+    const a = C[e], b = C[(e + 1) % 4];
+    const p = [d.c[0] + a[0] + (b[0] - a[0]) * f, 0, d.c[2] + a[1] + (b[1] - a[1]) * f];
+    let dir = [b[0] - a[0], 0, b[1] - a[1]];
+    if(d.dirn < 0) dir = V.mul(dir, -1);
+    return { p, dir: V.norm(dir) };
+  };
+  const walls = [];
+  // Does the segment a→b cross any wall near it?
+  function blocked(a, b){
+    for(const wl of walls){
+      // Slab test against the wall's box in XZ.
+      let t0 = 0, t1 = 1;
+      const d = [b[0] - a[0], b[2] - a[2]];
+      const mn = [wl.x - wl.hw, wl.z - wl.hd], mx = [wl.x + wl.hw, wl.z + wl.hd], o = [a[0], a[2]];
+      let hit = true;
+      for(let k = 0; k < 2 && hit; k++){
+        if(Math.abs(d[k]) < 1e-6){ if(o[k] < mn[k] || o[k] > mx[k]) hit = false; }
+        else{
+          let ta = (mn[k] - o[k]) / d[k], tb = (mx[k] - o[k]) / d[k];
+          if(ta > tb){ const t = ta; ta = tb; tb = t; }
+          t0 = Math.max(t0, ta); t1 = Math.min(t1, tb);
+          if(t0 > t1) hit = false;
+        }
+      }
+      if(hit) return true;
+    }
+    return false;
+  }
+  // Is p inside this light's cone, with nothing in between?
+  function inCone(o, dir, range, half, p){
+    const d = [p[0] - o[0], 0, p[2] - o[2]], l = Math.hypot(d[0], d[2]);
+    if(l > range || l < 0.01) return 0;
+    const cos = (d[0] * dir[0] + d[2] * dir[2]) / l;
+    if(cos < Math.cos(half)) return 0;
+    if(blocked([o[0], 0, o[2]], p)) return 0;
+    return 1 - l / range * 0.6;
+  }
+  const lightDir = L => { const a = L.a0 + Math.sin(w.t * L.sp + L.ph) * L.sweep; return [Math.sin(a), 0, Math.cos(a)]; };
+  function grab(it){
+    fac.kill(it);
+    caches++;
+    const ghost = exposure < 0.2;
+    if(ghost) ghostRuns++;
+    const pts = 40 + (ghost ? 25 : 0);
+    score += pts; setLive(score);
+    snd('pickup');
+    fx.glowPop([it.p[0], 1.2, it.p[2]], '#39ff88', 2, 0.35);
+    w.pop([it.p[0], 3, it.p[2]], '+' + pts + (ghost ? ' GHOST' : ''), ghost ? '#9dffc4' : '#7fe8ff', { size: 14 });
+  }
+  function spotted(){
+    caught++;
+    lives--;
+    exposure = 0;
+    me.inv = 2.5;
+    snd('alarm'); w.kick(1.2);
+    fx.sparks([me.p[0], 1, me.p[2]], 16, '#ff4a4a', 1.2, 12);
+    if(lives <= 0){
+      if(survivedFatal()){ lives = 1; say('SHIELD ABSORBED', 1.6); }
+      else{ over = true; gLater(() => finish('caught'), 1200); return; }
+    }
+    say('🚨 SPOTTED — ' + lives + ' left · lie low', 2);
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('cutter', score, {
+      '📡 Infiltration': why === 'clock' ? 'CLOCK EXPIRED' : 'CAUGHT',
+      '💾 Caches Lifted': caches,
+      '👻 Unseen Grabs': ghostRuns,
+      '🚨 Times Spotted': caught,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, caches, lives, exposure: Math.round(exposure * 100), lit, walls: walls.length }),
+    grab(){ let it = null; fac.each(o => { if(!it && o.t === 'cache') it = o; }); if(it) grab(it); return !!it; },
+    expose(){ me.inv = 0; exposure = 1; spotted(); },
+    lose(){ me.inv = 0; exposure = 1; spotted(); }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    fac.update(me.p);
+    walls.length = 0;
+    fac.near(me.p, it => { if(it.t === 'wall') walls.push(it); });
+    if(dt > 0 && !over){
+      me.inv = Math.max(0, me.inv - dt);
+      let mx = I.lx, mz = I.ly;
+      if(I.device === 'mouse' && I.mDown && hud.cam){
+        const g = screenToGround(hud, (I.mx + 1) / 2 * hud.W, (I.my + 1) / 2 * hud.H, 0);
+        if(g){ const d = V.sub(g, me.p), l = Math.hypot(d[0], d[2]); if(l > 1){ mx = d[0] / l; mz = d[2] / l; } }
+      }
+      const ml = Math.hypot(mx, mz); if(ml > 1){ mx /= ml; mz /= ml; }
+      const running = I.boost && ml > 0.1;
+      const sp = running ? 15 : 8;
+      me.v = V.lerp(me.v, [mx * sp, 0, mz * sp], ease(dt, 0.08));
+      const np = V.madd(me.p, me.v, dt);
+      let ok = true;
+      for(const wl of walls) if(Math.abs(np[0] - wl.x) < wl.hw + 0.9 && Math.abs(np[2] - wl.z) < wl.hd + 0.9){ ok = false; break; }
+      if(ok) me.p = np;
+      else{
+        // Slide along the wall.
+        const nx = [np[0], 0, me.p[2]], nz = [me.p[0], 0, np[2]];
+        const free = q => !walls.some(wl => Math.abs(q[0] - wl.x) < wl.hw + 0.9 && Math.abs(q[2] - wl.z) < wl.hd + 0.9);
+        if(free(nx)) me.p = nx; else if(free(nz)) me.p = nz;
+      }
+      // The light on you.
+      let k = 0;
+      fac.near(me.p, it => {
+        if(it.t === 'light') k = Math.max(k, inCone(it.p, lightDir(it), it.range, it.half, me.p));
+        else if(it.t === 'drone'){ const D = droneAt(it); k = Math.max(k, inCone(D.p, D.dir, it.range, it.half, me.p)); }
+        else if(it.t === 'cache' && V.d2(it.p, me.p) < 2.4 * 2.4) grab(it);
+      });
+      lit = k > 0 && me.inv <= 0;
+      if(lit) exposure += (0.55 + k * 0.6) * (running ? 1.7 : 1) * Math.min(1.4, diff) * dt;
+      else exposure = Math.max(0, exposure - (Math.hypot(me.v[0], me.v[2]) < 1 ? 0.45 : 0.28) * dt);
+      if(exposure >= 1) spotted();
+      bar.style.width = clamp(exposure * 100, 0, 100) + '%';
+      fac.each(it => { if(it.t === 'drone') it.u += it.sp * it.dirn * dt * Math.min(1.3, diff); });
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    followCam(w, me.p, { height: 30, back: 18, look: 2, fov: 56, half: 0.12 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 4, radius: 110, color: '#0e2a4a', glow: 0.55, major: 7, floor: '#020408', rough: 0.35 });
+    const eye = w.cam.eye;
+    const fan = (o, dir, range, half, col, k) => {
+      const m3 = [-dir[2], 0, dir[0], -dir[0], 0, -dir[2], 0, 1, 0];
+      r.draw('cone', { pos: [o[0] + dir[0] * range / 2, 0.12, o[2] + dir[2] * range / 2], m3, scale: [2 * range * Math.tan(half), range, 0.15],
+                       color: col, emissive: col, emissiveStrength: 1.2 * k, alpha: 0.16 * k, blend: true });
+    };
+    let nl = 0;
+    fac.each(it => {
+      if(it.t === 'wall'){
+        if(V.d2([it.x, 0, it.z], eye) > 140 * 140) return;
+        r.draw('cube', { pos: [it.x, 1.4, it.z], scale: [it.hw * 2, 2.8, it.hd * 2], color: '#141a26', metallic: 0.6, roughness: 0.45, rim: 0.5 });
+        r.draw('box', { pos: [it.x, 2.85, it.z], scale: [it.hw * 2 + 0.02, 0.08, it.hd * 2 + 0.02], color: '#2a5a8a', emissive: '#2a6aaa', emissiveStrength: 1.2 });
+      }else if(it.t === 'light'){
+        if(V.d2(it.p, eye) > 150 * 150) return;
+        const d = lightDir(it);
+        r.draw('cylinder', { pos: [it.p[0], 1.6, it.p[2]], scale: [1, 3.2, 1], color: '#2a2a34', metallic: 0.8, roughness: 0.3 });
+        r.draw('turret', { pos: [it.p[0], 3.4, it.p[2]], rot: [0, Math.atan2(-d[0], -d[2]) + Math.PI, 0], scale: 1, color: '#6a6a7a', metallic: 0.6, roughness: 0.3, emissive: '#ffd27a', emissiveStrength: 0.8 });
+        fan(it.p, d, it.range, it.half, '#ffd27a', 1);
+        if(nl++ < 4) r.light({ pos: V.add(it.p, [d[0] * 8, 3, d[2] * 8]), color: '#ffe0a0', intensity: 70, range: 16 });
+      }else if(it.t === 'drone'){
+        const D = droneAt(it);
+        if(V.d2(D.p, eye) > 150 * 150) return;
+        r.draw('drone', { pos: [D.p[0], 2, D.p[2]], rot: [0, Math.atan2(-D.dir[0], -D.dir[2]), 0], scale: 1.6, color: '#3a3a4a', metallic: 0.6, roughness: 0.35, emissive: '#ff5a5a', emissiveStrength: 0.6, accent: 2 });
+        fan(D.p, D.dir, it.range, it.half, '#ff6a6a', 0.8);
+      }else if(it.t === 'cache'){
+        if(V.d2(it.p, eye) > 140 * 140) return;
+        const y = 1 + Math.sin(w.t * 2 + it.ph) * 0.2;
+        r.draw('cube', { pos: [it.p[0], y, it.p[2]], rot: [w.t, w.t * 0.7, 0], scale: 1, color: '#39ff88', emissive: '#39ff88', emissiveStrength: 1.6 });
+        r.glow([it.p[0], y, it.p[2]], 1.6, '#39ff88', 0.6);
+      }
+    });
+    if(!(me.inv > 0 && Math.sin(w.t * 20) > 0)){
+      r.draw('mech', { pos: [me.p[0], 1.1, me.p[2]], rot: [0, Math.atan2(-me.v[0], -me.v[2] - 1e-6), 0], scale: 1.6, color: lit ? '#ffe8c0' : '#5a6a7a', metallic: 0.5, roughness: 0.4, rim: 0.6, emissive: colour, emissiveStrength: lit ? 0.6 : 0.2 });
+    }
+    groundRing(w, me.p, 1.3, lit ? '#ff4a4a' : colour, lit ? 1.6 : 0.5);
+    r.light({ pos: [me.p[0], 6, me.p[2] + 2], color: '#7a9aca', intensity: 50, range: 18 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = [];
+    fac.each(it => {
+      if(it.t === 'cache' && V.d2(it.p, me.p) < 90 * 90) rad.push({ p: it.p, c: '#39ff88', s: 2.2 });
+      else if(it.t === 'light' && V.d2(it.p, me.p) < 90 * 90) rad.push({ p: it.p, c: '#ffd27a', s: 2.6, shape: 'diamond' });
+      else if(it.t === 'drone'){ const D = droneAt(it); if(V.d2(D.p, me.p) < 90 * 90) rad.push({ p: D.p, c: '#ff6a6a', s: 2.6 }); }
+    });
+    hud.radar(70, Ht - 74, 54, me.p, [0, 0, -1], 70, rad);
+    hud.bar(Wd / 2 - 90, 34, 180, 9, exposure, exposure > 0.7 ? '#ff2d6a' : '#ffd27a', 'EXPOSURE');
+    hud.text(Wd / 2, 58, lit ? '👁 IN THE LIGHT' : me.inv > 0 ? '…lie low…' : 'DARK', { size: 12, color: lit ? '#ff8a8a' : '#7fe8ff' });
+    hud.text(Wd - 16, Ht - 40, '💾 ' + caches, { size: 14, align: 'right', color: '#9dffc4' });
+    hud.text(Wd - 16, Ht - 20, '●'.repeat(Math.max(0, lives)) + '○'.repeat(Math.max(0, 3 - lives)), { size: 15, align: 'right', color: '#bff6ff' });
+    if(msgT > 0) hud.text(Wd / 2, 80, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🎵 RHYTHM · OPEN WORLD — BEAT GATES ON THE PLAIN
+// ══════════════════════════════════════════════
+// The classic is three lanes and one beat. Out here there are no lanes: you
+// cruise an open plain and the gates are charted ahead of you on the beat of
+// your Music Drive — left, right, wherever — each with a ring that closes on
+// the exact moment it should be crossed. Steer through on the pulse; W and S
+// nudge your speed to fix your timing. Perfects build the multiplier.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround || !P.owDrive) return;
+const { V, TAU, wrapAng, ease, drawFloor, owClock } = P.owKit;
+const { groundBegin, chaseCam, groundRing, drawRover } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const CRUISE = 26, GW = 7.5, LEAD = 6;     // gates are charted six beats out
+
+P.ow.rhythm = function(){
+  const G = groundBegin({ sky: 'violet', env: { horizon: '#7a1a8a' }, input: { mouseSteer: true, mouseGain: 1.2, touch: 'drive' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  const bpm = (window.SFX && SFX.bpm) || 136;
+  const beat = 60 / bpm;
+  setControlHint('STICK: STEER THROUGH EACH GATE ON THE PULSE', 'A/D or THE MOUSE: STEER · W/S: NUDGE YOUR SPEED · CROSS EACH GATE AS ITS RING CLOSES');
+
+  const me = { p: [0, 0, 0], yaw: 0, speed: CRUISE, bank: 0 };
+  let t = 0, nextBeat = 2, score = 0, combo = 0, bestCombo = 0, mult = 1, perfect = 0, good = 0, ok = 0, missed = 0, over = false, finished = false;
+  let msg = '', msgT = 0, judge = '', judgeT = 0, judgeCol = '#ffffff', lastBeatI = -1, pulse = 0;
+  const gates = [];
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#ff2bd6,#a855f7,#00f5ff)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, tt) => { msg = s; msgT = tt || 2; };
+
+  // Chart a gate for beat number b: where you would be then if you held your
+  // heading, swung left or right — further and more often as the run goes on.
+  let side = 0;
+  function chart(b){
+    const at = b * beat;
+    const ahead = CRUISE * (at - t);
+    const f = [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], rt = [-f[2], 0, f[0]];
+    const swing = Math.min(14, 5 + t * 0.06);
+    side = clamp(side + rr(-1, 1) * swing, -swing * 1.6, swing * 1.6);
+    const p = V.add(V.madd(me.p, f, ahead), V.mul(rt, side));
+    gates.push({ p, n: f, at, b, done: false, res: null });
+  }
+  function judgeGate(g, dt0){
+    g.done = true;
+    const e = Math.abs(dt0);
+    let pts, txt, col;
+    if(e <= 0.07){ pts = 12; txt = 'PERFECT'; col = '#ffffff'; perfect++; }
+    else if(e <= 0.15){ pts = 7; txt = 'GOOD'; col = '#9dffc4'; good++; }
+    else if(e <= 0.26){ pts = 3; txt = 'OK'; col = '#7fe8ff'; ok++; }
+    else{ pts = 1; txt = dt0 < 0 ? 'EARLY' : 'LATE'; col = '#ffd27a'; }
+    if(e <= 0.15){ combo++; bestCombo = Math.max(bestCombo, combo); }
+    else combo = 0;
+    mult = 1 + Math.min(2, Math.floor(combo / 8));
+    score += pts * mult; setLive(score);
+    g.res = col;
+    judge = txt + (mult > 1 ? ' ×' + mult : ''); judgeT = 0.6; judgeCol = col;
+    snd(e <= 0.07 ? 'combo' : e <= 0.15 ? 'score' : 'click', { semi: Math.min(12, combo % 12) });
+    fx.sparks([g.p[0], 3, g.p[2]], e <= 0.07 ? 16 : 8, col, 1, 12);
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('rhythm', score, {
+      '📡 Set': why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
+      '♪ Charted At': Math.round(bpm) + ' BPM',
+      '✦ Perfect / Good / OK': perfect + ' / ' + good + ' / ' + ok,
+      '✖ Missed Gates': missed,
+      '⛓ Best Combo': bestCombo,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, combo, mult, perfect, good, ok, missed, gates: gates.length, bpm: Math.round(bpm) }),
+    hitPerfect(){ const g = gates.find(x => !x.done); if(g){ judgeGate(g, 0); return true; } return false; }
+  };
+  // The opening chart.
+  while(nextBeat * beat < LEAD * beat){ chart(nextBeat); nextBeat += 2; }
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      t += dt;
+      const steer = clamp(I.ax, -1, 1);
+      me.yaw = wrapAng(me.yaw - steer * 1.6 * dt);
+      me.bank += (clamp(steer * 0.5, -0.5, 0.5) - me.bank) * ease(dt, 0.1);
+      const nudge = clamp(-I.ly, -1, 1);
+      me.speed += (CRUISE * (1 + nudge * 0.28) - me.speed) * ease(dt, 0.2);
+      const prev = V.copy(me.p);
+      me.p = V.madd(me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], me.speed * dt);
+      // Chart ahead: every second beat at first, every beat once you are in it.
+      const step = t > 40 && diff >= 1 ? 1 : 2;
+      while(nextBeat * beat < t + LEAD * beat){ chart(nextBeat); nextBeat += (t > 70 && Math.random() < 0.5) ? 1 : step; }
+      // Crossing a gate's line, between its posts.
+      for(const g of gates){
+        if(g.done) continue;
+        const da = V.dot(V.sub(prev, g.p), g.n), db = V.dot(V.sub(me.p, g.p), g.n);
+        if(da < 0 && db >= 0){
+          const q = V.lerp(prev, me.p, -da / Math.max(1e-6, db - da));
+          const lat = Math.abs(V.dot(V.sub(q, g.p), [-g.n[2], 0, g.n[0]]));
+          if(lat < GW / 2){ judgeGate(g, (t - dt * (db / Math.max(1e-6, db - da))) - g.at); }
+        }
+      }
+      for(let i = gates.length - 1; i >= 0; i--){
+        const g = gates[i];
+        if(!g.done && t > g.at + 0.6){ g.done = true; g.res = '#ff4a6a'; missed++; combo = 0; mult = 1; judge = 'MISS'; judgeT = 0.6; judgeCol = '#ff6a8a'; snd('wrong'); }
+        if(g.done && t > g.at + 1.5) gates.splice(i, 1);
+      }
+      const bi = Math.floor(t / beat);
+      if(bi !== lastBeatI){ lastBeatI = bi; pulse = 1; }
+    }
+    pulse = Math.max(0, pulse - dt * 4);
+    judgeT = Math.max(0, judgeT - dt);
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    chaseCam(w, me.p, me.yaw, { back: 10, up: 4.6, ahead: 20, fov: 64, half: 0.08 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 170, color: '#5a1a7a', glow: 0.7 + pulse * 0.9, major: 4, floor: '#07030e', rough: 0.2 });
+    for(const g of gates){
+      const lead = g.at - t;
+      const col = g.res || (lead < 0.26 ? '#ffffff' : '#ff2bd6');
+      const rt = [-g.n[2], 0, g.n[0]];
+      for(const s of [-1, 1]){
+        const pp = V.add(g.p, V.mul(rt, s * GW / 2));
+        r.draw('cylinder', { pos: [pp[0], 2.5, pp[2]], scale: [0.6, 5, 0.6], color: '#1c1830', metallic: 0.8, roughness: 0.3, emissive: col, emissiveStrength: 0.6 });
+      }
+      r.beam(V.add(V.add(g.p, V.mul(rt, -GW / 2)), [0, 5, 0]), V.add(V.add(g.p, V.mul(rt, GW / 2)), [0, 5, 0]), 0.35, { color: col, emissive: col, emissiveStrength: 2.4 });
+      if(!g.done){
+        // The approach ring: it closes exactly on the beat.
+        const k = clamp(lead / (LEAD * beat), 0, 1);
+        const R = GW * 0.5 + k * 14;
+        r.draw('thintorus', { pos: [g.p[0], 2.5, g.p[2]], m3: [rt[0], 0, rt[2], g.n[0], 0, g.n[2], 0, 1, 0], scale: [R / 0.45, 1, R / 0.45], color: col, emissive: col, emissiveStrength: 1.8 * (1 - k * 0.6) });
+        groundRing(w, g.p, GW * 0.4, col, 0.6 + pulse);
+      }
+    }
+    drawRover(w, me.p, me.yaw, colour, { bank: me.bank, boost: clamp((me.speed - CRUISE) / 10, 0, 1), scale: 1.6 });
+    r.light({ pos: [me.p[0], 6, me.p[2]], color: '#ff9af0', intensity: 80 + pulse * 120, range: 24 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    hud.radar(70, Ht - 74, 54, me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], 120, gates.filter(g => !g.done).map(g => ({ p: g.p, c: '#ff2bd6', s: 2.6 })));
+    for(const g of gates){ if(!g.done && !hud.proj([g.p[0], 3, g.p[2]]).on) hud.edgeArrow(g.p, '#ff2bd6', null); }
+    if(judgeT > 0) hud.text(Wd / 2, Ht * 0.36, judge, { size: 22, color: judgeCol, alpha: clamp(judgeT / 0.3, 0, 1), blur: 14 });
+    hud.text(Wd / 2, 26, '♪ ' + Math.round(bpm) + ' BPM' + (combo > 1 ? '  ·  COMBO ' + combo : ''), { size: 14, color: '#ffd8ff' });
+    // The metronome: a dot that fills on every beat.
+    for(let i = 0; i < 4; i++){
+      const on = (lastBeatI % 4 + 4) % 4 === i;
+      hud.text(Wd / 2 - 30 + i * 20, 46, on ? '●' : '○', { size: 12, color: on ? '#ffffff' : '#7a5a8a' });
+    }
+    hud.text(Wd - 16, Ht - 40, mult > 1 ? 'MULTIPLIER ×' + mult : '', { size: 13, align: 'right', color: '#ffffff' });
+    hud.text(Wd - 16, Ht - 20, '✦ ' + perfect + '  ✓ ' + good, { size: 13, align: 'right', color: '#ffd8ff' });
+    if(msgT > 0) hud.text(Wd / 2, 70, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  ⌨️ COMMAND LINE · OPEN WORLD — ROGUE PROCESSES
+// ══════════════════════════════════════════════
+// The classic types down viruses falling toward one shell. Out here the
+// processes roam an open grid, each wearing its command, and you drive up to
+// them: anything within range can be typed dead — the first letter locks on,
+// a typo breaks the clean run, and one that reaches you costs integrity. The
+// letters are all for typing, so you drive on the ARROWS (or hold the mouse
+// where you want to go); a touch screen gets the classic's keypad.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround || !P.owDrive) return;
+const { V, TAU, ease, drawFloor, owClock } = P.owKit;
+const { groundBegin, groundRing, makeCity } = P.owGround;
+const { makeRover, driveStep, slideOut, roverCam, roverDraw, dotRing } = P.owDrive;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const RANGE = 34, MAX_LIVE = 10;
+
+P.ow.cmdline = function(){
+  let onType = null;
+  const G = groundBegin({ sky: 'toxic', input: { touch: 'drive', onKey: e => { if(onType) onType(e); } } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: DRIVE · TAP THE KEYPAD: TYPE A PROCESS DEAD', 'ARROWS or HOLD THE MOUSE: DRIVE · TYPE A WORD IN RANGE TO KILL ITS PROCESS · BACKSPACE: LET GO');
+
+  const me = makeRover({ max: 22 });
+  let score = 0, kills = 0, letters = 0, keys = 0, typos = 0, combo = 0, bestCombo = 0, integrity = 3, elapsed = 0, spawnT = 1, bossT = 28;
+  let over = false, finished = false, msg = '', msgT = 0, lock = null, zap = 0, typoT = 0;
+  const procs = [];
+  const city = makeCity({ seed: 5353, density: 0.14, cell: 100, clear: 70, hMin: 14, hMax: 60, radius: 640, towerColor: '#06120a' });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#39ff88,#00f5ff)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  function spawn(boss){
+    const taken = new Set(procs.map(p => p.word));
+    const firsts = new Set(procs.map(p => p.word[0]));
+    const word = (typeof cmdPickWord === 'function') ? cmdPickWord(elapsed, boss, taken, firsts) : ['ping', 'root', 'kill', 'grep', 'sudo'][(Math.random() * 5) | 0];
+    const a = Math.random() * TAU, d = rr(50, 110);
+    procs.push({ p: [me.p[0] + Math.cos(a) * d, 0, me.p[2] + Math.sin(a) * d], v: [0, 0, 0], word, typed: 0, boss: !!boss,
+                 hunt: boss || Math.random() < 0.45, head: Math.random() * TAU, ph: Math.random() * TAU, flash: 0 });
+  }
+  for(let i = 0; i < 4; i++) spawn(false);
+
+  const inRange = p => V.d2(p.p, me.p) < RANGE * RANGE;
+  function press(ch){
+    if(over) return;
+    keys++;
+    if(!lock){
+      let best = null, bd = 1e12;
+      for(const p of procs){ if(p.word[0] === ch && inRange(p)){ const d = V.d2(p.p, me.p); if(d < bd){ bd = d; best = p; } } }
+      if(!best){ snd('ui'); return; }
+      lock = best; lock.typed = 0;
+    }
+    if(lock.word[lock.typed] === ch){
+      lock.typed++; letters++;
+      score += 6; setLive(score);
+      zap = 0.08; lock.flash = 0.08;
+      snd('click', { semi: Math.min(12, lock.typed) });
+      if(lock.typed >= lock.word.length) kill(lock);
+    }else{
+      typos++;
+      combo = 0;
+      typoT = 0.35;
+      snd('error');
+    }
+  }
+  function letGo(){ if(lock){ lock.typed = 0; lock = null; snd('uiBack'); } }
+  onType = e => {
+    if(e.ctrlKey || e.metaKey || e.altKey) return;
+    if(e.key === 'Backspace' || e.key === 'Escape'){ e.preventDefault && e.preventDefault(); letGo(); return; }
+    if(e.key && e.key.length === 1 && /[a-z]/i.test(e.key) && !e.repeat) press(e.key.toLowerCase());
+  };
+  if(typeof cmdShowKeys === 'function'){ cmdShowKeys(true); cmdKeysBind(press, letGo); }
+  const prevStop = onStopGame;
+  onStopGame = () => { try{ if(typeof cmdShowKeys === 'function') cmdShowKeys(false); }catch(e){} if(prevStop) prevStop(); };
+
+  function kill(p){
+    const i = procs.indexOf(p);
+    if(i >= 0) procs.splice(i, 1);
+    if(lock === p) lock = null;
+    kills++;
+    combo++; bestCombo = Math.max(bestCombo, combo);
+    const pts = p.word.length * 8 + Math.min(40, combo * 4) + (p.boss ? 60 : 0);
+    score += pts; setLive(score);
+    snd(p.boss ? 'bigExplode' : 'explode');
+    fx.explode([p.p[0], 2, p.p[2]], p.boss ? 3 : 1.6, { color: p.boss ? '#ffd700' : '#ff4df0', debris: 3, debrisGeo: 'slab', debrisColor: '#1a2a1a' });
+    w.pop([p.p[0], 5, p.p[2]], '+' + pts + ' ' + p.word, p.boss ? '#ffd700' : '#9dffc4', { size: 15 });
+  }
+  function breach(p){
+    const i = procs.indexOf(p);
+    if(i >= 0) procs.splice(i, 1);
+    if(lock === p) lock = null;
+    integrity--;
+    combo = 0;
+    snd('hurt'); w.kick(1);
+    fx.explode([p.p[0], 1.5, p.p[2]], 1.8, { color: '#ff4a4a', debris: 0 });
+    me.inv = 1.2; me.hit = 0.3;
+    bar.style.width = (Math.max(0, integrity) / 3 * 100) + '%';
+    if(integrity <= 0){
+      if(survivedFatal()){ integrity = 1; bar.style.width = '33%'; say('SHIELD ABSORBED', 1.6); }
+      else{ over = true; snd('gameOver'); gLater(() => finish('breached'), 1100); return; }
+    }
+    say('⚠ ' + p.word + ' GOT THROUGH — integrity ' + integrity, 1.8);
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    const acc = keys ? letters / keys : 0;
+    const survive = Math.max(0, integrity) * 30;
+    score += survive;
+    owFinish('cmdline', score, {
+      '📡 Session': why === 'clock' ? 'CLOCK EXPIRED' : 'SHELL BREACHED',
+      '💀 Processes Killed': kills,
+      '⌨️ Accuracy': Math.round(acc * 100) + '% · ' + letters + ' of ' + keys + ' keys',
+      '🔗 Best Clean Run': bestCombo + ' words',
+      '🛡️ Integrity Left': Math.max(0, integrity) + ' (+' + survive + ')',
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = {
+    state: () => ({ score, kills, typos, integrity, procs: procs.length, lock: lock && lock.word, inRange: procs.filter(inRange).length }),
+    lose(){ me.inv = 0; if(!procs.length) spawn(false); breach(procs[0]); },
+    typeNearest(){
+      let best = null, bd = 1e12;
+      for(const p of procs){ const d = V.d2(p.p, me.p); if(d < bd){ bd = d; best = p; } }
+      if(!best) return false;
+      best.p = V.add(me.p, [0, 0, -12]);
+      for(const ch of best.word) press(ch);
+      return true;
+    },
+    typo(){ const p = procs.find(inRange) || procs[0]; if(!p) return; p.p = V.add(me.p, [6, 0, -6]); press(p.word[0]); press('#'); }
+  };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      elapsed += dt;
+      // Drive on the arrows, the stick, the pad or a held mouse — never the letters.
+      const k = I.keys || {};
+      let ax = (k.ArrowRight ? 1 : 0) - (k.ArrowLeft ? 1 : 0), ly = (k.ArrowDown ? 1 : 0) - (k.ArrowUp ? 1 : 0);
+      if(I.stick){ ax += clamp((I.stick.x - I.stick.x0) / 0.26, -1, 1); ly += clamp((I.stick.y - I.stick.y0) / 0.26, -1, 1); }
+      if(I.pad){ ax += I.pad.lx; ly += I.pad.ly; }
+      driveStep(me, { ax: clamp(ax, -1, 1), ly: clamp(ly, -1, 1), boost: I.boost, device: I.device, mDown: I.mDown, mx: I.mx, my: I.my }, dt, hud);
+      city.update(me.p);
+      if(slideOut(me, city, 1.2)) me.hit = 0.15;
+      spawnT -= dt;
+      if(spawnT <= 0 && procs.length < MAX_LIVE){ spawn(false); spawnT = Math.max(1.2, 3.2 - elapsed * 0.018) / Math.min(1.4, diff); }
+      bossT -= dt;
+      if(bossT <= 0){ spawn(true); bossT = 30; say('☠ A BOSS PROCESS IS LOOSE', 2); snd('alarm'); }
+      for(let i = procs.length - 1; i >= 0; i--){
+        const p = procs[i];
+        p.flash = Math.max(0, p.flash - dt);
+        const d = V.sub(me.p, p.p), l = Math.hypot(d[0], d[2]) || 1;
+        let want;
+        if(p.hunt && l < 90) want = V.mul([d[0] / l, 0, d[2] / l], (p.boss ? 4 : 6.5) * Math.min(1.3, diff));
+        else{ p.head += rr(-1, 1) * dt * 1.4; want = [Math.cos(p.head) * 4, 0, Math.sin(p.head) * 4]; }
+        // The one being typed flinches.
+        if(p === lock) want = V.mul(want, 0.4);
+        p.v = V.lerp(p.v, want, ease(dt, 0.4));
+        const np = V.madd(p.p, p.v, dt);
+        if(!city.hit(np, 1.2)) p.p = np; else p.head += Math.PI * 0.7;
+        if(l < 3 && me.inv <= 0) breach(p);
+        else if(l > 200){ procs.splice(i, 1); if(lock === p) lock = null; }
+      }
+      if(lock && !inRange(lock) && V.d2(lock.p, me.p) > (RANGE * 1.4) ** 2){ say('OUT OF RANGE — ' + lock.word + ' let go', 1.4); letGo(); }
+    }
+    zap = Math.max(0, zap - dt);
+    typoT = Math.max(0, typoT - dt);
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    roverCam(w, me, dt, { back: 15, up: 11, ahead: 14, fov: 60 });
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 170, color: '#0f5a2a', glow: 0.85, major: 5, floor: '#020a04', rough: 0.25 });
+    city.draw(w);
+    dotRing(w, me.p, RANGE, typoT > 0 ? '#ff4a4a' : '#39ff88', 0.6);
+    let nl = 0;
+    for(const p of procs){
+      const col = p.boss ? '#ffd700' : p === lock ? '#ffffff' : '#ff4df0';
+      const y = 2.2 + Math.sin(w.t * 3 + p.ph) * 0.3;
+      r.draw(p.boss ? 'core' : 'drone', { pos: [p.p[0], y, p.p[2]], rot: [0, w.t * 0.8 + p.ph, 0], scale: p.boss ? 3 : 1.8, color: p.flash > 0 ? '#ffffff' : '#2a2a34',
+                                          metallic: 0.6, roughness: 0.35, emissive: col, emissiveStrength: inRange(p) ? 0.9 : 0.4 });
+      r.glow([p.p[0], y, p.p[2]], p.boss ? 3.4 : 2, col, inRange(p) ? 0.8 : 0.35);
+      if(nl++ < 3 && inRange(p)) r.light({ pos: [p.p[0], 5, p.p[2]], color: col, intensity: 60, range: 14 });
+    }
+    if(lock && zap > 0) r.streak([me.p[0], 2.4, me.p[2]], [lock.p[0], 2.2, lock.p[2]], 0.3, '#9dffc4', 3, 0);
+    roverDraw(w, me, colour);
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H, ctx = hud.ctx;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    hud.radar(70, Ht - 74, 54, me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], 100, procs.map(p => ({ p: p.p, c: p.boss ? '#ffd700' : p.hunt ? '#ff4df0' : '#a87aa8', s: p.boss ? 3.4 : 2.4 })));
+    // The words: typed part green, the rest white; dim when out of range.
+    ctx.save();
+    ctx.font = '700 13px "Orbitron", "Rajdhani", sans-serif';
+    ctx.textBaseline = 'middle';
+    for(const p of procs){
+      if(V.d2(p.p, me.p) > 90 * 90) continue;
+      const q = hud.proj([p.p[0], p.boss ? 6 : 4.4, p.p[2]]);
+      if(!q.on) continue;
+      const near = inRange(p);
+      const a = p.word.slice(0, p.typed), b = p.word.slice(p.typed);
+      const wa = ctx.measureText(a).width, wb = ctx.measureText(b).width, x0 = q.x - (wa + wb) / 2;
+      ctx.globalAlpha = near ? 1 : 0.45;
+      ctx.fillStyle = 'rgba(2,10,4,0.7)'; ctx.fillRect(x0 - 5, q.y - 10, wa + wb + 10, 20);
+      ctx.shadowBlur = 6;
+      ctx.fillStyle = '#39ff88'; ctx.shadowColor = '#39ff88'; ctx.textAlign = 'left'; ctx.fillText(a, x0, q.y);
+      ctx.fillStyle = p === lock ? '#ffffff' : p.boss ? '#ffd700' : '#ffc8f4'; ctx.shadowColor = ctx.fillStyle; ctx.fillText(b, x0 + wa, q.y);
+      ctx.shadowBlur = 0;
+    }
+    ctx.restore();
+    if(lock && !hud.proj(lock.p).on) hud.edgeArrow(lock.p, '#ffffff', lock.word);
+    hud.text(Wd / 2, 26, lock ? '> ' + lock.word.slice(0, lock.typed) + '_' : procs.some(inRange) ? '> type a word in range' : '> drive up to a process', { size: 14, color: typoT > 0 ? '#ff6a6a' : '#9dffc4', align: 'center' });
+    hud.text(Wd - 16, Ht - 40, combo > 1 ? 'CLEAN RUN ' + combo : '', { size: 13, align: 'right', color: '#9dffc4' });
+    hud.text(Wd - 16, Ht - 20, 'INTEGRITY ' + '▮'.repeat(Math.max(0, integrity)) + '▯'.repeat(Math.max(0, 3 - integrity)), { size: 13, align: 'right', color: integrity > 1 ? '#9dffc4' : '#ff8a8a' });
+    if(msgT > 0) hud.text(Wd / 2, 50, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
 // <<OW:END>>
