@@ -5614,3 +5614,71 @@ body.mode-3d .lab-sw.on{box-shadow:0 1px 0 #0a8f9a,0 2px 0 #0a8f9a,0 3px 0 #0554
 .lab-lotd-k{font-family:var(--fd);font-size:.5rem;font-weight:900;letter-spacing:.14em;color:var(--gold)}
 .lab-lotd-n{font-family:var(--fd);font-size:.6rem;font-weight:700;letter-spacing:.06em;color:#fff}
 .lab-lotd-b{font-size:.8rem;color:var(--dim)}
+
+/* ══════════════════════════════════════════════════════════════
+   § v56 — 🌐 OPEN WORLD (app.js § 31)
+   Every mission's world with no borders. The banner, the grid's mode
+   switch, the picker and the in-round HUD canvas. Furniture reused
+   (.mp-banner, .en-grid, .fb-overlay); only the accents are new.
+   ══════════════════════════════════════════════════════════════ */
+.ow-banner{
+  border-color:rgba(255,120,200,.42);
+  background:
+    radial-gradient(120% 140% at 0% 0%,rgba(168,85,247,.22),transparent 55%),
+    radial-gradient(120% 140% at 100% 100%,rgba(0,245,255,.14),transparent 55%),
+    linear-gradient(135deg,rgba(255,0,144,.10),rgba(255,140,40,.06));
+  box-shadow:0 0 28px rgba(255,0,144,.10),inset 0 0 0 1px rgba(255,255,255,.03)
+}
+.ow-banner .mp-banner-title{
+  background:linear-gradient(90deg,#ff5ab4,#ffb35c 45%,#5ee7ff);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent
+}
+.ow-banner .mp-banner-icon{filter:drop-shadow(0 0 10px rgba(255,140,60,.6))}
+.ow-new{
+  font-style:normal;font-size:.5rem;letter-spacing:.14em;vertical-align:middle;margin-left:6px;
+  padding:2px 7px;border-radius:20px;border:1px solid #ffb35c;color:#ffb35c;-webkit-text-fill-color:#ffb35c
+}
+#btn-openworld{background:linear-gradient(90deg,#ff2d9a,#ff8a3a);border-color:transparent;color:#fff}
+
+/* The mode switch above the grid. */
+.ow-switch{
+  display:flex;gap:0;margin:2px 0 12px;width:fit-content;max-width:100%;
+  border:1px solid var(--border2);border-radius:999px;overflow:hidden;background:var(--s1)
+}
+.ow-seg{
+  font-family:var(--fd);font-size:.62rem;font-weight:700;letter-spacing:.08em;
+  padding:9px 16px;border:0;background:transparent;color:var(--dim);cursor:pointer;
+  transition:background .18s,color .18s;white-space:nowrap
+}
+.ow-seg em{font-style:normal;font-size:.48rem;opacity:.7;margin-left:4px;letter-spacing:.12em}
+.ow-seg:hover{color:#fff}
+.ow-seg.on{color:#fff;background:linear-gradient(90deg,rgba(0,245,255,.22),rgba(0,245,255,.08))}
+.ow-seg[data-owm="open"].on{background:linear-gradient(90deg,rgba(255,45,154,.35),rgba(255,138,58,.25));box-shadow:inset 0 0 18px rgba(255,90,180,.25)}
+
+/* Cards in OPEN WORLD mode: a ribbon, a warmer edge. */
+.gc-ow{
+  display:none;position:absolute;top:12px;left:50%;transform:translateX(-50%);
+  padding:3px 10px;border-radius:20px;white-space:nowrap;
+  font-family:var(--fd);font-size:.42rem;font-weight:900;letter-spacing:.12em;
+  color:#fff;background:linear-gradient(90deg,#ff2d9a,#ff8a3a);box-shadow:0 0 12px rgba(255,60,150,.45);
+  pointer-events:none;z-index:2
+}
+.games-grid.ow-mode .gc-ow{display:block}
+.games-grid.ow-mode .game-card:not(.locked){border-color:rgba(255,120,200,.38);
+  box-shadow:inset 0 0 26px rgba(255,45,154,.07)}
+.games-grid.ow-mode .game-card:not(.locked):hover{border-color:#ff8ac8;box-shadow:0 0 22px rgba(255,45,154,.22)}
+.games-grid.ow-mode .game-card.ow-none{opacity:.45}
+
+/* The picker. */
+.ow-tint .fb-modal{border-color:rgba(255,120,200,.42)}
+.ow-tint .fb-title{
+  background:linear-gradient(90deg,#ff5ab4,#ffb35c 45%,#5ee7ff);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent
+}
+.ow-grid{grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}
+.ow-card:hover:not(.locked){border-color:#ff8ac8}
+.ow-tag{font-size:.74rem;line-height:1.25;color:rgba(255,255,255,.78)}
+.res-bonus-ow{color:#ffb35c;border-color:#ff8ac8;background:linear-gradient(90deg,rgba(255,45,154,.12),rgba(255,138,58,.08))}
+
+/* The in-round HUD: one canvas over the board, never in the way of input. */
+.ow-hud{position:absolute;left:0;top:0;pointer-events:none}

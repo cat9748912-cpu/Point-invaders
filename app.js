@@ -1401,7 +1401,11 @@ const META = {
   bossrush:{ name:'BOSS RUSH',    emoji: '🔥', maxPts: 6200 },
   // ♾️ Not a mission either — the endless lane's results card. Uncapped for
   // the same reason Cyber Arena is: there is no finish line to measure against.
-  endless: { name:'ENDLESS PROTOCOL', emoji:'♾️', maxPts: 99999 }
+  endless: { name:'ENDLESS PROTOCOL', emoji:'♾️', maxPts: 99999 },
+  // 🌐 v56 · The open-world lane's results card (§ 31). Capped like a mission
+  // so maxAwardFor() keeps its meaning; each world scores on its own scale
+  // underneath and owns a per-mission best of its own.
+  openworld: { name:'OPEN WORLD', emoji:'🌐', maxPts: 3000 }
 };
 // The ISO week a mission added after launch joins the SHARED weekly rotations
 // (the Weekly Anomaly). Anything not named here has always been in them.
@@ -2682,6 +2686,8 @@ function enterHub(){
   // ends both, and a spectator that kept its listeners would leak them.
   if(typeof abortBossRush === 'function') abortBossRush();
   if(typeof abortEndless === 'function') abortEndless();
+  // 🌐 …and an open world (§ 31).
+  if(typeof abortOpenWorld === 'function') abortOpenWorld();
   if(typeof abortAnomaly === 'function') abortAnomaly();
   if(typeof abortChallenge === 'function') abortChallenge();
   // 🎉 Reaching the hub ends a party, the same way it ends a rush (§ 19).
@@ -2749,6 +2755,12 @@ function enterHub(){
     paintLoadoutRail();
     maybeOnboard();
   }catch(e){ console.warn('Hub panels failed to paint:', e); }
+  // 🌐 The open-world banner and the grid's mode switch (§ 31). Its own try,
+  // and typeof-guarded: § 31 is the last thing in the file.
+  try{
+    if(typeof paintOpenWorldBanner === 'function') paintOpenWorldBanner();
+    if(typeof owPaintGrid === 'function') owPaintGrid();
+  }catch(e){ console.warn('Open world panels failed to paint:', e); }
   // 🔗 A challenge link waiting to be raced (§ 22). Its own try: a failure here
   // must not take the hub's furniture down with it, or the other way round.
   try{ if(typeof maybeLinkChallenge === 'function') setTimeout(() => maybeLinkChallenge(0), 450); }
@@ -2787,6 +2799,9 @@ document.querySelectorAll('.game-card').forEach(card=>{
       toast(`🔒 ${META[gid].name} needs CLEARANCE ${need} — you are level ${xpLevel(user.xp || 0).level}.`, 3200);
       return;
     }
+    // 🌐 With the grid switched to OPEN WORLD every card launches its world
+    // with no borders instead (§ 31).
+    if(typeof owGridOn === 'function' && owGridOn()){ startOpenWorld(gid); return; }
     curGame=gid;
     snd('success');
     document.getElementById('g-title').textContent=META[gid].name;
@@ -15827,7 +15842,7 @@ function perkScoreMult(gid, opts){
   // reach, which is exactly why Netrunner exists — same seam, other side.
   if(opts && opts.internal) return hasPerk('perk-duel') ? 1.08 : 1;
   if(!hasPerk('perk-score')) return 1;
-  if(!SOLO_START[gid] && gid !== 'bossrush' && gid !== 'endless') return 1;
+  if(!SOLO_START[gid] && gid !== 'bossrush' && gid !== 'endless' && gid !== 'openworld') return 1;
   return 1.05;
 }
 // 🌳 Perk B. Read once by startBattleBots().
@@ -21089,6 +21104,18 @@ const M4 = {
     buf[off+4 ]=m10*s[1]; buf[off+5 ]=m11*s[1]; buf[off+6 ]=m12*s[1]; buf[off+7 ]=0;
     buf[off+8 ]=m20*s[2]; buf[off+9 ]=m21*s[2]; buf[off+10]=m22*s[2]; buf[off+11]=0;
     buf[off+12]=p[0];     buf[off+13]=p[1];     buf[off+14]=p[2];     buf[off+15]=1;
+  },
+
+  // ✨ v56 · The same, from a rotation given as its three basis COLUMNS
+  // (where the model's local X, Y and Z axes point in the world) instead of
+  // Euler angles. A free-flying craft needs it: XYZ Euler angles hit gimbal
+  // lock the moment a fighter banks onto its side, and a model that snaps a
+  // quarter turn in the middle of a roll reads as a broken game.
+  composeBasis(buf, off, p, m, s){
+    buf[off   ]=m[0]*s[0]; buf[off+1 ]=m[1]*s[0]; buf[off+2 ]=m[2]*s[0]; buf[off+3 ]=0;
+    buf[off+4 ]=m[3]*s[1]; buf[off+5 ]=m[4]*s[1]; buf[off+6 ]=m[5]*s[1]; buf[off+7 ]=0;
+    buf[off+8 ]=m[6]*s[2]; buf[off+9 ]=m[7]*s[2]; buf[off+10]=m[8]*s[2]; buf[off+11]=0;
+    buf[off+12]=p[0];      buf[off+13]=p[1];      buf[off+14]=p[2];      buf[off+15]=1;
   }
 };
 
@@ -21165,7 +21192,9 @@ const PART = {
   NAV_GREEN: 7,   // starboard light — fixed green
   NAV_WHITE: 8,   // tail strobe — fixed white
   HEAT:      9,   // exhaust nozzle interior: heat-tinted metal
-  GUNMETAL: 10    // blued / parkerised steel: barrels, muzzle brakes
+  GUNMETAL: 10,   // blued / parkerised steel: barrels, muzzle brakes
+  ACCENT:   11,   // ✨ v56 livery stripe — draw's `accent` index (orange by default)
+  PAINT2:   12    // ✨ v56 second tone: the instance colour lifted toward off-white
 };
 
 function emptyMesh(){ return { pos:[], nrm:[], uv:[], idx:[], part:[] }; }
@@ -21569,6 +21598,34 @@ function buildQuad(){
   };
 }
 
+// ✨ v56 · A flat annulus in XZ, outer radius 0.5, for planetary rings. Its
+// uv.x is the NORMALISED radius (0 at the inner edge, 1 at the outer), which is
+// what SURF.RING draws its lanes from. One face up; the blended pass draws
+// with culling off, so the underside of a ring is lit by the same normal.
+function buildRingDisc(inner, seg){
+  inner = inner == null ? 0.3 : inner;
+  seg = seg || 96;
+  const m = emptyMesh();
+  const STEPS = 6;
+  for(let j = 0; j <= STEPS; j++){
+    const t = j / STEPS, rad = inner + (0.5 - inner) * t;
+    for(let i = 0; i <= seg; i++){
+      const a = (i / seg) * Math.PI * 2;
+      m.pos.push(Math.cos(a) * rad, 0, Math.sin(a) * rad);
+      m.nrm.push(0, 1, 0);
+      m.uv.push(t, i / seg);
+      m.part.push(0);
+    }
+  }
+  for(let j = 0; j < STEPS; j++){
+    for(let i = 0; i < seg; i++){
+      const a = j * (seg + 1) + i, b = a + 1, c = a + seg + 1, d = c + 1;
+      m.idx.push(a, b, d, a, d, c);
+    }
+  }
+  return m;
+}
+
 // Subdivided ground plane in XZ. Extra vertices exist so a game can't get
 // gouraud banding across a huge floor lit by nearby point lights.
 function buildGround(seg){
@@ -21901,6 +21958,378 @@ function buildRaider(){
   // emissive; the surrounding brow is what stops it blooming into a bare dot.
   mergeMesh(m, buildPrism(8, 0.5, 0.5, 0.05, 0.04), { pos:[0, 0.05, 0.40], scale:[0.30, 0.16, 0.26], rot:[RX, 0, 0], part: PART.TRIM });
   mergeMesh(m, buildSphere(14, 9), { pos:[0, 0.05, 0.50], scale:[0.20, 0.16, 0.18], part: PART.LAMP });
+  return m;
+}
+
+// ══ ✨ v56 · LOFTED HULLS ══
+// The hard-surface kit above builds machines out of prisms and boxes, and at
+// hero distance — a chase camera two ship-lengths back — that is exactly what
+// they read as: a stack of boxes. A real airframe is a SKIN, one continuous
+// surface that swells and tapers. A loft is that skin: cross-sections along Z,
+// each a superellipse with its own width, upper and lower height, squareness
+// and offsets, joined into one surface whose normals come from the surface
+// itself (central differences round the ring and along the length), so it
+// shades as one smooth body with the light running along it.
+//
+// Per-vertex parts can be painted by angle round the ring (`partAt(th)`), which
+// is how a hull gets a pale upper surface over a darker belly with the seam a
+// clean line along its whole length (flat parts take the provoking vertex, and
+// every quad of a column provokes from the same column).
+function loftRing(st, n){
+  const pts = [];
+  const e = 2 / (st.n || 2);
+  for(let j = 0; j < n; j++){
+    const th = (j / n) * Math.PI * 2;
+    const c = Math.cos(th), s = Math.sin(th);
+    const hh = s >= 0 ? (st.ht != null ? st.ht : st.h) : (st.hb != null ? st.hb : st.h);
+    const x = Math.sign(c) * Math.pow(Math.abs(c), e) * st.w + (st.x || 0);
+    const y = Math.sign(s) * Math.pow(Math.abs(s), e) * hh + (st.y || 0);
+    pts.push([x, y, st.z]);
+  }
+  return pts;
+}
+function buildLoft(stations, opts){
+  opts = opts || {};
+  const n = opts.seg || 20;
+  const m = emptyMesh();
+  const rings = stations.map(st => loftRing(st, n));
+  const R = rings.length;
+  const partAt = opts.partAt || (() => opts.part || 0);
+  for(let i = 0; i < R; i++){
+    for(let j = 0; j <= n; j++){
+      const jj = j % n;
+      const p = rings[i][jj];
+      const pA = rings[i][(jj + 1) % n], pB = rings[i][(jj - 1 + n) % n];
+      const pF = rings[Math.min(R - 1, i + 1)][jj], pK = rings[Math.max(0, i - 1)][jj];
+      const tu = [pA[0] - pB[0], pA[1] - pB[1], pA[2] - pB[2]];
+      const tv = [pF[0] - pK[0], pF[1] - pK[1], pF[2] - pK[2]];
+      let nx = tu[1] * tv[2] - tu[2] * tv[1], ny = tu[2] * tv[0] - tu[0] * tv[2], nz = tu[0] * tv[1] - tu[1] * tv[0];
+      let l = Math.hypot(nx, ny, nz);
+      // A ring shrunk to a point (a nose tip, a tail cone) has no tangent
+      // round it: its normal is the axis, pointing away from the body.
+      if(l < 1e-9){ nx = 0; ny = 0; nz = i === 0 ? -1 : 1; l = 1; }
+      m.pos.push(p[0], p[1], p[2]);
+      m.nrm.push(nx / l, ny / l, nz / l);
+      m.uv.push(j / n, i / Math.max(1, R - 1));
+      m.part.push(partAt((jj / n) * Math.PI * 2, i));
+    }
+  }
+  for(let i = 0; i < R - 1; i++){
+    for(let j = 0; j < n; j++){
+      const a = i * (n + 1) + j, b = a + 1, c = a + n + 1, d = c + 1;
+      m.idx.push(a, b, c, b, d, c);
+    }
+  }
+  const capAt = (ri, dir, part) => {
+    const st = stations[ri];
+    if(Math.min(st.w, st.ht != null ? st.ht : st.h) < 1e-3) return;
+    const ring = rings[ri];
+    const cx = ring.reduce((s, p) => s + p[0], 0) / n, cy = ring.reduce((s, p) => s + p[1], 0) / n;
+    const c0 = m.pos.length / 3;
+    m.pos.push(cx, cy, st.z); m.nrm.push(0, 0, dir); m.uv.push(0.5, 0.5); m.part.push(part);
+    for(let j = 0; j < n; j++){
+      const p = ring[j];
+      m.pos.push(p[0], p[1], p[2]); m.nrm.push(0, 0, dir); m.uv.push(0.5 + (p[0] - cx), 0.5 + (p[1] - cy)); m.part.push(part);
+    }
+    for(let j = 0; j < n; j++){
+      const a = c0 + 1 + j, b = c0 + 1 + (j + 1) % n;
+      if(dir > 0) m.idx.push(c0, a, b); else m.idx.push(c0, b, a);
+    }
+  };
+  if(opts.capStart !== false) capAt(0, -1, opts.capPartStart != null ? opts.capPartStart : (opts.part || 0));
+  if(opts.capEnd !== false) capAt(R - 1, 1, opts.capPartEnd != null ? opts.capPartEnd : (opts.part || 0));
+  return m;
+}
+
+// A thin plate from a to b — a livery stripe, a strake, a weld seam — whose
+// height axis is as close to world-up as the run allows. Built straight into
+// `m` so a stripe can lie ON a surface without a bespoke transform.
+function plateAlong(m, a, b, width, height, part, up){
+  const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+  const len = Math.hypot(dx, dy, dz) || 1;
+  const f = [dx / len, dy / len, dz / len];
+  let u = up || [0, 1, 0];
+  let d = u[0] * f[0] + u[1] * f[1] + u[2] * f[2];
+  u = [u[0] - f[0] * d, u[1] - f[1] * d, u[2] - f[2] * d];
+  let ul = Math.hypot(u[0], u[1], u[2]);
+  if(ul < 1e-5){ u = [1, 0, 0]; d = f[0]; u = [u[0] - f[0] * d, -f[1] * d, -f[2] * d]; ul = Math.hypot(u[0], u[1], u[2]) || 1; }
+  u = [u[0] / ul, u[1] / ul, u[2] / ul];
+  const s = [f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2], f[0] * u[1] - f[1] * u[0]];
+  const hw = width / 2, hh = height / 2;
+  const P = (ex, sy, sx) => [ex[0] + u[0] * sy + s[0] * sx, ex[1] + u[1] * sy + s[1] * sx, ex[2] + u[2] * sy + s[2] * sx];
+  const A = [P(a, -hh, -hw), P(a, -hh, hw), P(a, hh, hw), P(a, hh, -hw)];
+  const B = [P(b, -hh, -hw), P(b, -hh, hw), P(b, hh, hw), P(b, hh, -hw)];
+  const v0 = m.pos.length / 3;
+  loftRings(m, A, B);
+  capRing(m, A, -1); capRing(m, B, 1);
+  for(let k = m.part.length; k < m.pos.length / 3; k++) m.part.push(part || 0);
+  for(let k = v0; k < m.pos.length / 3; k++) m.part[k] = part || 0;
+  return m;
+}
+
+// ✨ v56 · THE INTERCEPTOR, REBUILT AS A SKIN. Same footprint, same anchors —
+// nose at z −1.13, engine throats at (±0.36, −0.02, ~0.84), wing tips at
+// |x| ≈ 0.86 — so every mission that hangs a glow or a light off the old one
+// still lines up. What changed is everything you see: a lofted fuselage that
+// swells from a needle nose to a broad, flattened tail; a real glass canopy
+// in a framed sill; big round engine nacelles with intake lips, nozzle petals
+// and heat-tinted throats; a cranked delta with orange livery on its leading
+// edges and tips; twin canted fins; canards; cannons; and a pair of missiles
+// under the wings. The upper surfaces are the pale tone and the belly the
+// instance colour, which is the single strongest "designed aircraft" cue.
+function buildFighter(){
+  const m = emptyMesh();
+  const RX = Math.PI / 2;
+  const pale = th => (Math.sin(th) > 0.12 ? PART.PAINT2 : PART.PAINT);
+  // ── Fuselage ──
+  mergeMesh(m, buildLoft([
+    { z: -1.13, w: 0.004, ht: 0.004, hb: 0.004, n: 2.0, y: -0.012 },
+    { z: -1.07, w: 0.036, ht: 0.030, hb: 0.026, n: 2.2, y: -0.012 },
+    { z: -0.97, w: 0.070, ht: 0.056, hb: 0.046, n: 2.3, y: -0.009 },
+    { z: -0.83, w: 0.110, ht: 0.086, hb: 0.070, n: 2.5, y: -0.006 },
+    { z: -0.65, w: 0.150, ht: 0.112, hb: 0.094, n: 2.7, y: -0.002 },
+    { z: -0.45, w: 0.188, ht: 0.132, hb: 0.112, n: 2.9, y: 0.0 },
+    { z: -0.22, w: 0.218, ht: 0.142, hb: 0.128, n: 3.1, y: 0.0 },
+    { z:  0.04, w: 0.246, ht: 0.134, hb: 0.138, n: 3.3, y: 0.0 },
+    { z:  0.32, w: 0.256, ht: 0.120, hb: 0.138, n: 3.3, y: 0.0 },
+    { z:  0.57, w: 0.222, ht: 0.104, hb: 0.118, n: 3.0, y: 0.0 },
+    { z:  0.75, w: 0.150, ht: 0.078, hb: 0.088, n: 2.8, y: 0.0 },
+    { z:  0.86, w: 0.092, ht: 0.050, hb: 0.058, n: 2.6, y: 0.0 }
+  ], { seg: 28, partAt: pale, capPartEnd: PART.TRIM }));
+  // Racing stripe down the spine of the nose, and a thin chine line either side.
+  plateAlong(m, [0, 0.07, -0.93], [0, 0.135, -0.62], 0.05, 0.012, PART.ACCENT);
+  // ── Canopy: glass bubble seated in a trim sill, with a bow frame ──
+  mergeMesh(m, buildLoft([
+    { z: -0.70, w: 0.004, ht: 0.003, hb: 0.002, n: 2.0, y: 0.105 },
+    { z: -0.64, w: 0.060, ht: 0.040, hb: 0.010, n: 2.2, y: 0.110 },
+    { z: -0.54, w: 0.098, ht: 0.074, hb: 0.012, n: 2.3, y: 0.118 },
+    { z: -0.40, w: 0.112, ht: 0.086, hb: 0.012, n: 2.4, y: 0.124 },
+    { z: -0.26, w: 0.104, ht: 0.074, hb: 0.012, n: 2.4, y: 0.126 },
+    { z: -0.14, w: 0.078, ht: 0.046, hb: 0.010, n: 2.3, y: 0.126 },
+    { z: -0.06, w: 0.004, ht: 0.003, hb: 0.002, n: 2.0, y: 0.124 }
+  ], { seg: 24, part: PART.GLASS }));
+  mergeMesh(m, buildTorus(0.5, 0.06, 28, 6), { pos: [0, 0.126, -0.40], scale: [0.235, 0.2, 0.58], part: PART.TRIM });
+  plateAlong(m, [0, 0.20, -0.47], [0, 0.205, -0.33], 0.012, 0.012, PART.TRIM);
+  // ── Engine nacelles, intakes and nozzles ──
+  [-1, 1].forEach(s => {
+    const X = s * 0.36, Y = -0.02;
+    mergeMesh(m, buildLoft([
+      { z: -0.08, w: 0.112, h: 0.112, n: 2.0, x: X, y: Y },
+      { z:  0.02, w: 0.128, h: 0.128, n: 2.0, x: X, y: Y },
+      { z:  0.26, w: 0.138, h: 0.138, n: 2.0, x: X, y: Y },
+      { z:  0.56, w: 0.136, h: 0.136, n: 2.0, x: X, y: Y },
+      { z:  0.74, w: 0.124, h: 0.124, n: 2.0, x: X, y: Y }
+    ], { seg: 22, partAt: th => (Math.sin(th) > 0.3 ? PART.PAINT2 : PART.PAINT), capStart: false, capEnd: false }));
+    // Intake: a trim lip with a dark throat behind it.
+    mergeMesh(m, buildTorus(0.5, 0.11, 22, 8), { pos: [X, Y, -0.085], scale: [0.236, 0.236, 0.236], rot: [RX, 0, 0], part: PART.TRIM });
+    mergeMesh(m, buildCylinder(18), { pos: [X, Y, -0.04], scale: [0.2, 0.01, 0.2], rot: [RX, 0, 0], part: PART.RUBBER });
+    // Nozzle: an outward-flaring bell of petals, heat-tinted throat inside —
+    // the glow every mission draws sits in this throat.
+    mergeMesh(m, buildPrism(14, 0.5, 0.43, 0.05, 0.01), { pos: [X, Y, 0.80], scale: [0.27, 0.12, 0.27], rot: [-RX, 0, 0], part: PART.TRIM });
+    mergeMesh(m, buildCylinder(18), { pos: [X, Y, 0.835], scale: [0.20, 0.012, 0.20], rot: [RX, 0, 0], part: PART.HEAT });
+    mergeMesh(m, buildTorus(0.5, 0.08, 22, 6), { pos: [X, Y, 0.86], scale: [0.27, 0.27, 0.27], rot: [RX, 0, 0], part: PART.GUNMETAL });
+    // Nacelle-to-fuselage fairing.
+    plateAlong(m, [s * 0.24, Y + 0.02, -0.02], [s * 0.24, Y + 0.02, 0.62], 0.05, 0.16, PART.PAINT);
+    // ── Main wing: a cranked delta, livery on the leading edge and the tip ──
+    mergeMesh(m, buildWing({ span: 1, rootC: 0.80, tipC: 0.24, sweep: 0.58, rootT: 0.062, tipT: 0.022, dihedral: -0.02 }),
+              { pos: [s * 0.44, -0.05, 0.22], scale: [s * 0.46, 1, 1] });
+    mergeMesh(m, buildWing({ span: 1, rootC: 0.24, tipC: 0.12, sweep: 0.10, rootT: 0.024, tipT: 0.012 }),
+              { pos: [s * 0.90, -0.07, 0.49], scale: [s * 0.10, 1, 1], part: PART.ACCENT });
+    plateAlong(m, [s * 0.47, -0.022, -0.155], [s * 0.88, -0.044, 0.345], 0.05, 0.016, PART.ACCENT);
+    // Inner wing root strake joining the wing to the nacelle.
+    mergeMesh(m, buildWing({ span: 1, rootC: 0.62, tipC: 0.42, sweep: 0.12, rootT: 0.05, tipT: 0.04 }),
+              { pos: [s * 0.24, -0.05, 0.24], scale: [s * 0.22, 1, 1] });
+    // ── Canted twin fins on the nacelles, tipped in livery ──
+    mergeMesh(m, buildWing({ span: 1, rootC: 0.46, tipC: 0.18, sweep: 0.34, rootT: 0.045, tipT: 0.016 }),
+              { pos: [X, 0.09, 0.50], scale: [0.30, 1, 1], rot: [0, 0, s > 0 ? Math.PI / 2 - 0.27 : Math.PI / 2 + 0.27], part: PART.PAINT2 });
+    mergeMesh(m, buildWing({ span: 1, rootC: 0.18, tipC: 0.12, sweep: 0.06, rootT: 0.018, tipT: 0.012 }),
+              { pos: [X + s * 0.078, 0.375, 0.59], scale: [0.05, 1, 1], rot: [0, 0, s > 0 ? Math.PI / 2 - 0.27 : Math.PI / 2 + 0.27], part: PART.ACCENT });
+    // ── Canards ──
+    mergeMesh(m, buildWing({ span: 1, rootC: 0.30, tipC: 0.10, sweep: 0.22, rootT: 0.03, tipT: 0.012 }),
+              { pos: [s * 0.13, 0.0, -0.55], scale: [s * 0.24, 1, 1], rot: [0, 0, -s * 0.12] });
+    // ── Cannons in the wing roots ──
+    mergeMesh(m, buildCylinder(14, 0.5, 0.5, 0.1), { pos: [s * 0.30, -0.075, -0.30], scale: [0.034, 0.46, 0.034], rot: [RX, 0, 0], part: PART.GUNMETAL });
+    mergeMesh(m, buildCylinder(14, 0.5, 0.5, 0.1), { pos: [s * 0.30, -0.075, -0.54], scale: [0.05, 0.05, 0.05], rot: [RX, 0, 0], part: PART.GUNMETAL });
+    // ── A missile on a pylon under each wing ──
+    plateAlong(m, [s * 0.66, -0.07, 0.12], [s * 0.66, -0.07, 0.36], 0.016, 0.04, PART.TRIM);
+    mergeMesh(m, buildLoft([
+      { z: -0.16, w: 0.003, h: 0.003, n: 2, x: s * 0.66, y: -0.13 },
+      { z: -0.11, w: 0.026, h: 0.026, n: 2, x: s * 0.66, y: -0.13 },
+      { z:  0.30, w: 0.030, h: 0.030, n: 2, x: s * 0.66, y: -0.13 },
+      { z:  0.34, w: 0.024, h: 0.024, n: 2, x: s * 0.66, y: -0.13 }
+    ], { seg: 12, partAt: (th, i) => (i <= 1 ? PART.ACCENT : PART.PAINT2), capPartEnd: PART.HEAT }));
+    [0, 1, 2, 3].forEach(k => {
+      const a = k * Math.PI / 2 + Math.PI / 4;
+      plateAlong(m, [s * 0.66 + Math.cos(a) * 0.03, -0.13 + Math.sin(a) * 0.03, 0.24],
+                    [s * 0.66 + Math.cos(a) * 0.065, -0.13 + Math.sin(a) * 0.065, 0.33], 0.006, 0.006, PART.TRIM, [Math.cos(a + Math.PI / 2), Math.sin(a + Math.PI / 2), 0]);
+    });
+    // Navigation lights on the wing tips: red to port, green to starboard.
+    lampAt(m, [s * 0.96, -0.06, 0.52], 0.022, s < 0 ? PART.NAV_RED : PART.NAV_GREEN);
+  });
+  // Dorsal spine fairing and a tail strobe.
+  plateAlong(m, [0, 0.12, -0.10], [0, 0.11, 0.74], 0.07, 0.05, PART.PAINT2);
+  lampAt(m, [0, 0.14, 0.78], 0.018, PART.NAV_WHITE);
+  // Sensor blister under the nose.
+  mergeMesh(m, buildSphere(12, 8), { pos: [0, -0.085, -0.72], scale: [0.07, 0.04, 0.12], part: PART.GLASS });
+  return m;
+}
+
+// ✨ v56 · The raider, rebuilt as a predator: a lofted dark wedge (nose at +Z,
+// it flies AT you), forward-swept blade wings with red livery tips, twin
+// engine pods with hot throats, a dorsal crest and a single glowing eye sunk in
+// a brow. The eye stays at z ≈ +0.5, where every mission draws its glow.
+function buildRaider2(){
+  const m = emptyMesh();
+  const RX = Math.PI / 2;
+  const top = th => (Math.sin(th) > 0.25 ? PART.PAINT2 : PART.PAINT);
+  mergeMesh(m, buildLoft([
+    { z: -0.56, w: 0.20, ht: 0.10, hb: 0.10, n: 4.5 },
+    { z: -0.40, w: 0.30, ht: 0.15, hb: 0.13, n: 4.5 },
+    { z: -0.10, w: 0.34, ht: 0.17, hb: 0.13, n: 4.0 },
+    { z:  0.20, w: 0.24, ht: 0.14, hb: 0.10, n: 3.4 },
+    { z:  0.42, w: 0.12, ht: 0.08, hb: 0.06, n: 3.0, y: 0.01 },
+    { z:  0.58, w: 0.020, ht: 0.015, hb: 0.012, n: 2.4, y: 0.01 }
+  ], { seg: 24, partAt: top, capPartStart: PART.TRIM }));
+  // Brow and eye.
+  mergeMesh(m, buildPrism(8, 0.5, 0.5, 0.05, 0.04), { pos: [0, 0.07, 0.30], scale: [0.26, 0.12, 0.22], rot: [RX, 0, 0], part: PART.TRIM });
+  mergeMesh(m, buildSphere(14, 9), { pos: [0, 0.07, 0.40], scale: [0.17, 0.12, 0.15], part: PART.LAMP });
+  // Dorsal crest.
+  mergeMesh(m, buildWing({ span: 1, rootC: 0.60, tipC: 0.16, sweep: -0.30, rootT: 0.07, tipT: 0.02 }),
+            { pos: [0, 0.12, -0.20], scale: [0.28, 1, 1], rot: [0, 0, Math.PI / 2], part: PART.PAINT2 });
+  [-1, 1].forEach(s => {
+    // Forward-swept blade, its tip in red livery.
+    mergeMesh(m, buildWing({ span: 1, rootC: 0.62, tipC: 0.14, sweep: 0.52, rootT: 0.07, tipT: 0.02 }),
+              { pos: [s * 0.26, -0.02, -0.12], scale: [s * 0.58, 1, 1], rot: [0, 0, s * 0.14] });
+    mergeMesh(m, buildWing({ span: 1, rootC: 0.18, tipC: 0.06, sweep: 0.14, rootT: 0.025, tipT: 0.01 }),
+              { pos: [s * 0.80, 0.06, 0.26], scale: [s * 0.16, 1, 1], rot: [0, 0, s * 0.14], part: PART.ACCENT });
+    // Engine pod with a hot throat.
+    mergeMesh(m, buildLoft([
+      { z: -0.66, w: 0.075, h: 0.075, n: 2, x: s * 0.24, y: -0.06 },
+      { z: -0.56, w: 0.09, h: 0.09, n: 2, x: s * 0.24, y: -0.06 },
+      { z: -0.10, w: 0.085, h: 0.085, n: 2, x: s * 0.24, y: -0.06 },
+      { z:  0.00, w: 0.04, h: 0.04, n: 2, x: s * 0.24, y: -0.06 }
+    ], { seg: 16, part: PART.TRIM, capPartStart: PART.HEAT }));
+    // Gun barrels under the jaw.
+    mergeMesh(m, buildCylinder(10, 0.5, 0.5, 0.1), { pos: [s * 0.12, -0.10, 0.36], scale: [0.03, 0.36, 0.03], rot: [RX, 0, 0], part: PART.GUNMETAL });
+    lampAt(m, [s * 0.84, 0.07, 0.30], 0.02, PART.NAV_RED);
+  });
+  return m;
+}
+
+// ✨ v56 · A FRIGATE — the capital ship of the open-world flight missions,
+// modelled at unit length (bow −Z, stern +Z) and drawn at ~80–120 units. An
+// armoured hull lofted from a ram bow to a broad engine block, a stepped
+// command tower with lit bridge windows, a dorsal spine of plating, flank
+// sponsons, a hangar mouth, three main engines with hot throats, antennae and
+// a sensor dish. Its turrets and its reactor are NOT part of the mesh: they
+// are targets, drawn and destroyed separately at the mounts FRIGATE_MOUNTS
+// lists (exported below).
+function buildFrigate(){
+  const m = emptyMesh();
+  const RX = Math.PI / 2;
+  const deck = th => (Math.sin(th) > 0.55 ? PART.PAINT2 : PART.PAINT);
+  mergeMesh(m, buildLoft([
+    { z: -0.52, w: 0.004, ht: 0.010, hb: 0.010, n: 3, y: -0.008 },
+    { z: -0.46, w: 0.040, ht: 0.030, hb: 0.032, n: 4, y: -0.006 },
+    { z: -0.34, w: 0.080, ht: 0.050, hb: 0.050, n: 5 },
+    { z: -0.12, w: 0.105, ht: 0.060, hb: 0.058, n: 6 },
+    { z:  0.18, w: 0.118, ht: 0.064, hb: 0.060, n: 6 },
+    { z:  0.38, w: 0.124, ht: 0.066, hb: 0.062, n: 6 },
+    { z:  0.50, w: 0.110, ht: 0.060, hb: 0.056, n: 5 }
+  ], { seg: 32, partAt: deck, capPartEnd: PART.TRIM }));
+  // Dorsal spine and keel.
+  plateAlong(m, [0, 0.066, -0.30], [0, 0.072, 0.40], 0.05, 0.03, PART.TRIM);
+  plateAlong(m, [0, -0.064, -0.36], [0, -0.066, 0.42], 0.04, 0.025, PART.TRIM);
+  // Command tower: three receding stages toward the stern, a bridge band of
+  // lit windows (TECH plating everywhere else), masts and a dish.
+  mergeMesh(m, buildRoundedBox(0.06, 2), { pos: [0, 0.098, 0.24], scale: [0.11, 0.06, 0.16], part: PART.PAINT2 });
+  mergeMesh(m, buildRoundedBox(0.06, 2), { pos: [0, 0.140, 0.27], scale: [0.08, 0.04, 0.10], part: PART.PAINT2 });
+  mergeMesh(m, buildRoundedBox(0.08, 2), { pos: [0, 0.170, 0.29], scale: [0.054, 0.024, 0.060], part: PART.TRIM });
+  plateAlong(m, [-0.041, 0.146, 0.225], [0.041, 0.146, 0.225], 0.012, 0.010, PART.LAMP);
+  mergeMesh(m, buildCylinder(8), { pos: [0.012, 0.215, 0.30], scale: [0.004, 0.07, 0.004], part: PART.TRIM });
+  mergeMesh(m, buildCylinder(8), { pos: [-0.016, 0.205, 0.31], scale: [0.003, 0.05, 0.003], part: PART.TRIM });
+  lampAt(m, [0.012, 0.251, 0.30], 0.005, PART.NAV_RED);
+  mergeMesh(m, buildTorus(0.4, 0.06, 20, 6), { pos: [0, 0.196, 0.20], scale: [0.05, 0.05, 0.05], rot: [0.9, 0, 0], part: PART.CHROME });
+  // Flank sponsons along both sides, with a livery band.
+  [-1, 1].forEach(s => {
+    plateAlong(m, [s * 0.112, -0.004, -0.16], [s * 0.126, -0.004, 0.36], 0.05, 0.05, PART.PAINT);
+    plateAlong(m, [s * 0.138, 0.008, -0.12], [s * 0.150, 0.008, 0.32], 0.012, 0.01, PART.ACCENT);
+    plateAlong(m, [s * 0.090, 0.050, -0.40], [s * 0.118, 0.060, 0.10], 0.02, 0.012, PART.TRIM);
+    // Engine pods either side of the main engine.
+    mergeMesh(m, buildLoft([
+      { z: 0.30, w: 0.040, h: 0.040, n: 2.4, x: s * 0.085, y: -0.01 },
+      { z: 0.42, w: 0.048, h: 0.048, n: 2.4, x: s * 0.085, y: -0.01 },
+      { z: 0.56, w: 0.044, h: 0.044, n: 2.2, x: s * 0.085, y: -0.01 }
+    ], { seg: 16, part: PART.TRIM, capPartEnd: PART.HEAT }));
+    mergeMesh(m, buildTorus(0.5, 0.1, 18, 6), { pos: [s * 0.085, -0.01, 0.565], scale: [0.09, 0.09, 0.09], rot: [RX, 0, 0], part: PART.GUNMETAL });
+    lampAt(m, [s * 0.13, 0.02, -0.25], 0.006, s < 0 ? PART.NAV_RED : PART.NAV_GREEN);
+  });
+  // Main engine.
+  mergeMesh(m, buildLoft([
+    { z: 0.44, w: 0.058, h: 0.050, n: 2.6, y: 0.0 },
+    { z: 0.58, w: 0.062, h: 0.054, n: 2.6, y: 0.0 }
+  ], { seg: 18, part: PART.TRIM, capPartEnd: PART.HEAT }));
+  mergeMesh(m, buildTorus(0.5, 0.1, 22, 6), { pos: [0, 0, 0.585], scale: [0.125, 0.11, 0.125], rot: [RX, 0, 0], part: PART.GUNMETAL });
+  // Hangar mouth under the bow, a dark slot with a lamp lip.
+  plateAlong(m, [-0.045, -0.050, -0.20], [0.045, -0.050, -0.20], 0.02, 0.022, PART.RUBBER);
+  plateAlong(m, [-0.05, -0.040, -0.212], [0.05, -0.040, -0.212], 0.004, 0.004, PART.LAMP);
+  return m;
+}
+// Where the frigate carries its targets, in its own unit space: six turret
+// mounts on the deck and flanks, and the reactor amidships.
+const FRIGATE_MOUNTS = {
+  turrets: [[0, 0.075, -0.30], [0, 0.078, -0.10], [-0.10, 0.045, 0.06], [0.10, 0.045, 0.06], [-0.112, -0.03, -0.24], [0.112, -0.03, -0.24]],
+  reactor: [0, 0.08, 0.08]
+};
+
+// ✨ v56 · A missile: pale body, livery nose, cruciform tail fins, a hot motor.
+function buildMissile(){
+  const m = emptyMesh();
+  mergeMesh(m, buildLoft([
+    { z: -0.50, w: 0.004, h: 0.004, n: 2 },
+    { z: -0.40, w: 0.050, h: 0.050, n: 2 },
+    { z: -0.30, w: 0.070, h: 0.070, n: 2 },
+    { z:  0.40, w: 0.070, h: 0.070, n: 2 },
+    { z:  0.48, w: 0.056, h: 0.056, n: 2 }
+  ], { seg: 14, partAt: (th, i) => (i <= 2 ? PART.ACCENT : PART.PAINT2), capPartEnd: PART.HEAT }));
+  for(let k = 0; k < 4; k++){
+    const a = k * Math.PI / 2;
+    plateAlong(m, [Math.cos(a) * 0.06, Math.sin(a) * 0.06, 0.20], [Math.cos(a) * 0.16, Math.sin(a) * 0.16, 0.42], 0.012, 0.012, PART.TRIM, [-Math.sin(a), Math.cos(a), 0]);
+    plateAlong(m, [Math.cos(a) * 0.06, Math.sin(a) * 0.06, -0.24], [Math.cos(a) * 0.10, Math.sin(a) * 0.10, -0.16], 0.01, 0.01, PART.TRIM, [-Math.sin(a), Math.cos(a), 0]);
+  }
+  return m;
+}
+
+// ✨ v56 · A LIGHT CYCLE for the open-world grid: a lofted teardrop body with
+// a pale crown and a visor, two big wheels standing on the ground (rubber
+// tyres, trim hubs, a LAMP ring inside each rim that glows in the rider's
+// colour), and lamp strips down both flanks. Nose −Z, wheels touch y = 0.
+function buildCycle(){
+  const m = emptyMesh();
+  const RZ = Math.PI / 2;
+  mergeMesh(m, buildLoft([
+    { z: -1.00, w: 0.02, ht: 0.02, hb: 0.02, n: 2.0, y: 0.34 },
+    { z: -0.84, w: 0.13, ht: 0.11, hb: 0.10, n: 2.6, y: 0.36 },
+    { z: -0.42, w: 0.19, ht: 0.22, hb: 0.15, n: 3.0, y: 0.40 },
+    { z:  0.08, w: 0.21, ht: 0.27, hb: 0.17, n: 3.2, y: 0.42 },
+    { z:  0.54, w: 0.19, ht: 0.21, hb: 0.16, n: 3.0, y: 0.40 },
+    { z:  0.94, w: 0.06, ht: 0.08, hb: 0.06, n: 2.4, y: 0.37 }
+  ], { seg: 22, partAt: th => (Math.sin(th) > 0.45 ? PART.PAINT2 : PART.PAINT), capPartEnd: PART.LAMP }));
+  mergeMesh(m, buildLoft([
+    { z: -0.58, w: 0.004, ht: 0.003, hb: 0.002, n: 2, y: 0.60 },
+    { z: -0.46, w: 0.10, ht: 0.07, hb: 0.01, n: 2.4, y: 0.61 },
+    { z: -0.20, w: 0.12, ht: 0.09, hb: 0.01, n: 2.4, y: 0.64 },
+    { z:  0.02, w: 0.004, ht: 0.003, hb: 0.002, n: 2, y: 0.66 }
+  ], { seg: 16, part: PART.GLASS }));
+  [-0.64, 0.64].forEach(z => {
+    mergeMesh(m, buildTorus(0.42, 0.11, 32, 10), { pos: [0, 0.38, z], scale: [0.86, 0.86, 0.86], rot: [0, 0, RZ], part: PART.RUBBER });
+    mergeMesh(m, buildTorus(0.31, 0.018, 32, 6), { pos: [0, 0.38, z], scale: [0.86, 0.86, 0.86], rot: [0, 0, RZ], part: PART.LAMP });
+    mergeMesh(m, buildCylinder(18, 0.5, 0.5, 0.1), { pos: [0, 0.38, z], scale: [0.22, 0.26, 0.22], rot: [0, 0, RZ], part: PART.TRIM });
+  });
+  [-1, 1].forEach(s => {
+    plateAlong(m, [s * 0.205, 0.44, -0.72], [s * 0.215, 0.46, 0.74], 0.02, 0.035, PART.LAMP);
+    plateAlong(m, [s * 0.16, 0.62, -0.10], [s * 0.15, 0.58, 0.62], 0.02, 0.02, PART.ACCENT);
+  });
   return m;
 }
 
@@ -22354,6 +22783,14 @@ uniform float uDetailScale;
 // theme colour instead of the warm and cool tenants. 0 is the house look.
 uniform vec3  uWinTint;
 uniform float uWinMix;
+// ✨ v56 · Under a DEEP SPACE sky the environment is the baked nebula cube,
+// not the three-band city gradient: ambient and reflections sample it, blurred
+// by roughness through its mips, so a hull reflects the gas it flies through.
+uniform float uSpaceOn;
+uniform samplerCube uSpace;
+// Set by surfaceDetail for the styles that cut a surface (planetary rings);
+// 1 everywhere else. Multiplies the instance's own opacity at output.
+float gAlpha = 1.0;
 #ifdef ULTRA
 // 1 when the world has an open sky (a city horizon to reflect), 0 for an
 // enclosed set, which reflects its own ceiling lights instead.
@@ -22379,6 +22816,17 @@ vec3 envSample(vec3 d){
   // Horizon glow band — the brightest part of a night skyline.
   c += uHorizon * 0.55 * exp(-abs(t) * 9.0);
   return c * uEnvInt;
+}
+// ✨ v56 · The environment as LIGHT: irradiance (heavily blurred) and a
+// reflection tap blurred by roughness. Both fall straight through to the
+// gradient above unless the world is in deep space.
+vec3 envIrr(vec3 d){
+  if(uSpaceOn > 0.5) return textureLod(uSpace, d, 7.0).rgb * uEnvInt * 2.2 + vec3(0.004, 0.005, 0.009);
+  return envSample(d);
+}
+vec3 envRefl(vec3 d, float rough){
+  if(uSpaceOn > 0.5) return textureLod(uSpace, d, rough * 7.0).rgb * uEnvInt * 1.6;
+  return envSample(d);
 }
 
 // Lazarov's analytic fit to the split-sum environment BRDF. Replaces the
@@ -22478,12 +22926,37 @@ void applyPart(float part, inout vec3 albedo, inout float metallic, inout float 
     emisTint = vEmis.rgb;
     emis     = lit * clamp(vEmis.a * 0.9, 0.45, 2.0);
     detailMul = 0.0;
-  }else{                                                  // GUNMETAL
+  }else if(part < 10.5){                                  // GUNMETAL
     albedo   = vec3(0.12, 0.125, 0.135);
     metallic = 1.0;
     rough    = clamp(rough + 0.08, 0.28, 0.5);
     emis    *= 0.1;
     detailMul = 0.35;
+  }else if(part < 11.5){                                  // ACCENT
+    // ✨ v56 · Livery. A painted stripe in one of eight fixed paint colours,
+    // picked per INSTANCE (draw's 'accent' option, carried in the opacity channel —
+    // see draw()) and orange when none is given: the warm flash on a cold
+    // hull that makes a fighter read as designed rather than extruded.
+    int ai = vColor.a > 1.0 ? int(clamp(floor(fract(vColor.a) * 8.0), 0.0, 7.0)) : 0;
+    vec3 acc = ai == 0 ? vec3(1.00, 0.30, 0.04) : ai == 1 ? vec3(0.86, 0.87, 0.88)
+             : ai == 2 ? vec3(0.80, 0.05, 0.04) : ai == 3 ? vec3(1.00, 0.70, 0.06)
+             : ai == 4 ? vec3(0.03, 0.62, 1.00) : ai == 5 ? vec3(0.85, 0.06, 0.55)
+             : ai == 6 ? vec3(0.10, 0.85, 0.26) : vec3(0.025, 0.025, 0.03);
+    albedo   = acc;
+    metallic = 0.15;
+    rough    = clamp(rough * 0.8 + 0.12, 0.22, 0.6);
+    emis    *= 0.15;
+    detailMul = 0.5;
+  }else{                                                  // PAINT2
+    // ✨ v56 · The second tone of a two-tone scheme: the instance colour
+    // lifted toward off-white, the way a fighter's upper surfaces are a pale
+    // grey over a darker belly. Still the instance colour underneath, so a hit
+    // flash or a team tint reaches it too.
+    albedo   = mix(albedo, vec3(0.80, 0.81, 0.82), 0.62);
+    metallic = metallic * 0.55;
+    rough    = clamp(rough + 0.06, 0.2, 0.7);
+    emis    *= 0.5;
+    detailMul = 1.0;
   }
 }
 
@@ -22563,6 +23036,24 @@ float hexEdge(vec2 p){
   return max(dot(p, vec2(0.8660254, 0.5)), p.x);
 }
 
+// ✨ v56 · 3D value noise for the styles that wrap a whole body — a planet's
+// bands, an asteroid's regolith, a meteor's cracks. The 2D noise above is
+// projected along one axis, which on a sphere tears at the seam and pinches at
+// the poles; this is seamless by construction.
+float hash31(vec3 p){
+  p = fract(p * 0.1031);
+  p += dot(p, p.zyx + 31.32);
+  return fract((p.x + p.y) * p.z);
+}
+float vnoise3(vec3 p){
+  vec3 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(hash31(i),                   hash31(i + vec3(1.0, 0.0, 0.0)), f.x),
+                 mix(hash31(i + vec3(0.0, 1.0, 0.0)), hash31(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+             mix(mix(hash31(i + vec3(0.0, 0.0, 1.0)), hash31(i + vec3(1.0, 0.0, 1.0)), f.x),
+                 mix(hash31(i + vec3(0.0, 1.0, 1.0)), hash31(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+}
+
 // ══ 🔬 DETAIL LOD ══
 // How much OBJECT SPACE one screen pixel covers here. Every pattern below is
 // analytic and defined in object units, so this is the only number needed to
@@ -22597,7 +23088,10 @@ void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
   // gets a floor under the governor's dial: it can be dimmed, never deleted.
   // Everything else here really is polish and may go all the way to nothing.
   bool isWin = style > 1.5 && style < 2.5;
-  float ds  = isWin ? max(uDetailScale, 0.7) : uDetailScale;
+  // ✨ v56 · The same is true, harder, of a planet's bands, a ring's lanes and
+  // a meteor's molten cracks: without them those are a plain ball, a solid
+  // disc and a flat orange blob. They are never on the governor's dial.
+  float ds  = isWin ? max(uDetailScale, 0.7) : (style > 7.5 ? 1.0 : uDetailScale);
   float amt = fract(vMat.w) * ds;
   // A facade pattern belongs on the facade: roof plant, masts and lamps are
   // other parts and stay plain. Every other style is scaled by its part.
@@ -22614,7 +23108,7 @@ void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
              : style < 4.5 ? -1.0       // BRUSHED fades per octave inside
              : style < 5.5 ? 0.29       // HEX     lattice cell
              : style < 6.5 ? 0.53       // CIRCUIT trace cell
-                           : 0.038;     // MINERAL grain
+                           : -1.0;      // MINERAL / GAS / RING / MAGMA: LOD per octave, inside
   if(feat > 0.0) amt *= detailLOD(fp, feat);
 
   if(style < 0.5 || amt <= 0.004) return;
@@ -22839,18 +23333,98 @@ void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
     rough   = clamp(rough - trace * 0.25 * amt, 0.035, 1.0);
     height  = trace * 0.30 * amt;
 
-  }else{
-    // ── 7 · MINERAL. Strata and grain for rock: meteors and destructible
-    // cores. The banding is what makes it read as stone; each octave fades with
-    // its own period so a distant rock does not boil.
+  }else if(style < 7.5){
+    // ── 7 · MINERAL. Rock: meteors, asteroids and destructible cores. Each
+    // octave fades with its own period so a distant rock does not boil.
+    // ✨ v56: the strata alone read as a polished agate egg. What a real
+    // asteroid shows from a few hundred metres is REGOLITH — broad patches of
+    // warm brown and cool grey dust, darker mottle inside them, and a dusty,
+    // almost completely rough finish — so those come first and the strata sit
+    // quietly on top.
     amt *= matte;
+    vec3 q = vObj * 0.9;
+    float m1 = vnoise3(q * 1.3 + 3.1);
+    float m2 = vnoise3(q * 3.7 + 11.0);
+    float l3 = detailLOD(fp, 0.11);
+    float m3 = mix(0.5, vnoise3(q * 9.0 + 5.0), l3);
+    vec3 warm = albedo * vec3(1.14, 0.95, 0.78);
+    vec3 cool = albedo * vec3(0.82, 0.87, 0.96);
+    vec3 reg = mix(cool, warm, smoothstep(0.28, 0.72, m1));
+    reg *= (0.74 + 0.5 * m2) * (0.88 + 0.24 * m3);
+    albedo = mix(albedo, reg, amt);
+    float l17 = detailLOD(fp, 1.0 / 17.0), l26 = detailLOD(fp, 1.0 / 26.0);
     float b1 = vnoise(vec2(vObj.y * 5.5, vObj.x * 0.8));
     float b2 = vnoise(vec2(vObj.y * 17.0, vObj.z * 2.0));
-    float band = 0.5 + (b1 - 0.5) * 0.6 + (b2 - 0.5) * 0.4 * detailLOD(fp, 1.0 / 17.0);
-    float grain = mix(0.5, vnoise(pp * 26.0), detailLOD(fp, 1.0 / 26.0));
-    albedo *= 1.0 + ((band - 0.5) * 0.45 + (grain - 0.5) * 0.18) * amt;
-    rough  += ((grain - 0.5) * 0.22 + (band - 0.5) * 0.18) * amt;
-    height  = (band - 0.5) * 0.7 * amt + (grain - 0.5) * 0.2 * amt;
+    float band = 0.5 + (b1 - 0.5) * 0.6 + (b2 - 0.5) * 0.4 * l17;
+    float grain = mix(0.5, vnoise(pp * 26.0), l26);
+    albedo *= 1.0 + ((band - 0.5) * 0.22 + (grain - 0.5) * 0.18) * amt;
+    rough  += ((grain - 0.5) * 0.22 + (band - 0.5) * 0.12) * amt;
+    rough   = mix(rough, max(rough, 0.84), amt * 0.85);
+    metal   = mix(metal, 0.0, amt * 0.9);
+    height  = ((band - 0.5) * 0.45 + (m2 - 0.5) * 0.7) * amt + (grain - 0.5) * 0.2 * amt * l26;
+
+  }else if(style < 8.5){
+    // ── 8 · GAS. ✨ v56 · A banded giant, on a sphere whose object normal IS
+    // its surface direction: alternating pale zones and dark belts, bent by
+    // three octaves of seamless turbulence, fine streaks inside the bands, and
+    // one great oval storm. The instance colour is the dominant band, so any
+    // colour of giant comes out of one style.
+    amt *= matte;
+    vec3 s = normalize(vObjN);
+    float t1 = vnoise3(s * 2.6 + 1.7), t2 = vnoise3(s * 6.1 + 9.3), t3 = vnoise3(s * 14.0 + 4.1);
+    float tb = t1 * 0.6 + t2 * 0.3 + t3 * 0.1;
+    float y = s.y * 6.5 + (tb - 0.5) * 1.7;
+    float band = 0.5 + 0.5 * sin(y * 3.14159 + sin(y * 1.7) * 1.3);
+    float fl = detailLOD(fp, 0.022 * length(vObj));
+    float fine = mix(0.5, 0.5 + 0.5 * sin(y * 13.0 + t2 * 4.0), fl);
+    vec3 dark = albedo * vec3(0.50, 0.34, 0.26);
+    vec3 pale = mix(albedo, vec3(0.95, 0.88, 0.76), 0.55);
+    vec3 col = mix(dark, albedo, smoothstep(0.12, 0.55, band));
+    col = mix(col, pale, smoothstep(0.62, 0.95, band) * 0.85);
+    col *= 0.88 + 0.24 * fine;
+    vec3 sp = normalize(vec3(0.80, -0.36, 0.48));
+    float storm = 1.0 - smoothstep(0.09, 0.16, length((s - sp) * vec3(1.0, 2.4, 1.0)));
+    float swirl = 0.5 + 0.5 * sin(length((s - sp) * vec3(1.0, 2.4, 1.0)) * 90.0 + t2 * 6.0);
+    col = mix(col, (albedo * vec3(1.35, 0.62, 0.42) + 0.02) * (0.85 + 0.3 * swirl), storm * 0.85);
+    albedo = mix(albedo, col, amt);
+    rough  = mix(rough, 0.92, amt);
+    metal  = mix(metal, 0.0, amt);
+
+  }else if(style < 9.5){
+    // ── 9 · RING. ✨ v56 · Planetary ring lanes. The ring geometry carries its
+    // normalised radius in uv.x (0 inner edge, 1 outer), so the lanes are
+    // concentric whatever the scale: a dense band of fine ringlets, a wide dark
+    // division two thirds of the way out, a narrow one further in. Lanes cut
+    // the surface through gAlpha — the ring is drawn in the blended pass.
+    float rr = clamp(vUV.x, 0.0, 1.0);
+    float l2 = detailLOD(fp, 0.004 * length(vObj));
+    float lanes = vnoise(vec2(rr * 55.0, 1.3)) * 0.6 + mix(0.5, vnoise(vec2(rr * 190.0, 7.7)), l2) * 0.4;
+    float dens = 0.2 + 0.8 * lanes;
+    dens *= smoothstep(0.0, 0.05, rr) * (1.0 - smoothstep(0.93, 1.0, rr));
+    dens *= 1.0 - 0.92 * (1.0 - smoothstep(0.0, 0.018, abs(rr - 0.62)));
+    dens *= 1.0 - 0.55 * (1.0 - smoothstep(0.0, 0.012, abs(rr - 0.84)));
+    albedo *= mix(0.55, 1.3, lanes);
+    rough = 0.95; metal = 0.0;
+    gAlpha = clamp(dens * amt + (1.0 - amt), 0.0, 1.0);
+
+  }else{
+    // ── 10 · MAGMA. ✨ v56 · A burning meteor: charred black rock split by a
+    // network of cracks that carry the instance's EMISSION, pulsing. Before
+    // this the meteors were drawn as solid emissive orange, which bloom turned
+    // into flat glowing potatoes with no surface at all.
+    vec3 q = vObj * 1.4;
+    float n1 = vnoise3(q), n2 = vnoise3(q * 2.3 + 5.1);
+    float r1 = 1.0 - abs(n1 * 2.0 - 1.0), r2 = 1.0 - abs(n2 * 2.0 - 1.0);
+    float sharp = pow(max(r1, r2 * 0.92), 9.0);
+    float cl = detailLOD(fp, 0.05);
+    float crack = mix(0.18, sharp, cl);
+    float m = vnoise3(q * 0.6 + 2.0);
+    float pulse = 0.75 + 0.25 * sin(uTime * 2.4 + n1 * 12.0);
+    albedo = mix(albedo, albedo * vec3(0.20, 0.17, 0.16) * (0.7 + 0.6 * m), amt);
+    rough  = mix(rough, 0.88, amt);
+    metal  = mix(metal, 0.0, amt);
+    emis  *= mix(1.0, crack * 2.6 * pulse + 0.04, amt);
+    height = -sharp * 0.6 * amt * cl + (m - 0.5) * 0.4 * amt;
   }
 }
 
@@ -22914,7 +23488,9 @@ vec3 skylineColor(vec3 d){
 }
 
 vec3 envUltra(vec3 d, float blur, vec2 fwR){
-  vec3 c = envSample(d);
+  vec3 c = envRefl(d, blur);
+  // ✨ v56 · Deep space has no skyline and no ceiling: the cube is everything.
+  if(uSpaceOn > 0.5) return c;
   float sharp = 1.0 - smoothstep(0.10, 0.55, blur);
   if(sharp <= 0.0) return c;
   if(uSkyOn > 0.5){
@@ -23115,7 +23691,7 @@ void main(){
   // specular takes a single environment tap along the reflection vector, bent
   // toward the normal as roughness climbs (a poor man's prefiltered mip chain,
   // but the environment is smooth enough that nobody can tell).
-  vec3 irradiance = envSample(N) * 0.55 + envSample(vec3(0.0, 1.0, 0.0)) * 0.16;
+  vec3 irradiance = envIrr(N) * 0.55 + envIrr(vec3(0.0, 1.0, 0.0)) * 0.16;
 #ifdef ULTRA
   // The brushed reflection is bent toward the plane of the grooves, so the
   // reflected skyline smears along the part the way the highlight does.
@@ -23139,7 +23715,7 @@ void main(){
 #else
   vec3 R = reflect(-V, N);
   vec3 Rr = normalize(mix(R, N, roughS * roughS * 0.85));
-  vec3 prefiltered = envSample(Rr) * mix(1.35, 0.55, roughS);
+  vec3 prefiltered = envRefl(Rr, roughS) * mix(1.35, 0.55, roughS);
   vec3 ambient = diffCol * irradiance + prefiltered * envBRDFApprox(F0, roughS, NoV);
 #endif
 
@@ -23169,10 +23745,12 @@ void main(){
   // into the sky rather than into a flat grey.
   float d = length(uCam - vWorld);
   float fogAmt = 1.0 - exp2(-pow(d * uFogDensity, 2.0));
-  vec3 fogCol = mix(uFogCol, envSample(-V), 0.35);
+  vec3 fogCol = uSpaceOn > 0.5 ? mix(uFogCol, envRefl(-V, 0.75), 0.5) : mix(uFogCol, envSample(-V), 0.35);
   color = mix(color, fogCol, clamp(fogAmt, 0.0, 1.0) * (1.0 - fogFree));
 
-  fragColor = vec4(color, vColor.a);
+  // ✨ v56 · Opacity above 1 is an opaque instance carrying a livery index
+  // (see ACCENT); gAlpha is what a cut style (ring lanes) took away.
+  fragColor = vec4(color, min(vColor.a, 1.0) * gAlpha);
 }`;
 
 // Additive billboards: sparks, muzzle flare, plasma, light halos. Soft-edged
@@ -23222,6 +23800,166 @@ void main(){
   fragColor = vec4(vTint.rgb * vTint.a * (core + halo) * vFog, 1.0);
 }`;
 
+// ✨ v56 · STREAKS. A glow is a round spark; almost everything that MOVES fast
+// in a real render is not round — a tracer is a line of light, an engine plume
+// is a cone, the dust a fighter flies through smears into dashes, a laser is a
+// beam. Faking those with chains of round glows reads as a string of beads.
+// A streak is one camera-facing capsule between two world points: its width
+// always faces the lens (so it never goes edge-on and vanishes), its ends are
+// round, and `head` shades it from a uniform beam (0) to a comet (1) whose
+// tail fades into nothing. Additive, drawn with the glows.
+const VS_STREAK = `#version 300 es
+precision highp float;
+layout(location=0) in vec3 aPos;      // quad corner: x across, y along, both -0.5..0.5
+layout(location=3) in vec4 aA;        // tail xyz, w = width (negative = fog-free)
+layout(location=4) in vec4 aB;        // head xyz, w = intensity
+layout(location=5) in vec4 aTint;     // rgb colour, a = head bias
+uniform mat4 uView;
+uniform mat4 uProj;
+uniform vec3 uCam;
+uniform float uFogDensity;
+out vec2 vUV;
+out vec3 vCol;
+out float vFog;
+out float vHead;
+out float vCap;
+void main(){
+  vec3 axis = aB.xyz - aA.xyz;
+  float len = length(axis);
+  vec3 dir = len > 1e-5 ? axis / len : vec3(0.0, 0.0, 1.0);
+  vec3 mid = (aA.xyz + aB.xyz) * 0.5;
+  vec3 toCam = uCam - mid;
+  vec3 side = cross(dir, toCam);
+  float sl = length(side);
+  // Seen end-on there is no screen direction to spread across; fall back to
+  // the camera's right vector and let it read as a dot, which it is.
+  vec3 camRight = vec3(uView[0][0], uView[1][0], uView[2][0]);
+  side = sl > 1e-4 * max(length(toCam), 1e-3) ? side / sl : camRight;
+  float w = abs(aA.w);
+  float t = aPos.y + 0.5;
+  vec3 along = mix(aA.xyz - dir * w * 0.5, aB.xyz + dir * w * 0.5, t);
+  vec3 world = along + side * aPos.x * w;
+  vUV = vec2(aPos.x * 2.0, t);
+  vCap = clamp(w * 0.5 / max(len + w, 1e-5), 0.0, 0.5);
+  vCol = aTint.rgb * aB.w;
+  vHead = aTint.a;
+  float d = length(toCam);
+  vFog = aA.w < 0.0 ? 1.0 : exp2(-pow(d * uFogDensity, 2.0));
+  gl_Position = uProj * uView * vec4(world, 1.0);
+}`;
+
+const FS_STREAK = `#version 300 es
+precision highp float;
+in vec2 vUV;
+in vec3 vCol;
+in float vFog;
+in float vHead;
+in float vCap;
+out vec4 fragColor;
+void main(){
+  float x = vUV.x, t = vUV.y;
+  // Distance to the capsule's core line, with round caps at both ends.
+  float tc = clamp(t, vCap, 1.0 - vCap);
+  float dy = (t - tc) / max(vCap, 1e-4);
+  float r2 = x * x + dy * dy;
+  if(r2 > 1.0) discard;
+  float core = pow(1.0 - r2, 3.0);
+  float halo = pow(1.0 - r2, 1.2) * 0.35;
+  float along = mix(1.0, pow(clamp(t, 0.0, 1.0), 1.6), vHead);
+  fragColor = vec4(vCol * (core + halo) * along * vFog, 1.0);
+}`;
+
+// ✨ v56 · DEEP SPACE. The open sky every space mission flies under, baked once
+// per world into a cubemap: domain-warped nebula clouds in three colours with
+// bright cores and dark dust lanes, a faint galactic band, unresolved star
+// haze. Baking it is what makes it affordable at all — eight octaves of warped
+// 3D noise per pixel per frame is out of reach of the GPUs this arcade runs
+// on, a 512² face rendered once is not — and it is ALSO what makes it an
+// environment: FS_MESH samples the same cube (blurred by roughness through its
+// mips) for ambient and reflections, so a chrome hull reflects the nebula it is
+// flying through instead of a city that is not there. Point stars stay
+// procedural in FS_SKY, where they can be one sharp pixel at any resolution.
+const FS_SPACEGEN = `#version 300 es
+precision highp float;
+uniform int   uFace;
+uniform float uSize;
+uniform vec3  uColA;
+uniform vec3  uColB;
+uniform vec3  uColC;
+uniform vec3  uNebDir;
+uniform vec3  uBandN;
+uniform vec3  uSeed;
+uniform vec4  uP;        // x nebula amount, y dust, z galaxy band, w base glow
+out vec4 fragColor;
+
+float h31(vec3 p){
+  p = fract(p * 0.1031);
+  p += dot(p, p.zyx + 31.32);
+  return fract((p.x + p.y) * p.z);
+}
+float n3(vec3 p){
+  vec3 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(h31(i),                   h31(i + vec3(1.0, 0.0, 0.0)), f.x),
+                 mix(h31(i + vec3(0.0, 1.0, 0.0)), h31(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+             mix(mix(h31(i + vec3(0.0, 0.0, 1.0)), h31(i + vec3(1.0, 0.0, 1.0)), f.x),
+                 mix(h31(i + vec3(0.0, 1.0, 1.0)), h31(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+}
+float fbm(vec3 p, int oct){
+  float a = 0.5, s = 0.0, nrm = 0.0;
+  for(int i = 0; i < 8; i++){
+    if(i >= oct) break;
+    s += a * n3(p); nrm += a;
+    p = p * 2.03 + vec3(1.7, 9.2, 3.1);
+    a *= 0.5;
+  }
+  return s / nrm;
+}
+vec3 faceDir(vec2 st, int f){
+  vec2 c = st * 2.0 - 1.0;
+  if(f == 0) return vec3( 1.0, -c.y, -c.x);
+  if(f == 1) return vec3(-1.0, -c.y,  c.x);
+  if(f == 2) return vec3( c.x,  1.0,  c.y);
+  if(f == 3) return vec3( c.x, -1.0, -c.y);
+  if(f == 4) return vec3( c.x, -c.y,  1.0);
+  return vec3(-c.x, -c.y, -1.0);
+}
+void main(){
+  vec3 d = normalize(faceDir(gl_FragCoord.xy / uSize, uFace));
+  vec3 p = d * 1.55 + uSeed;
+  // Two levels of domain warp — what turns noise into CLOUD: filaments,
+  // folds and pillars instead of round blobs.
+  vec3 q = vec3(fbm(p + vec3(0.0, 1.3, 2.1), 5), fbm(p + vec3(5.2, 1.3, 7.7), 5), fbm(p + vec3(2.7, 9.1, 3.3), 5));
+  vec3 r = vec3(fbm(p + 3.2 * q + vec3(1.7, 9.2, 0.3), 5), fbm(p + 3.2 * q + vec3(8.3, 2.8, 5.1), 5), fbm(p + 3.2 * q + vec3(4.4, 6.6, 1.9), 4));
+  float f = fbm(p + 2.6 * r, 7);
+  // The nebula is a PLACE in the sky, not wallpaper: dense toward uNebDir,
+  // thinning to wisps and then to clear space on the far side.
+  float region = smoothstep(-0.55, 0.85, dot(d, uNebDir));
+  float dens = smoothstep(0.38, 0.92, f) * region;
+  vec3 col = mix(uColA, uColB, clamp(q.x * 1.8 - 0.45, 0.0, 1.0));
+  col = mix(col, uColC, clamp(r.y * r.y * 2.2 - 0.25, 0.0, 1.0));
+  vec3 neb = col * (dens * dens * 2.4 + dens * 0.25);
+  // Hot cores: where the gas is densest it glows white-hot in the third colour.
+  neb += mix(uColC, vec3(1.0), 0.35) * pow(dens, 6.0) * 3.2;
+  // Dark dust lanes cut across the bright gas — thin, branching filaments
+  // (a ridge of warped noise), never round holes.
+  float rid = 1.0 - abs(fbm(p * 2.3 + q * 2.4 + r * 1.2 + 9.0, 6) * 2.0 - 1.0);
+  float dust = pow(rid, 10.0) * smoothstep(0.05, 0.45, dens);
+  neb *= 1.0 - clamp(uP.y * dust * 1.2, 0.0, 0.85);
+  // The galaxy: a soft band of unresolved stars with its own dust rift.
+  float bd = dot(d, uBandN);
+  float band = exp(-pow(bd / 0.17, 2.0));
+  float bn = fbm(d * 7.0 + uSeed * 0.3, 5);
+  float rift = smoothstep(0.2, 0.0, abs(bd + (bn - 0.5) * 0.08)) * 0.6;
+  vec3 gal = vec3(0.32, 0.30, 0.38) * band * (0.35 + 0.65 * bn) * (1.0 - rift) * uP.z * 0.28;
+  // Unresolved starlight: a smooth glow that thickens along the band. NOT
+  // texel-sized speckle — the cube is magnified several times on screen, and
+  // a bright texel comes out as a little square.
+  vec3 base = vec3(0.0035, 0.0045, 0.011) * (1.0 + uP.w) + uColA * 0.012 * region;
+  vec3 c = base + neb * uP.x + gal + vec3(0.05, 0.055, 0.07) * band * bn * uP.z * 0.25;
+  fragColor = vec4(c, 1.0);
+}`;
+
 // The background. Clearing to a flat colour left the world sitting in a void:
 // with no shadows to carry depth, a real gradient sky doing the far-field work
 // is not decoration, it is the horizon the fog dissolves into. This evaluates
@@ -23249,6 +23987,10 @@ uniform float uTheme;
 uniform vec4  uBodyA;
 uniform vec4  uBodyB;
 uniform vec4  uBodyC;
+// ✨ v56 · theme 5 is DEEP SPACE: the baked nebula cube (see FS_SPACEGEN)
+// under procedural point stars, with no horizon, no city and no ground.
+uniform samplerCube uSpace;
+uniform vec4  uStarP;    // x density, y brightness, z bright-star rate, w glint
 #ifdef ULTRA
 uniform vec3  uSunDir;
 uniform vec3  uSunCol;
@@ -23335,6 +24077,57 @@ vec3 skyToxic(vec3 c, vec3 dir, vec2 p, float aa){
   return mix(o, vec3(0.10, 0.18, 0.06) * uEnvInt + sunC * 0.08 * exp(-rr * 0.5), smog * 0.6);
 }
 
+// ── ✨ v56 · 🌌 DEEP SPACE (theme 5) ──────────────────────────────────────
+// Stars on a 3D lattice of cells round the whole sphere — there is no horizon
+// out here, so the elevation rows the city sky uses would pinch at the poles
+// the camera can now fly straight at. One star per lit cell, jittered away
+// from the cell walls, one pixel across at any resolution. Three layers: a
+// dense haze of faint ones, a middle field, and a rare bright few that carry
+// diffraction spikes aligned to the lens, the way a real camera draws them.
+float sh31(vec3 p){
+  p = fract(p * 0.1031);
+  p += dot(p, p.zyx + 31.32);
+  return fract((p.x + p.y) * p.z);
+}
+vec3 starTint(float h){
+  return h < 0.22 ? vec3(0.62, 0.74, 1.0)
+       : h < 0.66 ? vec3(0.95, 0.96, 1.0)
+       : h < 0.88 ? vec3(1.0, 0.86, 0.64)
+                  : vec3(1.0, 0.60, 0.42);
+}
+vec3 starLayer(vec3 dir, float K, float cut, float gain, float pix, float seed, float glint){
+  vec3 ci = floor(dir * K);
+  float h = sh31(ci + seed);
+  if(h <= cut) return vec3(0.0);
+  vec3 jit = vec3(sh31(ci + seed + 17.3), sh31(ci + seed + 41.7), sh31(ci + seed + 73.1)) * 0.4 + 0.3;
+  vec3 sd = normalize(ci + jit);
+  if(dot(dir, sd) <= 0.0) return vec3(0.0);
+  float ang = length(cross(dir, sd));
+  float mag = (h - cut) / max(1.0 - cut, 1e-4);
+  float b = gain * mag * mag;
+  vec3 tint = starTint(sh31(ci + seed + 5.5));
+  vec3 c = tint * b * (1.0 - smoothstep(0.35 * pix, 1.35 * pix, ang));
+  if(glint > 0.0 && mag > 0.4){
+    // A star is only ever looked up from its OWN cell, so anything it draws
+    // past the cell wall is cut off square. The jitter keeps it 0.3 cells
+    // inside; the halo and spikes are windowed to fade out before 0.28.
+    float win = 1.0 - smoothstep(0.16 / K, 0.28 / K, ang);
+    vec3 dd = dir - sd;
+    float sx = abs(dot(dd, uRight)), sy = abs(dot(dd, uUp));
+    float reach = min(pix * 14.0 * mag, 0.12 / K);
+    float spike = exp(-sx / (pix * 0.7)) * exp(-sy / reach) + exp(-sy / (pix * 0.7)) * exp(-sx / reach);
+    c += tint * b * (spike * glint * 0.3 + exp(-ang / (pix * 2.2)) * 0.18) * win;
+  }
+  return c;
+}
+vec3 skySpace(vec3 dir, float pix){
+  vec3 c = texture(uSpace, dir).rgb * uEnvInt;
+  c += starLayer(dir, 230.0, 1.0 - 0.07 * uStarP.x, 0.32 * uStarP.y, pix, 1.0, 0.0);
+  c += starLayer(dir, 120.0, 1.0 - 0.05 * uStarP.x, 0.9 * uStarP.y, pix, 7.0, 0.0);
+  c += starLayer(dir, 22.0, 1.0 - 0.06 * uStarP.z, 5.0 * uStarP.y, pix, 13.0, uStarP.w);
+  return c;
+}
+
 #ifdef ULTRA
 float hash11(float n){ return fract(sin(n * 12.9898) * 43758.5453); }
 // ── The distant skyline, as a coverage mask in [0,1] for direction d. ──
@@ -23387,6 +24180,9 @@ void main(){
   // filtered feature below.
   vec3 fwd = fwidth(dir);
   float pix = max(length(fwd), 1e-5);
+  // ✨ v56 · Deep space has none of what follows: no horizon glow, no city,
+  // no clouds, no moon. Taken after the derivatives, in uniform flow.
+  if(uTheme > 4.5){ fragColor = vec4(skySpace(dir, pix), 1.0); return; }
   vec3 c = envSample(dir);
 
   // 🕳️ The orbital theme's black hole bends the background around it, so the
@@ -23912,12 +24708,16 @@ const SURF = {
   BRUSHED: 4,   // turned/machined metal: directional roughness streaks
   HEX:     5,   // energy lattice: shields, holo panels, force fields
   CIRCUIT: 6,   // traces and solder pads: decks, floor plates, consoles
-  MINERAL: 7    // strata and grain: meteors, asteroids, destructible cores
+  MINERAL: 7,   // regolith, strata and grain: meteors, asteroids, cores
+  GAS:     8,   // ✨ v56 banded gas giant (on a sphere)
+  RING:    9,   // ✨ v56 planetary ring lanes (on a ringdisc, blended)
+  MAGMA:  10    // ✨ v56 charred rock with glowing cracks (emission in the cracks)
 };
 
 const MAX_LIGHTS = 10;
 const FLOATS_PER_INSTANCE = 16 + 4 + 4 + 4;   // model, colour, emissive, material
 const FLOATS_PER_GLOW = 8;                    // centre+size, tint+intensity
+const FLOATS_PER_STREAK = 12;                 // ✨ v56 tail+width, head+intensity, tint+head bias
 
 // ✨ What the Ultra profile does to the finishing chain, on top of whatever each
 // mission grades. Aberration and scanlines are CAMERA and CRT artefacts — they
@@ -24008,7 +24808,7 @@ function createRenderer(canvas, opts){
   const MAX_SAMPLES = (gl.getParameter(gl.MAX_SAMPLES) | 0);
 
   // Profile-independent programs.
-  let progGlow, progBright, progDown, progUp;
+  let progGlow, progBright, progDown, progUp, progStreak;
   try{
     progGlow   = program(gl, VS_GLOW, FS_GLOW);
     progBright = program(gl, VS_FULL, FS_BRIGHT);
@@ -24018,6 +24818,10 @@ function createRenderer(canvas, opts){
     console.warn('[3D] shader build failed, 3D mode unavailable:', err.message);
     return null;
   }
+  // ✨ v56 · Streaks are polish, never a reason to lose 3D: a driver that will
+  // not build them leaves streak() a no-op.
+  try{ progStreak = program(gl, VS_STREAK, FS_STREAK); }
+  catch(err){ progStreak = null; console.warn('[3D] streak shader unavailable:', err.message); }
 
   // ── ✨ PROFILE PROGRAMS ──
   // Compiled the first time a profile is wanted and kept for the session, so a
@@ -24192,8 +24996,15 @@ function createRenderer(canvas, opts){
     ['thintorus', () => buildTorus(0.45, 0.035, 48, 10),     0],   // neon rings — clean
     ['quad',      () => buildQuad(),                         0],
     ['ground',    () => buildGround(28),                     0],
-    ['ship',      () => buildShip(),                         SURF.HULL    + 0.7],
-    ['raider',    () => buildRaider(),                       SURF.HULL    + 0.6],
+    // ✨ v56 · the interceptor and the raider are lofted skins now (see
+    // LOFTED HULLS); the old kit-bashed builds stay registered for reference.
+    ['ship',      () => buildFighter(),                      SURF.HULL    + 0.62],
+    ['raider',    () => buildRaider2(),                      SURF.HULL    + 0.55],
+    ['ship_v55',  () => buildShip(),                         SURF.HULL    + 0.7],
+    ['raider_v55',() => buildRaider(),                       SURF.HULL    + 0.6],
+    ['frigate',   () => buildFrigate(),                      SURF.HULL    + 0.75],
+    ['missile',   () => buildMissile(),                      SURF.HULL    + 0.3],
+    ['cycle',     () => buildCycle(),                        SURF.HULL    + 0.4],
     ['drone',     () => buildDrone(),                        SURF.TECH    + 0.55],
     ['turret',    () => buildTurret(),                       SURF.TECH    + 0.6],
     ['techblock', () => buildTechBlock(),                    SURF.HULL    + 0.35],
@@ -24210,7 +25021,14 @@ function createRenderer(canvas, opts){
     ['tower3',    () => buildTowerStepped(),                 SURF.WINDOWS + 0.9],
     ['tower4',    () => buildTowerSpire(),                   SURF.WINDOWS + 0.85],
     ['rock',      () => buildRock(7),                        SURF.MINERAL + 0.75],
-    ['rock2',     () => buildRock(1337),                     SURF.MINERAL + 0.75]
+    ['rock2',     () => buildRock(1337),                     SURF.MINERAL + 0.75],
+    // ✨ v56 · celestial bodies and a wider asteroid set.
+    ['planet',    () => buildSphere(72, 44),                 SURF.GAS     + 0.95],
+    ['ringdisc',  () => buildRingDisc(0.3, 128),             SURF.RING    + 0.95],
+    ['rock3',     () => buildRock(424242),                   SURF.MINERAL + 0.8],
+    ['rock4',     () => buildRock(90210),                    SURF.MINERAL + 0.8],
+    ['rock5',     () => buildRock(31337),                    SURF.MINERAL + 0.8],
+    ['rock6',     () => buildRock(2718281),                  SURF.MINERAL + 0.8]
   ];
   function registerBuiltins(){
     for(const [name, make, surf] of BUILTIN){
@@ -24246,6 +25064,77 @@ function createRenderer(canvas, opts){
     gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 4, gl.FLOAT, false, 32, 0);  gl.vertexAttribDivisor(3, 1);
     gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 4, gl.FLOAT, false, 32, 16); gl.vertexAttribDivisor(4, 1);
     gl.bindVertexArray(null);
+  }
+
+  // ── ✨ v56 · STREAK VAO ── the glow's quad, with a three-vec4 instance stream.
+  const streakVAO = gl.createVertexArray();
+  const streakInst = gl.createBuffer();
+  let streakCap = 0;
+  {
+    gl.bindVertexArray(streakVAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, glowVBO);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, glowIBO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, streakInst);
+    const st = FLOATS_PER_STREAK * 4;
+    gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 4, gl.FLOAT, false, st, 0);  gl.vertexAttribDivisor(3, 1);
+    gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 4, gl.FLOAT, false, st, 16); gl.vertexAttribDivisor(4, 1);
+    gl.enableVertexAttribArray(5); gl.vertexAttribPointer(5, 4, gl.FLOAT, false, st, 32); gl.vertexAttribDivisor(5, 1);
+    gl.bindVertexArray(null);
+  }
+
+  // ── ✨ v56 · THE DEEP-SPACE CUBE ──
+  // Baked by FS_SPACEGEN one face per frame (see bakeSpaceStep) the first time
+  // a world asks for a sky with these settings, then mipmapped — the mips are
+  // the roughness blur FS_MESH reflects through. A 1×1 black stand-in is bound
+  // whenever there is no cube, so the samplers always have a complete texture.
+  const SPACE_UNIT = 3;
+  const dummyCube = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_CUBE_MAP, dummyCube);
+  for(let f = 0; f < 6; f++) gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+  gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.bindTexture(gl.TEXTURE_CUBE_MAP, null);
+  let spaceCube = null, spaceSize = 0, spaceKey = '', spaceBake = null, spaceReady = false;
+  let progSpace = null;
+  const spaceFbo = gl.createFramebuffer();
+  function bakeSpaceStep(){
+    const b = spaceBake;
+    if(!b) return;
+    if(!progSpace){
+      try{ progSpace = program(gl, VS_FULL, FS_SPACEGEN); }
+      catch(err){ console.warn('[3D] deep-space sky unavailable:', err.message); spaceBake = null; return; }
+    }
+    gl.useProgram(progSpace);
+    const U = progSpace._u, o = b.o;
+    gl.uniform1f(U.uSize, b.size);
+    gl.uniform3fv(U.uColA, hexToLinear(o.a || '#7a1fa8'));
+    gl.uniform3fv(U.uColB, hexToLinear(o.b || '#0d6f9e'));
+    gl.uniform3fv(U.uColC, hexToLinear(o.c || '#ff5ca8'));
+    gl.uniform3fv(U.uNebDir, V3.norm(o.dir || [0.35, 0.25, -0.9]));
+    gl.uniform3fv(U.uBandN, V3.norm(o.band || [0.2, 0.9, 0.38]));
+    const sd = o.seed || 1;
+    gl.uniform3fv(U.uSeed, [(sd * 12.9898) % 97, (sd * 78.233) % 89, (sd * 37.719) % 83]);
+    gl.uniform4fv(U.uP, [o.amount != null ? o.amount : 1, o.dust != null ? o.dust : 0.8, o.galaxy != null ? o.galaxy : 1, o.glow || 0]);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, spaceFbo);
+    gl.viewport(0, 0, b.size, b.size);
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE);
+    gl.bindVertexArray(null);
+    // Two faces a frame: the bake is over in three frames and no single frame
+    // carries more than a third of it.
+    for(let k = 0; k < 2 && b.face < 6; k++, b.face++){
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_CUBE_MAP_POSITIVE_X + b.face, spaceCube, 0);
+      gl.uniform1i(U.uFace, b.face);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if(b.face >= 6){
+      gl.bindTexture(gl.TEXTURE_CUBE_MAP, spaceCube);
+      gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+      gl.bindTexture(gl.TEXTURE_CUBE_MAP, null);
+      spaceBake = null;
+      spaceReady = true;
+    }
   }
 
   // ── RENDER TARGETS ──
@@ -24403,6 +25292,21 @@ function createRenderer(canvas, opts){
   let glowData = new Float32Array(FLOATS_PER_GLOW * 512);
   let glowCount = 0;
   let blendBuf = new Float32Array(FLOATS_PER_INSTANCE * 256);
+  // ✨ v56
+  let streakData = new Float32Array(FLOATS_PER_STREAK * 256);
+  let streakCount = 0;
+  // ✨ v56 · THE FLOATING ORIGIN. Every world position a game hands over is
+  // taken relative to this point, in JavaScript's doubles, before it reaches a
+  // Float32 buffer. An open world has no edge, and a float32 position a few
+  // tens of thousands of units out has lost the precision to place a hull
+  // cleanly — vertices shimmer, the camera judders. Nothing in the shaders
+  // depends on absolute position (lighting, fog and the procedural surfaces
+  // are all relative or in object space), so moving the origin to the camera
+  // every frame is invisible. Zero, i.e. off, for every world that does not set it.
+  let org0 = 0, org1 = 0, org2 = 0;
+  const _p = [0, 0, 0];
+  let spaceOn = false;
+  let starP = [1, 1, 1, 1];
 
   const view = M4.create(), proj = M4.create();
   let camPos = [0, 0, 6];
@@ -24527,15 +25431,25 @@ function createRenderer(canvas, opts){
       for(const k in buckets) buckets[k].n = 0;
       blendList.length = 0;
       glowCount = 0;
+      streakCount = 0;
       lightCount = 0;
     },
 
+    // ✨ v56 · Sets the floating origin (see org0 above) for everything drawn
+    // after it this frame. null puts it back at zero. Call it BEFORE camera().
+    origin(p){
+      if(p){ org0 = p[0]; org1 = p[1]; org2 = p[2]; }
+      else { org0 = org1 = org2 = 0; }
+    },
+    get originPos(){ return [org0, org1, org2]; },
+
     camera(o){
-      camPos = o.eye || camPos;
+      const e = o.eye, tg = o.target || [0,0,0];
+      if(e) camPos = [e[0] - org0, e[1] - org1, e[2] - org2];
       fovY = (o.fov != null ? o.fov : 55) * Math.PI/180;
       near = o.near != null ? o.near : 0.1;
       far  = o.far  != null ? o.far  : 400;
-      M4.lookAt(view, camPos, o.target || [0,0,0], o.up || [0,1,0]);
+      M4.lookAt(view, camPos, [tg[0] - org0, tg[1] - org1, tg[2] - org2], o.up || [0,1,0]);
       M4.perspective(proj, fovY, Math.max(0.05, vpW / Math.max(1, vpH)), near, far);
       // The view matrix's rows ARE the camera basis in world space, so the sky
       // pass gets its ray directions for free rather than inverting anything.
@@ -24568,7 +25482,42 @@ function createRenderer(canvas, opts){
       }
       if(o.winTint) winTint = hexToLinear(o.winTint);
       if(o.winMix != null) winMix = o.winMix;
+      // ✨ v56 · Deep space lights the meshes with the baked cube too — but
+      // only once the cube exists, or every hull would go black for the three
+      // frames it takes to bake.
+      spaceOn = skyTheme > 4.5;
+      if(o.stars) starP = [o.stars[0], o.stars[1], o.stars[2], o.stars[3]];
     },
+
+    // ✨ v56 · Asks for a deep-space sky. `o` = { a, b, c: nebula colours,
+    // dir: where the nebula sits, band: the galaxy's pole, seed, amount, dust,
+    // galaxy, glow, size }. Re-baking only happens when the settings change,
+    // so a world can call this every round for free.
+    spaceSky(o){
+      o = o || {};
+      const key = JSON.stringify(o);
+      if(key === spaceKey && (spaceReady || spaceBake)) return;
+      spaceKey = key;
+      const size = Math.max(64, Math.min(1024, o.size || 512));
+      if(!spaceCube || spaceSize !== size){
+        if(spaceCube) gl.deleteTexture(spaceCube);
+        spaceCube = gl.createTexture();
+        spaceSize = size;
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, spaceCube);
+        const levels = Math.floor(Math.log2(size)) + 1;
+        gl.texStorage2D(gl.TEXTURE_CUBE_MAP, levels, HDR ? gl.RGBA16F : gl.RGBA8, size, size);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, null);
+      }
+      spaceReady = false;
+      spaceBake = { o, face: 0, size };
+    },
+    // True once the cube has finished baking (tests, and a world that wants
+    // to hold its first frame until the sky is in).
+    get spaceReady(){ return spaceReady; },
 
     fog(o){
       if(o.color) fog.color = hexToLinear(o.color);
@@ -24608,7 +25557,7 @@ function createRenderer(canvas, opts){
       if(lightCount >= MAX_LIGHTS) return;
       const i = lightCount++;
       const p = o.pos || DEF_POS;
-      lightPos[i*3] = p[0]; lightPos[i*3+1] = p[1]; lightPos[i*3+2] = p[2];
+      lightPos[i*3] = p[0] - org0; lightPos[i*3+1] = p[1] - org1; lightPos[i*3+2] = p[2] - org2;
       const c = hexToLinear(o.color || '#ffffff');
       const k = (o.intensity != null ? o.intensity : 1);
       lightCol[i*3] = c[0]*k; lightCol[i*3+1] = c[1]*k; lightCol[i*3+2] = c[2]*k;
@@ -24635,8 +25584,9 @@ function createRenderer(canvas, opts){
         const p = o.pos || DEF_POS;
         blendList.push({
           geo,
-          p: [p[0], p[1], p[2]],
+          p: [p[0] - org0, p[1] - org1, p[2] - org2],
           r: o.rot ? [o.rot[0], o.rot[1], o.rot[2]] : DEF_ROT,
+          m3: o.m3 ? o.m3.slice(0, 9) : null,
           s: [_s[0], _s[1], _s[2]],
           col, alpha, emisCol, emisStr,
           metallic: o.metallic != null ? o.metallic : 0.1,
@@ -24652,8 +25602,15 @@ function createRenderer(canvas, opts){
       const need = (b.n + 1) * FLOATS_PER_INSTANCE;
       if(need > b.data.length) b.data = growFloat(b.data, need);
       const off = b.n * FLOATS_PER_INSTANCE;
-      M4.compose(b.data, off, o.pos || DEF_POS, o.rot || DEF_ROT, _s);
-      b.data[off+16] = col[0]; b.data[off+17] = col[1]; b.data[off+18] = col[2]; b.data[off+19] = alpha;
+      const p = o.pos || DEF_POS;
+      _p[0] = p[0] - org0; _p[1] = p[1] - org1; _p[2] = p[2] - org2;
+      if(o.m3) M4.composeBasis(b.data, off, _p, o.m3, _s);
+      else M4.compose(b.data, off, _p, o.rot || DEF_ROT, _s);
+      // ✨ v56 · An opaque instance's opacity channel is free, so it carries
+      // the livery index for the ACCENT part: 1 + (i + 0.5) / 8. FS_MESH reads
+      // anything above 1 as "opaque, accent i" and clamps it back for output.
+      b.data[off+16] = col[0]; b.data[off+17] = col[1]; b.data[off+18] = col[2];
+      b.data[off+19] = o.accent != null ? 1 + ((o.accent | 0) % 8 + 0.5) / 8 : alpha;
       b.data[off+20] = emisCol[0]; b.data[off+21] = emisCol[1]; b.data[off+22] = emisCol[2]; b.data[off+23] = emisStr;
       b.data[off+24] = o.metallic  != null ? o.metallic  : 0.1;
       b.data[off+25] = o.roughness != null ? o.roughness : 0.55;
@@ -24668,11 +25625,29 @@ function createRenderer(canvas, opts){
       if(need > glowData.length) glowData = growFloat(glowData, need);
       const off = glowCount * FLOATS_PER_GLOW;
       const c = hexToLinear(color || '#ffffff');
-      glowData[off] = pos[0]; glowData[off+1] = pos[1]; glowData[off+2] = pos[2];
+      glowData[off] = pos[0] - org0; glowData[off+1] = pos[1] - org1; glowData[off+2] = pos[2] - org2;
       glowData[off+3] = size == null ? 1 : size;
       glowData[off+4] = c[0]; glowData[off+5] = c[1]; glowData[off+6] = c[2];
       glowData[off+7] = intensity == null ? 1 : intensity;
       glowCount++;
+    },
+
+    // ✨ v56 · A camera-facing capsule of light from `a` (tail) to `b` (head):
+    // tracers, plumes, beams, speed streaks. `head` 0 is an even beam, 1 a
+    // comet fading to its tail. A NEGATIVE width keeps it out of the fog.
+    streak(a, b, width, color, intensity, head){
+      if(!progStreak) return;
+      const need = (streakCount + 1) * FLOATS_PER_STREAK;
+      if(need > streakData.length) streakData = growFloat(streakData, need);
+      const off = streakCount * FLOATS_PER_STREAK;
+      const c = hexToLinear(color || '#ffffff');
+      streakData[off]   = a[0] - org0; streakData[off+1] = a[1] - org1; streakData[off+2] = a[2] - org2;
+      streakData[off+3] = width == null ? 0.2 : width;
+      streakData[off+4] = b[0] - org0; streakData[off+5] = b[1] - org1; streakData[off+6] = b[2] - org2;
+      streakData[off+7] = intensity == null ? 1 : intensity;
+      streakData[off+8] = c[0]; streakData[off+9] = c[1]; streakData[off+10] = c[2];
+      streakData[off+11] = head == null ? 0.6 : head;
+      streakCount++;
     },
 
     // A neon strip / girder between two points, drawn as a stretched box. The
@@ -24697,7 +25672,7 @@ function createRenderer(canvas, opts){
     // whenever the page is dirty — about 20µs a call, 2.5ms a frame at the
     // hundred-odd calls the world dressing makes, for pixels it never needs.
     viewDepth(p, margin){
-      const x = p[0], y = p[1], z = p[2];
+      const x = p[0] - org0, y = p[1] - org1, z = p[2] - org2;
       const vx = view[0]*x + view[4]*y + view[8]*z  + view[12];
       const vy = view[1]*x + view[5]*y + view[9]*z  + view[13];
       const vz = view[2]*x + view[6]*y + view[10]*z + view[14];
@@ -24712,7 +25687,7 @@ function createRenderer(canvas, opts){
     // World → CSS pixel, for DOM overlays (floating score text, lock-on
     // reticles). Returns null behind the camera or outside the frustum.
     project(p){
-      const x = p[0], y = p[1], z = p[2];
+      const x = p[0] - org0, y = p[1] - org1, z = p[2] - org2;
       const vx = view[0]*x + view[4]*y + view[8]*z  + view[12];
       const vy = view[1]*x + view[5]*y + view[9]*z  + view[13];
       const vz = view[2]*x + view[6]*y + view[10]*z + view[14];
@@ -24734,6 +25709,13 @@ function createRenderer(canvas, opts){
       if(lost || !scene) return;
       if(WANT !== PROFILE) settleProfile();
       const ultra = PROFILE === 'ultra';
+      // ✨ v56 · A deep-space sky still baking takes its two faces first, in
+      // its own framebuffer, before the frame binds the scene target.
+      if(spaceBake) bakeSpaceStep();
+      const spaceLit = spaceOn && spaceReady && !!spaceCube;
+      gl.activeTexture(gl.TEXTURE0 + SPACE_UNIT);
+      gl.bindTexture(gl.TEXTURE_CUBE_MAP, spaceLit ? spaceCube : dummyCube);
+      gl.activeTexture(gl.TEXTURE0);
 
       // Every scene pass draws into the multisampled target when Ultra has one,
       // and straight into the scene texture otherwise.
@@ -24775,6 +25757,8 @@ function createRenderer(canvas, opts){
       if(U.uSkyOn) gl.uniform1f(U.uSkyOn, sky ? 1 : 0);
       if(U.uWinTint) gl.uniform3fv(U.uWinTint, winTint);
       if(U.uWinMix) gl.uniform1f(U.uWinMix, winMix);
+      if(U.uSpace) gl.uniform1i(U.uSpace, SPACE_UNIT);
+      if(U.uSpaceOn) gl.uniform1f(U.uSpaceOn, spaceLit ? 1 : 0);
 
       // Opaque, one instanced call per geometry.
       for(const name in buckets){
@@ -24825,6 +25809,8 @@ function createRenderer(canvas, opts){
         if(S.uBodyA) gl.uniform4fv(S.uBodyA, skyBodies.subarray(0, 4));
         if(S.uBodyB) gl.uniform4fv(S.uBodyB, skyBodies.subarray(4, 8));
         if(S.uBodyC) gl.uniform4fv(S.uBodyC, skyBodies.subarray(8, 12));
+        if(S.uSpace) gl.uniform1i(S.uSpace, SPACE_UNIT);
+        if(S.uStarP) gl.uniform4fv(S.uStarP, starP);
         gl.bindVertexArray(null);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         gl.depthMask(true);
@@ -24864,7 +25850,8 @@ function createRenderer(canvas, opts){
           for(let k=0;k<n;k++){
             const it = blendList[start+k];
             const off = k * FLOATS_PER_INSTANCE;
-            M4.compose(buf, off, it.p, it.r, it.s);
+            if(it.m3) M4.composeBasis(buf, off, it.p, it.m3, it.s);
+            else M4.compose(buf, off, it.p, it.r, it.s);
             buf[off+16]=it.col[0]; buf[off+17]=it.col[1]; buf[off+18]=it.col[2]; buf[off+19]=it.alpha;
             buf[off+20]=it.emisCol[0]; buf[off+21]=it.emisCol[1]; buf[off+22]=it.emisCol[2]; buf[off+23]=it.emisStr;
             buf[off+24]=it.metallic; buf[off+25]=it.roughness; buf[off+26]=it.rim; buf[off+27]=it.detail;
@@ -24900,6 +25887,31 @@ function createRenderer(canvas, opts){
           gl.bufferSubData(gl.ARRAY_BUFFER, 0, glowData.subarray(0, glowCount * FLOATS_PER_GLOW));
         }
         gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0, glowCount);
+        gl.enable(gl.CULL_FACE);
+      }
+
+      // ✨ v56 · Streaks, with the glows' additive blend.
+      if(streakCount && progStreak){
+        gl.useProgram(progStreak);
+        const T = progStreak._u;
+        gl.uniformMatrix4fv(T.uView, false, view);
+        gl.uniformMatrix4fv(T.uProj, false, proj);
+        gl.uniform3fv(T.uCam, camPos);
+        gl.uniform1f(T.uFogDensity, fog.density);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE);
+        gl.depthMask(false);
+        gl.disable(gl.CULL_FACE);
+        gl.bindVertexArray(streakVAO);
+        gl.bindBuffer(gl.ARRAY_BUFFER, streakInst);
+        const bytes = streakCount * FLOATS_PER_STREAK * 4;
+        if(bytes > streakCap){
+          gl.bufferData(gl.ARRAY_BUFFER, streakData.subarray(0, streakCount * FLOATS_PER_STREAK), gl.DYNAMIC_DRAW);
+          streakCap = bytes;
+        }else{
+          gl.bufferSubData(gl.ARRAY_BUFFER, 0, streakData.subarray(0, streakCount * FLOATS_PER_STREAK));
+        }
+        gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0, streakCount);
         gl.enable(gl.CULL_FACE);
       }
 
@@ -25012,6 +26024,14 @@ function createRenderer(canvas, opts){
       for(const k in geos) dropGeo(k);
       gl.deleteVertexArray(glowVAO);
       [glowVBO, glowIBO, glowInst].forEach(b => gl.deleteBuffer(b));
+      // ✨ v56
+      gl.deleteVertexArray(streakVAO);
+      gl.deleteBuffer(streakInst);
+      gl.deleteTexture(dummyCube);
+      if(spaceCube){ gl.deleteTexture(spaceCube); spaceCube = null; }
+      gl.deleteFramebuffer(spaceFbo);
+      if(progStreak) gl.deleteProgram(progStreak);
+      if(progSpace) gl.deleteProgram(progSpace);
       for(const k in PROGS){ const set = PROGS[k]; [set.mesh, set.sky, set.comp, set.aa].forEach(p => gl.deleteProgram(p)); }
       for(const k in BUILDS){ BUILDS[k].forEach(st => { gl.deleteProgram(st.p); gl.deleteShader(st.vs); gl.deleteShader(st.fs); }); }
       [progGlow, progBright, progDown, progUp].forEach(p => gl.deleteProgram(p));
@@ -25043,9 +26063,12 @@ return {
     empty: emptyMesh, merge: mergeMesh,
     box: buildBox, roundedBox: buildRoundedBox, sphere: buildSphere,
     cylinder: buildCylinder, prism: buildPrism, torus: buildTorus, quad: buildQuad,
-    ground: buildGround, rock: buildRock, wing: buildWing,
+    ground: buildGround, rock: buildRock, wing: buildWing, ringDisc: buildRingDisc,
     faceQuad, faceTri, loftRings, capRing,
     ship: buildShip, raider: buildRaider, tower: buildTower, drone: buildDrone,
+    // ✨ v56
+    loft: buildLoft, plateAlong, fighter: buildFighter, raider2: buildRaider2,
+    frigate: buildFrigate, missile: buildMissile, FRIGATE_MOUNTS,
     towerSlab: buildTowerSlab, towerStepped: buildTowerStepped, towerSpire: buildTowerSpire,
     turret: buildTurret, core: buildCore,
     mech: buildMech, tank: buildTank, barrier: buildBarrier, techBlock: buildTechBlock, serverRack: buildServerRack, paddle: buildPaddle
@@ -28031,12 +29054,18 @@ function createWorld(cfg){
     // pose instead of easing toward it.
     const pc = (typeof photoCam === 'function') ? photoCam(w.cam) : w.cam;
     eyeNow[0] = pc.eye[0] + jx; eyeNow[1] = pc.eye[1] + jy; eyeNow[2] = pc.eye[2];
+    // ✨ v56 · The floating origin rides the camera in an open world, and is
+    // zero everywhere else — set every frame, so it can never stick to the
+    // next mission (the sticky-state rule).
+    r.origin(w.origin ? [pc.eye[0], pc.eye[1], pc.eye[2]] : null);
     r.camera({
       eye:    [pc.eye[0] + jx, pc.eye[1] + jy, pc.eye[2]],
       target: [pc.target[0] + jx * 0.4, pc.target[1] + jy * 0.4, pc.target[2]],
       // 🌍 A look's sun and planets stand up to ~800 units off; the house
-      // night keeps its exact old depth range.
-      fov: pc.fov, near: 0.25, far: LK ? 1000 : 500
+      // night keeps its exact old depth range. ✨ v56 · An open world sets
+      // its own (planets thousands of units out).
+      fov: pc.fov, near: w.near || 0.25, far: w.far || (LK ? 1000 : 500),
+      up: w.up || [0, 1, 0]
     });
     r.environment(env);
     r.fog(fog);
@@ -38301,6 +39330,18 @@ function recordLaneBest(kind, gid, pts, extra){
     db.ref('players/' + user.uid + '/endless/' + gid).set(user.endless[gid])
       .catch(e => console.warn('Endless best not stored (rules?):', e && e.code));
   }
+  // 🌐 v56 · An open world's best, per mission (§ 31). Same shape, same
+  // shrug on a refusal — `players/$uid/$other` accepts the new child key.
+  if(kind === 'openworld'){
+    user.openworld = user.openworld || {};
+    const prev = user.openworld[gid] || { pts: 0 };
+    if((prev.pts || 0) >= pts) return;
+    user.openworld[gid] = { pts, at: Date.now() };
+    cacheProfile(user);
+    if(!db || offlineMode || isLocalSession()) return;
+    db.ref('players/' + user.uid + '/openworld/' + gid).set(user.openworld[gid])
+      .catch(e => console.warn('Open world best not stored (rules?):', e && e.code));
+  }
 }
 
 // Both lane panels, from ONE read. They rank different numbers off the same
@@ -38868,6 +39909,19 @@ function padPoll(now){
   const onBoard = document.getElementById('game-screen')?.classList.contains('active') &&
                   document.getElementById('g-canvas-holder')?.style.display !== 'none' &&
                   !document.querySelector('.fb-overlay.show');
+
+  // 🌐 An open world reads the controller itself — analog sticks and
+  // triggers, START and X included (§ 31) — so the virtual pointer and the
+  // synthetic keys stand down rather than steering it twice.
+  if(onBoard && typeof owPadOwns === 'function' && owPadOwns()){
+    padHideCursor();
+    padRelease();
+    // Keep the edge memory current, or a button held through the hand-over
+    // (X into photo mode, START into the pause menu) reads as a fresh press
+    // on the other side of it and undoes what it just did.
+    edge(0, a0); edge(1, b1); edge(2, x2); edge(3, y3); edge(9, start);
+    return;
+  }
 
   if(onBoard){
     // ── VIRTUAL POINTER ──
@@ -50996,3 +52050,3161 @@ P.games.pinball = function(){
 };
 
 })();
+
+// <<OW:BEGIN>> — § 31 open worlds, spliced from the v56 sources
+
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 31 · v56 — 🌐 OPEN WORLD · every mission, no borders
+// ══════════════════════════════════════════════════════════════════════
+// Every mission in the arcade has a second way to be played: an OPEN WORLD.
+// The classic round is a board — a rectangle, a corridor, a well — and the
+// open world is the same verb with the edges taken away: the neon nebula is a
+// sky you can fly into in any direction, the snake has a whole plain, the
+// light cycle an infinite grid, the maze never runs out. Content is generated
+// around the player as they move (deterministic chunks, so the place you left
+// is still there when you turn back), the camera follows them, and nothing
+// ever says "you have reached the edge".
+//
+// It is a LANE, the way ♾️ Endless is: one pseudo-mission id (`openworld`)
+// carries the results card, the award and the shared high score, and each
+// mission's own best lives at players/<uid>/openworld/<gid> — a new CHILD key,
+// which the live rules accept under `players/$uid/$other`, so no rules change
+// and no new top-level node. The open worlds are 3D-only by nature: in 2D mode
+// the round still mounts the GL surface for itself, because a world with no
+// edges is not something a fixed 2D board can show.
+//
+// ⚠️ `var` for everything other sections read: enterHub(), the card handler
+// and the gamepad poll all sit far above this line in the file.
+var owRun = null;                 // { gid, t0 } while an open-world round is up
+var OW_CAP = 3000;                // the results card's 100% — fanfare at 75%
+var OW_GRID_KEY = 'pi_ow_grid';   // '1' when the mission grid launches open worlds
+
+// What each mission's open world IS — one line for the picker, the briefing
+// toast, and the hint under the board.
+var OW_INFO = {
+  click:      { tag: 'Reactor cores drift through an endless sky-dock — dive at each one and overload it before it vents.' },
+  nebula:     { tag: 'Free flight through an endless asteroid belt — hunt raider squadrons and gut capital frigates.' },
+  tetris:     { tag: 'A well with no walls: blocks fall on an endless floor, and any ten in a row clear.' },
+  dodge:      { tag: 'An open plain under a bombardment that never ends — keep moving, grab the energy, stay alive.' },
+  memory:     { tag: 'Monoliths stand all over an endless field. Flip one, remember WHERE, find its twin.' },
+  math:       { tag: 'Answer gates float in an open sky — read the sum, fly through the right number.' },
+  reaction:   { tag: 'Beacons ignite anywhere around you — turn, burn, and reach each one before it dies.' },
+  pong:       { tag: 'A rally with no walls — the ball can go anywhere, so you have to be there.' },
+  snake:      { tag: 'An endless plain and a worm that never stops growing. No walls — only your own tail.' },
+  flappy:     { tag: 'An endless field of pylons and rings, and you can fly around them in every direction.' },
+  breaker:    { tag: 'A ceiling of bricks that never ends and no walls to bank off — chase the ball.' },
+  arena:      { tag: 'A battlefield with no edge. Waves close in from every side; you pick where to fight.' },
+  runner:     { tag: 'No lanes, no highway — an endless neon plain to carve across at full speed.' },
+  hacker:     { tag: 'Network nodes scattered to the horizon — reach them in sequence before the trace closes.' },
+  meteor:     { tag: 'Defend a station adrift in open space — meteors come from every direction now.' },
+  battlebots: { tag: 'Siege across an open battlefield — deploy anywhere, burn every enemy outpost.' },
+  path:       { tag: 'Lay power cable across an endless board — every relay you connect overclocks the grid.' },
+  freq:       { tag: 'Radio towers across an endless dark — drive into range and tune each one in.' },
+  rhythm:     { tag: 'Beat gates on an open plain — steer through each on the pulse, anywhere ahead.' },
+  merge:      { tag: 'You ARE a core. Absorb your equals, double up, and never touch anything bigger.' },
+  uplink:     { tag: 'A mobile launcher on endless terrain — lob shells onto targets at any range.' },
+  cutter:     { tag: 'A facility with no outer wall — slip between patrols to every data cache.' },
+  sorter:     { tag: 'Packets scatter across the plain — scoop each one and haul it to its own tower.' },
+  trace:      { tag: 'A hidden transmitter somewhere out there — read the signal and run it down.' },
+  defrag:     { tag: 'Fragments of corrupted files litter the volume — rebuild each file by colour.' },
+  coolant:    { tag: 'Reactors overheating across the city — reach each one and vent it before it blows.' },
+  lightcycle: { tag: 'The grid goes on forever — no walls, only light trails and rival riders.' },
+  stack:      { tag: 'A tower in an open city — slabs swing in from every compass point.' },
+  muncher:    { tag: 'A maze that never ends — eat your way out while the ghosts close in.' },
+  cmdline:    { tag: 'Rogue processes roam an open grid — drive up and type them dead.' },
+  pinball:    { tag: 'An endless table that falls forever — your flippers ride with the ball.' }
+};
+
+function owActive(){ return !!owRun; }
+// While an open-world round is on the board, the controller is read directly
+// (analog sticks, triggers) by the round itself, so the arcade's virtual
+// pointer and synthetic arrow keys stand down — see padPoll().
+function owPadOwns(){
+  return !!owRun && !!document.getElementById('game-screen')?.classList.contains('active') &&
+         !document.querySelector('.fb-overlay.show');
+}
+function owGridOn(){ try{ return localStorage.getItem(OW_GRID_KEY) === '1'; }catch(e){ return false; } }
+function owSetGrid(on){
+  try{ localStorage.setItem(OW_GRID_KEY, on ? '1' : '0'); }catch(e){}
+  owPaintGrid();
+}
+function owPaintGrid(){
+  const on = owGridOn();
+  document.querySelector('.games-grid')?.classList.toggle('ow-mode', on);
+  document.querySelectorAll('#ow-switch .ow-seg').forEach(b => {
+    const mine = (b.dataset.owm === 'open') === on;
+    b.classList.toggle('on', mine);
+    b.setAttribute('aria-selected', String(mine));
+  });
+  document.querySelectorAll('.games-grid .game-card[data-game]').forEach(card => {
+    let tag = card.querySelector('.gc-ow');
+    if(!tag){
+      tag = document.createElement('span');
+      tag.className = 'gc-ow';
+      tag.textContent = '🌐 OPEN WORLD';
+      card.appendChild(tag);
+    }
+    const has = !!(window.PI3D && PI3D.hasOW && PI3D.hasOW(card.dataset.game));
+    card.classList.toggle('ow-none', on && !has);
+  });
+}
+
+function startOpenWorld(gid){
+  if(!user || !META[gid] || !SOLO_START[gid]) return;
+  if(typeof missionUnlocked === 'function' && !missionUnlocked(gid)){
+    snd('deny');
+    toast(`🔒 ${META[gid].name} needs CLEARANCE ${missionClearance(gid)} — open worlds unlock with their missions.`, 3200);
+    return;
+  }
+  if(!(window.PI3D && PI3D.supported())){
+    snd('deny');
+    toast('🌐 Open worlds are 3D — this browser has no WebGL2.', 3400);
+    return;
+  }
+  if(!PI3D.hasOW || !PI3D.hasOW(gid)){
+    snd('deny');
+    toast('🌐 ' + META[gid].name + ' has no open world on this build.', 3000);
+    return;
+  }
+  if((typeof bossRush !== 'undefined' && bossRush) || (typeof mp !== 'undefined' && mp) ||
+     (typeof endless !== 'undefined' && endless) || (typeof dailyActive !== 'undefined' && dailyActive)){
+    snd('deny');
+    return;
+  }
+  owRun = { gid, t0: Date.now() };
+  curGame = gid;
+  document.getElementById('g-title').textContent = '🌐 ' + META[gid].name + ' · OPEN WORLD';
+  showScreen('game-screen');
+  snd('success');
+  owPrep(gid);
+}
+
+function owPrep(gid){
+  resetGameStage(gid);
+  document.getElementById('game-screen').classList.add('canvas-game');
+  if(typeof chaos === 'object' && chaos){ chaos.pending = []; }
+  const info = OW_INFO[gid];
+  if(info) toast('🌐 ' + info.tag, 4200);
+  countdown(() => {
+    if(!owRun || owRun.gid !== gid) return;
+    let ok = false;
+    runMissionStart(() => { ok = !!(window.PI3D && PI3D.startOW(gid)); });
+    if(!ok){
+      owRun = null;
+      toast('🌐 That open world failed to load — back to the hub.', 3200);
+      enterHub();
+      return;
+    }
+    try{ if(typeof statsEvent === 'function') statsEvent('_ow_' + gid); }catch(e){}
+  });
+}
+
+// Every open world ends here: its raw score, its breakdown rows.
+function owFinish(gid, raw, bd){
+  const pts = Math.max(0, Math.round(+raw || 0));
+  owRun = null;
+  try{ recordLaneBest('openworld', gid, pts); }catch(e){ console.warn('Open world best not stored:', e); }
+  showResults('openworld', pts, bd || {}, {
+    cap: OW_CAP,
+    emoji: '🌐',
+    name: 'OPEN WORLD · ' + META[gid].name,
+    badge: { text: '🌐 OPEN WORLD · NO BORDERS', cls: 'res-bonus-ow' },
+    noChaosPay: true,
+    again: { label: '🌐 Play Again', fn: () => startOpenWorld(gid) },
+    hub: { label: 'Hub', fn: () => enterHub() }
+  });
+}
+
+function abortOpenWorld(){ owRun = null; }
+
+function owBest(gid){ return +(((user && user.openworld) || {})[gid] || {}).pts || 0; }
+
+function paintOpenWorldBanner(){
+  const sub = document.getElementById('ow-banner-sub');
+  if(!sub || !user) return;
+  const recs = Object.entries((user && user.openworld) || {});
+  const best = recs.reduce((a, [g, v]) => (+v.pts || 0) > a.pts && META[g] ? { pts: +v.pts, gid: g } : a, { pts: 0 });
+  const n = Object.keys(SOLO_START).filter(g => window.PI3D && PI3D.hasOW && PI3D.hasOW(g)).length;
+  sub.textContent = best.pts
+    ? 'Your best: ' + best.pts.toLocaleString() + ' PTS in ' + META[best.gid].name + '. ' + n + ' worlds, every one without an edge.'
+    : n + ' missions, each rebuilt as a world with no borders — fly, drive and run in any direction. 3D.';
+}
+
+function renderOpenWorldPicker(){
+  const wrap = document.getElementById('ow-body');
+  const sub = document.getElementById('ow-sub');
+  if(!wrap || !user) return;
+  const gids = Object.keys(SOLO_START);
+  if(sub) sub.textContent = 'Every mission, rebuilt without walls. Pick a world — it unlocks with its mission.';
+  wrap.innerHTML = '<div class="en-grid ow-grid">' + gids.map(g => {
+    const has = !!(window.PI3D && PI3D.hasOW && PI3D.hasOW(g));
+    const open = has && (typeof missionUnlocked !== 'function' || missionUnlocked(g));
+    const best = owBest(g);
+    const info = OW_INFO[g] || { tag: '' };
+    return '<button class="en-card ow-card' + (open ? '' : ' locked') + '" data-ow="' + g + '"' + (open ? '' : ' disabled') + '>' +
+           '<span class="en-ico">' + META[g].emoji + '</span>' +
+           '<span class="en-name">' + esc(META[g].name) + '</span>' +
+           '<span class="ow-tag">' + esc(info.tag) + '</span>' +
+           '<span class="en-best">' + (!has ? 'not on this build' : !open ? '🔒 clearance ' + missionClearance(g)
+                                     : best ? best.toLocaleString() + ' PTS best' : 'unexplored') + '</span>' +
+           '</button>';
+  }).join('') + '</div>';
+  wrap.querySelectorAll('.ow-card[data-ow]').forEach(b => {
+    b.onclick = () => { closeOverlay('ow-overlay'); startOpenWorld(b.dataset.ow); };
+  });
+}
+
+// Wiring. Optional-chained: an older cached index.html has none of these.
+document.getElementById('btn-openworld')?.addEventListener('click', () => {
+  if(!user) return;
+  openOverlay('ow-overlay', renderOpenWorldPicker);
+});
+document.getElementById('ow-close')?.addEventListener('click', () => closeOverlay('ow-overlay'));
+document.querySelectorAll('#ow-switch .ow-seg').forEach(b => b.addEventListener('click', () => {
+  const on = b.dataset.owm === 'open';
+  if(on === owGridOn()) return;
+  owSetGrid(on);
+  snd('tab');
+  toast(on ? '🌐 OPEN WORLD — every card now launches its world with no borders'
+           : '▶ CLASSIC — the original missions', 2400);
+}));
+try{ owPaintGrid(); }catch(e){}
+
+
+// ══════════════════════════════════════════════════════════════════════
+//  🌐 OPEN WORLD · THE KIT — what every borderless world is built from
+// ══════════════════════════════════════════════════════════════════════
+// Thirty-one worlds is thirty-one games, so everything they share lives here
+// and each world is only its own rules:
+//   · INPUT   one set of virtual controls (steer, fire, alt, boost …) fed by
+//             the keyboard, the mouse (aim by pointing), a touch stick and
+//             touch buttons, and the controller's ANALOG sticks and triggers
+//   · HUD     a canvas over the board: radar, brackets on targets, arrows to
+//             what is off-screen, lock-on, bars, the touch controls
+//   · FIELD   a deterministic chunked world generated around the player and
+//             forgotten behind them — but what you destroyed stays destroyed
+//   · CAMERA  chase rigs (the floating origin rides the camera)
+//   · FX      explosions with fireball, debris, smoke and shockwave; sparks;
+//             speed dust; engine plumes
+//   · SET     an endless lit ground, procedural towers, distant bodies
+(function(){
+'use strict';
+
+const P = window.PI3D;
+if(!P) return;
+const K = P.kit;
+const E = window.PI3D_ENGINE;
+const { begin3d, runLoop, mine, clamp, seeded } = K;
+
+// ── REGISTRY ──
+P.ow = Object.create(null);
+P.hasOW = gid => !!P.ow[gid];
+// Like startFor(), but for the open-world build and regardless of the 2D/3D
+// setting: an open world needs WebGL2, not the player's renderer choice.
+P.startOW = function(gid){
+  const fn = P.ow[gid];
+  if(!fn || !P.supported()) return false;
+  try{
+    fn();
+    return true;
+  }catch(err){
+    P.lastOWError = String((err && (err.stack || err.message)) || err);
+    console.error('[OW] open world failed to start: ' + P.lastOWError);
+    try{ stopGame(); }catch(e){}
+    try{ P.unmount(); }catch(e){}
+    return false;
+  }
+};
+
+// ── VECTORS ── plain arrays; the worlds are small enough that clarity wins.
+const V = {
+  add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  mul: (a, k) => [a[0] * k, a[1] * k, a[2] * k],
+  madd: (a, b, k) => [a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  len: a => Math.hypot(a[0], a[1], a[2]),
+  norm: a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; },
+  lerp: (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t],
+  d2: (a, b) => { const x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2]; return x * x + y * y + z * z; },
+  copy: a => [a[0], a[1], a[2]]
+};
+const TAU = Math.PI * 2;
+const wrapAng = a => { while(a > Math.PI) a -= TAU; while(a < -Math.PI) a += TAU; return a; };
+// Frame-rate independent approach: the share of the remaining gap closed in dt
+// for a given half-life.
+const ease = (dt, half) => 1 - Math.pow(0.5, dt / Math.max(1e-4, half));
+const ihash = (x, y, z, s) => {
+  let h = (Math.imul(x | 0, 73856093) ^ Math.imul(y | 0, 19349663) ^ Math.imul(z | 0, 83492791) ^ Math.imul(s | 0, 2654435761)) >>> 0;
+  h ^= h >>> 13; h = Math.imul(h, 1274126177) >>> 0; h ^= h >>> 16;
+  return h >>> 0;
+};
+
+// Model basis from heading (yaw about world up, 0 = −Z), pitch (up +) and a
+// bank about the nose (right wing down +). Returned as the three columns
+// draw({ m3 }) wants for a model whose nose is −Z: right, up, back.
+function basisYPR(yaw, pitch, bank){
+  const cp = Math.cos(pitch), sp = Math.sin(pitch), cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const f = [-sy * cp, sp, -cy * cp];
+  const r0 = [cy, 0, -sy];
+  const u0 = V.cross(r0, f);
+  const cb = Math.cos(bank), sb = Math.sin(bank);
+  const r = [r0[0] * cb - u0[0] * sb, r0[1] * cb - u0[1] * sb, r0[2] * cb - u0[2] * sb];
+  const u = [u0[0] * cb + r0[0] * sb, u0[1] * cb + r0[1] * sb, u0[2] * cb + r0[2] * sb];
+  return { f, r, u, m3: [r[0], r[1], r[2], u[0], u[1], u[2], -f[0], -f[1], -f[2]] };
+}
+// A model basis that points a +Z-nosed model (the raider) along `fwd`.
+function basisLook(fwd, upHint, bank){
+  const f = V.norm(fwd);
+  let r = V.cross(f, upHint || [0, 1, 0]);
+  if(V.len(r) < 1e-4) r = [1, 0, 0];
+  r = V.norm(r);
+  let u = V.cross(r, f);
+  if(bank){
+    const cb = Math.cos(bank), sb = Math.sin(bank);
+    const r2 = V.sub(V.mul(r, cb), V.mul(u, sb)), u2 = V.add(V.mul(u, cb), V.mul(r, sb));
+    r = r2; u = u2;
+  }
+  return { f, r, u, m3: [r[0], r[1], r[2], u[0], u[1], u[2], -f[0], -f[1], -f[2]],
+           m3z: [-r[0], -r[1], -r[2], u[0], u[1], u[2], f[0], f[1], f[2]] };
+}
+
+// ══════════════════════════════════════════════
+//  🎮 INPUT
+// ══════════════════════════════════════════════
+// One poll a frame turns every device into the same virtual controls:
+//   ax, ay    steer (−1..1; ay is SCREEN-down positive, so "up" is −1)
+//   lx, ly    the raw move axes (keys + stick + left pad stick) without the mouse
+//   aimX/Y    the mouse / right stick aim point, −1..1 from the board centre
+//   fire      held; altHit / jumpHit edge presses; boost, brake held
+// Keys a world wants for itself arrive through opts.onKey.
+//
+// Synthetic events (isTrusted false) are IGNORED: they come from the arcade's
+// own gamepad poll, which this round reads directly instead — with analog
+// sticks — and stands down while an open world owns the pad (owPadOwns()).
+const GAME_KEYS = new Set(['Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyW', 'KeyA', 'KeyS', 'KeyD',
+  'KeyQ', 'KeyE', 'KeyF', 'KeyR', 'KeyX', 'KeyC', 'KeyZ', 'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'Enter', 'Tab']);
+function makeInput(opts){
+  opts = opts || {};
+  const frozen = () => ((typeof photoActive === 'function') && photoActive()) || ((typeof pauseActive === 'function') && pauseActive());
+  const st = {
+    keys: Object.create(null), hit: Object.create(null),
+    mx: 0, my: 0, mouseOn: false, mDown: false, mRight: false, mRightHit: false, mouseAt: 0,
+    stick: null, aimStick: null, tFire: false, tAlt: false, tBoost: false, tAltHit: false, tJumpHit: false,
+    pad: null, padPrev: {},
+    ax: 0, ay: 0, lx: 0, ly: 0, aimX: 0, aimY: 0, aimOn: false, fire: false, boost: false, brake: false, roll: 0,
+    altHit: false, jumpHit: false, device: isTouchDevice ? 'touch' : 'keys',
+    touchCfg: opts.touch || 'fly'
+  };
+  const offs = [];
+  const on = (t, type, fn, o) => { t.addEventListener(type, fn, o || { passive: false }); offs.push(() => t.removeEventListener(type, fn, o || { passive: false })); };
+
+  window.onkeydown = e => {
+    if(!e.isTrusted) return;
+    if(GAME_KEYS.has(e.code)) e.preventDefault();
+    if(frozen()) return;
+    if(!st.keys[e.code]) st.hit[e.code] = true;
+    st.keys[e.code] = true;
+    st.device = 'keys';
+    if(opts.onKey) opts.onKey(e);
+  };
+  window.onkeyup = e => { if(!e.isTrusted) return; st.keys[e.code] = false; };
+
+  const cv = aCanvas;
+  const rel = (cx, cy) => {
+    const r = cv.getBoundingClientRect();
+    return [((cx - r.left) / Math.max(1, r.width)) * 2 - 1, ((cy - r.top) / Math.max(1, r.height)) * 2 - 1, r];
+  };
+  if(cv){
+    on(cv, 'mousemove', e => {
+      if(!e.isTrusted) return;
+      const [x, y] = rel(e.clientX, e.clientY);
+      st.mx = clamp(x, -1, 1); st.my = clamp(y, -1, 1);
+      st.mouseOn = true; st.mouseAt = performance.now();
+      st.device = 'mouse';
+    });
+    on(cv, 'mouseleave', () => { st.mouseOn = false; });
+    on(cv, 'mousedown', e => {
+      if(!e.isTrusted || frozen()) return;
+      e.preventDefault();
+      if(e.button === 2){ st.mRight = true; st.mRightHit = true; } else st.mDown = true;
+      st.device = 'mouse';
+    });
+    on(window, 'mouseup', e => { if(e.button === 2) st.mRight = false; else st.mDown = false; });
+    on(cv, 'contextmenu', e => e.preventDefault());
+    // ── TOUCH ── left half: a stick born where the thumb lands. Right half:
+    // FIRE by default, with ALT and BOOST buttons (see HUD.touchPad for the
+    // layout, which is shared so what is drawn is what is pressed). 'twin'
+    // turns the right half into an aim stick that fires while held.
+    const btnAt = (u, v) => {
+      const B = touchButtons(st.touchCfg);
+      for(const b of B){ if(Math.hypot((u - b.u) * 1.0, (v - b.v) * (cv.clientHeight / Math.max(1, cv.clientWidth))) < b.r) return b.k; }
+      return null;
+    };
+    on(cv, 'touchstart', e => {
+      if(frozen()) return;
+      e.preventDefault();
+      st.device = 'touch';
+      for(const t of e.changedTouches){
+        const [x, y] = rel(t.clientX, t.clientY);
+        const u = (x + 1) / 2, v = (y + 1) / 2;
+        if(u < 0.5 && !st.stick){
+          st.stick = { id: t.identifier, x0: x, y0: y, x, y };
+        }else{
+          const b = btnAt(u, v);
+          if(b === 'alt'){ st.tAlt = t.identifier; st.tAltHit = true; }
+          else if(b === 'boost'){ st.tBoost = t.identifier; }
+          else if(b === 'jump'){ st.tJumpHit = true; st.tJump = t.identifier; }
+          else if(st.touchCfg === 'twin' && !st.aimStick){ st.aimStick = { id: t.identifier, x0: x, y0: y, x, y }; st.tFire = t.identifier; }
+          else st.tFire = t.identifier;
+        }
+      }
+    });
+    on(cv, 'touchmove', e => {
+      e.preventDefault();
+      for(const t of e.changedTouches){
+        const [x, y] = rel(t.clientX, t.clientY);
+        if(st.stick && st.stick.id === t.identifier){ st.stick.x = x; st.stick.y = y; }
+        if(st.aimStick && st.aimStick.id === t.identifier){ st.aimStick.x = x; st.aimStick.y = y; }
+      }
+    });
+    const endT = e => {
+      e.preventDefault();
+      for(const t of e.changedTouches){
+        const id = t.identifier;
+        if(st.stick && st.stick.id === id) st.stick = null;
+        if(st.aimStick && st.aimStick.id === id) st.aimStick = null;
+        if(st.tFire === id) st.tFire = false;
+        if(st.tAlt === id) st.tAlt = false;
+        if(st.tBoost === id) st.tBoost = false;
+        if(st.tJump === id) st.tJump = false;
+      }
+    };
+    on(cv, 'touchend', endT);
+    on(cv, 'touchcancel', endT);
+  }
+
+  const DEAD = 0.18;
+  const dz = v => Math.abs(v) < DEAD ? 0 : (v - Math.sign(v) * DEAD) / (1 - DEAD);
+  st.poll = function(){
+    const k = st.keys;
+    // Controller, read raw.
+    let pad = null;
+    try{
+      if(typeof padEnabled === 'undefined' || padEnabled){
+        const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+        for(let i = 0; i < pads.length; i++) if(pads[i] && pads[i].connected){ pad = pads[i]; break; }
+      }
+    }catch(e){ pad = null; }
+    let plx = 0, ply = 0, prx = 0, pry = 0, pa = false, pb = false, pxb = false, py = false, plb = false, prb = false, plt = 0, prt = 0;
+    if(pad){
+      const ax = pad.axes || [], bt = pad.buttons || [];
+      const pr = i => !!(bt[i] && bt[i].pressed), val = i => (bt[i] ? (bt[i].value || (bt[i].pressed ? 1 : 0)) : 0);
+      plx = dz(ax[0] || 0); ply = dz(ax[1] || 0); prx = dz(ax[2] || 0); pry = dz(ax[3] || 0);
+      if(pr(14)) plx = -1; if(pr(15)) plx = 1; if(pr(12)) ply = -1; if(pr(13)) ply = 1;
+      pa = pr(0); pb = pr(1); pxb = pr(2); py = pr(3); plb = pr(4); prb = pr(5); plt = val(6); prt = val(7);
+      const any = pa || pb || py || plb || prb || plt > 0.2 || prt > 0.2 || Math.abs(plx) + Math.abs(ply) + Math.abs(prx) + Math.abs(pry) > 0;
+      if(any) st.device = 'pad';
+    }
+    const pp = st.padPrev;
+    const edge = (key, v) => { const was = !!pp[key]; pp[key] = v; return v && !was; };
+    const padAlt = edge('b', pb) || edge('lb', plb && opts.lbAlt);
+    const padJump = edge('y', py) || edge('a2', pa && opts.aJump);
+    edge('x', pxb);
+    st.pad = pad ? { lx: plx, ly: ply, rx: prx, ry: pry, lt: plt, rt: prt } : null;
+
+    // Keys.
+    const kx = (k.ArrowRight || k.KeyD ? 1 : 0) - (k.ArrowLeft || k.KeyA ? 1 : 0);
+    const ky = (k.ArrowDown || k.KeyS ? 1 : 0) - (k.ArrowUp || k.KeyW ? 1 : 0);
+    // Touch stick: full deflection at ~13% of the board's width from where it landed.
+    let sx = 0, sy = 0;
+    if(st.stick){
+      const R = 0.26;
+      sx = clamp((st.stick.x - st.stick.x0) / R, -1, 1);
+      sy = clamp((st.stick.y - st.stick.y0) / R, -1, 1);
+    }
+    st.lx = clamp(kx + sx + plx, -1, 1);
+    st.ly = clamp(ky + sy + ply, -1, 1);
+    // Mouse aim: live while the pointer is over the board and the mouse is
+    // the device in use — a keyboard player whose cursor happens to rest off
+    // centre must not find the ship turning on its own.
+    const mouseLive = st.mouseOn && st.device === 'mouse';
+    st.aimOn = mouseLive || !!st.aimStick || Math.abs(prx) + Math.abs(pry) > 0;
+    st.aimX = st.aimStick ? clamp((st.aimStick.x - st.aimStick.x0) / 0.22, -1, 1) : (Math.abs(prx) + Math.abs(pry) > 0 ? prx : (mouseLive ? st.mx : 0));
+    st.aimY = st.aimStick ? clamp((st.aimStick.y - st.aimStick.y0) / 0.22, -1, 1) : (Math.abs(prx) + Math.abs(pry) > 0 ? pry : (mouseLive ? st.my : 0));
+    const useMouseSteer = opts.mouseSteer && mouseLive;
+    st.ax = clamp(st.lx + (useMouseSteer ? st.mx * (opts.mouseGain || 1) : 0), -1, 1);
+    st.ay = clamp(st.ly + (useMouseSteer ? st.my * (opts.mouseGain || 1) : 0), -1, 1);
+    st.fire = !!(k.Space || st.mDown || st.tFire || pa || prt > 0.35 || (opts.enterFires && k.Enter));
+    st.boost = !!(k.ShiftLeft || k.ShiftRight || st.tBoost || prb || plt > 0.6 && opts.ltBoost);
+    st.brake = !!(k.ControlLeft || k.ControlRight || k.KeyX || plt > 0.35 && !opts.ltBoost);
+    st.roll = (k.KeyE ? 1 : 0) - (k.KeyQ ? 1 : 0) + (opts.bumperRoll ? ((prb ? 1 : 0) - (plb ? 1 : 0)) : 0);
+    st.altHit = !!(st.hit.KeyF || st.hit.KeyR || st.mRightHit || st.tAltHit || padAlt);
+    st.jumpHit = !!(st.hit.Space && opts.spaceJumps) || !!st.tJumpHit || padJump || !!st.hit.KeyC;
+    // Controller START / X: pause and photo, which the arcade's own poll would
+    // have done but stands down for us.
+    if(pad){
+      const bt = pad.buttons || [];
+      if(edge('start', !!(bt[9] && bt[9].pressed)) && typeof pauseRound === 'function') pauseRound('pad');
+      // Into photo mode only: once it is up, the arcade's own poll owns the
+      // pad (orbit, capture, X/B out) and must be the only one toggling it.
+      const inPhoto = (typeof photoActive === 'function') && photoActive();
+      if(pxb && !pp.xDone && !inPhoto){ if(typeof photoToggle === 'function') photoToggle(); }
+      pp.xDone = pxb;
+    }
+    st.pressed = st.hit;
+    st.hit = Object.create(null);
+    st.mRightHit = false; st.tAltHit = false; st.tJumpHit = false;
+    return st;
+  };
+  st.dispose = () => { offs.forEach(f => { try{ f(); }catch(e){} }); offs.length = 0; };
+  return st;
+}
+// The touch buttons, in board-relative units (u, v in 0..1, r in widths).
+function touchButtons(cfg){
+  if(cfg === 'twin') return [{ k: 'alt', u: 0.9, v: 0.18, r: 0.07 }];
+  if(cfg === 'drive') return [{ k: 'alt', u: 0.66, v: 0.84, r: 0.075 }, { k: 'boost', u: 0.88, v: 0.6, r: 0.07 }, { k: 'jump', u: 0.88, v: 0.86, r: 0.09 }];
+  if(cfg === 'tap') return [];
+  return [{ k: 'alt', u: 0.66, v: 0.86, r: 0.075 }, { k: 'boost', u: 0.9, v: 0.58, r: 0.07 }];
+}
+
+// ══════════════════════════════════════════════
+//  🖥️ HUD
+// ══════════════════════════════════════════════
+// One canvas in the fx layer, redrawn every frame. Projection is done here
+// from the world camera itself (not r.project, which refuses points behind
+// the lens) because the off-screen arrows need exactly those points.
+function makeHud(w){
+  const fx = document.getElementById('gl-fx');
+  const cv = document.createElement('canvas');
+  cv.className = 'ow-hud';
+  cv.setAttribute('aria-hidden', 'true');
+  fx.appendChild(cv);
+  const ctx = cv.getContext('2d');
+  // avoid: screen rects [x0, y0, x1, y1] that edge arrows stay out of.
+  const H = { cv, ctx, W: 1, H: 1, cam: null, avoid: [] };
+  const FONT = '"Orbitron", "Rajdhani", sans-serif';
+  H.begin = function(){
+    const cw = Math.max(1, fx.clientWidth), ch = Math.max(1, fx.clientHeight);
+    const d = Math.min(2, window.devicePixelRatio || 1);
+    const pw = Math.round(cw * d), ph = Math.round(ch * d);
+    if(cv.width !== pw || cv.height !== ph){ cv.width = pw; cv.height = ph; cv.style.width = cw + 'px'; cv.style.height = ch + 'px'; }
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+    ctx.clearRect(0, 0, cw, ch);
+    H.W = cw; H.H = ch;
+    const c = (typeof photoCam === 'function') ? photoCam(w.cam) : w.cam;
+    const f = V.norm(V.sub(c.target, c.eye));
+    let r = V.cross(f, w.up || [0, 1, 0]);
+    r = V.len(r) < 1e-5 ? [1, 0, 0] : V.norm(r);
+    const u = V.cross(r, f);
+    H.cam = { eye: c.eye, f, r, u, th: Math.tan((c.fov || 58) * Math.PI / 360) };
+  };
+  // → { x, y, z, on } in CSS px; z is depth (negative: behind the camera).
+  H.proj = function(p){
+    const C = H.cam, d = V.sub(p, C.eye);
+    const z = V.dot(d, C.f), x = V.dot(d, C.r), y = V.dot(d, C.u);
+    const asp = H.W / H.H;
+    if(z <= 0.05) return { x: 0, y: 0, z, on: false, vx: x, vy: y };
+    const sx = H.W / 2 + (x / z) / (C.th * asp) * (H.W / 2);
+    const sy = H.H / 2 - (y / z) / C.th * (H.H / 2);
+    return { x: sx, y: sy, z, on: sx >= 0 && sx <= H.W && sy >= 0 && sy <= H.H, vx: x, vy: y };
+  };
+  H.text = function(x, y, s, o){
+    o = o || {};
+    ctx.font = (o.weight || 700) + ' ' + (o.size || 12) + 'px ' + FONT;
+    ctx.textAlign = o.align || 'center';
+    ctx.textBaseline = o.base || 'middle';
+    if(o.glow !== false){ ctx.shadowColor = o.color || '#9fe9ff'; ctx.shadowBlur = o.blur != null ? o.blur : 8; }
+    ctx.fillStyle = o.color || '#dff8ff';
+    ctx.globalAlpha = o.alpha != null ? o.alpha : 1;
+    ctx.fillText(s, x, y);
+    ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  };
+  // A target bracket: four corners round a projected point, sized by depth.
+  H.bracket = function(p, worldSize, color, label, o){
+    o = o || {};
+    const q = H.proj(p);
+    if(!q.on) return q;
+    const s = clamp(worldSize / Math.max(q.z, 1) * H.H * 0.9, 9, 70);
+    ctx.strokeStyle = color; ctx.lineWidth = o.lock ? 2 : 1.3; ctx.globalAlpha = o.alpha != null ? o.alpha : 0.9;
+    ctx.shadowColor = color; ctx.shadowBlur = 6;
+    const c = s * 0.38;
+    ctx.beginPath();
+    for(const [dx, dy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]){
+      ctx.moveTo(q.x + dx * s, q.y + dy * s - dy * c); ctx.lineTo(q.x + dx * s, q.y + dy * s); ctx.lineTo(q.x + dx * s - dx * c, q.y + dy * s);
+    }
+    ctx.stroke();
+    if(o.lock){
+      ctx.beginPath();
+      const s2 = s * 0.62;
+      ctx.moveTo(q.x, q.y - s2); ctx.lineTo(q.x + s2, q.y); ctx.lineTo(q.x, q.y + s2); ctx.lineTo(q.x - s2, q.y); ctx.closePath();
+      ctx.stroke();
+    }
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+    if(label) H.text(q.x, q.y - s - 9, label, { size: 10, color });
+    if(o.dist != null) H.text(q.x, q.y + s + 9, Math.round(o.dist) + ' m', { size: 9, color, alpha: 0.8 });
+    return q;
+  };
+  // An arrow on the screen's edge toward something off-screen (or behind).
+  H.edgeArrow = function(p, color, label){
+    const q = H.proj(p);
+    if(q.on) return false;
+    let dx = q.vx, dy = -q.vy;
+    if(q.z <= 0.05 && Math.abs(dx) + Math.abs(dy) < 1e-3) dy = 1;
+    const a = Math.atan2(dy, dx);
+    const m = 26, cx = H.W / 2, cy = H.H / 2;
+    const kx = (cx - m) / Math.max(1e-4, Math.abs(Math.cos(a))), ky = (cy - m) / Math.max(1e-4, Math.abs(Math.sin(a)));
+    const k = Math.min(kx, ky);
+    let x = cx + Math.cos(a) * k, y = cy + Math.sin(a) * k;
+    // Never under a panel: the bottom corners carry the radar and readouts.
+    for(const z of H.avoid){ if(x > z[0] && x < z[2] && y > z[1] && y < z[3]) y = z[1] - 8; }
+    ctx.save();
+    ctx.translate(x, y); ctx.rotate(a);
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 8; ctx.globalAlpha = 0.92;
+    ctx.beginPath(); ctx.moveTo(9, 0); ctx.lineTo(-6, -7); ctx.lineTo(-3, 0); ctx.lineTo(-6, 7); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    if(label) H.text(x - Math.cos(a) * 18, y - Math.sin(a) * 18, label, { size: 9, color });
+    return true;
+  };
+  H.crosshair = function(x, y, color, size){
+    const s = size || 10;
+    ctx.strokeStyle = color || '#bff6ff'; ctx.lineWidth = 1.4; ctx.globalAlpha = 0.85;
+    ctx.shadowColor = color || '#bff6ff'; ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.arc(x, y, s, 0, TAU);
+    ctx.moveTo(x - s * 1.9, y); ctx.lineTo(x - s * 1.2, y);
+    ctx.moveTo(x + s * 1.2, y); ctx.lineTo(x + s * 1.9, y);
+    ctx.moveTo(x, y - s * 1.9); ctx.lineTo(x, y - s * 1.2);
+    ctx.moveTo(x, y + s * 1.2); ctx.lineTo(x, y + s * 1.9);
+    ctx.stroke();
+    ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+  };
+  H.bar = function(x, y, wdt, hgt, frac, color, label, o){
+    o = o || {};
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = 'rgba(6,14,26,0.55)';
+    ctx.fillRect(x, y, wdt, hgt);
+    ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 8;
+    ctx.fillRect(x + 1, y + 1, Math.max(0, (wdt - 2) * clamp(frac, 0, 1)), hgt - 2);
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+    ctx.strokeStyle = 'rgba(160,230,255,0.35)'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, wdt - 1, hgt - 1);
+    if(label) H.text(x, y - 7, label, { size: 9, align: 'left', color: o.labelColor || '#9fdcff', glow: false });
+  };
+  // A panel with a title and a big number — the MISSILES 14 box.
+  H.panel = function(x, y, wdt, hgt, title, big, color, sub){
+    ctx.fillStyle = 'rgba(5,12,24,0.62)';
+    ctx.fillRect(x, y, wdt, hgt);
+    ctx.fillStyle = color; ctx.fillRect(x + wdt - 2, y, 2, hgt);
+    H.text(x + 8, y + 11, title, { size: 9, align: 'left', color, glow: false });
+    if(big != null) H.text(x + wdt - 10, y + 14, String(big), { size: 17, align: 'right', color: '#ffffff', blur: 6 });
+    if(sub) H.text(x + 8, y + hgt - 10, sub, { size: 9, align: 'left', color: '#dff8ff', glow: false, alpha: 0.9 });
+  };
+  // Radar: a disc in the bottom-left, the player's heading up. items: { p, c, s }.
+  H.radar = function(cx, cy, R, centre, fwd, range, items){
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = 'rgba(4,14,26,0.55)';
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(120,220,255,0.45)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, TAU); ctx.arc(cx, cy, R * 0.5, 0, TAU); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy); ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R); ctx.globalAlpha = 0.35; ctx.stroke();
+    ctx.globalAlpha = 1;
+    const fh = V.norm([fwd[0], 0, fwd[2]]);
+    const rh = [-fh[2], 0, fh[0]];
+    for(const it of items){
+      const d = V.sub(it.p, centre);
+      let x = V.dot(d, rh) / range, y = -V.dot(d, fh) / range;
+      const l = Math.hypot(x, y);
+      const edge = l > 1;
+      if(edge){ x /= l; y /= l; }
+      ctx.fillStyle = it.c; ctx.shadowColor = it.c; ctx.shadowBlur = 5;
+      ctx.globalAlpha = edge ? 0.55 : 1;
+      const s = it.s || 2.4;
+      const vy = d[1];
+      ctx.beginPath();
+      if(it.shape === 'diamond'){ ctx.moveTo(cx + x * R, cy + y * R - s * 1.4); ctx.lineTo(cx + x * R + s * 1.4, cy + y * R); ctx.lineTo(cx + x * R, cy + y * R + s * 1.4); ctx.lineTo(cx + x * R - s * 1.4, cy + y * R); ctx.closePath(); }
+      else ctx.arc(cx + x * R, cy + y * R, s, 0, TAU);
+      ctx.fill();
+      // Above/below tick, for the worlds with height.
+      if(it.tick && Math.abs(vy) > range * 0.08){ ctx.fillRect(cx + x * R - 0.5, cy + y * R + (vy > 0 ? -s - 4 : s), 1, 4); }
+    }
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.moveTo(cx, cy - 5); ctx.lineTo(cx + 3.5, cy + 4); ctx.lineTo(cx - 3.5, cy + 4); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  };
+  // The touch controls, drawn only while a finger is the thing playing.
+  H.touchPad = function(inp){
+    if(inp.device !== 'touch') return;
+    const B = touchButtons(inp.touchCfg);
+    ctx.save();
+    for(const b of B){
+      const x = b.u * H.W, y = b.v * H.H, r = b.r * H.W;
+      ctx.globalAlpha = 0.5; ctx.strokeStyle = '#7fe8ff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke();
+      H.text(x, y, b.k === 'alt' ? (inp.altLabel || 'ALT') : b.k === 'boost' ? 'BOOST' : 'JUMP', { size: 10, color: '#bff6ff' });
+    }
+    if(inp.stick){
+      const s = inp.stick;
+      const x0 = (s.x0 + 1) / 2 * H.W, y0 = (s.y0 + 1) / 2 * H.H, x = (s.x + 1) / 2 * H.W, y = (s.y + 1) / 2 * H.H;
+      ctx.globalAlpha = 0.45; ctx.strokeStyle = '#00f5ff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x0, y0, 0.13 * H.W, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 0.7; ctx.fillStyle = 'rgba(0,245,255,0.3)';
+      ctx.beginPath(); ctx.arc(x, y, 0.05 * H.W, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+  };
+  H.dispose = () => { cv.remove(); };
+  return H;
+}
+
+// ══════════════════════════════════════════════
+//  🗺️ THE FIELD — a world that is never built, only generated around you
+// ══════════════════════════════════════════════
+// The world is cut into cells; a cell's contents are a pure function of its
+// coordinates and the world's seed, so the asteroid you passed is exactly
+// where you left it when you turn back. Cells are made as they come within
+// `radius` and dropped once well past it. What the player DESTROYED is kept in
+// a set by item id, so a field you cleared does not grow back behind you.
+function makeField(o){
+  const cell = o.cell, dims = o.dims || 2, seed = o.seed || 1;
+  const map = new Map(), dead = new Set();
+  let lastKey = null, sweep = 0;
+  const F = { map, dead };
+  const key = (x, y, z) => x + ',' + y + ',' + z;
+  F.update = function(p, radius){
+    const Rr = radius || o.radius;
+    const R = Math.ceil(Rr / cell);
+    const ix = Math.floor(p[0] / cell), iy = dims === 3 ? Math.floor(p[1] / cell) : 0, iz = Math.floor(p[2] / cell);
+    const here = key(ix, iy, iz);
+    if(here !== lastKey){
+      lastKey = here;
+      const Ry = dims === 3 ? R : 0;
+      for(let dx = -R; dx <= R; dx++) for(let dy = -Ry; dy <= Ry; dy++) for(let dz = -R; dz <= R; dz++){
+        if(dims === 3 ? (dx * dx + dy * dy + dz * dz > (R + 0.5) * (R + 0.5)) : (dx * dx + dz * dz > (R + 0.5) * (R + 0.5))) continue;
+        const cx = ix + dx, cy = iy + dy, cz = iz + dz, k = key(cx, cy, cz);
+        if(map.has(k)) continue;
+        const rng = seeded(ihash(cx, cy, cz, seed));
+        let items = [];
+        try{ items = o.gen(cx, cy, cz, rng, k) || []; }catch(e){ console.warn('[OW] cell gen failed', e); items = []; }
+        items.forEach((it, i) => { it.id = k + '#' + i; if(dead.has(it.id)) it.dead = true; });
+        map.set(k, { cx, cy, cz, items });
+      }
+    }
+    // Drop what is far behind, a slice of the map per frame.
+    if(++sweep % 20 === 0){
+      const lim = R + 2;
+      for(const [k, c] of map){
+        if(Math.abs(c.cx - ix) > lim || Math.abs(c.cz - iz) > lim || (dims === 3 && Math.abs(c.cy - iy) > lim)) map.delete(k);
+      }
+    }
+  };
+  F.each = function(fn){
+    for(const c of map.values()) for(const it of c.items) if(!it.dead) fn(it);
+  };
+  // Items in the cells around p (the 3×3(×3) block): collision queries.
+  F.near = function(p, fn){
+    const ix = Math.floor(p[0] / cell), iy = dims === 3 ? Math.floor(p[1] / cell) : 0, iz = Math.floor(p[2] / cell);
+    const Ry = dims === 3 ? 1 : 0;
+    for(let dx = -1; dx <= 1; dx++) for(let dy = -Ry; dy <= Ry; dy++) for(let dz = -1; dz <= 1; dz++){
+      const c = map.get(key(ix + dx, iy + dy, iz + dz));
+      if(!c) continue;
+      for(const it of c.items) if(!it.dead) fn(it);
+    }
+  };
+  F.kill = function(it){ it.dead = true; dead.add(it.id); };
+  return F;
+}
+
+// ══════════════════════════════════════════════
+//  💥 FX
+// ══════════════════════════════════════════════
+function makeFx(w){
+  const r = w.r;
+  const L = [];
+  // The particle ceiling the quality governor has set, read once a frame.
+  let cap = 500;
+  const MAX = () => cap;
+  const held = () => (typeof photoActive === 'function') && photoActive();
+  const FX = { list: L };
+  const rr = (a, b) => a + Math.random() * (b - a);
+  const rdir = () => { const u = Math.random() * 2 - 1, th = Math.random() * TAU, s = Math.sqrt(1 - u * u); return [s * Math.cos(th), u, s * Math.sin(th)]; };
+  const push = e => { if(held() || L.length >= MAX()) return; L.push(e); };
+  // A full explosion. s = size (≈ the exploding thing's radius).
+  FX.explode = function(p, s, o){
+    if(held()) return;
+    o = o || {};
+    s = s || 1;
+    const hot = o.color || '#ff8a2a';
+    push({ k: 'flash', p: V.copy(p), t: 0, life: 0.28, s, c: o.light || '#ffb066' });
+    for(let i = 0; i < 4; i++) push({ k: 'ball', p: V.madd(p, rdir(), s * 0.3), t: -i * 0.05, life: 0.75 + i * 0.12, s: s * (0.9 + i * 0.25), c: hot });
+    const ns = Math.round(clamp(10 + s * 8, 10, o.sparks || 46));
+    for(let i = 0; i < ns; i++){
+      const d = rdir(), sp = rr(12, 38) * Math.sqrt(s);
+      push({ k: 'spark', p: V.copy(p), v: V.mul(d, sp), t: 0, life: rr(0.35, 0.9), s: rr(0.06, 0.14) * Math.sqrt(s), c: Math.random() < 0.6 ? '#ffd28a' : hot, drag: 1.4 });
+    }
+    const nd = o.debris != null ? o.debris : Math.round(clamp(3 + s * 2.5, 3, 14));
+    for(let i = 0; i < nd; i++){
+      const d = rdir(), sp = rr(5, 18) * Math.sqrt(s);
+      push({ k: 'deb', p: V.copy(p), v: V.mul(d, sp), t: 0, life: rr(1.2, 2.4), s: rr(0.10, 0.26) * s, rot: [Math.random() * 6, Math.random() * 6, 0], spin: [rr(-6, 6), rr(-6, 6), 0],
+             g: o.debrisGeo || (Math.random() < 0.7 ? 'rock2' : 'slab'), c: o.debrisColor || '#3a3633', grav: o.grav || 0 });
+    }
+    const nsm = o.smoke != null ? o.smoke : Math.round(clamp(2 + s * 1.5, 2, 9));
+    for(let i = 0; i < nsm; i++) push({ k: 'smoke', p: V.madd(p, rdir(), s * 0.5), v: V.mul(rdir(), rr(0.5, 2.5) * s), t: -0.08, life: rr(1.4, 2.6), s: s * rr(0.8, 1.4), c: o.smokeColor || '#2c2724' });
+    if(o.ring !== false) push({ k: 'ring', p: V.copy(p), t: 0, life: 0.55, s: s * 5, c: o.ringColor || '#ffb86a', n: o.ringNormal || null });
+    if(s > 2.5) w.kick && w.kick(Math.min(2.2, s * 0.25));
+  };
+  // Sparks off an impact, along a normal-ish direction.
+  FX.sparks = function(p, n, color, k, speed){
+    for(let i = 0; i < (n || 8); i++){
+      const d = rdir();
+      push({ k: 'spark', p: V.copy(p), v: V.mul(d, (speed || 18) * rr(0.4, 1)), t: 0, life: rr(0.2, 0.45), s: rr(0.04, 0.09) * (k || 1), c: color || '#bff6ff', drag: 2.2 });
+    }
+  };
+  FX.flash = function(p, color, s, life){ push({ k: 'flash', p: V.copy(p), t: 0, life: life || 0.15, s: s || 0.6, c: color || '#ffffff' }); };
+  FX.puff = function(p, color, s, life, v){ push({ k: 'smoke', p: V.copy(p), v: v || [0, 0.4, 0], t: 0, life: life || 1.2, s: s || 0.5, c: color || '#5a5a64' }); };
+  FX.glowPop = function(p, color, s, life){ push({ k: 'ball', p: V.copy(p), t: 0, life: life || 0.35, s: s || 0.6, c: color || '#ffffff' }); };
+  FX.step = function(dt){
+    if(dt <= 0) return;
+    try{ cap = Math.max(160, (P.quality && P.quality.parts) || 500); }catch(e){ cap = 500; }
+    for(let i = L.length - 1; i >= 0; i--){
+      const e = L[i];
+      e.t += dt;
+      if(e.t >= e.life){ L.splice(i, 1); continue; }
+      if(e.v){
+        const d = e.drag ? Math.max(0, 1 - e.drag * dt) : 1;
+        e.v[0] *= d; e.v[1] = e.v[1] * d - (e.grav || 0) * dt; e.v[2] *= d;
+        e.p[0] += e.v[0] * dt; e.p[1] += e.v[1] * dt; e.p[2] += e.v[2] * dt;
+      }
+      if(e.spin){ e.rot[0] += e.spin[0] * dt; e.rot[1] += e.spin[1] * dt; }
+    }
+  };
+  const ramp = (a) => a < 0.15 ? '#fff4d6' : a < 0.35 ? '#ffd27a' : a < 0.6 ? '#ff8a2a' : '#b8321a';
+  FX.draw = function(){
+    let lights = 0;
+    const eye = w.cam.eye;
+    for(const e of L){
+      if(e.t < 0) continue;
+      const a = e.t / e.life;
+      switch(e.k){
+        case 'flash':
+          if(lights++ < 3) r.light({ pos: e.p, color: e.c, intensity: 320 * e.s * (1 - a), range: 18 * Math.max(1, e.s) });
+          r.glow(e.p, e.s * 3.2 * (1 - a * 0.5), e.c, 3.0 * (1 - a));
+          break;
+        case 'ball': {
+          const g = e.s * (0.6 + 2.2 * Math.sqrt(a));
+          r.glow(e.p, g, ramp(a), 2.4 * (1 - a) * (1 - a));
+          r.glow(e.p, g * 0.55, '#fff2c8', 1.6 * Math.max(0, 1 - a * 2.2));
+          break;
+        }
+        case 'spark': {
+          const tail = V.madd(e.p, e.v, -0.045);
+          r.streak(tail, e.p, e.s * 2.2, e.c, 3.2 * (1 - a), 0.9);
+          break;
+        }
+        case 'deb': {
+          // Glowing hot at first and cooling to dark: the glow does the heat,
+          // the hull itself only blushes, so a fragment keeps its shape.
+          const heat = Math.max(0, 1 - a * 3.2);
+          r.draw(e.g, { pos: e.p, rot: e.rot, scale: e.s, color: e.c, metallic: 0.35, roughness: 0.7, rim: 0.5,
+                        emissive: '#ff5a10', emissiveStrength: 0.55 * heat * heat });
+          if(heat > 0.05) r.glow(e.p, e.s * 1.1, '#ff7a2a', heat * 1.1);
+          break;
+        }
+        case 'smoke': {
+          const s = e.s * (1 + a * 2.2);
+          r.draw('lowsphere', { pos: e.p, scale: s, color: e.c, metallic: 0, roughness: 1, rim: 0.15,
+                                alpha: 0.42 * (1 - a) * Math.min(1, e.t * 6), blend: true });
+          break;
+        }
+        case 'ring': {
+          const n = e.n || V.norm(V.sub(eye, e.p));
+          const b = basisLook(n, Math.abs(n[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0]);
+          // A torus lies in XZ: its axis (local Y) has to point along n.
+          const m3 = [b.r[0], b.r[1], b.r[2], n[0], n[1], n[2], b.u[0], b.u[1], b.u[2]];
+          const sc = e.s * 0.6 * (0.2 + Math.sqrt(a));
+          const fa = (1 - a) * (1 - a);
+          r.draw('thintorus', { pos: e.p, m3, scale: [sc, sc * 0.18, sc], color: e.c, emissive: e.c, emissiveStrength: 1.8 * fa, alpha: 0.32 * fa, blend: true, rim: 0 });
+          break;
+        }
+      }
+    }
+  };
+  return FX;
+}
+
+// Speed dust: motes fixed in the world around the camera, wrapped in a box so
+// there are always some, drawn as short streaks along the camera's motion. In
+// open space nothing else tells you that you are moving.
+function makeDust(n, box){
+  const P0 = [];
+  for(let i = 0; i < n; i++) P0.push([(Math.random() - 0.5) * box, (Math.random() - 0.5) * box, (Math.random() - 0.5) * box, Math.random()]);
+  let prev = null;
+  return function(w, vel, o){
+    o = o || {};
+    const r = w.r, c = w.cam.eye, h = box / 2;
+    const v = vel || [0, 0, 0];
+    const sp = V.len(v);
+    const k = clamp(sp * (o.len || 0.022), 0.05, o.max || 3.5);
+    const dir = sp > 1e-3 ? V.mul(v, 1 / sp) : [0, 0, -1];
+    for(const p of P0){
+      for(let a = 0; a < 3; a++){
+        let d = p[a] - c[a];
+        if(d > h) p[a] -= box * Math.ceil((d - h) / box);
+        else if(d < -h) p[a] += box * Math.ceil((-h - d) / box);
+      }
+      const head = [p[0], p[1], p[2]];
+      const tail = V.madd(head, dir, -k);
+      const dd = Math.sqrt(V.d2(head, c));
+      const fade = clamp(1 - dd / h, 0, 1) * clamp(dd / 3, 0, 1);
+      r.streak(tail, head, o.width || 0.045, o.color || '#cfe2ff', (o.gain || 0.9) * fade * (0.4 + p[3] * 0.6), 1.0);
+    }
+  };
+}
+
+// An engine plume out of a nozzle: a hot core glow in the throat, a long blue
+// cone of light, and a flicker. dir is the way the exhaust goes (backwards).
+function plume(w, p, dir, o){
+  o = o || {};
+  const r = w.r, t = w.t;
+  const len = (o.len || 2.4) * (0.92 + 0.08 * Math.sin(t * 47 + (o.ph || 0)));
+  const wd = o.width || 0.5;
+  const col = o.color || '#68d4ff';
+  r.glow(p, wd * 1.15, o.core || '#e8fbff', (o.gain || 1) * 2.4 * (o.glow != null ? o.glow : 1));
+  r.streak(p, V.madd(p, dir, len), wd, col, (o.gain || 1) * 2.0, 0.0);
+  r.streak(V.madd(p, dir, len * 0.15), V.madd(p, dir, len * 1.6), wd * 0.55, col, (o.gain || 1) * 0.8, 0.0);
+}
+
+// Bodies "at infinity": positioned off the camera every frame, with a little
+// parallax, so a planet stays a planet however far you fly — and still sits
+// behind every asteroid, because it is real geometry at a real depth.
+function drawBodies(w, list){
+  const r = w.r, c = w.cam.eye;
+  for(const b of list){
+    const par = b.par == null ? 0.004 : b.par;
+    const p = [c[0] + b.off[0] - c[0] * par, c[1] + b.off[1] - c[1] * par, c[2] + b.off[2] - c[2] * par];
+    if(b.kind === 'gas'){
+      r.draw('planet', { pos: p, rot: b.rot || [0.2, w.t * (b.spin || 0.004), 0.32], scale: b.size, color: b.color, metallic: 0, roughness: 0.92, rim: -(b.rim || 0.5) });
+      if(b.ring) r.draw('ringdisc', { pos: p, rot: b.ringRot || [0.2, 0, 0.32], scale: b.size * b.ring, color: b.ringColor || '#d6c29c', metallic: 0, roughness: 0.95, rim: -0.2, blend: true, alpha: 0.96 });
+      r.glow(p, -(b.size * 0.72), b.halo || '#ffb27a', 0.08);
+    }else if(b.kind === 'moon'){
+      r.draw('rock' + (b.v || ''), { pos: p, rot: [0.3, w.t * 0.01, 0.1], scale: b.size, color: b.color || '#8a8580', metallic: 0, roughness: 0.95, rim: -(b.rim || 0.4) });
+    }else if(b.kind === 'sun'){
+      r.glow(p, -b.size, b.color || '#fff1d6', b.gain || 3.2);
+      r.glow(p, -b.size * 4, b.color || '#ffd8a0', (b.gain || 3.2) * 0.12);
+    }
+  }
+}
+
+// An endless lit floor: a ground slab and grid beams snapped to the grid
+// step under the camera, so the lines stand still in the world while the
+// slab follows you. Fog does the far edge.
+function drawFloor(w, o){
+  o = o || {};
+  const r = w.r, c = w.cam.eye;
+  const step = o.step || 6, R = o.radius || 150;
+  const y = o.y || 0;
+  const cx = Math.round(c[0] / step) * step, cz = Math.round(c[2] / step) * step;
+  r.draw('ground', { pos: [cx, y - 0.06, cz], scale: [R * 2.4, 1, R * 2.4], color: o.floor || '#05070f', metallic: o.metal != null ? o.metal : 0.8, roughness: o.rough != null ? o.rough : 0.3, rim: 0.2 });
+  const col = o.color || '#123a66', em = o.glow != null ? o.glow : 1.0, wd = o.width || 0.06;
+  const n = Math.ceil(R / step);
+  for(let i = -n; i <= n; i++){
+    const x = cx + i * step, z = cz + i * step;
+    const major = o.major && (Math.round(x / step) % o.major === 0);
+    const majorZ = o.major && (Math.round(z / step) % o.major === 0);
+    r.beam([x, y, cz - R], [x, y, cz + R], major ? wd * 2 : wd, { color: col, emissive: col, emissiveStrength: major ? em * 1.8 : em, height: wd });
+    r.beam([cx - R, y, z], [cx + R, y, z], majorZ ? wd * 2 : wd, { color: col, emissive: col, emissiveStrength: majorZ ? em * 1.8 : em, height: wd });
+  }
+}
+
+// ══════════════════════════════════════════════
+//  🌍 WORLD PRESETS
+// ══════════════════════════════════════════════
+const SPACE = {
+  env:  { theme: 5, zenith: '#05060f', horizon: '#160d2a', ground: '#03040b', intensity: 1, stars: [1, 1, 1, 1] },
+  fog:  { color: '#06050f', density: 0.0009 },
+  sun:  { dir: [-0.55, -0.28, -0.78], color: '#fff0da', intensity: 2.4 },
+  grade:{ exposure: 1.0, bloom: 0.55, threshold: 1.35, knee: 0.5, radius: 1.0, vignette: 0.36, aberration: 0.25, grain: 0.016, scanline: 0, saturation: 1.12 },
+  ease: 1
+};
+const NIGHT = {
+  env:  { zenith: '#050818', horizon: '#3a1050', ground: '#05060f', intensity: 1.3 },
+  fog:  { color: '#0d0722', density: 0.0068 },
+  sun:  { dir: [-0.4, -0.85, -0.5], color: '#6f7dff', intensity: 0.75 },
+  grade:{ exposure: 0.97, bloom: 0.45, threshold: 1.55, knee: 0.5, radius: 0.95, vignette: 0.42, aberration: 0.35, grain: 0.024, scanline: 0.01, saturation: 1.12 },
+  ease: 1
+};
+
+// Opens an open-world round: the world (floating origin on, far plane out),
+// the HUD, the FX, the input, and the clean-up chained onto stopGame().
+function owBegin(cfg){
+  cfg = cfg || {};
+  const base = cfg.preset === 'night' ? NIGHT : SPACE;
+  const merged = {
+    env: Object.assign({}, base.env, cfg.env), fog: Object.assign({}, base.fog, cfg.fog),
+    sun: Object.assign({}, base.sun, cfg.sun), grade: Object.assign({}, base.grade, cfg.grade), ease: 1
+  };
+  const w = begin3d(merged);
+  if(!w) throw new Error('no 3D surface');
+  w.origin = true;
+  w.far = cfg.far || 6000;
+  w.near = cfg.near || 0.3;
+  if(cfg.space) w.r.spaceSky(cfg.space);
+  setControls(null);
+  const hud = makeHud(w);
+  const fx = makeFx(w);
+  const inp = makeInput(cfg.input);
+  const prev = onStopGame;
+  onStopGame = () => { try{ inp.dispose(); }catch(e){} try{ hud.dispose(); }catch(e){} if(prev) prev(); };
+  return { w, r: w.r, hud, fx, inp };
+}
+
+// The round clock, through gTimer like every mission's (so the pause shim and
+// the Time Dilator see it).
+function owClock(secs, onEnd, onTick){
+  let left = Math.round(secs * (typeof getTimeModifier === 'function' ? getTimeModifier() : 1));
+  const el = document.getElementById('g-time');
+  if(el) el.textContent = left;
+  gTimer = setInterval(() => {
+    left--;
+    if(el) el.textContent = Math.max(0, left);
+    if(left <= 5 && left > 0) snd('tick');
+    if(onTick) onTick(left);
+    if(left <= 0){ clearInterval(gTimer); gTimer = null; onEnd(); }
+  }, 1000);
+  return { get left(){ return left; }, add(n){ left += n; if(el) el.textContent = left; } };
+}
+
+P.owKit = { V, TAU, wrapAng, ease, ihash, basisYPR, basisLook, makeInput, makeHud, makeField, makeFx, makeDust,
+            plume, drawBodies, drawFloor, owBegin, owClock, SPACE, NIGHT, touchButtons };
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🚀 NEON NEBULA · OPEN WORLD — NEBULA FRONTIER
+// ══════════════════════════════════════════════
+// The classic round is a corridor; this is the whole sky. A free-flying
+// interceptor (chase camera, mouse or stick steering, boost, barrel rolls)
+// over an endless asteroid belt under a nebula, a ringed giant hanging in the
+// distance. Raider squadrons find you wherever you are; capital frigates sit
+// in the belt with six turrets each and a shielded reactor — strip the
+// turrets, the shield falls, kill the core and the ship goes up in a chain of
+// explosions. Lasers, homing missiles with lock-on, pickups in the rocks.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit) return;
+const { V, TAU, wrapAng, ease, basisYPR, basisLook, makeField, makeDust, plume, drawBodies, owBegin, owClock } = P.owKit;
+const { mine, clamp, runLoop } = P.kit;
+const FM = window.PI3D_ENGINE.mesh.FRIGATE_MOUNTS;
+const rr = (a, b) => a + Math.random() * (b - a);
+
+P.ow.nebula = function(){
+  const G = owBegin({
+    space: { seed: 7, a: '#8a1fb8', b: '#0e7fae', c: '#ff4fa0', dir: [0.3, 0.18, -0.94], amount: 1.0, dust: 0.85, galaxy: 1.0 },
+    input: { mouseSteer: true, mouseGain: 1.15 },
+    far: 14000, near: 0.3
+  });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('LEFT STICK: FLY · RIGHT: FIRE · ⟲ MISSILE · BOOST',
+                 'MOUSE / WASD: FLY · CLICK / SPACE: FIRE · RIGHT-CLICK / F: MISSILE · SHIFT: BOOST · Q/E: ROLL');
+  inp.altLabel = 'MSL';
+
+  // ── STATE ──
+  const SC = 1.6;                                   // ship scale
+  const ship = { p: [0, 0, 0], yaw: 0, pitch: 0, bank: 0, roll: 0, speed: 44, hull: 100, energy: 100,
+                 cool: 0, weapon: 1, missiles: 6, mRegen: 0, inv: 0, hit: 0, dead: false };
+  let B = basisYPR(0, 0, 0);
+  let score = 0, kills = 0, chain = 0, bestChain = 0, turretsKilled = 0, frigatesKilled = 0, over = false;
+  let camOff = [0, 2.6, 9.5], camTgt = [0, 0, -26], camUp = [0, 1, 0];
+  const bolts = [], flak = [], foes = [], missiles = [];
+  let frig = null, frigTimer = 2, squadT = 6;
+  let lockT = 0, lockOn = null, objective = '', objT = 0, msgT = 0, msg = '';
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#28d8ff,#7ff7ff)';
+
+  const say = (s, t) => { msg = s; msgT = t || 2.6; };
+
+  // ── THE BELT ──
+  // Rocks in 3D cells. Density thickens toward the ecliptic (y ≈ 0) and in
+  // broad clumps across it, so there is open space to fly fast through and
+  // thick rubble to hide in. A rare cell carries a mountain of a rock.
+  const ROCKS = ['rock', 'rock2', 'rock3', 'rock4', 'rock5', 'rock6'];
+  const TINTS = ['#6b5d52', '#5f5a56', '#73614f', '#57524e', '#6e6258', '#655a50'];
+  const belt = makeField({
+    cell: 150, dims: 3, seed: 20261001, radius: 760,
+    gen(cx, cy, cz, g){
+      const items = [];
+      const yc = cy * 150;
+      const band = Math.exp(-Math.pow(yc / 520, 2));
+      const clump = 0.55 + 0.45 * Math.sin(cx * 0.31 + cz * 0.23) * Math.cos(cz * 0.19 - cx * 0.11 + cy * 0.4);
+      const n = Math.floor(g() * (1.5 + 10 * band * clump * clump));
+      for(let i = 0; i < n; i++){
+        const p = [(cx + g()) * 150, (cy + g()) * 150, (cz + g()) * 150];
+        if(V.len(p) < 90) continue;
+        const s = 1.2 + Math.pow(g(), 4.2) * 30;
+        items.push({ t: 'rock', p, s, g: ROCKS[(g() * 6) | 0], c: TINTS[(g() * 6) | 0],
+                     rot: [g() * 6, g() * 6, g() * 6], spin: [(g() - 0.5) * 0.25, (g() - 0.5) * 0.25, 0], hp: Math.ceil(s * 0.6) });
+      }
+      if(g() < 0.035 * (0.4 + band)){
+        const p = [(cx + 0.5) * 150, (cy + 0.5) * 150, (cz + 0.5) * 150];
+        if(V.len(p) > 300) items.push({ t: 'rock', p, s: 55 + g() * 70, g: ROCKS[(g() * 6) | 0], c: TINTS[(g() * 6) | 0],
+                                       rot: [g() * 6, g() * 6, 0], spin: [0.01, 0.02, 0], hp: 1e9, big: true });
+      }
+      if(g() < 0.16){
+        const roll = g();
+        items.push({ t: 'pick', p: [(cx + g()) * 150, (cy + g()) * 150, (cz + g()) * 150],
+                     kind: roll < 0.4 ? 'orb' : roll < 0.72 ? 'repair' : 'msl', s: 1.6, ph: g() * 6 });
+      }
+      return items;
+    }
+  });
+
+  // ── DISTANT BODIES ──
+  const BODIES = [
+    { kind: 'gas', off: [2600, -700, -6400], size: 3000, color: '#c8874c', ring: 2.3, ringRot: [0.38, 0, 0.42], rot: [0.38, 0, 0.42], halo: '#ffb070', par: 0.004 },
+    { kind: 'moon', off: [-3100, 900, -5200], size: 300, color: '#9a8f86', v: '3', par: 0.006 },
+    { kind: 'sun', off: [-3200, 1300, 3600], size: 220, color: '#fff2da', gain: 3.4, par: 0 }
+  ];
+
+  const dust = makeDust(70, 80);
+
+  // ── CONTROLS ──
+  const SHOT_SP = 340;
+  function shoot(){
+    if(ship.cool > 0 || over || ship.dead) return;
+    ship.cool = ship.weapon >= 3 ? 0.075 : 0.11;
+    snd('shoot', { semi: 3 + ship.weapon * 2 });
+    const guns = ship.weapon >= 2 ? [-0.30, 0.30, 0] : [-0.30, 0.30];
+    for(const gx of guns){
+      const off = gx === 0 ? [0, -0.1, -1.2] : [gx, -0.075, -0.62];
+      const p = V.add(ship.p, V.add(V.add(V.mul(B.r, off[0] * SC), V.mul(B.u, off[1] * SC)), V.mul(B.f, -off[2] * SC)));
+      const v = V.mul(B.f, SHOT_SP + ship.speed);
+      bolts.push({ p, v, life: 1.15, mine: true });
+      fx.flash(V.madd(p, B.f, 0.8), '#ffb766', 0.35, 0.06);
+    }
+  }
+  function fireMissile(){
+    if(over || ship.dead) return;
+    if(ship.missiles <= 0){ snd('deny'); say('NO MISSILES', 1.2); return; }
+    if(!lockOn || lockT < 1){ snd('deny'); say('NO LOCK — hold a target in the reticle', 1.6); return; }
+    ship.missiles--;
+    snd('missile');
+    const side = (ship.missiles % 2) ? 1 : -1;
+    const p = V.add(ship.p, V.add(V.mul(B.r, side * 0.66 * SC), V.mul(B.u, -0.13 * SC)));
+    missiles.push({ p, v: V.mul(B.f, ship.speed + 40), tgt: lockOn, life: 6, smoke: 0 });
+  }
+
+  // ── FOES ──
+  function spawnSquad(){
+    const n = 2 + ((Math.random() * (diff > 1.2 ? 3 : 2)) | 0);
+    const dir = V.norm(V.add(V.mul(B.f, rr(0.4, 1.2)), [rr(-1, 1), rr(-0.35, 0.35), rr(-1, 1)]));
+    const c = V.madd(ship.p, dir, rr(420, 640));
+    for(let i = 0; i < n; i++){
+      const p = V.add(c, [rr(-40, 40), rr(-20, 20), rr(-40, 40)]);
+      foes.push({ p, f: V.norm(V.sub(ship.p, p)), v: [0, 0, 0], hp: 3, sp: rr(52, 66) * diff, fireT: rr(1.5, 3), ph: Math.random() * 6,
+                  orbit: Math.random() < 0.5 ? 1 : -1, bank: 0, flash: 0 });
+    }
+    say('⚠ RAIDER SQUADRON INBOUND', 2.2);
+    snd('alarm');
+  }
+  function spawnFrigate(){
+    const a = Math.random() * TAU;
+    const fwdH = V.norm([B.f[0], 0, B.f[2]]);
+    const dir = V.norm(V.add(V.mul(fwdH, 0.6), [Math.cos(a), 0, Math.sin(a)]));
+    const p = V.add(V.madd(ship.p, dir, rr(1300, 1700)), [0, rr(-120, 120), 0]);
+    const yaw = Math.atan2(-dir[2], dir[0]);      // broadside-on to the approach
+    const S = 115;
+    const fb = basisYPR(yaw, 0, 0);
+    const toW = q => V.add(p, V.add(V.add(V.mul(fb.r, q[0] * S), V.mul(fb.u, q[1] * S)), V.mul(fb.f, -q[2] * S)));
+    frig = { p, yaw, S, fb, toW, drift: 3.5, hp: 1, shield: true, reactorHp: 30, dying: 0, boom: 0,
+             turrets: FM.turrets.map(q => ({ q, hp: 8, cool: rr(1, 3), flash: 0, dead: false })),
+             reactor: { q: FM.reactor, flash: 0 } };
+    objective = 'ENGAGE — destroy the frigate\'s 6 turrets to collapse the reactor shield';
+    objT = 0;
+    say('🛰 CAPITAL SHIP DETECTED', 2.6);
+  }
+  const frigPos = q => frig.toW(q);
+
+  function award(pts, at, label, col){
+    chain++;
+    bestChain = Math.max(bestChain, chain);
+    const bonus = Math.min(chain, 10) * 4;
+    score += pts + bonus;
+    setLive(score);
+    if(at) w.pop(at, '+' + (pts + bonus) + (label ? ' ' + label : ''), col || '#ffd27a', { size: 14 });
+  }
+  function killFoe(i){
+    const f = foes[i];
+    foes.splice(i, 1);
+    kills++;
+    fx.explode(f.p, 2.2, { color: '#ff5a2a' });
+    snd('explode');
+    award(60, V.add(f.p, [0, 3, 0]), '', '#ff9a6a');
+    if(kills % 5 === 0) dropPick(f.p, 'orb');
+    if(lockOn === f){ lockOn = null; lockT = 0; }
+  }
+  function dropPick(p, kind){ pickups.push({ p: V.copy(p), kind, s: 1.6, ph: 0, life: 25 }); }
+  const pickups = [];
+
+  function damageTurret(t, dmg, at){
+    t.hp -= dmg; t.flash = 0.15;
+    fx.sparks(at, 6, '#ffd28a', 1.2, 14);
+    if(t.hp <= 0 && !t.dead){
+      t.dead = true;
+      turretsKilled++;
+      const tp = frigPos(t.q);
+      fx.explode(tp, 4.2, { color: '#ff7a2a', debrisGeo: 'slab', debrisColor: '#4a4f58' });
+      snd('bigExplode');
+      award(120, V.add(tp, [0, 5, 0]), 'TURRET', '#ffb36a');
+      const left = frig.turrets.filter(x => !x.dead).length;
+      if(lockOn === t){ lockOn = null; lockT = 0; }
+      if(left === 0){
+        frig.shield = false;
+        objective = 'REACTOR EXPOSED — destroy the core';
+        say('🛡 SHIELD DOWN — HIT THE REACTOR', 3);
+        snd('success');
+      }else say('TURRET DESTROYED · ' + left + ' remaining', 2);
+    }
+  }
+  function damageReactor(dmg, at){
+    if(!frig || frig.shield || frig.dying) return;
+    frig.reactorHp -= dmg; frig.reactor.flash = 0.12;
+    fx.sparks(at, 8, '#bff6ff', 1.4, 16);
+    if(frig.reactorHp <= 0){
+      frig.dying = 2.4; frig.boom = 0;
+      award(400, V.add(frig.p, [0, 20, 0]), 'REACTOR', '#7ff7ff');
+      snd('bigExplode');
+      say('💥 REACTOR CRITICAL', 2.4);
+      if(lockOn && lockOn.reactor) { lockOn = null; lockT = 0; }
+    }
+  }
+
+  function takeHit(dmg, at){
+    if(ship.dead || ship.inv > 0) return;
+    ship.hull -= dmg;
+    ship.hit = 0.35;
+    chain = 0;
+    w.kick(0.9 + dmg * 0.04);
+    snd(ship.hull <= 0 ? 'bigExplode' : 'hurt');
+    if(at) fx.sparks(at, 10, '#ff7a6a', 1, 14);
+    if(ship.hull <= 0 && survivedFatal()){
+      ship.hull = 55; ship.inv = 1.5;
+      fx.explode(ship.p, 2, { color: '#a855f7', debris: 0 });
+      w.pop(V.add(ship.p, [0, 3, 0]), 'SHIELD ABSORBED', '#c084fc', { size: 18, life: 1.4 });
+    }
+    bar.style.width = Math.max(0, ship.hull) + '%';
+    if(ship.hull <= 0){
+      ship.dead = true;
+      fx.explode(ship.p, 3.2, { color: '#ff7a2a' });
+      w.kick(2.2);
+      gLater(() => end('destroyed'), 1400);
+    }
+  }
+
+  const clock = owClock(180, () => end('clock'));
+
+  // Test hooks (console / harness only): stage a fight without flying to it.
+  P.owDebug = {
+    state: () => ({ score, kills, hull: ship.hull, foes: foes.length, frig: !!frig, turretsLeft: frig ? frig.turrets.filter(t => !t.dead).length : 0,
+                    reactor: frig ? frig.reactorHp : 0, missiles: ship.missiles, lock: lockT, rocks: belt.map.size, fx: fx.list.length, p: ship.p.map(Math.round) }),
+    frigateAhead(d){
+      spawnFrigate();
+      frig.p = V.add(V.madd(ship.p, B.f, d || 240), [0, -20, 0]);
+      const yaw = ship.yaw + Math.PI / 2;
+      frig.fb = basisYPR(yaw, 0, 0); frig.yaw = yaw; frig.drift = 0;
+    },
+    squad(){ spawnSquad(); for(const f of foes) f.p = V.add(V.madd(ship.p, B.f, 90 + Math.random() * 60), [Math.random() * 40 - 20, Math.random() * 20 - 10, Math.random() * 40 - 20]); },
+    stripTurrets(){ if(frig) for(const t of frig.turrets) if(!t.dead) damageTurret(t, 99, frigPos(t.q)); },
+    killReactor(){ if(frig){ frig.shield = false; damageReactor(999, frigPos(frig.reactor.q)); } },
+    god(on){ ship.inv = on ? 1e9 : 0; },
+    boom(d, s){ fx.explode(V.add(V.madd(ship.p, B.f, d || 30), V.mul(B.u, 1)), s || 3, { color: '#ff7a2a' }); },
+    stop(){ ship.speed = 0; ship.inv = 1e9; }
+  };
+
+  function end(reason){
+    if(over) return;
+    over = true;
+    owFinish('nebula', score, {
+      '📡 Sortie': reason === 'clock' ? 'MISSION CLOCK EXPIRED' : 'INTERCEPTOR DESTROYED',
+      '💥 Raiders Downed': kills,
+      '🛰 Turrets Destroyed': turretsKilled,
+      '🔥 Frigates Gutted': frigatesKilled,
+      '⛓ Best Chain': bestChain + '×',
+      '🛡 Hull Remaining': Math.max(0, Math.round(ship.hull)) + '%',
+      '🏆 Score': score + ' PTS'
+    });
+  }
+
+  // ── TARGETING ── the target nearest the reticle within the lock cone.
+  function targetsEach(fn){
+    for(const f of foes) fn(f, f.p, 3, '#ff4060', 'RAIDER');
+    if(frig && !frig.dying){
+      for(const t of frig.turrets) if(!t.dead) fn(t, frigPos(t.q), 5, '#ffb03a', 'TURRET');
+      if(!frig.shield) fn(frig.reactor, frigPos(frig.reactor.q), 8, '#7ff7ff', 'REACTOR');
+    }
+  }
+  function updateLock(dt){
+    let best = null, bestA = 0.26;
+    targetsEach((t, p) => {
+      const d = V.sub(p, ship.p), l = V.len(d);
+      if(l > 950 || l < 8) return;
+      const a = Math.acos(clamp(V.dot(d, B.f) / l, -1, 1));
+      if(a < bestA){ bestA = a; best = t; }
+    });
+    if(best && best === lockOn) lockT = Math.min(1, lockT + dt / 0.75);
+    else { lockOn = best; lockT = best ? Math.min(lockT, 0.2) : 0; }
+    if(lockT >= 1 && !updateLock.beeped){ updateLock.beeped = true; snd('node'); }
+    if(lockT < 1) updateLock.beeped = false;
+  }
+  // Segment/sphere: did a bolt moving from a to b pass within rad of c?
+  function segHit(a, b, c, rad){
+    const ab = V.sub(b, a), ac = V.sub(c, a);
+    const L2 = V.dot(ab, ab) || 1e-6;
+    const t = clamp(V.dot(ac, ab) / L2, 0, 1);
+    return V.d2(V.madd(a, ab, t), c) < rad * rad;
+  }
+
+  // ── FRAME ──
+  runLoop(dt => {
+    if(over) return false;
+    const I = inp.poll();
+    w.dt = dt;
+    if(dt > 0 && !ship.dead){
+      // Flight. Mouse/stick deflection is a turn RATE (a joystick, not a
+      // pointer the nose snaps to), with a soft centre so a resting hand flies
+      // straight.
+      const soft = v => Math.sign(v) * Math.pow(Math.max(0, Math.abs(v) - 0.06) / 0.94, 1.35);
+      const yawRate = -soft(I.ax) * 1.6, pitchRate = -soft(I.ay) * 1.3;
+      ship.yaw = wrapAng(ship.yaw + yawRate * dt);
+      ship.pitch = clamp(ship.pitch + pitchRate * dt, -1.32, 1.32);
+      ship.bank += (clamp(-yawRate * 0.5, -0.9, 0.9) - ship.bank) * ease(dt, 0.12);
+      if(I.roll) ship.roll += I.roll * 6.2 * dt;
+      else ship.roll += (Math.round(ship.roll / TAU) * TAU - ship.roll) * ease(dt, 0.18);
+      const boosting = I.boost && ship.energy > 2;
+      ship.energy = clamp(ship.energy + (boosting ? -28 : 13) * dt, 0, 100);
+      const want = boosting ? 112 : I.brake ? 16 : 46;
+      ship.speed += (want - ship.speed) * ease(dt, boosting ? 0.25 : 0.4);
+      B = basisYPR(ship.yaw, ship.pitch, ship.bank + ship.roll);
+      ship.p = V.madd(ship.p, B.f, ship.speed * dt);
+      ship.cool -= dt; ship.inv = Math.max(0, ship.inv - dt); ship.hit = Math.max(0, ship.hit - dt);
+      if(I.fire) shoot();
+      if(I.altHit) fireMissile();
+      ship.mRegen += dt;
+      if(ship.mRegen > 12){ ship.mRegen = 0; if(ship.missiles < 8){ ship.missiles++; } }
+      // Missile lock.
+      updateLock(dt);
+    }
+
+    // The belt follows the ship.
+    belt.update(ship.p);
+
+    // ── ROCK COLLISIONS ──
+    if(dt > 0 && !ship.dead){
+      belt.near(ship.p, it => {
+        if(it.t === 'rock'){
+          const rad = it.s * 0.46 + 1.1 * SC * 0.6;
+          const d2 = V.d2(ship.p, it.p);
+          if(d2 < rad * rad){
+            const n = V.norm(V.sub(ship.p, it.p));
+            ship.p = V.madd(it.p, n, rad + 0.1);
+            const hitV = ship.speed;
+            ship.speed = Math.min(ship.speed, 14);
+            takeHit(clamp(hitV * 0.22, 6, 26), V.madd(ship.p, n, -1));
+            fx.explode(V.madd(ship.p, n, -1.2), 0.8, { debris: 4, smoke: 1, ring: false, debrisGeo: 'rock2', debrisColor: '#5a5048' });
+          }
+        }else if(it.t === 'pick'){
+          if(V.d2(ship.p, it.p) < 9 * 9) collect(it, true);
+        }
+      });
+    }
+    function collect(it, fromField){
+      if(fromField) belt.kill(it); else it.dead = true;
+      snd('powerup');
+      if(it.kind === 'orb'){ ship.weapon = Math.min(3, ship.weapon + 1); say('⚡ WEAPON LEVEL ' + ship.weapon, 2); award(25, null); }
+      else if(it.kind === 'repair'){ ship.hull = Math.min(100, ship.hull + 30); bar.style.width = ship.hull + '%'; say('🛠 HULL +30', 1.6); award(25, null); }
+      else { ship.missiles = Math.min(8, ship.missiles + 3); say('🚀 MISSILES +3', 1.6); award(25, null); }
+      fx.glowPop(it.p, it.kind === 'orb' ? '#ffd700' : it.kind === 'repair' ? '#39ff88' : '#ff6aa8', 2.4, 0.5);
+    }
+    for(let i = pickups.length - 1; i >= 0; i--){
+      const pk = pickups[i];
+      pk.life -= dt;
+      if(pk.life <= 0 || pk.dead){ pickups.splice(i, 1); continue; }
+      if(!ship.dead && V.d2(ship.p, pk.p) < 9 * 9){ collect(pk, false); pickups.splice(i, 1); }
+    }
+
+    // ── BOLTS ──
+    for(let i = bolts.length - 1; i >= 0; i--){
+      const b = bolts[i];
+      const a = V.copy(b.p);
+      b.p = V.madd(b.p, b.v, dt);
+      b.life -= dt;
+      let hit = b.life <= 0;
+      if(!hit){
+        for(let j = foes.length - 1; j >= 0 && !hit; j--){
+          const f = foes[j];
+          if(segHit(a, b.p, f.p, 2.6)){
+            hit = true; f.hp--; f.flash = 0.12;
+            fx.sparks(b.p, 5, '#ffd8a0', 1, 12);
+            if(f.hp <= 0) killFoe(j); else snd('hit', { semi: 4 });
+          }
+        }
+      }
+      if(!hit && frig && !frig.dying){
+        for(const t of frig.turrets){
+          if(t.dead) continue;
+          const tp = frigPos(t.q);
+          if(segHit(a, b.p, tp, 4.2)){ hit = true; damageTurret(t, 1, b.p); break; }
+        }
+        if(!hit){
+          const rp = frigPos(frig.reactor.q);
+          if(segHit(a, b.p, rp, frig.shield ? 11 : 6.5)){
+            hit = true;
+            if(frig.shield){ fx.sparks(b.p, 4, '#7ff7ff', 1, 10); frig.shieldFlash = 0.25; }
+            else damageReactor(1, b.p);
+          }
+        }
+        if(!hit){
+          // The hull itself: a capsule along the keel.
+          const bow = frigPos([0, 0, -0.5]), stern = frigPos([0, 0, 0.5]);
+          const ab = V.sub(stern, bow), t = clamp(V.dot(V.sub(b.p, bow), ab) / V.dot(ab, ab), 0, 1);
+          if(V.d2(V.madd(bow, ab, t), b.p) < 12 * 12){ hit = true; fx.sparks(b.p, 3, '#ffd8a0', 0.8, 8); }
+        }
+      }
+      if(!hit){
+        belt.near(b.p, it => {
+          if(hit || it.t !== 'rock') return;
+          if(V.d2(b.p, it.p) < (it.s * 0.5) * (it.s * 0.5)){
+            hit = true;
+            fx.sparks(b.p, 4, '#ffcf9a', 0.9, 10);
+            if(!it.big){
+              it.hp--;
+              if(it.hp <= 0){
+                belt.kill(it);
+                fx.explode(it.p, Math.max(1, it.s * 0.35), { color: '#ff9a4a', debrisGeo: it.g, debrisColor: it.c, debris: Math.min(10, 3 + (it.s | 0)), ring: it.s > 6 });
+                snd('brick');
+                award(it.s > 8 ? 20 : 8, null);
+              }
+            }
+          }
+        });
+      }
+      if(hit) bolts.splice(i, 1);
+    }
+
+    // ── MISSILES ──
+    for(let i = missiles.length - 1; i >= 0; i--){
+      const m = missiles[i];
+      m.life -= dt;
+      let tp = null;
+      const tg = m.tgt;
+      if(tg){
+        if(foes.includes(tg)) tp = tg.p;
+        else if(frig && !frig.dying && tg.q){
+          if(tg === frig.reactor){ if(!frig.shield) tp = frigPos(tg.q); }
+          else if(!tg.dead) tp = frigPos(tg.q);
+        }
+      }
+      const sp = V.len(m.v);
+      const want = tp ? V.norm(V.sub(tp, m.p)) : V.mul(m.v, 1 / (sp || 1));
+      const cur = V.mul(m.v, 1 / (sp || 1));
+      const nd = V.norm(V.lerp(cur, want, clamp(3.2 * dt, 0, 1)));
+      m.v = V.mul(nd, Math.min(210, sp + 160 * dt));
+      const a = V.copy(m.p);
+      m.p = V.madd(m.p, m.v, dt);
+      m.smoke -= dt;
+      if(m.smoke <= 0){ m.smoke = 0.03; fx.puff(m.p, '#8a8f99', 0.35, 0.9, V.mul(m.v, -0.02)); }
+      let boom = m.life <= 0;
+      if(tp && segHit(a, m.p, tp, 4)) boom = true;
+      if(boom){
+        fx.explode(m.p, 2.6, { color: '#ff8a3a' });
+        snd('explode');
+        if(tp){
+          if(foes.includes(tg)){ tg.hp -= 6; const j = foes.indexOf(tg); if(tg.hp <= 0 && j >= 0) killFoe(j); }
+          else if(tg === (frig && frig.reactor)) damageReactor(6, m.p);
+          else if(tg.q && !tg.dead) damageTurret(tg, 6, m.p);
+        }
+        missiles.splice(i, 1);
+      }
+    }
+
+    // ── RAIDERS ──
+    squadT -= dt;
+    if(squadT <= 0 && foes.length < 7 && !ship.dead){ spawnSquad(); squadT = rr(16, 26) / diff; }
+    for(let i = foes.length - 1; i >= 0; i--){
+      const f = foes[i];
+      f.flash = Math.max(0, f.flash - dt);
+      const toP = V.sub(ship.p, f.p), dist = V.len(toP);
+      // Attack runs: close on a point beside the player, overshoot, come round.
+      const side = V.norm(V.cross(B.f, [0, 1, 0]));
+      const aim = V.add(ship.p, V.add(V.mul(side, f.orbit * 24 * Math.sin(w.t * 0.5 + f.ph)), V.mul(B.f, 18)));
+      const want = V.norm(V.sub(aim, f.p));
+      const turn = clamp(1.9 * dt, 0, 1);
+      const nf = V.norm(V.lerp(f.f, want, turn));
+      const cr = V.cross(f.f, nf);
+      f.bank += (clamp(cr[1] * 40, -1, 1) - f.bank) * ease(dt, 0.15);
+      f.f = nf;
+      f.p = V.madd(f.p, f.f, f.sp * dt);
+      f.fireT -= dt;
+      if(f.fireT <= 0 && dist < 300 && !ship.dead){
+        const ang = V.dot(f.f, V.mul(toP, 1 / dist));
+        if(ang > 0.86){
+          f.fireT = rr(1.0, 2.2) / diff;
+          // Lead the target.
+          const lead = V.madd(ship.p, B.f, ship.speed * dist / 170);
+          flak.push({ p: V.madd(f.p, f.f, 2.5), v: V.mul(V.norm(V.sub(lead, f.p)), 170), life: 2.4, c: '#ff3a5a', dmg: 7 });
+          snd('enemyShot', { semi: -3 });
+        }else f.fireT = 0.3;
+      }
+      if(dist < 3.4 && !ship.dead){ takeHit(18, f.p); foes.splice(i, 1); fx.explode(f.p, 2, {}); continue; }
+      if(dist > 1600) foes.splice(i, 1);
+    }
+
+    // ── THE FRIGATE ──
+    if(!frig){ frigTimer -= dt; if(frigTimer <= 0 && !ship.dead) spawnFrigate(); }
+    if(frig){
+      frig.p = V.madd(frig.p, frig.fb.f, frig.drift * dt);
+      frig.toW = q => V.add(frig.p, V.add(V.add(V.mul(frig.fb.r, q[0] * frig.S), V.mul(frig.fb.u, q[1] * frig.S)), V.mul(frig.fb.f, -q[2] * frig.S)));
+      frig.shieldFlash = Math.max(0, (frig.shieldFlash || 0) - dt);
+      if(!frig.dying){
+        for(const t of frig.turrets){
+          if(t.dead) continue;
+          t.flash = Math.max(0, t.flash - dt);
+          t.cool -= dt;
+          const tp = frigPos(t.q);
+          const d = V.sub(ship.p, tp), l = V.len(d);
+          if(t.cool <= 0 && l < 520 && !ship.dead){
+            t.cool = rr(1.3, 2.4) / diff;
+            const lead = V.madd(ship.p, B.f, ship.speed * l / 130);
+            const dir = V.norm(V.sub(lead, tp));
+            flak.push({ p: V.madd(tp, dir, 4), v: V.mul(dir, 130), life: 4.5, c: '#ff8a2a', dmg: 9, big: true });
+            snd('enemyShot', { semi: -8 });
+          }
+        }
+        // Collision with the hull.
+        const bow = frigPos([0, 0, -0.5]), stern = frigPos([0, 0, 0.5]);
+        const ab = V.sub(stern, bow), tt = clamp(V.dot(V.sub(ship.p, bow), ab) / V.dot(ab, ab), 0, 1);
+        const cp = V.madd(bow, ab, tt);
+        if(!ship.dead && V.d2(cp, ship.p) < 13 * 13){
+          const n = V.norm(V.sub(ship.p, cp));
+          ship.p = V.madd(cp, n, 13.2);
+          ship.speed = Math.min(ship.speed, 14);
+          takeHit(20, V.madd(ship.p, n, -1));
+        }
+      }else{
+        // Going down: a chain of explosions walking the hull.
+        frig.dying -= dt; frig.boom -= dt;
+        if(frig.boom <= 0){
+          frig.boom = rr(0.08, 0.18);
+          const q = [rr(-0.1, 0.1), rr(-0.05, 0.12), rr(-0.48, 0.5)];
+          fx.explode(frigPos(q), rr(4, 9), { color: '#ff7a2a', debrisGeo: 'slab', debrisColor: '#4a4f58' });
+          w.kick(0.9);
+        }
+        if(frig.dying <= 0){
+          fx.explode(frig.p, 24, { color: '#ffb06a', sparks: 46, debris: 14, smoke: 9 });
+          snd('bigExplode');
+          w.kick(2.6);
+          frigatesKilled++;
+          award(600, V.add(frig.p, [0, 30, 0]), 'FRIGATE DOWN', '#ffd700');
+          for(let k = 0; k < 3; k++) dropPick(V.add(frig.p, [rr(-20, 20), rr(-10, 10), rr(-20, 20)]), ['orb', 'repair', 'msl'][k]);
+          frig = null; frigTimer = 9; objective = ''; say('🔥 FRIGATE DESTROYED — another is on the scope', 3);
+        }
+      }
+      if(frig && V.len(V.sub(frig.p, ship.p)) > 4200){ frig = null; frigTimer = 2; }
+    }
+
+    // ── ENEMY FIRE ──
+    for(let i = flak.length - 1; i >= 0; i--){
+      const b = flak[i];
+      const a = V.copy(b.p);
+      b.p = V.madd(b.p, b.v, dt);
+      b.life -= dt;
+      if(b.life <= 0){ flak.splice(i, 1); continue; }
+      if(!ship.dead && segHit(a, b.p, ship.p, b.big ? 2.4 : 1.8)){
+        flak.splice(i, 1);
+        takeHit(b.dmg, b.p);
+      }
+    }
+
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    // ── CAMERA ── behind and above, the offset eased in the ship's own frame
+    // so the ship stays put on screen while the turn swings the view round.
+    if(dt > 0){
+      const boostK = clamp((ship.speed - 46) / 66, 0, 1);
+      const Bc = basisYPR(ship.yaw, ship.pitch, ship.bank * 0.35);
+      const goalOff = V.add(V.mul(Bc.f, -(7.2 + boostK * 2.6)), V.mul(Bc.u, 2.15));
+      const k = ease(dt, ship.dead ? 0.6 : 0.075);
+      camOff = V.lerp(camOff, goalOff, k);
+      camTgt = V.lerp(camTgt, V.add(V.mul(B.f, 30), V.mul(Bc.u, 1.2)), ease(dt, 0.06));
+      camUp = V.norm(V.lerp(camUp, Bc.u, ease(dt, 0.1)));
+      w.goal.fov = 62 + boostK * 12;
+    }
+    w.cam.eye = V.add(ship.p, camOff);
+    w.cam.target = V.add(ship.p, camTgt);
+    w.goal.eye = w.cam.eye; w.goal.target = w.cam.target;
+    w.up = camUp;
+    w.step(dt);
+
+    // ── DRAW ──
+    w.begin();
+    drawBodies(w, BODIES);
+    const eye = w.cam.eye;
+    // Rocks: frustum-culled, small ones dropped with distance.
+    belt.each(it => {
+      if(it.t === 'rock'){
+        const d2 = V.d2(it.p, eye);
+        if(!it.big && d2 > 820 * 820) return;
+        if(it.s < 4 && d2 > 430 * 430) return;
+        if(!r.viewDepth(it.p, 1.15 + it.s / Math.max(30, Math.sqrt(d2)))) return;
+        r.draw(it.g, { pos: it.p, rot: [it.rot[0] + it.spin[0] * w.t, it.rot[1] + it.spin[1] * w.t, it.rot[2]], scale: it.s,
+                       color: it.c, metallic: 0.04, roughness: 0.92, rim: 0.35 });
+      }else if(it.t === 'pick'){
+        drawPick(it);
+      }
+    });
+    for(const pk of pickups) drawPick(pk);
+    function drawPick(pk){
+      // Culled like the rocks: a field holds a couple of hundred of these and
+      // each is two high-poly meshes and a glow.
+      const d2 = V.d2(pk.p, eye);
+      if(d2 > 650 * 650 || !r.viewDepth(pk.p, 1.2)) return;
+      const c = pk.kind === 'orb' ? '#ffd700' : pk.kind === 'repair' ? '#39ff88' : '#ff5aa8';
+      const s = 1.2 + 0.15 * Math.sin(w.t * 3 + (pk.ph || 0));
+      r.draw('sphere', { pos: pk.p, scale: s, color: c, emissive: c, emissiveStrength: 1.6 });
+      r.draw('torus', { pos: pk.p, rot: [w.t * 1.3, w.t * 1.7, 0], scale: s * 2.4, color: '#fff3b0', emissive: c, emissiveStrength: 1.4 });
+      r.glow(pk.p, s * 2.2, c, 0.9);
+    }
+
+    // The frigate, its turrets, its reactor and shield.
+    if(frig){
+      const fb = frig.fb;
+      r.draw('frigate', { m3: fb.m3, pos: frig.p, scale: frig.S, color: '#596070', metallic: 0.6, roughness: 0.44, rim: 0.45,
+                          emissive: '#9fe6ff', emissiveStrength: 0.004, accent: 0 });
+      // Engine glow at the stern.
+      for(const q of [[0, 0, 0.6], [-0.085, -0.01, 0.57], [0.085, -0.01, 0.57]]){
+        const ep = frigPos(q);
+        plume(w, ep, fb.f.map(v => -v), { len: q[0] ? 18 : 26, width: q[0] ? 5 : 8, color: '#ff7a3a', core: '#ffe2b8', gain: 1.2, ph: q[0] * 9 });
+      }
+      for(const t of frig.turrets){
+        const tp = frigPos(t.q);
+        if(t.dead){ r.glow(tp, 3, '#ff6a2a', 0.5 + 0.3 * Math.sin(w.t * 9 + t.q[2] * 20)); continue; }
+        const aimD = V.norm(V.sub(ship.p, tp));
+        // Yawed on its deck, pitched only part of the way, so the plinth stays
+        // planted while the guns still swing toward you.
+        const up = fb.u, flat = V.norm(V.madd(aimD, up, -V.dot(aimD, up) * 0.65));
+        const tb = basisLook(flat, up);
+        r.draw('turret', { pos: tp, m3: tb.m3, scale: 7.2, color: t.flash > 0 ? '#ffffff' : '#4a505c', metallic: 0.7, roughness: 0.35, rim: 0.8,
+                           emissive: '#ff7a2a', emissiveStrength: 0.18 });
+        r.glow(V.madd(tp, tb.f, 4.2), 1.7, '#ff8a3a', 0.8 + 0.4 * Math.sin(w.t * 6 + t.q[0] * 10));
+      }
+      const rp = frigPos(frig.reactor.q);
+      if(!frig.dying){
+        r.draw('core', { pos: rp, rot: [0, w.t * 0.8, 0], scale: 6, color: '#1a2a3a', metallic: 0.5, roughness: 0.3, rim: 1,
+                         emissive: frig.reactor.flash > 0 ? '#ffffff' : '#7ff7ff', emissiveStrength: frig.shield ? 0.9 : 1.8 });
+        r.glow(rp, 9, '#7ff7ff', frig.shield ? 0.6 : 1.4);
+        if(frig.shield){
+          r.draw('sphere', { pos: rp, scale: 22, color: '#2ad7ff', emissive: '#4ae7ff', emissiveStrength: 0.4 + (frig.shieldFlash || 0) * 3,
+                             alpha: 0.18 + (frig.shieldFlash || 0), blend: true, detail: 5.8, metallic: 0, roughness: 0.2, rim: 1.4 });
+        }
+        r.light({ pos: rp, color: '#7ff7ff', intensity: 900, range: 60 });
+      }
+    }
+
+    // Raiders.
+    let nl = 0;
+    for(const f of foes){
+      const fb = basisLook(f.f, [0, 1, 0], f.bank);
+      r.draw('raider', { pos: f.p, m3: fb.m3z, scale: 2.3, color: f.flash > 0 ? '#ffffff' : '#323846', metallic: 0.72, roughness: 0.34, rim: 0.9,
+                         emissive: '#ff2442', emissiveStrength: 0.12, accent: 2 });
+      r.glow(V.madd(f.p, f.f, 1.05), 0.9, '#ff3050', 1.4);
+      for(const s of [-1, 1]){
+        const ep = V.add(V.madd(f.p, f.f, -1.45), V.add(V.mul(fb.r, s * 0.55), V.mul(fb.u, -0.14)));
+        plume(w, ep, V.mul(f.f, -1), { len: 3.2, width: 0.55, color: '#ff4a5a', core: '#ffd0d8', gain: 0.9, ph: s * 3 });
+      }
+      if(nl++ < 3 && V.d2(f.p, ship.p) < 160 * 160) r.light({ pos: f.p, color: '#ff3a50', intensity: 140, range: 30 });
+    }
+
+    // Shots.
+    for(const b of bolts){
+      r.streak(V.madd(b.p, b.v, -0.022), b.p, 0.26, '#ff9a3a', 4.2, 0.85);
+    }
+    for(const b of flak){
+      if(b.big){ r.glow(b.p, 2.0, b.c, 2.2); r.streak(V.madd(b.p, b.v, -0.05), b.p, 0.9, b.c, 2.2, 1); }
+      else r.streak(V.madd(b.p, b.v, -0.03), b.p, 0.34, b.c, 3.6, 0.9);
+    }
+    for(const m of missiles){
+      const mb = basisLook(V.norm(m.v), [0, 1, 0]);
+      r.draw('missile', { pos: m.p, m3: mb.m3, scale: 1.4, color: '#d9dde4', metallic: 0.3, roughness: 0.4, emissive: '#ff8a3a', emissiveStrength: 1.2, accent: 2 });
+      plume(w, V.madd(m.p, V.norm(m.v), -0.8), V.mul(V.norm(m.v), -1), { len: 2.6, width: 0.5, color: '#ffb06a', core: '#fff0d0', gain: 1.1 });
+    }
+
+    // The interceptor.
+    if(!ship.dead){
+      const blink = ship.inv > 0 && Math.sin(w.t * 40) > 0;
+      if(!blink){
+        r.draw('ship', { pos: ship.p, m3: B.m3, scale: SC, color: ship.hit > 0 ? '#ff8a8a' : '#a9b1bf', metallic: 0.62, roughness: 0.3, rim: 0.7,
+                         emissive: colour, emissiveStrength: 0.004, accent: 0 });
+      }
+      const boostK = clamp((ship.speed - 46) / 66, 0, 1);
+      for(const s of [-1, 1]){
+        const ep = V.add(ship.p, V.add(V.add(V.mul(B.r, s * 0.36 * SC), V.mul(B.u, -0.02 * SC)), V.mul(B.f, -0.86 * SC)));
+        plume(w, ep, V.mul(B.f, -1), { len: 1.0 + boostK * 1.8, width: 0.3 + boostK * 0.08, color: boostK > 0.3 ? '#8fe6ff' : '#5ec8ff', gain: 0.7 + boostK * 0.35, glow: 0.8, ph: s * 5 });
+      }
+      r.light({ pos: V.add(ship.p, V.add(V.mul(B.u, 3), V.mul(B.f, 2))), color: '#cfe0ff', intensity: 110, range: 22 });
+      r.light({ pos: V.madd(ship.p, B.f, -3), color: '#6fd0ff', intensity: 90 * (1 + boostK), range: 14 });
+    }
+    // Speed dust: the only thing in open space that says how fast you are going.
+    dust(w, V.mul(B.f, ship.speed), { len: 0.045, max: 7, gain: 0.42, width: 0.03 });
+    fx.draw();
+    w.end();
+
+    // ── HUD ──
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 270, Ht], [Wd - 180, Ht - 76, Wd, Ht]];
+    // Reticle where the guns converge, and the mouse's own pointer.
+    const aimP = hud.proj(V.madd(ship.p, B.f, 140));
+    if(aimP.on && !ship.dead) hud.crosshair(aimP.x, aimP.y, '#bff6ff', 9);
+    if(I.device === 'mouse' && I.mouseOn) hud.crosshair((I.mx + 1) / 2 * Wd, (I.my + 1) / 2 * Ht, 'rgba(255,190,120,0.9)', 5);
+    // Targets.
+    const tl = [];
+    targetsEach((t, p, sz, col, lbl) => tl.push({ t, p, sz, col, lbl, d: Math.sqrt(V.d2(p, ship.p)) }));
+    tl.sort((x, y) => x.d - y.d);
+    tl.forEach((e, i) => {
+      const isLock = e.t === lockOn;
+      const label = isLock ? (lockT >= 1 ? 'MISSILE LOCK' : e.lbl) : (i < 2 && e.d < 450 ? e.lbl : null);
+      const q = hud.bracket(e.p, e.sz * 2, e.col, label, { lock: isLock && lockT >= 1, dist: isLock ? e.d : null, alpha: isLock || i < 3 ? 0.95 : 0.55 });
+      if(!q.on && e.lbl === 'RAIDER' && e.d < 520) hud.edgeArrow(e.p, e.col, null);
+      if(!q.on && e.lbl === 'REACTOR') hud.edgeArrow(e.p, e.col, 'REACTOR');
+    });
+    if(frig && !frig.dying){
+      const q = hud.proj(frig.p);
+      if(!q.on) hud.edgeArrow(frig.p, '#ffb03a', 'FRIGATE ' + Math.round(V.len(V.sub(frig.p, ship.p))) + 'm');
+    }
+    // Radar.
+    const rad = [];
+    for(const f of foes) rad.push({ p: f.p, c: '#ff4060', tick: true });
+    if(frig) rad.push({ p: frig.p, c: '#ffb03a', s: 4, shape: 'diamond', tick: true });
+    for(const pk of pickups) rad.push({ p: pk.p, c: '#ffd700', s: 2 });
+    hud.radar(70, Ht - 74, 54, ship.p, B.f, 900, rad);
+    // Bars and panels.
+    hud.bar(136, Ht - 52, 120, 9, ship.hull / 100, ship.hull > 35 ? '#38e6ff' : '#ff4a5a', 'HULL');
+    hud.bar(136, Ht - 28, 120, 7, ship.energy / 100, '#ffb03a', 'BOOST · ' + Math.round(ship.speed) + ' m/s');
+    const lockTxt = lockOn ? (lockT >= 1 ? 'LOCKED' : 'ACQUIRING ' + Math.round(lockT * 100) + '%') : 'NO LOCK';
+    hud.panel(Wd - 168, Ht - 62, 154, 48, 'MISSILES', ship.missiles, lockT >= 1 ? '#ffb03a' : '#7fdcff', lockTxt);
+    if(objective) hud.text(Wd / 2, 22, objective, { size: 11, color: '#ffd27a' });
+    if(msgT > 0) hud.text(Wd / 2, objective ? 44 : 24, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    if(ship.hit > 0){
+      const g = hud.ctx.createRadialGradient(Wd / 2, Ht / 2, Math.min(Wd, Ht) * 0.3, Wd / 2, Ht / 2, Math.max(Wd, Ht) * 0.7);
+      g.addColorStop(0, 'rgba(255,0,40,0)'); g.addColorStop(1, 'rgba(255,0,40,' + (ship.hit * 0.9).toFixed(3) + ')');
+      hud.ctx.fillStyle = g; hud.ctx.fillRect(0, 0, Wd, Ht);
+    }
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🌐 OPEN WORLD · THE GROUND KIT
+// ══════════════════════════════════════════════
+// Most worlds are played on the ground: a rover, a runner, a worm, a bike on
+// an endless lit plain under a city sky. Shared here: the skies, the follow
+// and chase cameras, a screen → ground pick, an endless procedural city whose
+// towers can be obstacles or just the horizon, and a few props.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit) return;
+const KIT = P.owKit;
+const { V, TAU, ease, makeField, owBegin } = KIT;
+const { clamp } = P.kit;
+
+// Sky looks. Each is a full env/fog/sun/grade set on the NIGHT base.
+const SKIES = {
+  night: {},
+  dusk:  { env: { zenith: '#120622', horizon: '#9a2a4a', ground: '#0c0410', intensity: 1.15 }, fog: { color: '#22081e', density: 0.0058 },
+           sun: { dir: [0.3, -0.35, -0.9], color: '#ff9a6a', intensity: 0.9 }, grade: { saturation: 1.15 } },
+  toxic: { env: { zenith: '#020a05', horizon: '#1d6a30', ground: '#020604', intensity: 1.05 }, fog: { color: '#061a0c', density: 0.0062 },
+           sun: { dir: [-0.3, -0.8, -0.5], color: '#9aff7a', intensity: 0.7 } },
+  ice:   { env: { zenith: '#020a18', horizon: '#1d5a86', ground: '#020a14', intensity: 1.2 }, fog: { color: '#071a2a', density: 0.006 },
+           sun: { dir: [-0.5, -0.7, -0.4], color: '#a8e6ff', intensity: 0.9 } },
+  ember: { env: { zenith: '#0c0303', horizon: '#8a3410', ground: '#0a0402', intensity: 1.1 }, fog: { color: '#1e0904', density: 0.006 },
+           sun: { dir: [0.4, -0.5, -0.7], color: '#ffb36a', intensity: 0.85 } },
+  violet:{ env: { zenith: '#07031a', horizon: '#4a1e86', ground: '#05031a', intensity: 1.15 }, fog: { color: '#11082a', density: 0.006 },
+           sun: { dir: [-0.4, -0.7, -0.6], color: '#c79bff', intensity: 0.8 } }
+};
+function groundBegin(o){
+  o = o || {};
+  const s = SKIES[o.sky || 'night'] || {};
+  return owBegin({ preset: 'night', env: Object.assign({}, s.env, o.env), fog: Object.assign({}, s.fog, o.fog),
+                   sun: Object.assign({}, s.sun, o.sun), grade: Object.assign({}, s.grade, o.grade),
+                   input: o.input, far: o.far || 1400, near: o.near || 0.3 });
+}
+
+// A top-down follow camera, NEVER yawing (screen-right is always +X), eased.
+function followCam(w, p, o, dt){
+  o = o || {};
+  const h = o.height || 26, back = o.back != null ? o.back : 17, look = o.look || 0;
+  const goalEye = [p[0], p[1] + h, p[2] + back], goalTgt = [p[0], p[1], p[2] - look];
+  const k = dt > 0 ? ease(dt, o.half || 0.12) : 0;
+  w.cam.eye = V.lerp(w.cam.eye, goalEye, w._owCamInit ? k : 1);
+  w.cam.target = V.lerp(w.cam.target, goalTgt, w._owCamInit ? k : 1);
+  w._owCamInit = true;
+  w.cam.fov = o.fov || 52;
+  w.goal.eye = w.cam.eye; w.goal.target = w.cam.target; w.goal.fov = w.cam.fov;
+  w.up = [0, 1, 0];
+}
+// A chase camera behind a heading (yaw: 0 = −Z), eased in the target's frame.
+function chaseCam(w, p, yaw, o, dt){
+  o = o || {};
+  const back = o.back || 9, up = o.up || 4, ahead = o.ahead || 14;
+  const f = [-Math.sin(yaw), 0, -Math.cos(yaw)];
+  const goalOff = [-f[0] * back, up, -f[2] * back];
+  const k = dt > 0 ? ease(dt, o.half || 0.1) : 0;
+  w._ccOff = w._ccOff ? V.lerp(w._ccOff, goalOff, k) : goalOff;
+  const tgt = [p[0] + f[0] * ahead, p[1] + (o.tgtUp || 1), p[2] + f[2] * ahead];
+  w._ccTgt = w._ccTgt ? V.lerp(w._ccTgt, tgt, ease(dt || 0.016, o.half || 0.1)) : tgt;
+  w.cam.eye = V.add(p, w._ccOff);
+  w.cam.target = w._ccTgt;
+  w.cam.fov = o.fov || 60;
+  w.goal.eye = w.cam.eye; w.goal.target = w.cam.target; w.goal.fov = w.cam.fov;
+  w.up = [0, 1, 0];
+}
+// Screen point (CSS px in the board) → the ground plane y = gy, using the
+// HUD's own camera (call after hud.begin()). Null if the ray misses.
+function screenToGround(hud, sx, sy, gy){
+  const C = hud.cam;
+  if(!C) return null;
+  const asp = hud.W / hud.H;
+  const nx = (sx / hud.W) * 2 - 1, ny = 1 - (sy / hud.H) * 2;
+  const d = V.norm(V.add(V.add(C.f, V.mul(C.r, nx * C.th * asp)), V.mul(C.u, ny * C.th)));
+  if(Math.abs(d[1]) < 1e-4) return null;
+  const t = ((gy || 0) - C.eye[1]) / d[1];
+  if(t <= 0) return null;
+  return V.madd(C.eye, d, t);
+}
+
+// ── THE ENDLESS CITY ──
+// Towers on a jittered grid of cells, generated around the player. `clear`
+// keeps a radius round the origin open; `density` thins it; `obstacle` lets a
+// world collide with them (city.hit). Drawn culled: distance and frustum.
+const TOWER_GEOS = ['tower', 'tower2', 'tower3', 'tower4', 'tower', 'tower2'];
+const NEONS = ['#00f5ff', '#ff0090', '#a855f7', '#ffd700', '#39ff88', '#ff6600'];
+function makeCity(o){
+  o = o || {};
+  const cell = o.cell || 70, dens = o.density != null ? o.density : 0.55, clear = o.clear || 60;
+  const hMin = o.hMin || 10, hMax = o.hMax || 60;
+  const F = makeField({
+    cell, dims: 2, seed: o.seed || 777, radius: o.radius || 620,
+    gen(cx, cy, cz, g){
+      const items = [];
+      if(g() > dens) return items;
+      const x = (cx + 0.2 + g() * 0.6) * cell, z = (cz + 0.2 + g() * 0.6) * cell;
+      if(Math.hypot(x, z) < clear) return items;
+      if(o.skip && o.skip(x, z)) return items;
+      const kind = TOWER_GEOS[(g() * TOWER_GEOS.length) | 0];
+      let bw = 6 + g() * 10, bd = 6 + g() * 10;
+      if(kind === 'tower2'){ bw *= 1.5; bd *= 0.6; } else if(kind === 'tower4'){ bd = bw; }
+      const h = hMin + Math.pow(g(), 1.6) * (hMax - hMin);
+      items.push({ t: 'tower', p: [x, 0, z], kind, w: bw, d: bd, h, rot: g() * 0.6 - 0.3,
+                   neon: NEONS[(g() * NEONS.length) | 0], lit: g() > 0.4, ph: g() * 6 });
+      return items;
+    }
+  });
+  F.draw = function(w){
+    const r = w.r, eye = w.cam.eye;
+    const far = o.drawFar || 640;
+    F.each(b => {
+      const d2 = (b.p[0] - eye[0]) ** 2 + (b.p[2] - eye[2]) ** 2;
+      if(d2 > far * far) return;
+      const mid = [b.p[0], b.h * 0.5, b.p[2]];
+      if(!r.viewDepth(mid, 1.3 + b.h / Math.max(40, Math.sqrt(d2))) && !r.viewDepth([b.p[0], b.h, b.p[2]], 1.3) && !r.viewDepth(b.p, 1.3)) return;
+      r.draw(b.kind, { pos: mid, rot: [0, b.rot, 0], scale: [b.w, b.h, b.d], color: o.towerColor || '#0b0d18', metallic: 0.55, roughness: 0.5, rim: 0.85 });
+      if(b.lit){
+        const pulse = 0.6 + 0.4 * Math.sin(w.t * 1.3 + b.ph);
+        r.draw('box', { pos: [b.p[0], b.h + 0.4, b.p[2]], rot: [0, b.rot, 0], scale: [b.w * 0.5, 0.16, 0.5], color: b.neon, emissive: b.neon, emissiveStrength: 3.0 * pulse });
+      }
+    });
+  };
+  // Footprint test (axis-aligned box, ignoring the small rotation).
+  F.hit = function(p, rad){
+    let hit = null;
+    F.near(p, b => {
+      if(hit) return;
+      if(Math.abs(p[0] - b.p[0]) < b.w * 0.5 + rad && Math.abs(p[2] - b.p[2]) < b.d * 0.5 + rad) hit = b;
+    });
+    return hit;
+  };
+  return F;
+}
+
+// A glowing marker ring on the ground — goals, pickups, zones.
+function groundRing(w, p, rad, col, k){
+  const r = w.r;
+  r.draw('thintorus', { pos: [p[0], (p[1] || 0) + 0.1, p[2]], scale: [rad * 2.2, 1, rad * 2.2], color: col, emissive: col, emissiveStrength: 2.2 * (k == null ? 1 : k) });
+}
+// A tall light beam rising from a point: "it's over there" from far away.
+function beacon(w, p, col, h, k){
+  const top = [p[0], (p[1] || 0) + (h || 60), p[2]];
+  w.r.streak([p[0], (p[1] || 0), p[2]], top, 1.6, col, 1.3 * (k == null ? 1 : k), 0);
+  w.r.streak([p[0], (p[1] || 0), p[2]], top, 5, col, 0.25 * (k == null ? 1 : k), 0);
+}
+
+// A hover rover — the player's craft in most ground worlds: a low wedge on
+// glowing skirts. Drawn from the shared ship hull, flattened, nose along yaw.
+function drawRover(w, p, yaw, col, o){
+  o = o || {};
+  const r = w.r;
+  const B = KIT.basisYPR(yaw, o.pitch || 0, o.bank || 0);
+  r.draw(o.geo || 'ship', { pos: [p[0], p[1] + (o.lift != null ? o.lift : 0.9), p[2]], m3: B.m3, scale: o.scale || 1.6,
+                            color: o.hit ? '#ff8a8a' : (o.color || '#b8c0cc'), metallic: 0.62, roughness: 0.3, rim: 0.7,
+                            emissive: col, emissiveStrength: 0.004, accent: o.accent != null ? o.accent : 0 });
+  const back = V.madd([p[0], p[1] + (o.lift != null ? o.lift : 0.9), p[2]], B.f, -1.35 * (o.scale || 1.6) / 1.6);
+  for(const s of [-1, 1]){
+    const ep = V.add(back, V.mul(B.r, s * 0.58 * (o.scale || 1.6) / 1.6));
+    KIT.plume(w, ep, V.mul(B.f, -1), { len: 0.8 + (o.boost || 0) * 1.6, width: 0.3, color: col, gain: 0.8 });
+  }
+  r.glow([p[0], p[1] + 0.15, p[2]], 2.2 * (o.scale || 1.6) / 1.6, col, 0.35);
+  r.light({ pos: [p[0], p[1] + 4, p[2] + 2], color: '#cfe0ff', intensity: 80, range: 18 });
+  return B;
+}
+
+P.owGround = { SKIES, groundBegin, followCam, chaseCam, screenToGround, makeCity, groundRing, beacon, drawRover, NEONS };
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🐍 GRID SNAKE · OPEN WORLD — ENDLESS PLAIN
+// ══════════════════════════════════════════════
+// No walls at all: a worm on an endless lit plain, steering freely, growing on
+// the data orbs scattered everywhere. Rival worms roam it too — run one into
+// your body and it bursts into a trail of food; put your head into theirs (or
+// your own tail, or a tower) and it is over.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, wrapAng, ease, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, chaseCam, makeCity } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const SEG = 0.85;                     // body spacing along the path
+
+function makeWorm(p, yaw, len, col, ai){
+  const pts = [];
+  const f = [-Math.sin(yaw), 0, -Math.cos(yaw)];
+  for(let i = 0; i < len; i++) pts.push(V.madd(p, f, -i * SEG));
+  return { pts, yaw, len, col, ai, speed: ai ? 12 : 14, dead: false, think: 0, turn: 0, grow: 0 };
+}
+// Advance a worm: the head moves, and the body re-samples along its own path
+// at fixed spacing, so turning carves a real curve rather than a polyline.
+function stepWorm(wm, dt){
+  const f = [-Math.sin(wm.yaw), 0, -Math.cos(wm.yaw)];
+  const head = V.madd(wm.pts[0], f, wm.speed * dt);
+  const pts = [head];
+  let carry = 0, prev = head;
+  for(let i = 0; i < wm.pts.length && pts.length < wm.len; i++){
+    const q = wm.pts[i];
+    let d = Math.hypot(q[0] - prev[0], q[2] - prev[2]);
+    while(d + carry >= SEG && pts.length < wm.len){
+      const t = (SEG - carry) / Math.max(d, 1e-6);
+      const np = [prev[0] + (q[0] - prev[0]) * t, 0, prev[2] + (q[2] - prev[2]) * t];
+      pts.push(np);
+      prev = np; carry = 0;
+      d = Math.hypot(q[0] - prev[0], q[2] - prev[2]);
+    }
+    carry += d;
+    prev = q;
+  }
+  while(pts.length < wm.len) pts.push(V.copy(pts[pts.length - 1]));
+  wm.pts = pts;
+}
+
+P.ow.snake = function(){
+  const G = groundBegin({ sky: 'toxic', input: { mouseSteer: true, mouseGain: 1.4 } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK / TILT: STEER · BOOST BUTTON', 'A/D or ←/→ or MOUSE: STEER · SHIFT: BOOST (costs length)');
+
+  const me = makeWorm([0, 0, 0], 0, 14, colour, false);
+  let score = 0, eaten = 0, kills = 0, over = false, msg = '', msgT = 0, inv = 0;
+  const rivals = [];
+  const RCOL = ['#ff2d9a', '#ffd700', '#a855f7', '#ff6600', '#39ff88'];
+  const spawnRival = () => {
+    const a = Math.random() * TAU, d = rr(90, 160);
+    const p = V.add(me.pts[0], [Math.cos(a) * d, 0, Math.sin(a) * d]);
+    rivals.push(makeWorm(p, Math.random() * TAU, 10 + ((Math.random() * 14) | 0), RCOL[(Math.random() * RCOL.length) | 0], true));
+  };
+  for(let i = 0; i < 4; i++) spawnRival();
+
+  const food = makeField({
+    cell: 36, dims: 2, seed: 9091, radius: 260,
+    gen(cx, cy, cz, g){
+      const items = [];
+      const n = 1 + Math.floor(g() * 4);
+      for(let i = 0; i < n; i++){
+        const p = [(cx + g()) * 36, 0, (cz + g()) * 36];
+        const big = g() < 0.08;
+        items.push({ p, big, c: big ? '#ffd700' : ['#39ff88', '#00f5ff', '#ff6aa8', '#c084fc'][(g() * 4) | 0], ph: g() * 6 });
+      }
+      return items;
+    }
+  });
+  const dropped = [];
+  const city = makeCity({ seed: 4040, density: 0.16, cell: 90, clear: 80, hMin: 12, hMax: 48, radius: 700, towerColor: '#07120a' });
+
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#39ff88,#00f5ff)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  function die(why){
+    if(over || me.dead) return;
+    if(survivedFatal()){
+      inv = 2.2;
+      fx.explode(me.pts[0], 1.6, { color: '#a855f7', debris: 0 });
+      say('SHIELD ABSORBED', 1.6);
+      return;
+    }
+    me.dead = true;
+    snd('bigExplode');
+    for(let i = 0; i < me.pts.length; i += 3) fx.explode(me.pts[i], 0.8, { color: colour, debris: 0, smoke: 0, ring: false });
+    w.kick(1.4);
+    gLater(() => end(why), 1300);
+  }
+  function killRival(i){
+    const rv = rivals[i];
+    rivals.splice(i, 1);
+    kills++;
+    snd('explode');
+    score += 100; setLive(score);
+    w.pop(V.add(rv.pts[0], [0, 3, 0]), '+100 BURST', rv.col, { size: 15 });
+    for(let k = 0; k < rv.pts.length; k += 2) dropped.push({ p: V.add(rv.pts[k], [rr(-0.6, 0.6), 0, rr(-0.6, 0.6)]), c: rv.col, big: false, ph: Math.random() * 6, life: 30 });
+    fx.explode(rv.pts[0], 1.4, { color: rv.col, debris: 0 });
+    gLater(spawnRival, 2500);
+  }
+  function end(why){
+    if(over) return;
+    over = true;
+    owFinish('snake', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : why === 'tail' ? 'BIT YOUR OWN TAIL' : why === 'tower' ? 'HIT A TOWER' : 'HIT A RIVAL',
+      '🍏 Orbs Eaten': eaten,
+      '🐍 Final Length': me.len,
+      '💥 Rivals Burst': kills,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  // Point → nearest distance to a polyline body, from index `from`.
+  const bodyHit = (p, wm, from, rad) => {
+    for(let i = from; i < wm.pts.length; i++){
+      const q = wm.pts[i];
+      if((p[0] - q[0]) ** 2 + (p[2] - q[2]) ** 2 < rad * rad) return true;
+    }
+    return false;
+  };
+
+  P.owDebug = { state: () => ({ score, len: me.len, rivals: rivals.length, eaten, kills }) };
+
+  runLoop(dt => {
+    if(over) return false;
+    const I = inp.poll();
+    if(dt > 0 && !me.dead){
+      inv = Math.max(0, inv - dt);
+      const steer = clamp(I.ax, -1, 1);
+      me.yaw = wrapAng(me.yaw - steer * 3.0 * dt);
+      const boosting = I.boost && me.len > 8;
+      me.speed += ((boosting ? 24 : 14) * Math.min(diff, 1.4) - me.speed) * ease(dt, 0.3);
+      if(boosting){ me.boostT = (me.boostT || 0) + dt; if(me.boostT > 0.45){ me.boostT = 0; me.len--; dropped.push({ p: V.copy(me.pts[me.pts.length - 1]), c: colour, ph: 0, life: 20 }); } }
+      stepWorm(me, dt);
+      const head = me.pts[0];
+      // Food.
+      food.update(head);
+      food.near(head, it => {
+        if((it.p[0] - head[0]) ** 2 + (it.p[2] - head[2]) ** 2 < (it.big ? 2.6 : 1.8) ** 2){
+          food.kill(it);
+          eaten++;
+          me.len += it.big ? 4 : 1;
+          score += it.big ? 50 : 10; setLive(score);
+          snd(it.big ? 'powerup' : 'eat');
+          fx.glowPop(it.p, it.c, it.big ? 2.2 : 1.2, 0.3);
+        }
+      });
+      for(let i = dropped.length - 1; i >= 0; i--){
+        const d = dropped[i];
+        d.life -= dt;
+        if(d.life <= 0){ dropped.splice(i, 1); continue; }
+        if((d.p[0] - head[0]) ** 2 + (d.p[2] - head[2]) ** 2 < 1.8 * 1.8){
+          dropped.splice(i, 1); eaten++; me.len += 1; score += 10; setLive(score); snd('eat');
+        }
+      }
+      // Collisions.
+      city.update(head);
+      if(inv <= 0){
+        if(city.hit(head, 0.6)) die('tower');
+        else if(me.len > 12 && bodyHit(head, me, 10, 0.7)) die('tail');
+        else for(const rv of rivals){ if(bodyHit(head, rv, 0, 0.95)){ die('rival'); break; } }
+      }
+    }
+    // Rivals: wander toward food, shy away from the player's head, steer
+    // round towers.
+    for(let i = rivals.length - 1; i >= 0; i--){
+      const rv = rivals[i];
+      if(dt <= 0) break;
+      rv.think -= dt;
+      const h = rv.pts[0];
+      if(rv.think <= 0){
+        rv.think = rr(0.3, 0.8);
+        let tgt = null, bd = 900;
+        food.near(h, it => { const d = (it.p[0] - h[0]) ** 2 + (it.p[2] - h[2]) ** 2; if(d < bd){ bd = d; tgt = it.p; } });
+        const want = tgt ? Math.atan2(-(tgt[0] - h[0]), -(tgt[2] - h[2])) : rv.yaw + rr(-1, 1);
+        rv.turn = clamp(wrapAng(want - rv.yaw) * 2, -2.6, 2.6);
+        // Cut across the player now and then: the only way a rival dies is
+        // by hitting you, and the only way you die is hitting them.
+        if(Math.random() < 0.25 && !me.dead){
+          const ph = me.pts[0], ahead = V.madd(ph, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], 8);
+          const cut = Math.atan2(-(ahead[0] - h[0]), -(ahead[2] - h[2]));
+          rv.turn = clamp(wrapAng(cut - rv.yaw) * 2.4, -2.8, 2.8);
+        }
+      }
+      rv.yaw = wrapAng(rv.yaw + rv.turn * dt);
+      stepWorm(rv, dt);
+      const rh = rv.pts[0];
+      food.near(rh, it => { if((it.p[0] - rh[0]) ** 2 + (it.p[2] - rh[2]) ** 2 < 1.6 * 1.6){ food.kill(it); rv.len = Math.min(60, rv.len + 1); } });
+      if(!me.dead && bodyHit(rh, me, 1, 0.9)){ killRival(i); continue; }
+      if(city.hit(rh, 0.6)){ rv.yaw += Math.PI * 0.8; }
+      if(V.d2(rh, me.pts[0]) > 320 * 320){ rivals.splice(i, 1); spawnRival(); }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    // ── CAMERA ── high behind the head, so the body you are coiling is in view.
+    const head = me.pts[0];
+    chaseCam(w, head, me.yaw, { back: 15 + me.len * 0.06, up: 11 + me.len * 0.05, ahead: 10, fov: 62, half: 0.14, tgtUp: 0 }, dt);
+    w.step(dt);
+
+    // ── DRAW ──
+    w.begin();
+    drawFloor(w, { step: 6, radius: 160, color: '#0f5a2a', glow: 0.9, major: 5, floor: '#030805' });
+    city.draw(w);
+    const eye = w.cam.eye;
+    food.each(it => {
+      if(V.d2(it.p, eye) > 170 * 170 || !r.viewDepth(it.p, 1.2)) return;
+      const y = 0.7 + 0.2 * Math.sin(w.t * 3 + it.ph);
+      r.draw('sphere', { pos: [it.p[0], y, it.p[2]], scale: it.big ? 1.3 : 0.7, color: it.c, emissive: it.c, emissiveStrength: 1.5 });
+      r.glow([it.p[0], y, it.p[2]], it.big ? 2.4 : 1.3, it.c, 0.7);
+    });
+    for(const d of dropped){ if(V.d2(d.p, eye) < 170 * 170) { r.draw('lowsphere', { pos: [d.p[0], 0.6, d.p[2]], scale: 0.6, color: d.c, emissive: d.c, emissiveStrength: 1.6 }); } }
+    const drawWorm = (wm, isMe) => {
+      const n = wm.pts.length;
+      for(let i = n - 1; i >= 0; i--){
+        const q = wm.pts[i];
+        if(i % 1 === 0 && V.d2(q, eye) > 180 * 180) continue;
+        const t = i / Math.max(1, n - 1);
+        const s = (i === 0 ? 1.45 : 1.15 - t * 0.45) * (isMe ? 1 : 0.95);
+        const blink = isMe && inv > 0 && Math.sin(w.t * 30) > 0;
+        if(blink) continue;
+        r.draw(i === 0 ? 'sphere' : 'lowsphere', { pos: [q[0], s * 0.5, q[2]], scale: s, color: i % 4 === 0 ? '#ffffff' : wm.col,
+                                                   metallic: 0.3, roughness: 0.3, rim: 1.0, emissive: wm.col, emissiveStrength: i % 4 === 0 ? 0.6 : 0.35 });
+      }
+      // Eyes.
+      const h = wm.pts[0], f = [-Math.sin(wm.yaw), 0, -Math.cos(wm.yaw)], rt = [f[2] * -1, 0, f[0]];
+      for(const s of [-1, 1]){
+        const e = V.add(V.madd(h, f, 0.45), [rt[0] * s * 0.38, 0.95, rt[2] * s * 0.38]);
+        r.draw('lowsphere', { pos: e, scale: 0.34, color: '#ffffff', emissive: '#ffffff', emissiveStrength: 0.8 });
+        r.draw('lowsphere', { pos: V.madd(e, f, 0.12), scale: 0.18, color: '#05060a', metallic: 0, roughness: 0.2 });
+      }
+    };
+    if(!me.dead) drawWorm(me, true);
+    for(const rv of rivals) if(V.d2(rv.pts[0], eye) < 200 * 200) drawWorm(rv, false);
+    r.light({ pos: [head[0], 6, head[2]], color: colour, intensity: 120, range: 26 });
+    fx.draw();
+    w.end();
+
+    // ── HUD ──
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = [];
+    for(const rv of rivals) rad.push({ p: rv.pts[0], c: rv.col, s: 3 });
+    food.each(it => { if(it.big) rad.push({ p: it.p, c: '#ffd700', s: 2 }); });
+    hud.radar(70, Ht - 74, 54, head, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], 140, rad);
+    for(const rv of rivals){ const q = hud.proj(rv.pts[0]); if(!q.on && V.d2(rv.pts[0], head) < 90 * 90) hud.edgeArrow(rv.pts[0], rv.col, null); }
+    hud.text(Wd - 16, Ht - 22, 'LENGTH ' + me.len, { size: 13, align: 'right', color: '#9dffc4' });
+    if(msgT > 0) hud.text(Wd / 2, 26, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🏍️ LIGHT CYCLE · OPEN WORLD — INFINITE GRID
+// ══════════════════════════════════════════════
+// The classic arena has four walls; this grid has none. You ride, the rival
+// riders ride, and every cycle lays a wall of light behind it. Turn ninety
+// degrees at a time, box the riders in, make them hit a wall — and never hit
+// one yourself. Old light fades, so the grid never fills up.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, ease, drawFloor, owClock, basisYPR } = P.owKit;
+const { groundBegin, chaseCam, makeCity } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];            // N E S W in XZ
+const yawOf = d => [0, -Math.PI / 2, Math.PI, Math.PI / 2][d];
+const TRAIL_MAX = 520;                                     // units of light a cycle keeps
+
+function makeRider(p, dir, col, ai){
+  return { p: V.copy(p), dir, col, ai, alive: true, speed: 26, trail: [V.copy(p)], len: 0, think: 0, turned: 0, lean: 0, respawn: 0 };
+}
+
+P.ow.lightcycle = function(){
+  const G = groundBegin({ sky: 'violet', input: { touch: 'drive' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('TAP LEFT / RIGHT HALF: TURN · BOOST', '← → or A D: TURN 90° · SHIFT: BOOST');
+
+  const me = makeRider([0, 0, 0], 0, colour, false);
+  const RCOL = ['#ff2d9a', '#ffd700', '#ff6600', '#39ff88'];
+  const riders = [me];
+  const spawnRival = () => {
+    const a = Math.random() * TAU, d = rr(90, 150);
+    const p = V.add(me.p, [Math.round(Math.cos(a) * d / 2) * 2, 0, Math.round(Math.sin(a) * d / 2) * 2]);
+    riders.push(makeRider(p, (Math.random() * 4) | 0, RCOL[riders.length % RCOL.length], true));
+  };
+  for(let i = 0; i < 4; i++) spawnRival();
+  let score = 0, derez = 0, over = false, msg = '', msgT = 0, inv = 0, boostE = 100;
+  const city = makeCity({ seed: 2727, density: 0.12, cell: 110, clear: 120, hMin: 20, hMax: 70, radius: 760, towerColor: '#0a0716' });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#a855f7,#00f5ff)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  // Turning: keys (edge), the touch halves, or a mouse click on either half.
+  let pendingTurn = 0;
+  const turn = (rd, s) => {
+    if(!rd.alive) return;
+    rd.dir = (rd.dir + s + 4) % 4;
+    rd.trail.push(V.copy(rd.p));
+    rd.turned = 0.18 * s;
+  };
+  // Segment list for collisions: every rider's trail, oldest point first.
+  function trailHit(p, self){
+    for(const rd of riders){
+      const T = rd.trail;
+      const n = T.length;
+      for(let i = 0; i < n; i++){
+        const a = T[i], b = i + 1 < n ? T[i + 1] : rd.p;
+        // Your own newest segment always "touches" you.
+        if(rd === self && i >= n - 1) continue;
+        const minx = Math.min(a[0], b[0]) - 0.5, maxx = Math.max(a[0], b[0]) + 0.5;
+        const minz = Math.min(a[2], b[2]) - 0.5, maxz = Math.max(a[2], b[2]) + 0.5;
+        if(p[0] > minx && p[0] < maxx && p[2] > minz && p[2] < maxz){
+          // A rider's own corner it just left: ignore the stub behind it.
+          if(rd === self && i === n - 2 && Math.hypot(p[0] - b[0], p[2] - b[2]) < 1.2) continue;
+          return rd;
+        }
+      }
+    }
+    return null;
+  }
+  // Free run ahead, in units, for an AI deciding where to go.
+  function freeAhead(rd, dir, maxD){
+    const d = DIRS[dir];
+    for(let s = 2; s <= maxD; s += 2){
+      const q = [rd.p[0] + d[0] * s, 0, rd.p[2] + d[1] * s];
+      if(trailHit(q, rd) || city.hit(q, 0.5)) return s;
+    }
+    return maxD;
+  }
+  function trimTrail(rd){
+    // Keep at most TRAIL_MAX units of light, fading out from the oldest end.
+    let total = 0;
+    const T = rd.trail;
+    for(let i = T.length - 1; i >= 0; i--){
+      const b = i + 1 < T.length ? T[i + 1] : rd.p;
+      total += Math.abs(b[0] - T[i][0]) + Math.abs(b[2] - T[i][2]);
+      if(total > TRAIL_MAX){
+        const over = total - TRAIL_MAX;
+        const a = T[i], seg = Math.abs(b[0] - a[0]) + Math.abs(b[2] - a[2]);
+        const t = over / Math.max(seg, 1e-6);
+        T[i] = [a[0] + (b[0] - a[0]) * t, 0, a[2] + (b[2] - a[2]) * t];
+        T.splice(0, i);
+        break;
+      }
+    }
+  }
+  function crash(rd){
+    rd.alive = false;
+    fx.explode([rd.p[0], 0.8, rd.p[2]], 1.8, { color: rd.col, debrisGeo: 'slab', debrisColor: '#1a1a2a' });
+    if(rd === me){
+      if(survivedFatal()){
+        rd.alive = true; inv = 2; rd.dir = (rd.dir + 2) % 4; rd.trail.push(V.copy(rd.p));
+        say('SHIELD ABSORBED', 1.6); return;
+      }
+      snd('bigExplode'); w.kick(1.6);
+      gLater(() => end('crash'), 1300);
+    }else{
+      derez++;
+      score += 150; setLive(score);
+      snd('explode');
+      w.pop([rd.p[0], 3, rd.p[2]], '+150 DEREZZED', rd.col, { size: 15 });
+      rd.respawn = 3.5;
+    }
+  }
+  function end(why){
+    if(over) return;
+    over = true;
+    owFinish('lightcycle', score, {
+      '📡 Ride': why === 'clock' ? 'CLOCK EXPIRED' : 'DEREZZED',
+      '💥 Riders Derezzed': derez,
+      '📏 Distance': Math.round(me.dist || 0) + ' u',
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = { state: () => ({ score, derez, alive: me.alive, riders: riders.length, segs: riders.reduce((s, x) => s + x.trail.length, 0) }) };
+
+  runLoop(dt => {
+    if(over) return false;
+    const I = inp.poll();
+    if(dt > 0){
+      // Input: an edge on left/right turns once.
+      if(me.alive){
+        const pr = I.pressed || {};
+        let t = 0;
+        if(pr.ArrowLeft || pr.KeyA) t = -1;
+        if(pr.ArrowRight || pr.KeyD) t = 1;
+        // Touch: a fresh touch on the left half (the stick) turns left, on the
+        // right half (fire) turns right. Mouse: a click on either half.
+        if(I.stick && !inp._held){ inp._held = true; t = -1; }
+        if(!I.stick) inp._held = false;
+        const clickLike = I.device === 'touch' || I.device === 'mouse';
+        if(I.fire && clickLike && !inp._fireHeld){ inp._fireHeld = true; t = I.device === 'mouse' ? (I.mx < 0 ? -1 : 1) : 1; }
+        if(!I.fire) inp._fireHeld = false;
+        const pad = I.pad;
+        if(pad){
+          const sx = pad.lx;
+          if(sx < -0.6 && !inp._padHeld){ inp._padHeld = true; t = -1; }
+          else if(sx > 0.6 && !inp._padHeld){ inp._padHeld = true; t = 1; }
+          else if(Math.abs(sx) < 0.3) inp._padHeld = false;
+        }
+        if(t) turn(me, t);
+      }
+      const boosting = I.boost && boostE > 2;
+      boostE = clamp(boostE + (boosting ? -30 : 12) * dt, 0, 100);
+      me.speed += ((boosting ? 40 : 26) - me.speed) * ease(dt, 0.25);
+      inv = Math.max(0, inv - dt);
+
+      for(const rd of riders){
+        if(!rd.alive){
+          if(rd.ai){
+            rd.respawn -= dt;
+            if(rd.respawn <= 0){
+              const a = Math.random() * TAU, d = rr(90, 150);
+              rd.p = V.add(me.p, [Math.round(Math.cos(a) * d / 2) * 2, 0, Math.round(Math.sin(a) * d / 2) * 2]);
+              rd.trail = [V.copy(rd.p)]; rd.alive = true; rd.dir = (Math.random() * 4) | 0;
+            }
+          }
+          continue;
+        }
+        if(rd.ai){
+          rd.speed = 26 * Math.min(1.25, diff);
+          rd.think -= dt;
+          const ahead = freeAhead(rd, rd.dir, 14);
+          if(ahead < 12 || rd.think <= 0){
+            rd.think = rr(0.6, 2.2);
+            const L = freeAhead(rd, (rd.dir + 3) % 4, 30), R = freeAhead(rd, (rd.dir + 1) % 4, 30);
+            // Hunt: lean toward cutting across the player's path.
+            const toMe = V.sub(V.madd(me.p, [DIRS[me.dir][0], 0, DIRS[me.dir][1]], 20), rd.p);
+            const d = DIRS[rd.dir];
+            const cross = d[0] * toMe[2] - d[1] * toMe[0];
+            if(ahead < 12) turn(rd, L > R ? -1 : 1);
+            else if(Math.random() < 0.5 && Math.hypot(toMe[0], toMe[2]) < 70) turn(rd, cross > 0 ? 1 : -1);
+            else if(Math.random() < 0.25) turn(rd, L > R ? -1 : 1);
+          }
+        }
+        const d = DIRS[rd.dir];
+        rd.p = [rd.p[0] + d[0] * rd.speed * dt, 0, rd.p[2] + d[1] * rd.speed * dt];
+        if(rd === me) me.dist = (me.dist || 0) + rd.speed * dt;
+        rd.turned *= Math.max(0, 1 - 8 * dt);
+        trimTrail(rd);
+        city.update(rd === me ? rd.p : me.p);
+        if(!(rd === me && inv > 0)){
+          const hit = trailHit(rd.p, rd);
+          if(hit || city.hit(rd.p, 0.6)){
+            crash(rd);
+          }
+        }
+      }
+      // Riders that fell far behind are recycled.
+      for(const rd of riders) if(rd.ai && rd.alive && V.d2(rd.p, me.p) > 360 * 360){ rd.alive = false; rd.respawn = 0.5; }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    // Distance pays a trickle; survival does the rest.
+    if(dt > 0 && me.alive){ me.payT = (me.payT || 0) + dt; if(me.payT > 1){ me.payT = 0; score += 3; setLive(score); } }
+
+    chaseCam(w, me.p, yawOf(me.dir), { back: 10, up: 4.4, ahead: 18, fov: 66, half: 0.09 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 8, radius: 200, color: '#3a1d6e', glow: 1.0, major: 4, floor: '#04030b', rough: 0.22 });
+    city.draw(w);
+    const eye = w.cam.eye;
+    // Light walls: one emissive panel per segment, culled.
+    for(const rd of riders){
+      const T = rd.trail, n = T.length;
+      for(let i = 0; i < n; i++){
+        const a = T[i], b = i + 1 < n ? T[i + 1] : rd.p;
+        const mid = [(a[0] + b[0]) / 2, 1.1, (a[2] + b[2]) / 2];
+        const len = Math.abs(b[0] - a[0]) + Math.abs(b[2] - a[2]);
+        if(len < 0.05) continue;
+        if(V.d2(mid, eye) > (260 + len / 2) ** 2) continue;
+        if(!r.viewDepth(mid, 1.4 + len / Math.max(30, Math.sqrt(V.d2(mid, eye))))) continue;
+        const fade = i === 0 ? 0.55 : 1;
+        r.beam([a[0], 1.1, a[2]], [b[0], 1.1, b[2]], 0.12, { color: rd.col, emissive: rd.col, emissiveStrength: 1.9 * fade, height: 2.2 });
+        r.beam([a[0], 2.25, a[2]], [b[0], 2.25, b[2]], 0.16, { color: '#ffffff', emissive: rd.col, emissiveStrength: 3.0 * fade, height: 0.08 });
+      }
+    }
+    // The cycles.
+    let nl = 0;
+    for(const rd of riders){
+      if(!rd.alive) continue;
+      if(rd === me && inv > 0 && Math.sin(w.t * 30) > 0) continue;
+      if(V.d2(rd.p, eye) > 300 * 300) continue;
+      const B = basisYPR(yawOf(rd.dir), 0, rd.turned * 2.2);
+      r.draw('cycle', { pos: rd.p, m3: B.m3, scale: 2.2, color: rd === me ? '#c9d1dd' : '#2c2f3c', metallic: 0.7, roughness: 0.3, rim: 0.9,
+                        emissive: rd.col, emissiveStrength: 0.004, accent: rd === me ? 0 : 2 });
+      r.glow([rd.p[0], 0.8, rd.p[2]], 2.6, rd.col, 0.6);
+      if(nl++ < 4) r.light({ pos: [rd.p[0], 3, rd.p[2]], color: rd.col, intensity: 110, range: 22 });
+    }
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = riders.filter(x => x !== me && x.alive).map(x => ({ p: x.p, c: x.col, s: 3 }));
+    hud.radar(70, Ht - 74, 54, me.p, [DIRS[me.dir][0], 0, DIRS[me.dir][1]], 160, rad);
+    for(const rd of riders){ if(rd === me || !rd.alive) continue; const q = hud.proj(rd.p); if(!q.on && V.d2(rd.p, me.p) < 120 * 120) hud.edgeArrow(rd.p, rd.col, null); }
+    hud.bar(Wd - 150, Ht - 26, 130, 8, boostE / 100, '#a855f7', 'BOOST');
+    if(msgT > 0) hud.text(Wd / 2, 26, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    if(I.device === 'touch'){
+      hud.text(Wd * 0.25, Ht * 0.5, '◀ TURN', { size: 12, color: '#bff6ff', alpha: 0.35 });
+      hud.text(Wd * 0.75, Ht * 0.5, 'TURN ▶', { size: 12, color: '#bff6ff', alpha: 0.35 });
+    }
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  🌌 CYBER RUNNER · OPEN WORLD — FREE RUN
+// ══════════════════════════════════════════════
+// No highway and no lanes: an endless dusk plain strewn with barriers you can
+// jump, walls you must go round, pylons, gates to thread and lines of data to
+// collect. You choose the line; the speed keeps climbing.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, wrapAng, ease, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, chaseCam, makeCity, drawRover } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+
+P.ow.runner = function(){
+  const G = groundBegin({ sky: 'dusk', input: { mouseSteer: true, mouseGain: 1.3, spaceJumps: true, touch: 'drive' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: STEER · JUMP · BOOST', 'A/D or ←/→ or MOUSE: STEER · SPACE: JUMP · SHIFT: BOOST');
+
+  const me = { p: [0, 0, 0], yaw: 0, vy: 0, y: 0, speed: 30, shields: 3, inv: 0, bank: 0, dist: 0 };
+  let score = 0, orbs = 0, gates = 0, over = false, msg = '', msgT = 0, boostE = 100;
+  const ORB = '#00f5ff';
+  const obs = makeField({
+    cell: 44, dims: 2, seed: 31337, radius: 330,
+    gen(cx, cy, cz, g){
+      const items = [];
+      const x = (cx + 0.5) * 44, z = (cz + 0.5) * 44;
+      if(Math.hypot(x, z) < 50) return items;
+      const roll = g();
+      const yaw = g() * Math.PI;
+      if(roll < 0.28) items.push({ t: 'bar', p: [x + (g() - 0.5) * 20, 0, z + (g() - 0.5) * 20], yaw, len: 8 + g() * 10, h: 1.1 });
+      else if(roll < 0.44) items.push({ t: 'wall', p: [x, 0, z], yaw, len: 14 + g() * 16, h: 6 });
+      else if(roll < 0.6) items.push({ t: 'pylon', p: [x + (g() - 0.5) * 24, 0, z + (g() - 0.5) * 24], r: 1.4, h: 16 + g() * 10 });
+      else if(roll < 0.72) items.push({ t: 'gate', p: [x, 0, z], yaw, w: 7, h: 6, passed: false });
+      // Orb lines: an arc of data across the cell.
+      if(g() < 0.55){
+        const n = 5 + ((g() * 4) | 0), a0 = g() * TAU, bend = (g() - 0.5) * 0.6;
+        for(let i = 0; i < n; i++){
+          const a = a0 + bend * i;
+          items.push({ t: 'orb', p: [x + Math.cos(a0) * (i - n / 2) * 3.2 + Math.sin(a) * 2, 1.2 + (g() < 0.2 ? 2.2 : 0), z + Math.sin(a0) * (i - n / 2) * 3.2 + Math.cos(a) * 2] });
+        }
+      }
+      return items;
+    }
+  });
+  const city = makeCity({ seed: 5150, density: 0.1, cell: 120, clear: 140, hMin: 30, hMax: 90, radius: 800, towerColor: '#120818' });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#ff4f6a,#ffd700)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  // Box test in an obstacle's own frame.
+  const inBox = (p, o, hw, hd) => {
+    const dx = p[0] - o.p[0], dz = p[2] - o.p[2];
+    const c = Math.cos(o.yaw), s = Math.sin(o.yaw);
+    const lx = dx * c - dz * s, lz = dx * s + dz * c;
+    return Math.abs(lx) < hw && Math.abs(lz) < hd;
+  };
+  function hurt(at){
+    if(me.inv > 0 || over) return;
+    me.shields--;
+    me.inv = 1.4; me.speed = Math.min(me.speed, 14);
+    snd('hurt'); w.kick(1.1);
+    fx.explode([at[0], 1, at[2]], 1.0, { color: '#ff5a4a', debris: 3, smoke: 1, ring: false });
+    bar.style.width = (Math.max(0, me.shields) / 3 * 100) + '%';
+    if(me.shields <= 0){
+      if(survivedFatal()){ me.shields = 1; bar.style.width = '33%'; say('SHIELD ABSORBED', 1.6); return; }
+      snd('bigExplode');
+      fx.explode([me.p[0], 1, me.p[2]], 2.4, { color: '#ff8a3a' });
+      over = true;
+      gLater(() => finish('crash'), 1200);
+    }
+  }
+  let finished = false;
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('runner', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'WIPED OUT',
+      '📏 Distance': Math.round(me.dist) + ' m',
+      '💠 Data Orbs': orbs,
+      '⛩ Gates Threaded': gates,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = { state: () => ({ score, dist: Math.round(me.dist), speed: Math.round(me.speed), shields: me.shields }) };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      me.inv = Math.max(0, me.inv - dt);
+      const steer = clamp(I.ax, -1, 1);
+      me.yaw = wrapAng(me.yaw - steer * 1.9 * dt);
+      me.bank += (clamp(steer * 0.55, -0.6, 0.6) - me.bank) * ease(dt, 0.1);
+      const base = Math.min(72, 30 + me.dist * 0.012) * Math.min(1.3, diff);
+      const boosting = I.boost && boostE > 2;
+      boostE = clamp(boostE + (boosting ? -32 : 10) * dt, 0, 100);
+      me.speed += ((boosting ? base * 1.45 : base) - me.speed) * ease(dt, 0.6);
+      if((I.jumpHit || (I.pressed && I.pressed.Space)) && me.y <= 0.01){ me.vy = 9.5; snd('jump'); }
+      me.vy -= 24 * dt;
+      me.y = Math.max(0, me.y + me.vy * dt);
+      if(me.y <= 0) me.vy = 0;
+      const f = [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)];
+      me.p = V.madd(me.p, f, me.speed * dt);
+      me.dist += me.speed * dt;
+      // Distance pays.
+      me.payT = (me.payT || 0) + me.speed * dt;
+      if(me.payT > 25){ me.payT = 0; score += 5; setLive(score); }
+      obs.update(me.p);
+      city.update(me.p);
+      const hp = [me.p[0], me.y, me.p[2]];
+      obs.near(hp, o => {
+        if(o.t === 'orb'){
+          if(V.d2(o.p, [hp[0], hp[1] + 0.9, hp[2]]) < 2.2 * 2.2){ obs.kill(o); orbs++; score += 10; setLive(score); snd('coin'); fx.glowPop(o.p, ORB, 1.4, 0.3); }
+        }else if(o.t === 'bar'){
+          if(me.y < o.h - 0.1 && inBox(hp, o, o.len / 2, 0.9)) hurt(hp);
+        }else if(o.t === 'wall'){
+          if(inBox(hp, o, o.len / 2, 1.1)) hurt(hp);
+        }else if(o.t === 'pylon'){
+          if((hp[0] - o.p[0]) ** 2 + (hp[2] - o.p[2]) ** 2 < (o.r + 0.9) ** 2) hurt(hp);
+        }else if(o.t === 'gate'){
+          // The posts are solid; the space between them pays.
+          for(const s of [-1, 1]){
+            const px = o.p[0] + Math.cos(o.yaw) * s * o.w / 2, pz = o.p[2] - Math.sin(o.yaw) * s * o.w / 2;
+            if((hp[0] - px) ** 2 + (hp[2] - pz) ** 2 < 1.6 * 1.6) hurt(hp);
+          }
+          if(!o.passed && inBox(hp, o, o.w / 2 - 0.8, 1.2)){ o.passed = true; gates++; score += 25; setLive(score); snd('score'); w.pop([o.p[0], o.h + 1, o.p[2]], '+25 GATE', '#ffd700', { size: 14 }); }
+        }
+      });
+      if(city.hit(hp, 0.8)) hurt(hp);
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    chaseCam(w, [me.p[0], me.y * 0.6, me.p[2]], me.yaw, { back: 9.5, up: 3.6, ahead: 16, fov: 62 + clamp((me.speed - 30) / 4, 0, 14), half: 0.08 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 170, color: '#5a1a4a', glow: 1.1, major: 5, floor: '#0a0410', rough: 0.25 });
+    city.draw(w);
+    const eye = w.cam.eye;
+    obs.each(o => {
+      const d2 = V.d2(o.p, eye);
+      if(d2 > 300 * 300) return;
+      if(!r.viewDepth([o.p[0], 2, o.p[2]], 1.5)) return;
+      if(o.t === 'orb'){
+        r.draw('sphere', { pos: o.p, scale: 0.8, color: ORB, emissive: ORB, emissiveStrength: 1.8 });
+        r.glow(o.p, 1.5, ORB, 0.7);
+      }else if(o.t === 'bar'){
+        r.draw('slab', { pos: [o.p[0], o.h / 2, o.p[2]], rot: [0, o.yaw, 0], scale: [o.len, o.h, 1.2], color: '#2a0e1a', metallic: 0.6, roughness: 0.4, emissive: '#ff2d6a', emissiveStrength: 0.004 });
+        r.draw('box', { pos: [o.p[0], o.h + 0.05, o.p[2]], rot: [0, o.yaw, 0], scale: [o.len, 0.12, 1.3], color: '#ff2d6a', emissive: '#ff2d6a', emissiveStrength: 2.6 });
+      }else if(o.t === 'wall'){
+        r.draw('cube', { pos: [o.p[0], o.h / 2, o.p[2]], rot: [0, o.yaw, 0], scale: [o.len, o.h, 1.6], color: '#1a1424', metallic: 0.7, roughness: 0.36 });
+        r.draw('box', { pos: [o.p[0], o.h * 0.5, o.p[2]], rot: [0, o.yaw, 0], scale: [o.len * 1.002, 0.16, 1.7], color: '#ffd700', emissive: '#ffb000', emissiveStrength: 2.0 });
+      }else if(o.t === 'pylon'){
+        r.draw('cylinder', { pos: [o.p[0], o.h / 2, o.p[2]], scale: [o.r * 2, o.h, o.r * 2], color: '#141022', metallic: 0.8, roughness: 0.3 });
+        r.draw('box', { pos: [o.p[0], o.h * 0.6, o.p[2]], scale: [o.r * 2.1, o.h * 0.5, 0.2], color: '#ff4fd8', emissive: '#ff4fd8', emissiveStrength: 2.0 });
+        r.glow([o.p[0], o.h + 0.5, o.p[2]], 1.4, '#ff4fd8', 0.9);
+      }else if(o.t === 'gate'){
+        const c = Math.cos(o.yaw), s = Math.sin(o.yaw);
+        const col = o.passed ? '#39ff88' : '#ffd700';
+        for(const k of [-1, 1]) r.draw('cylinder', { pos: [o.p[0] + c * k * o.w / 2, o.h / 2, o.p[2] - s * k * o.w / 2], scale: [0.7, o.h, 0.7], color: '#1c1830', metallic: 0.8, roughness: 0.3, emissive: col, emissiveStrength: 0.004 });
+        r.draw('box', { pos: [o.p[0], o.h, o.p[2]], rot: [0, o.yaw, 0], scale: [o.w + 0.7, 0.35, 0.5], color: col, emissive: col, emissiveStrength: 2.4 });
+        r.streak([o.p[0] + c * o.w / 2, 0.3, o.p[2] - s * o.w / 2], [o.p[0] - c * o.w / 2, 0.3, o.p[2] + s * o.w / 2], 0.3, col, 1.2, 0);
+      }
+    });
+    if(!(me.inv > 0 && Math.sin(w.t * 30) > 0)){
+      drawRover(w, [me.p[0], me.y, me.p[2]], me.yaw, colour, { bank: me.bank, boost: clamp((me.speed - 30) / 40, 0, 1), scale: 1.6, accent: 0 });
+    }
+    // Speed streaks off the floor.
+    if(me.speed > 40){
+      for(let i = 0; i < 10; i++){
+        const a = (i / 10) * TAU + w.t;
+        const q = V.add(me.p, [Math.cos(a) * 6, 0.2 + (i % 3) * 1.4, Math.sin(a) * 6]);
+        const f = [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)];
+        r.streak(V.madd(q, f, 3 * (me.speed / 60)), q, 0.04, '#ffd8f0', 0.5, 1);
+      }
+    }
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = [];
+    obs.each(o => { if(o.t === 'gate' && !o.passed) rad.push({ p: o.p, c: '#ffd700', s: 2.4 }); });
+    hud.radar(70, Ht - 74, 54, me.p, [-Math.sin(me.yaw), 0, -Math.cos(me.yaw)], 160, rad);
+    hud.text(Wd - 16, Ht - 40, Math.round(me.speed * 3.6) + ' km/h', { size: 15, align: 'right', color: '#ffd8a0' });
+    hud.text(Wd - 16, Ht - 20, '♦'.repeat(Math.max(0, me.shields)) + '◊'.repeat(Math.max(0, 3 - me.shields)), { size: 14, align: 'right', color: '#ff6a8a' });
+    hud.bar(Wd / 2 - 70, Ht - 18, 140, 7, boostE / 100, '#ffb000', 'BOOST');
+    if(msgT > 0) hud.text(Wd / 2, 26, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  💥 DODGE CORES · OPEN WORLD — BOMBARDMENT
+// ══════════════════════════════════════════════
+// The classic board is a box the cores bounce around in. Here there is no box:
+// an open plain under a bombardment. Burning cores fall on you from the sky —
+// a red ring marks where, a heartbeat before — then bounce and roll on across
+// the plain; rolling barrages sweep in from the horizon. Run anywhere. Energy
+// shards lie everywhere for the taking.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, ease, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, followCam, makeCity, groundRing, screenToGround } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+const MAGMA = 10.92;           // SURF.MAGMA + intensity — rock with glowing cracks
+
+P.ow.dodge = function(){
+  const G = groundBegin({ sky: 'ember', input: { touch: 'fly' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('STICK: MOVE · BOOST', 'WASD / ←↑↓→: MOVE · MOUSE: HOLD TO RUN AT THE CURSOR · SHIFT: DASH');
+
+  const me = { p: [0, 0, 0], v: [0, 0, 0], hp: 3, inv: 0, dash: 0, dashCd: 0 };
+  let score = 0, shards = 0, alive = 0, over = false, finished = false, spawnT = 1.5, rollT = 9, msg = '', msgT = 0;
+  const cores = [], warns = [];
+  const field = makeField({
+    cell: 30, dims: 2, seed: 1212, radius: 230,
+    gen(cx, cy, cz, g){
+      const items = [];
+      const n = Math.floor(g() * 3.2);
+      for(let i = 0; i < n; i++){
+        const p = [(cx + g()) * 30, 0.9, (cz + g()) * 30];
+        items.push({ p, gold: g() < 0.07, ph: g() * 6 });
+      }
+      return items;
+    }
+  });
+  const city = makeCity({ seed: 8181, density: 0.08, cell: 140, clear: 200, hMin: 30, hMax: 80, radius: 820, towerColor: '#140806' });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#ff6600,#ffd700)';
+  const clock = owClock(120, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  function drop(){
+    // Aimed a little ahead of where you are going.
+    const lead = V.add(me.p, V.mul(me.v, rr(0.4, 1.1)));
+    const at = [lead[0] + rr(-6, 6), 0, lead[2] + rr(-6, 6)];
+    warns.push({ p: at, t: 0, life: Math.max(0.7, 1.25 / Math.sqrt(diff)), s: rr(1.4, 2.4) });
+  }
+  function barrage(){
+    const a = Math.random() * TAU;
+    const dir = [Math.cos(a), 0, Math.sin(a)];
+    const side = [-dir[2], 0, dir[0]];
+    const start = V.madd(me.p, dir, -70);
+    const n = 5 + ((Math.random() * 4) | 0);
+    for(let i = 0; i < n; i++){
+      const p = V.add(V.madd(start, side, (i - n / 2) * 6.5), [0, 1.6, 0]);
+      cores.push({ p, v: V.mul(dir, rr(16, 22) * diff), s: 1.6, life: 9, spin: [0, 0, 0], rot: [Math.random() * 6, 0, 0], roll: true });
+    }
+    say('⚠ ROLLING BARRAGE', 1.6);
+    snd('alarm');
+  }
+  function hit(at){
+    if(me.inv > 0 || over) return;
+    me.hp--;
+    me.inv = 1.4;
+    snd('hurt'); w.kick(1.3);
+    fx.sparks([me.p[0], 1, me.p[2]], 14, '#ff8a5a', 1.2, 14);
+    bar.style.width = (Math.max(0, me.hp) / 3 * 100) + '%';
+    if(me.hp <= 0){
+      if(survivedFatal()){ me.hp = 1; bar.style.width = '33%'; say('SHIELD ABSORBED', 1.6); return; }
+      over = true;
+      snd('bigExplode');
+      fx.explode([me.p[0], 1, me.p[2]], 2.4, { color: colour });
+      gLater(() => finish('hit'), 1200);
+    }
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('dodge', score, {
+      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED — SURVIVED' : 'CORE IMPACT',
+      '⏱ Survived': Math.round(alive) + ' s',
+      '💠 Shards': shards,
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = { state: () => ({ score, hp: me.hp, cores: cores.length, warns: warns.length, shards }) };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      alive += dt;
+      me.payT = (me.payT || 0) + dt;
+      if(me.payT >= 1){ me.payT = 0; score += 2; setLive(score); }
+      me.inv = Math.max(0, me.inv - dt);
+      me.dashCd = Math.max(0, me.dashCd - dt);
+      // Move: keys / stick on world axes; a held mouse runs at the cursor.
+      let mx = I.lx, mz = I.ly;
+      if(I.device === 'mouse' && I.mDown && hud.cam){
+        const g = screenToGround(hud, (I.mx + 1) / 2 * hud.W, (I.my + 1) / 2 * hud.H, 0);
+        if(g){ const d = V.sub(g, me.p); const l = Math.hypot(d[0], d[2]); if(l > 1.2){ mx = d[0] / l; mz = d[2] / l; } }
+      }
+      const ml = Math.hypot(mx, mz);
+      if(ml > 1){ mx /= ml; mz /= ml; }
+      if(I.boost && me.dashCd <= 0 && ml > 0.1){ me.dash = 0.22; me.dashCd = 1.6; snd('dash'); }
+      me.dash = Math.max(0, me.dash - dt);
+      const sp = (me.dash > 0 ? 46 : 19);
+      const want = [mx * sp, 0, mz * sp];
+      me.v = V.lerp(me.v, want, ease(dt, me.dash > 0 ? 0.02 : 0.08));
+      me.p = V.madd(me.p, me.v, dt);
+      field.update(me.p);
+      city.update(me.p);
+      field.near(me.p, it => {
+        if((it.p[0] - me.p[0]) ** 2 + (it.p[2] - me.p[2]) ** 2 < 2.0 * 2.0){
+          field.kill(it); shards++; score += it.gold ? 60 : 15; setLive(score);
+          snd(it.gold ? 'powerup' : 'coin'); fx.glowPop(it.p, it.gold ? '#ffd700' : '#00f5ff', 1.6, 0.3);
+        }
+      });
+      const tb = city.hit(me.p, 0.9);
+      if(tb){ // slide off a tower
+        const dx = me.p[0] - tb.p[0], dz = me.p[2] - tb.p[2];
+        if(Math.abs(dx) / (tb.w / 2) > Math.abs(dz) / (tb.d / 2)) me.p[0] = tb.p[0] + Math.sign(dx) * (tb.w / 2 + 0.95);
+        else me.p[2] = tb.p[2] + Math.sign(dz) * (tb.d / 2 + 0.95);
+      }
+      // Spawning tightens with time and tier.
+      spawnT -= dt;
+      if(spawnT <= 0){ drop(); if(alive > 40 && Math.random() < 0.35) drop(); spawnT = Math.max(0.35, 1.25 - alive * 0.008) / diff; }
+      rollT -= dt;
+      if(rollT <= 0){ barrage(); rollT = Math.max(6, 14 - alive * 0.05); }
+    }
+    // Warnings → impacts.
+    for(let i = warns.length - 1; i >= 0; i--){
+      const wn = warns[i];
+      wn.t += dt;
+      if(wn.t >= wn.life){
+        warns.splice(i, 1);
+        const a = Math.random() * TAU;
+        cores.push({ p: [wn.p[0], 42, wn.p[2]], v: [0, -38, 0], s: wn.s, life: 7.5, falling: true, rot: [0, 0, 0], spin: [rr(-3, 3), rr(-3, 3), 0], kick: [Math.cos(a), Math.sin(a)] });
+      }
+    }
+    // Cores: fall, slam, bounce, roll.
+    for(let i = cores.length - 1; i >= 0; i--){
+      const c = cores[i];
+      if(dt <= 0) break;
+      c.life -= dt;
+      if(c.life <= 0 || V.d2(c.p, me.p) > 260 * 260){ cores.splice(i, 1); continue; }
+      c.v[1] -= 32 * dt;
+      c.p = V.madd(c.p, c.v, dt);
+      c.rot[0] += c.spin[0] * dt; c.rot[1] += c.spin[1] * dt;
+      if(c.roll) c.rot[0] += V.len(c.v) / c.s * dt;
+      if(c.p[1] < c.s * 0.5){
+        c.p[1] = c.s * 0.5;
+        if(c.falling){
+          c.falling = false;
+          fx.explode([c.p[0], 0.4, c.p[2]], c.s * 0.9, { color: '#ff7a1a', debrisGeo: 'rock2', debrisColor: '#2a1a14', ringNormal: [0, 1, 0], grav: 24, smoke: 3 });
+          snd('explode');
+          w.kick(0.4);
+          const sp = rr(7, 13);
+          c.v = [c.kick[0] * sp, 9, c.kick[1] * sp];
+          // The slam itself: anything close is hit.
+          if(Math.hypot(me.p[0] - c.p[0], me.p[2] - c.p[2]) < c.s * 1.6) hit(c.p);
+        }else if(c.v[1] < 0){
+          c.v[1] = -c.v[1] * 0.45;
+          if(c.v[1] < 2) c.v[1] = 0;
+          c.v[0] *= 0.92; c.v[2] *= 0.92;
+        }
+      }
+      if(!over && V.d2([c.p[0], 0, c.p[2]], me.p) < (c.s * 0.5 + 0.8) ** 2 && c.p[1] < c.s + 1.2) hit(c.p);
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    followCam(w, me.p, { height: 30, back: 21, look: 2, fov: 52, half: 0.1 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 5, radius: 140, color: '#5a2a0a', glow: 0.9, major: 6, floor: '#0a0503', rough: 0.3 });
+    city.draw(w);
+    const eye = w.cam.eye;
+    field.each(it => {
+      if(V.d2(it.p, eye) > 150 * 150 || !r.viewDepth(it.p, 1.2)) return;
+      const y = 0.9 + 0.25 * Math.sin(w.t * 3 + it.ph), c = it.gold ? '#ffd700' : '#00f5ff';
+      r.draw('cube', { pos: [it.p[0], y, it.p[2]], rot: [w.t, w.t * 1.3, 0.6], scale: it.gold ? 1.0 : 0.7, color: c, emissive: c, emissiveStrength: 1.6, detail: 0 });
+      r.glow([it.p[0], y, it.p[2]], 1.6, c, 0.6);
+    });
+    for(const wn of warns){
+      const k = wn.t / wn.life;
+      groundRing(w, wn.p, wn.s * (1.6 - k * 0.6), '#ff2a2a', 0.6 + k * 1.6);
+      r.streak([wn.p[0], 0.1, wn.p[2]], [wn.p[0], 30 * (1 - k), wn.p[2]], 0.4, '#ff3a2a', 0.4 + k, 0);
+    }
+    let nl = 0;
+    for(const c of cores){
+      if(V.d2(c.p, eye) > 200 * 200) continue;
+      r.draw('rock', { pos: c.p, rot: c.rot, scale: c.s, color: '#5a4038', metallic: 0.1, roughness: 0.85, rim: 0.4, emissive: '#ff6a10', emissiveStrength: 1.4, detail: MAGMA });
+      r.glow(c.p, c.s * 1.5, '#ff6a1a', c.falling ? 1.4 : 0.6);
+      if(c.falling) r.streak(V.add(c.p, [0, 8, 0]), c.p, c.s * 0.7, '#ff8a3a', 1.6, 1);
+      if(nl++ < 3) r.light({ pos: c.p, color: '#ff7a2a', intensity: 90, range: 14 });
+    }
+    // You: a glowing core in a spinning ring.
+    if(!over && !(me.inv > 0 && Math.sin(w.t * 30) > 0)){
+      const y = 1.1;
+      r.draw('sphere', { pos: [me.p[0], y, me.p[2]], scale: 1.5, color: '#e8f6ff', metallic: 0.3, roughness: 0.2, rim: 1.2, emissive: colour, emissiveStrength: 1.2 });
+      r.draw('torus', { pos: [me.p[0], y, me.p[2]], rot: [Math.PI / 2 + Math.sin(w.t) * 0.3, w.t * 2, 0], scale: 3.0, color: '#cfd8e8', metallic: 0.8, roughness: 0.25, emissive: colour, emissiveStrength: 0.4 });
+      r.glow([me.p[0], y, me.p[2]], 3.2, colour, 0.9);
+      if(me.dash > 0) r.streak(V.madd([me.p[0], y, me.p[2]], V.norm(me.v), -6), [me.p[0], y, me.p[2]], 1.2, colour, 1.6, 1);
+    }
+    r.light({ pos: [me.p[0], 6, me.p[2] + 3], color: '#ffd8b0', intensity: 140, range: 26 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    const rad = cores.map(c => ({ p: c.p, c: '#ff6a2a', s: 2.6 })).concat(warns.map(wn => ({ p: wn.p, c: '#ff2a2a', s: 2 })));
+    hud.radar(70, Ht - 74, 54, me.p, [0, 0, -1], 90, rad);
+    hud.text(Wd - 16, Ht - 20, '♥'.repeat(Math.max(0, me.hp)) + '♡'.repeat(Math.max(0, 3 - me.hp)), { size: 16, align: 'right', color: '#ff6a8a' });
+    hud.text(Wd - 16, Ht - 42, Math.round(alive) + ' s', { size: 13, align: 'right', color: '#ffd8a0' });
+    for(const c of cores){ if(c.roll){ const q = hud.proj(c.p); if(!q.on && V.d2(c.p, me.p) < 80 * 80) hud.edgeArrow(c.p, '#ff6a2a', null); } }
+    if(msgT > 0) hud.text(Wd / 2, 26, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+
+
+// ══════════════════════════════════════════════
+//  ⚔️ CYBER ARENA · OPEN WORLD — NO EDGE
+// ══════════════════════════════════════════════
+// The pit had walls to back into. This battlefield has none: a city plain
+// that goes on in every direction, waves of drones, walkers and tanks closing
+// in from all sides, and the towers are the only cover there is. Move with
+// one hand, aim with the other — the camera never turns, so up is always up.
+(function(){
+'use strict';
+const P = window.PI3D;
+if(!P || !P.owKit || !P.owGround) return;
+const { V, TAU, ease, makeField, drawFloor, owClock } = P.owKit;
+const { groundBegin, followCam, makeCity, screenToGround } = P.owGround;
+const { mine, clamp, runLoop } = P.kit;
+const rr = (a, b) => a + Math.random() * (b - a);
+
+P.ow.arena = function(){
+  const G = groundBegin({ sky: 'ice', input: { touch: 'twin' } });
+  const { w, r, hud, fx, inp } = G;
+  const colour = mine();
+  const diff = getDifficultyModifier();
+  setControlHint('LEFT STICK: MOVE · RIGHT STICK: AIM + FIRE', 'WASD: MOVE · MOUSE: AIM · CLICK / SPACE: FIRE · SHIFT: DASH · F: SHOCKWAVE');
+  inp.altLabel = 'WAVE';
+
+  const me = { p: [0, 0, 0], v: [0, 0, 0], hp: 100, inv: 0, aim: [0, 0, -1], cool: 0, dashCd: 0, dash: 0, rapid: 0, spread: 0, shock: 2, face: 0 };
+  let score = 0, kills = 0, wave = 0, waveT = 2, over = false, finished = false, msg = '', msgT = 0;
+  const foes = [], shots = [], eshots = [], drops = [];
+  const KINDS = {
+    drone: { geo: 'drone', hp: 2, sp: 11, sc: 1.6, pts: 40, col: '#ff2d9a', fire: 0, r: 1.2 },
+    walker: { geo: 'mech', hp: 6, sp: 5.5, sc: 2.6, pts: 90, col: '#ffd700', fire: 2.2, r: 1.6 },
+    tank: { geo: 'tank', hp: 10, sp: 4, sc: 2.8, pts: 140, col: '#ff6600', fire: 3.2, r: 2.0 }
+  };
+  const city = makeCity({ seed: 6060, density: 0.32, cell: 64, clear: 40, hMin: 8, hMax: 34, radius: 520, towerColor: '#081220' });
+  const bar = document.getElementById('prog-fill');
+  bar.style.width = '100%';
+  bar.style.background = 'linear-gradient(90deg,#00f5ff,#46c8ff)';
+  const clock = owClock(150, () => end('clock'));
+  const say = (s, t) => { msg = s; msgT = t || 2; };
+
+  function spawnWave(){
+    wave++;
+    const n = Math.min(26, 4 + wave * 3);
+    for(let i = 0; i < n; i++){
+      const a = Math.random() * TAU, d = rr(55, 85);
+      const p = [me.p[0] + Math.cos(a) * d, 0, me.p[2] + Math.sin(a) * d];
+      if(city.hit(p, 2)) continue;
+      const roll = Math.random();
+      const k = wave > 2 && roll < 0.18 ? 'tank' : wave > 1 && roll < 0.45 ? 'walker' : 'drone';
+      const K = KINDS[k];
+      foes.push({ k, K, p, hp: K.hp, fire: rr(1, K.fire || 1), face: 0, flash: 0, ph: Math.random() * 6 });
+    }
+    say('WAVE ' + wave + ' — ' + n + ' HOSTILES', 2.2);
+    snd('wave');
+  }
+  function shoot(){
+    if(me.cool > 0 || over) return;
+    me.cool = me.rapid > 0 ? 0.07 : 0.13;
+    const a = Math.atan2(me.aim[2], me.aim[0]);
+    const spread = me.spread > 0 ? [-0.18, 0, 0.18] : [0];
+    for(const s of spread){
+      const d = [Math.cos(a + s), 0, Math.sin(a + s)];
+      shots.push({ p: V.add(me.p, [d[0] * 1.6, 1.5, d[2] * 1.6]), v: V.mul(d, 90), life: 0.9 });
+    }
+    snd('shoot', { semi: 6 });
+  }
+  function shockwave(){
+    if(me.shock <= 0){ snd('deny'); return; }
+    me.shock--;
+    snd('bigExplode'); w.kick(1.6);
+    fx.explode([me.p[0], 1, me.p[2]], 3, { color: colour, debris: 0, smoke: 0, ringNormal: [0, 1, 0] });
+    for(let i = foes.length - 1; i >= 0; i--){ if(V.d2(foes[i].p, me.p) < 26 * 26){ foes[i].hp -= 8; if(foes[i].hp <= 0) kill(i); } }
+    eshots.length = 0;
+  }
+  function kill(i){
+    const f = foes[i];
+    foes.splice(i, 1);
+    kills++;
+    score += f.K.pts; setLive(score);
+    fx.explode([f.p[0], 1.2, f.p[2]], f.K.sc * 0.7, { color: f.K.col, grav: 18, debrisGeo: 'slab', debrisColor: '#2a2e3a' });
+    snd('explode');
+    w.pop([f.p[0], 4, f.p[2]], '+' + f.K.pts, f.K.col, { size: 13 });
+    if(Math.random() < 0.12) drops.push({ p: [f.p[0], 1, f.p[2]], k: ['hp', 'rapid', 'spread', 'shock'][(Math.random() * 4) | 0], life: 14 });
+  }
+  function hurt(dmg, at){
+    if(me.inv > 0 || over) return;
+    me.hp -= dmg;
+    snd('hurt'); w.kick(0.8);
+    fx.sparks(at, 8, '#ff6a8a', 1, 12);
+    if(me.hp <= 0){
+      if(survivedFatal()){ me.hp = 50; me.inv = 1.5; say('SHIELD ABSORBED', 1.6); }
+      else{ over = true; snd('bigExplode'); fx.explode([me.p[0], 1, me.p[2]], 2.6, { color: colour }); gLater(() => finish('down'), 1200); }
+    }
+    bar.style.width = Math.max(0, me.hp) + '%';
+  }
+  function end(why){ if(!over){ over = true; finish(why); } }
+  function finish(why){
+    if(finished) return;
+    finished = true;
+    owFinish('arena', score, {
+      '📡 Battle': why === 'clock' ? 'CLOCK EXPIRED — STILL STANDING' : 'AVATAR DOWN',
+      '🌊 Waves': wave,
+      '💥 Kills': kills,
+      '🛡 Integrity': Math.max(0, Math.round(me.hp)) + '%',
+      '🏆 Score': score + ' PTS'
+    });
+  }
+  P.owDebug = { state: () => ({ score, wave, kills, hp: me.hp, foes: foes.length }) };
+
+  runLoop(dt => {
+    if(finished) return false;
+    const I = inp.poll();
+    if(dt > 0 && !over){
+      me.inv = Math.max(0, me.inv - dt);
+      me.cool -= dt; me.rapid = Math.max(0, me.rapid - dt); me.spread = Math.max(0, me.spread - dt); me.dashCd = Math.max(0, me.dashCd - dt);
+      let mx = I.lx, mz = I.ly;
+      const ml = Math.hypot(mx, mz); if(ml > 1){ mx /= ml; mz /= ml; }
+      if(I.boost && me.dashCd <= 0 && ml > 0.1){ me.dash = 0.2; me.dashCd = 1.4; me.inv = Math.max(me.inv, 0.25); snd('dash'); }
+      me.dash = Math.max(0, me.dash - dt);
+      const sp = me.dash > 0 ? 48 : 17;
+      me.v = V.lerp(me.v, [mx * sp, 0, mz * sp], ease(dt, me.dash > 0 ? 0.02 : 0.07));
+      const np = V.madd(me.p, me.v, dt);
+      if(!city.hit(np, 1.2)) me.p = np; else me.v = [0, 0, 0];
+      city.update(me.p);
+      // Aim: mouse on the ground, or the right stick / touch aim stick.
+      let firing = I.fire;
+      if(I.device === 'mouse' && hud.cam){
+        const g = screenToGround(hud, (I.mx + 1) / 2 * hud.W, (I.my + 1) / 2 * hud.H, 0);
+        if(g){ const d = V.sub(g, me.p); const l = Math.hypot(d[0], d[2]); if(l > 0.5) me.aim = [d[0] / l, 0, d[2] / l]; }
+      }else if(Math.abs(I.aimX) + Math.abs(I.aimY) > 0.2){
+        const l = Math.hypot(I.aimX, I.aimY);
+        me.aim = [I.aimX / l, 0, I.aimY / l];
+        firing = true;
+      }else if(ml > 0.2 && !I.fire){ me.aim = [mx / Math.max(ml, 1e-3), 0, mz / Math.max(ml, 1e-3)]; }
+      if(firing) shoot();
+      if(I.altHit) shockwave();
+      me.face = Math.atan2(-me.aim[0], -me.aim[2]);
+      waveT -= dt;
+      if(foes.length === 0 && waveT > 2.5) waveT = 2.5;
+      if(waveT <= 0){ spawnWave(); waveT = Math.max(10, 22 - wave); }
+    }
+    // Player shots.
+    for(let i = shots.length - 1; i >= 0; i--){
+      const s = shots[i];
+      s.p = V.madd(s.p, s.v, dt); s.life -= dt;
+      let hit = s.life <= 0 || !!city.hit(s.p, 0.2);
+      if(!hit){
+        for(let j = foes.length - 1; j >= 0; j--){
+          const f = foes[j];
+          if((f.p[0] - s.p[0]) ** 2 + (f.p[2] - s.p[2]) ** 2 < (f.K.r + 0.4) ** 2){
+            hit = true; f.hp--; f.flash = 0.1;
+            fx.sparks(s.p, 4, '#bff6ff', 0.8, 10);
+            if(f.hp <= 0) kill(j); else snd('hit', { semi: 5 });
+            break;
+          }
+        }
+      }else if(s.life > 0) fx.sparks(s.p, 3, '#bff6ff', 0.7, 8);
+      if(hit) shots.splice(i, 1);
+    }
+    // Foes: close in; walkers and tanks stop at range and shoot.
+    for(let i = foes.length - 1; i >= 0; i--){
+      const f = foes[i];
+      if(dt <= 0) break;
+      f.flash = Math.max(0, f.flash - dt);
+      const d = V.sub(me.p, f.p), l = Math.hypot(d[0], d[2]) || 1;
+      const want = f.K.fire ? (l > 22 ? 1 : l < 14 ? -0.5 : 0) : 1;
+      // Steer round towers: probe ahead, sidestep if blocked.
+      let dir = [d[0] / l, 0, d[2] / l];
+      if(city.hit(V.madd(f.p, dir, 3), 1.5)) dir = [-dir[2] * (f.ph > 3 ? 1 : -1), 0, dir[0] * (f.ph > 3 ? 1 : -1)];
+      if(f.k === 'drone') dir = V.norm(V.add(dir, [Math.cos(w.t * 2 + f.ph) * 0.5, 0, Math.sin(w.t * 2 + f.ph) * 0.5]));
+      const np = V.madd(f.p, dir, f.K.sp * want * dt * Math.min(1.3, diff));
+      if(!city.hit(np, f.K.r)) f.p = np;
+      f.face = Math.atan2(-d[0], -d[2]);
+      if(f.K.fire){
+        f.fire -= dt;
+        if(f.fire <= 0 && l < 40){
+          f.fire = f.K.fire * rr(0.8, 1.2) / diff;
+          const lead = V.madd(me.p, me.v, l / 34);
+          const ad = V.norm([lead[0] - f.p[0], 0, lead[2] - f.p[2]]);
+          eshots.push({ p: [f.p[0], 1.8, f.p[2]], v: V.mul(ad, f.k === 'tank' ? 26 : 34), life: 2.4, dmg: f.k === 'tank' ? 16 : 9, c: f.K.col, big: f.k === 'tank' });
+          snd('enemyShot', { semi: -3 });
+        }
+      }
+      if(l < f.K.r + 1.2){ hurt(f.k === 'drone' ? 8 : 14, f.p); if(f.k === 'drone'){ kill(i); continue; } }
+      if(l > 200) foes.splice(i, 1);
+    }
+    for(let i = eshots.length - 1; i >= 0; i--){
+      const s = eshots[i];
+      s.p = V.madd(s.p, s.v, dt); s.life -= dt;
+      if(s.life <= 0 || city.hit(s.p, 0.3)){ eshots.splice(i, 1); continue; }
+      if((s.p[0] - me.p[0]) ** 2 + (s.p[2] - me.p[2]) ** 2 < 1.4 * 1.4){ eshots.splice(i, 1); hurt(s.dmg, s.p); }
+    }
+    for(let i = drops.length - 1; i >= 0; i--){
+      const d = drops[i];
+      d.life -= dt;
+      if(d.life <= 0){ drops.splice(i, 1); continue; }
+      if((d.p[0] - me.p[0]) ** 2 + (d.p[2] - me.p[2]) ** 2 < 2.4 * 2.4){
+        drops.splice(i, 1); snd('powerup');
+        if(d.k === 'hp'){ me.hp = Math.min(100, me.hp + 30); bar.style.width = me.hp + '%'; say('🛠 +30 INTEGRITY'); }
+        else if(d.k === 'rapid'){ me.rapid = 10; say('⚡ RAPID FIRE'); }
+        else if(d.k === 'spread'){ me.spread = 10; say('✳ SPREAD SHOT'); }
+        else { me.shock++; say('💥 +1 SHOCKWAVE'); }
+      }
+    }
+    fx.step(dt);
+    if(msgT > 0) msgT -= dt;
+
+    followCam(w, me.p, { height: 36, back: 24, look: 2, fov: 52, half: 0.1 }, dt);
+    w.step(dt);
+
+    w.begin();
+    drawFloor(w, { step: 6, radius: 150, color: '#0f3a5a', glow: 0.9, major: 5, floor: '#030812', rough: 0.24 });
+    city.draw(w);
+    const eye = w.cam.eye;
+    let nl = 0;
+    for(const f of foes){
+      if(V.d2(f.p, eye) > 170 * 170) continue;
+      const bob = f.k === 'drone' ? 2.2 + Math.sin(w.t * 4 + f.ph) * 0.4 : 0;
+      r.draw(f.K.geo, { pos: [f.p[0], bob + (f.k === 'drone' ? 0 : f.K.sc * 0.5), f.p[2]], rot: [0, f.face, 0], scale: f.K.sc,
+                        color: f.flash > 0 ? '#ffffff' : '#2e3442', metallic: 0.7, roughness: 0.35, rim: 0.9, emissive: f.K.col, emissiveStrength: 0.25, accent: 2 });
+      r.glow([f.p[0], (bob || f.K.sc) + 0.6, f.p[2]], 1.4, f.K.col, 0.8);
+      if(nl++ < 3 && V.d2(f.p, me.p) < 40 * 40) r.light({ pos: [f.p[0], 4, f.p[2]], color: f.K.col, intensity: 60, range: 14 });
+    }
+    for(const s of shots) r.streak(V.madd(s.p, s.v, -0.03), s.p, 0.28, colour, 3.2, 0.9);
+    for(const s of eshots){ r.glow(s.p, s.big ? 1.4 : 0.9, s.c, 1.8); r.streak(V.madd(s.p, s.v, -0.06), s.p, s.big ? 0.6 : 0.36, s.c, 1.6, 1); }
+    for(const d of drops){
+      const c = d.k === 'hp' ? '#39ff88' : d.k === 'rapid' ? '#ffd700' : d.k === 'spread' ? '#00f5ff' : '#ff2d9a';
+      r.draw('cube', { pos: [d.p[0], 1 + Math.sin(w.t * 3) * 0.3, d.p[2]], rot: [w.t, w.t * 1.4, 0.5], scale: 1.1, color: c, emissive: c, emissiveStrength: 1.5, detail: 0 });
+      r.glow([d.p[0], 1.2, d.p[2]], 2.2, c, 0.7);
+    }
+    if(!over && !(me.inv > 0.3 && Math.sin(w.t * 30) > 0)){
+      r.draw('mech', { pos: [me.p[0], 1.35, me.p[2]], rot: [0, me.face, 0], scale: 2.7, color: '#c9d1dd', metallic: 0.65, roughness: 0.3, rim: 0.8, emissive: colour, emissiveStrength: 0.004, accent: 0 });
+      r.glow([me.p[0], 0.2, me.p[2]], 3.2, colour, 0.4);
+      // Aim line.
+      r.streak([me.p[0] + me.aim[0] * 2, 1.5, me.p[2] + me.aim[2] * 2], [me.p[0] + me.aim[0] * 9, 1.5, me.p[2] + me.aim[2] * 9], 0.08, colour, 0.8, 0);
+    }
+    r.light({ pos: [me.p[0], 7, me.p[2] + 3], color: '#cfe8ff', intensity: 150, range: 28 });
+    fx.draw();
+    w.end();
+
+    hud.begin();
+    const Wd = hud.W, Ht = hud.H;
+    hud.avoid = [[0, Ht - 140, 150, Ht]];
+    hud.radar(70, Ht - 74, 54, me.p, [0, 0, -1], 100, foes.map(f => ({ p: f.p, c: f.K.col, s: f.k === 'drone' ? 2 : 3 })));
+    for(const f of foes){ const q = hud.proj(f.p); if(!q.on && V.d2(f.p, me.p) < 70 * 70) hud.edgeArrow(f.p, f.K.col, null); }
+    hud.text(Wd - 16, Ht - 40, 'WAVE ' + wave, { size: 13, align: 'right', color: '#9fe6ff' });
+    hud.text(Wd - 16, Ht - 20, '💥 ×' + me.shock, { size: 13, align: 'right', color: '#ff8ac8' });
+    if(I.device === 'mouse' && I.mouseOn) hud.crosshair((I.mx + 1) / 2 * Wd, (I.my + 1) / 2 * Ht, colour, 7);
+    if(msgT > 0) hud.text(Wd / 2, 26, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
+    hud.touchPad(I);
+  });
+};
+
+})();
+// <<OW:END>>

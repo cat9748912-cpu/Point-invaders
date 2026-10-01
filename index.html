@@ -48,7 +48,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=55">
+<link rel="stylesheet" href="style.css?v=56">
 </head>
 <body>
 
@@ -229,6 +229,17 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <!-- 🌐 NETWORK ARENA — the door to live head-to-head play. Sits above the
            mission grid because it's a different KIND of thing from the solo
            cards: a lobby, not a round you can start on the spot. -->
+      <!-- 🌐 OPEN WORLD (v56, § 31) — every mission rebuilt as a world with
+           no borders. First on the hub because it is the arcade's biggest
+           door: thirty-one worlds, one per mission. -->
+      <div class="mp-banner ow-banner" id="ow-banner">
+        <span class="mp-banner-icon">🪐</span>
+        <div class="mp-banner-txt">
+          <div class="mp-banner-title">OPEN WORLD <em class="ow-new">NEW</em></div>
+          <div class="mp-banner-sub" id="ow-banner-sub">Every mission rebuilt as a world with no borders — fly, drive and run in any direction. 3D.</div>
+        </div>
+        <button class="btn btn-primary" id="btn-openworld">🌐 EXPLORE →</button>
+      </div>
       <div class="mp-banner" id="mp-banner">
         <span class="mp-banner-icon">🌐</span>
         <div class="mp-banner-txt">
@@ -312,6 +323,12 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
            day and stored on the profile. Built by paintContracts() (§ 15). -->
       <div class="contracts-panel" id="contracts-panel"></div>
       <div class="sec-label">⚡ SELECT MISSION <em class="mission-clearance" id="mission-clearance"></em></div>
+      <!-- 🌐 v56 · What a card launches: the classic round, or its open world
+           (§ 31). Per device, like the 2D/3D choice. -->
+      <div class="ow-switch" id="ow-switch" role="tablist" aria-label="Mission mode">
+        <button class="ow-seg on" type="button" data-owm="classic" role="tab" aria-selected="true">▶ CLASSIC</button>
+        <button class="ow-seg" type="button" data-owm="open" role="tab" aria-selected="false">🌐 OPEN WORLD <em>NO BORDERS</em></button>
+      </div>
       <!-- ⭐ GRID TOOLS — filter chips (all / favourites / reflex / puzzle /
            patience / strategy) and the order toggle. Built by paintGridTools();
            per-device state in localStorage. Nothing in the grid is moved in the
@@ -1138,6 +1155,21 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════
+     🌐 OPEN WORLD PICKER (v56, § 31) — every mission's world with no
+     borders, with your best in each.
+     ══════════════════════════════════════════════════════════════ -->
+<div class="fb-overlay ow-tint" id="ow-overlay" aria-hidden="true">
+  <div class="fb-modal dossier-modal" role="dialog" aria-modal="true" aria-labelledby="ow-heading">
+    <button class="fb-close" id="ow-close" aria-label="Close open world picker">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="ow-heading">🌐 OPEN WORLD</div>
+      <div class="fb-sub" id="ow-sub">—</div>
+    </div>
+    <div class="dossier-body" id="ow-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
      🎒 LOADOUTS — name and save a kit, swap it in one tap.
      ══════════════════════════════════════════════════════════════ -->
 <div class="fb-overlay loadout-tint" id="loadout-overlay" aria-hidden="true">
@@ -1592,7 +1624,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=55"></script>
+<script src="app.js?v=56"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker
