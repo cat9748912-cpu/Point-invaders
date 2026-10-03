@@ -2710,6 +2710,9 @@ function enterHub(){
   // tier. Released here for the same reason the room and the chain are: this is
   // the one door every "I'm done" path goes through.
   if(typeof abortDailyRun === 'function') abortDailyRun();
+  // 🧊 A mode's own 2D/3D choice (§ 31) ends with the mode: the interface
+  // goes back to the arcade's setting.
+  try{ if(window.PI3D && PI3D.syncBody) PI3D.syncBody(); }catch(e){}
   document.getElementById('h-uname').textContent=user.username;
   let guestTagEl=document.getElementById('h-guest-tag');
   if(user.isGuest){
@@ -27350,14 +27353,23 @@ function supported(){
 // when 3D was picked on a machine that then turned out to have no WebGL2 —
 // better to quietly render in 2D than to show a black board.
 const wanted = () => want;
-const active = () => (want === '3d' && supported()) ? '3d' : '2d';
+// 🧊 v60 · A mode can override the setting for its own rounds: each event
+// banner (Campaign, Arena, Boss Rush, Party, Brick Lab, Daily Hack, Endless,
+// Weekly Anomaly) has a ▶ 2D · 🧊 3D · 🌐 OPEN WORLD switch of its own (§ 31).
+// modeOverride() answers '2d' / '3d' only while that mode is running.
+const override = () => { try{ const o = API.modeOverride && API.modeOverride(); return (o === '2d' || o === '3d') ? o : null; }catch(e){ return null; } };
+const active = () => ((override() || want) === '3d' && supported()) ? '3d' : '2d';
 const is3D   = () => active() === '3d';
+// Keeps the interface's 3D styling in step with the mode in force.
+function syncBody(){ document.body.classList.toggle('mode-3d', is3D()); }
 
 function setMode(m){
   want = (m === '3d') ? '3d' : '2d';
   try{ localStorage.setItem(LS_MODE, want); }catch(e){}
   paintPicker();
   document.body.classList.toggle('mode-3d', is3D());
+  // A mode switch left unset follows this setting (§ 31).
+  try{ if(typeof owPaintLanes === 'function') owPaintLanes(); }catch(e){}
   preloadSoon();
 }
 
@@ -30597,7 +30609,7 @@ function wirePicker(){
 
 const API = {
   // — mode —
-  supported, wanted, active, is3D, setMode,
+  supported, wanted, active, is3D, setMode, syncBody, modeOverride: null,
   // — graphics profile: 'normal' | 'ultra' —
   gfx, setGfx,
   // — surface —
@@ -30771,10 +30783,179 @@ function abilityStrip(){
       }
       if(html !== last){ el.innerHTML = html; last = html; el.style.display = html ? '' : 'none'; }
     },
+    // Lets a tap on the "next" chip fire it (touch has no Q / E).
+    tap(fn){ el.classList.add('tap'); el.addEventListener('pointerdown', ev => { if(ev.target.closest('.ga-next')){ ev.preventDefault(); ev.stopPropagation(); fn(); } }); },
     destroy(){ el.remove(); }
   };
 }
 K.abilityStrip = abilityStrip;
+
+// ══════════════════════════════════════════════
+//  ⚡ v60 · SPECIALS FOR THE 3D MISSIONS
+// ══════════════════════════════════════════════
+// The 2D Nebula's Smart Missiles, Shield Burst, Time Warp and Nova Blast, the
+// Arena's Time Freeze, Repair Pulse and Overcharge, and the open worlds' Phase
+// Shift, Magnet Field, Rapid Salvo and EMP — for the 3D builds that had none.
+// Earned by score, banked three deep, fired with Q / E / V or a tap on the
+// strip. A mission names its rotation and wires the hooks its rules need:
+//   o.kinds, o.every (points per charge), o.player() → [x, y, z],
+//   o.targets() → [{ p, r, obj }], o.hit(obj, at), o.clearFire(), o.heal(f)
+// and reads: foeScale() (1, ½ under Time Warp, 0 frozen), guard() (Shield
+// Burst / Phase Shift hold off a hit), jammed(), scoreMul() (Overcharge ×2),
+// pull(p, dt) (Magnet Field) and active(kind).
+const SPEC3D = {
+  smart:     { label: 'SMART MISSILES', color: '#00f5ff', t: 2.6 },
+  shield:    { label: 'SHIELD BURST',   color: '#a855f7', t: 4.0 },
+  warp:      { label: 'TIME WARP',      color: '#ffd700', t: 5.0 },
+  nova:      { label: 'NOVA BLAST',     color: '#ff2d9a', t: 1.0 },
+  freeze:    { label: 'TIME FREEZE',    color: '#7fe8ff', t: 3.0 },
+  repair:    { label: 'REPAIR PULSE',   color: '#39ff14', t: 1.0 },
+  overdrive: { label: 'OVERCHARGE',     color: '#ff6a1a', t: 6.0 },
+  salvo:     { label: 'RAPID SALVO',    color: '#ff8a1a', t: 2.6 },
+  emp:       { label: 'EMP PULSE',      color: '#9fdcff', t: 6.0 },
+  magnet:    { label: 'MAGNET FIELD',   color: '#39ff88', t: 8.0 },
+  phase:     { label: 'PHASE SHIFT',    color: '#c8a2ff', t: 3.0 }
+};
+function specials3d(w, o){
+  o = o || {};
+  const r = w.r;
+  const kinds = (o.kinds || ['shield', 'warp', 'nova']).filter(k => SPEC3D[k]);
+  const every = o.every || 150, max = o.max || 3;
+  const queue = [], on = Object.create(null), missiles = [];
+  let earned = 0, nextAt = every, salvoLeft = 0, salvoT = 0, gone = false;
+  const strip = abilityStrip();
+  const me = () => o.player ? o.player() : [0, 1, 0];
+  const up = (p, h) => [p[0], p[1] + h, p[2]];
+  const d2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
+  const S = { queue, on };
+  S.active = k => (on[k] || 0) > 0;
+  S.foeScale = () => S.active('freeze') ? 0 : S.active('warp') ? 0.5 : 1;
+  S.guard = () => S.active('shield') || S.active('phase');
+  S.jammed = () => S.active('emp') || S.active('freeze');
+  S.scoreMul = () => S.active('overdrive') ? 2 : 1;
+  S.pull = function(p, dt, speed){
+    if(!S.active('magnet')) return p;
+    const q = me(), dx = q[0] - p[0], dy = q[1] - p[1], dz = q[2] - p[2], l = Math.hypot(dx, dy, dz);
+    if(l < 0.3 || l > (o.magnetR || 30)) return p;
+    const k = Math.min(1, (speed || 22) * dt / l);
+    return [p[0] + dx * k, p[1] + dy * k, p[2] + dz * k];
+  };
+  S.grant = function(kind){
+    if(gone || queue.length >= max) return false;
+    const k = kind && SPEC3D[kind] ? kind : kinds[earned++ % kinds.length];
+    queue.push(k);
+    snd('powerup', { semi: 5 });
+    w.pop(up(me(), 3.2), SPEC3D[k].label + ' READY', SPEC3D[k].color, { size: 13 });
+    return true;
+  };
+  function launch(n){
+    const p = me(), T = (o.targets ? o.targets() : []).slice().sort((a, b) => d2(a.p, p) - d2(b.p, p));
+    for(let i = 0; i < n; i++){
+      const t = T.length ? T[i % T.length] : null, a = i / Math.max(1, n) * Math.PI * 2;
+      missiles.push({ p: up(p, 0.8), v: [Math.cos(a) * 5, 9, Math.sin(a) * 5], tgt: t ? t.obj : null, life: 3.5 });
+    }
+    snd('missile');
+  }
+  S.use = function(){
+    if(gone) return false;
+    if(!queue.length){ snd('deny'); return false; }
+    const k = queue.shift(), d = SPEC3D[k], p = me();
+    on[k] = d.t;
+    snd(k === 'nova' ? 'bigExplode' : (k === 'repair' || k === 'shield') ? 'shield' : 'ability');
+    w.pop(up(p, 2.4), d.label + '!', d.color, { size: 18 });
+    w.kick(k === 'nova' ? 1.8 : 0.7);
+    if(k === 'smart') launch(o.smartN || 3);
+    else if(k === 'salvo'){ salvoLeft = 6; salvoT = 0; }
+    else if(k === 'nova'){
+      const R = o.novaR || 14;
+      w.burst(p, d.color, 60, { speed: 22, life: 0.8, size: 0.5 });
+      for(const t of (o.targets ? o.targets() : [])) if(d2(t.p, p) < R * R && o.hit) o.hit(t.obj, t.p);
+      if(o.clearFire) o.clearFire();
+    }else if(k === 'shield'){
+      if(o.heal) o.heal(1);
+      if(o.clearFire) o.clearFire();
+      w.burst(p, d.color, 30, { speed: 12, life: 0.6 });
+    }else if(k === 'repair'){
+      if(o.heal) o.heal(0.5);
+      w.burst(p, d.color, 24, { speed: 9, life: 0.6 });
+    }else if(k === 'emp'){
+      if(o.clearFire) o.clearFire();
+      w.burst(p, d.color, 36, { speed: 16, life: 0.6 });
+    }
+    if(o.onUse) o.onUse(k);
+    return true;
+  };
+  S.tick = function(dt, score){
+    if(gone || dt <= 0) return;
+    if(score != null){ while(score >= nextAt){ nextAt += every; S.grant(); } }
+    for(const k in on) if(on[k] > 0) on[k] = Math.max(0, on[k] - dt);
+    if(salvoLeft > 0){ salvoT -= dt; if(salvoT <= 0){ salvoT = 0.14; salvoLeft--; launch(1); } }
+    for(let i = missiles.length - 1; i >= 0; i--){
+      const m = missiles[i];
+      m.life -= dt;
+      const T = o.targets ? o.targets() : [];
+      let t = m.tgt ? T.find(x => x.obj === m.tgt) : null;
+      if(!t && T.length){ let bd = 1e18; for(const x of T){ const dd = d2(x.p, m.p); if(dd < bd){ bd = dd; t = x; } } m.tgt = t ? t.obj : null; }
+      const sp = Math.hypot(m.v[0], m.v[1], m.v[2]) || 1;
+      if(t){
+        const dx = t.p[0] - m.p[0], dy = t.p[1] - m.p[1], dz = t.p[2] - m.p[2], l = Math.hypot(dx, dy, dz) || 1;
+        const k = clamp((m.life > 3.1 ? 1.5 : 7) * dt, 0, 1), ns = Math.min(70, sp + 60 * dt);
+        const vx = m.v[0] / sp + (dx / l - m.v[0] / sp) * k, vy = m.v[1] / sp + (dy / l - m.v[1] / sp) * k, vz = m.v[2] / sp + (dz / l - m.v[2] / sp) * k;
+        const vl = Math.hypot(vx, vy, vz) || 1;
+        m.v = [vx / vl * ns, vy / vl * ns, vz / vl * ns];
+      }
+      m.p = [m.p[0] + m.v[0] * dt, m.p[1] + m.v[1] * dt, m.p[2] + m.v[2] * dt];
+      let boom = m.life <= 0;
+      if(t && d2(m.p, t.p) < ((t.r || 1) + 0.8) ** 2){ boom = true; if(o.hit) o.hit(t.obj, t.p); }
+      if(boom){ w.burst(m.p, '#7fe8ff', 18, { speed: 10, life: 0.5 }); snd('explode'); missiles.splice(i, 1); }
+    }
+    const act = queue.length || Object.keys(on).some(k => on[k] > 0);
+    let cur = null;
+    for(const k in on) if(on[k] > 0 && (!cur || on[k] / SPEC3D[k].t > cur.frac)) cur = { label: SPEC3D[k].label, color: SPEC3D[k].color, frac: on[k] / SPEC3D[k].t };
+    strip.set(act ? queue.map(k => SPEC3D[k]) : [], cur, isTouchDevice ? 'TAP ⚡' : 'Q / E');
+  };
+  S.draw = function(){
+    if(gone) return;
+    for(const m of missiles){
+      const l = Math.hypot(m.v[0], m.v[1], m.v[2]) || 1;
+      r.draw('missile', { pos: m.p, rot: [Math.asin(clamp(m.v[1] / l, -1, 1)), Math.atan2(-m.v[0], -m.v[2]), 0], scale: 0.7,
+                          color: '#d9dde4', metallic: 0.3, roughness: 0.4, emissive: '#00f5ff', emissiveStrength: 0.5, accent: 4 });
+    }
+    const p = me(), rad = o.bubbleR || 1.8;
+    if(S.active('shield')){
+      const k = Math.min(1, on.shield * 2);
+      r.draw('sphere', { pos: p, scale: rad + Math.sin(w.t * 9) * 0.05, color: '#a855f7', emissive: '#c084fc', emissiveStrength: 0.15 * k,
+                         alpha: 0.08 * k, blend: true, metallic: 0, roughness: 0.2, rim: 2.2 });
+    }
+    if(S.active('phase')) r.draw('sphere', { pos: p, scale: rad * 0.9, color: '#c8a2ff', emissive: '#c8a2ff', emissiveStrength: 0.3, alpha: 0.12, blend: true, rim: 1.6 });
+    if(S.active('magnet')) r.draw('thintorus', { pos: up(p, -0.4), rot: [0, w.t * 3, 0], scale: [rad * 2.4, 1, rad * 2.4], color: '#39ff88', emissive: '#39ff88', emissiveStrength: 1.2, alpha: 0.4, blend: true });
+    if(S.active('warp') || S.active('freeze')){
+      const c = S.active('freeze') ? '#7fe8ff' : '#ffd700';
+      r.draw('thintorus', { pos: p, rot: [0, -w.t * 1.5, 0], scale: [rad * 4, 1, rad * 4], color: c, emissive: c, emissiveStrength: 0.8, alpha: 0.22, blend: true });
+    }
+  };
+  // Keys — added beside the mission's own handler, removed with the round.
+  const onKey = e => {
+    if(gone || e.repeat || !['KeyQ', 'KeyE', 'KeyV'].includes(e.code)) return;
+    const t = e.target;
+    if(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+    e.preventDefault();
+    S.use();
+  };
+  if(o.keys !== false) window.addEventListener('keydown', onKey);
+  strip.tap(() => S.use());
+  S.destroy = function(){
+    if(gone) return;
+    gone = true;
+    window.removeEventListener('keydown', onKey);
+    strip.destroy();
+  };
+  onQuit(S.destroy);
+  // Test hooks (console / harness only).
+  P.dbg3d = Object.assign(P.dbg3d || {}, { spec: S });
+  return S;
+}
+K.specials3d = specials3d;
 
 // begin3d() claims onStopGame for unmount(); a mission that also owns DOM
 // chains onto it (the same helper the later parts each carry).
@@ -31440,6 +31621,15 @@ P.games.dodge = function(){
   const BAR_T = [null, { r: 0.8, vz: 30, c: '#ff6600' }, { r: 1.3, vz: 22, c: '#ff2442' }, { r: 0.55, vz: 44, c: '#ffd700' }];
   let barrageAt = 0;
 
+  // ⚡ v60 · the specials (SPECIALS FOR THE 3D MISSIONS).
+  const SP = K.specials3d(w, {
+    kinds: ['shield', 'warp', 'nova', 'smart', 'phase', 'freeze'], every: 150, novaR: 9,
+    player: () => [me.x, 1.0, me.z],
+    targets: () => cores.map(c => ({ p: [c.x, c.y + 1.0, c.z], r: c.r, obj: c })),
+    hit(c){ const i = cores.indexOf(c); if(i < 0) return; cores.splice(i, 1); w.burst([c.x, c.y + 1, c.z], c.col, 16, { speed: 10, life: 0.5 }); },
+    clearFire(){ for(let i = cores.length - 1; i >= 0; i--) if(cores[i].z > me.z - 18){ const c = cores[i]; cores.splice(i, 1); w.burst([c.x, c.y + 1, c.z], c.col, 10, { speed: 8, life: 0.4 }); } }
+  });
+
   Ghost.begin('dodge');
   if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
 
@@ -31526,14 +31716,18 @@ P.games.dodge = function(){
       });
     }
 
+    SP.tick(dt, score);
+    const fs = SP.foeScale();
     for(let i = cores.length - 1; i >= 0; i--){
       const c = cores[i];
-      c.z += c.vz * dt; c.x += c.vx * dt;
+      c.z += c.vz * dt * fs; c.x += c.vx * dt * fs;
       c.sx += c.spin * dt; c.sy += c.spin * 0.7 * dt;
       if(Math.abs(c.x) > XL) c.vx *= -1;
       if(c.z > 12){ cores.splice(i, 1); continue; }
       const dx = c.x - me.x, dz = c.z - me.z, dy = c.y - 1.0;
       if(dx*dx + dz*dz + dy*dy < (c.r + me.r) * (c.r + me.r)){
+        // ⚡ A Shield Burst or Phase Shift shrugs the core off.
+        if(SP.guard()){ cores.splice(i, 1); w.burst([c.x, c.y + 1, c.z], '#a855f7', 14, { speed: 9, life: 0.4 }); continue; }
         // 🛡️ Sweeps the field for the same reason the 2D build does: the core
         // that hit you is rarely the only one within a frame of doing so.
         if(survivedFatal()){
@@ -31610,6 +31804,7 @@ P.games.dodge = function(){
       });
     }
 
+    SP.draw();
     w.end();
   });
 
@@ -32275,6 +32470,15 @@ P.games.snake = function(){
   }
   let food = spawnFood();
 
+  // ⚡ v60 · the specials (SPECIALS FOR THE 3D MISSIONS): Time Warp slows
+  // the stride, Time Freeze stops the clock, the Magnet Field walks the node
+  // to you, a Shield Burst or Phase Shift carries you through a wall (out the
+  // other side) or your own tail, Overcharge doubles a node.
+  const SP = K.specials3d(w, {
+    kinds: ['warp', 'shield', 'magnet', 'freeze', 'overdrive', 'phase'], every: 150,
+    player: () => [wx(snake[0].x), 0.8, wz(snake[0].y)]
+  });
+
   Ghost.begin('snake');
   if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
 
@@ -32316,6 +32520,7 @@ P.games.snake = function(){
 
   gTimer = setInterval(() => {
     if(over) return;
+    if(SP.active('freeze')) return;
     time--;
     document.getElementById('g-time').textContent = Math.ceil(time);
     document.getElementById('prog-fill').style.width = `${Math.max(0, time / startTime * 100)}%`;
@@ -32326,14 +32531,16 @@ P.games.snake = function(){
   runLoop(dt => {
     if(over) return false;
     orbit += dt;
-    acc += dt;
+    SP.tick(dt, score);
+    acc += dt * (SP.active('warp') ? 0.6 : 1);
     if(acc >= stepEvery){
       acc = 0; tick++;
       dir = nextDir;
       const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
-      if(head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS
+      if(SP.guard()){ head.x = (head.x + COLS) % COLS; head.y = (head.y + ROWS) % ROWS; }
+      if(!SP.guard() && (head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS
          || (LW && LW.isWall(head.x, head.y))
-         || snake.some(s => s.x === head.x && s.y === head.y)){
+         || snake.some(s => s.x === head.x && s.y === head.y))){
         // 🛡️ The absorb has to leave a state the very next tick can survive,
         // and there is exactly one arrangement that is valid whatever killed
         // you: a single segment heading back the way it came. Off a wall that
@@ -32355,17 +32562,23 @@ P.games.snake = function(){
       }
       snake.unshift(head);
       if(head.x === food.x && head.y === food.y){
-        score += 30; eaten++; lastEat = w.t;
+        const gain = 30 * SP.scoreMul();
+        score += gain; eaten++; lastEat = w.t;
         setLive(capRaw(1200, score));
         snd('eat', { semi: Math.min(eaten, 12) });
         w.burst([wx(food.x), 0.9, wz(food.y)], '#39ff88', 22, { speed: 9, life: 0.7 });
-        w.pop([wx(food.x), 2.2, wz(food.y)], '+30', '#39ff88');
+        w.pop([wx(food.x), 2.2, wz(food.y)], '+' + gain, '#39ff88');
         w.kick(0.45);
         food = spawnFood();
       }else{
         snake.pop();
       }
       Ghost.sample(head.x, head.y);
+      // 🧲 The Magnet Field walks the node a cell toward the head each step.
+      if(SP.active('magnet') && (food.x !== head.x || food.y !== head.y)){
+        const nx2 = food.x + Math.sign(head.x - food.x), ny2 = food.y + (food.x === head.x ? Math.sign(head.y - food.y) : 0);
+        if(!snake.some(q => q.x === nx2 && q.y === ny2) && !(LW && LW.isWall(nx2, ny2))){ food = { x: nx2, y: ny2 }; }
+      }
     }
 
     // A slow orbit around the deck. It never changes what you can see — the
@@ -32473,6 +32686,7 @@ P.games.snake = function(){
                             color: colour, emissive: colour, emissiveStrength: 1.2, alpha: 0.38 });
     }
 
+    SP.draw();
     w.end();
   });
 
@@ -32564,12 +32778,25 @@ P.games.flappy = function(){
   bindCanvasDrag({ onDown(){ hideTouchHint(); flap(); } });
   document.getElementById('ctrl-action').onclick = flap;
 
+  // ⚡ v60 · the specials (SPECIALS FOR THE 3D MISSIONS): a missile or a
+  // nova blows a firewall open (it still counts), a shield or a phase carries
+  // the drone through one, Time Warp slows the canyon.
+  const smash = g => { g.none = true; w.burst([0, g.cy, g.z], g.col || '#ff6600', 30, { speed: 12, life: 0.6 }); snd('explode'); };
+  const SP = K.specials3d(w, {
+    kinds: ['shield', 'warp', 'smart', 'phase', 'nova'], every: 150, novaR: 32, smartN: 2,
+    player: () => [0, y, 0],
+    targets: () => gates.filter(g => !g.none && g.z < -2 && g.z > -60).map(g => ({ p: [0, g.cy, g.z], r: 2.5, obj: g })),
+    hit(g){ if(!g.none) smash(g); }
+  });
+
   Ghost.begin('flappy');
   if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
 
   runLoop(dt => {
     if(over) return false;
-    dist += SPEED * dt;
+    SP.tick(dt, score * 50);
+    const wdt = dt * SP.foeScale();
+    dist += SPEED * wdt;
     vy += GRAV * dt;
     y -= vy * dt;                      // vy is screen-down positive, as in 2D
     // Per FRAME, so a frozen one skips it: the drone kept pitching toward its
@@ -32577,11 +32804,14 @@ P.games.flappy = function(){
     if(dt > 0) tilt += (clamp(-vy * 0.035, -0.55, 0.7) - tilt) * 0.2;
     Ghost.sample((y / YL * 0.5 + 0.5) * BOARD_H);
 
-    if(y > YL || y < -YL){ die(); return false; }
+    if(SP.guard() && (y > YL || y < -YL)){ y = clamp(y, -YL + 0.1, YL - 0.1); vy = 0; }
+    // A crash the shield perk absorbs (survivedFatal) carries on: only a real
+    // one ends the loop — returning false stopped the round dead.
+    if(y > YL || y < -YL){ die(); if(over) return false; }
 
     for(let i = gates.length - 1; i >= 0; i--){
       const g = gates[i];
-      g.z += SPEED * dt;
+      g.z += SPEED * wdt;
       if(g.z > 14){
         gates.splice(i, 1);
         // Keep six gates in flight, spaced by distance rather than by time, so
@@ -32601,7 +32831,11 @@ P.games.flappy = function(){
         w.pop([0, y + 2.2, -2], '+50', g.col, { size: 18 });
         w.kick(0.25);
       }
-      if(!g.none && Math.abs(g.z) < 1.4 && Math.abs(y - g.cy) > (g.gap || GAP0) / 2 - 0.55){ die(); return false; }
+      if(!g.none && Math.abs(g.z) < 1.4 && Math.abs(y - g.cy) > (g.gap || GAP0) / 2 - 0.55){
+        if(SP.guard()){ smash(g); continue; }
+        die(); if(over) return false;
+        break;    // the absorb cleared the gates round the drone
+      }
     }
 
     // Chase cam, just behind and level with the drone but lagging its vertical
@@ -32674,6 +32908,7 @@ P.games.flappy = function(){
     r.glow([0, y, 1.4], 0.6, colour, 1.5);
     r.light({ pos:[0, y + 1.4, 3.2], color: colour, intensity: 34, range: 20 });
 
+    SP.draw();
     w.end();
   });
 
@@ -33036,6 +33271,16 @@ P.games.runner = function(){
   w.buildCity({ seed: 3113, count: 90, spread: 105, hole: 22, y: -6 });
   w.buildStars(150, 200);
 
+  // ⚡ v60 · the specials (SPECIALS FOR THE 3D MISSIONS): walls and spikes
+  // are what a missile or a nova clears; the magnet pulls data cubes in.
+  const SP = K.specials3d(w, {
+    kinds: ['shield', 'smart', 'warp', 'magnet', 'nova', 'repair', 'phase'], every: 160, novaR: 40,
+    player: () => [x, 1.2, 0],
+    targets: () => items.filter(it => it.kind !== 'cube' && it.z > -60 && it.z < -2).map(it => ({ p: [laneX(it.lane), 1.4, it.z], r: 1.4, obj: it })),
+    hit(it){ const i = items.indexOf(it); if(i < 0) return; items.splice(i, 1); w.burst([laneX(it.lane), 1.4, it.z], '#ff6600', 18, { speed: 10, life: 0.5 }); },
+    heal(){ hull = Math.min(3, hull + 1); document.getElementById('prog-fill').style.width = `${hull / 3 * 100}%`; }
+  });
+
   Ghost.begin('runner');
   if(Ghost.racing) toast(`👻 Racing your best run — ${Ghost.target} to beat`, 2600);
 
@@ -33113,7 +33358,10 @@ P.games.runner = function(){
     if(over) return false;
     run += dt;
     speed = Math.min(MAX, speed + RAMP * dt);
-    dist += speed * dt;
+    SP.tick(dt, score());
+    // Time Warp slows the track (and the score with it — distance is score).
+    const tdt = dt * (SP.active('freeze') ? 0.25 : SP.foeScale());
+    dist += speed * tdt;
     invuln = Math.max(0, invuln - dt);
     if(jumpT > 0) jumpT = Math.max(0, jumpT - dt);
     x += (laneX(lane) - x) * (1 - Math.pow(0.0002, dt));
@@ -33123,13 +33371,15 @@ P.games.runner = function(){
     Ghost.sample((x / (LANE * 1.5) * 0.5 + 0.5) * BOARD_W);
 
     // Rows are spaced by DISTANCE, so a faster run does not become a denser one.
-    spawnZ += speed * dt;
+    spawnZ += speed * tdt;
     if(spawnZ > 0){ spawnRow(-150); spawnZ -= TRACK ? 19.5 : rnd(15, 24); }
 
     for(let i = items.length - 1; i >= 0; i--){
       const it = items[i];
-      it.z += speed * dt;
+      it.z += speed * tdt;
       it.spin += dt * 2.5;
+      // 🧲 The Magnet Field draws the data cubes into your lane.
+      if(it.kind === 'cube' && SP.active('magnet') && it.z > -35) it.lane = lane;
       if(it.z > 12){ items.splice(i, 1); continue; }
       if(Math.abs(it.z) > 1.3) continue;
       if(Math.abs(laneX(it.lane) - x) > 1.5) continue;
@@ -33144,6 +33394,7 @@ P.games.runner = function(){
       // A spike is jumpable; a wall is not.
       if(it.kind === 'spike' && air > 1.4) continue;
       if(invuln > 0) continue;
+      if(SP.guard()){ items.splice(i, 1); w.burst([laneX(it.lane), 1.4, it.z], '#a855f7', 16, { speed: 9, life: 0.4 }); continue; }
       items.splice(i, 1);
       takeHit();
       if(over) return false;
@@ -33221,6 +33472,7 @@ P.games.runner = function(){
       }
     }
     r.light({ pos:[x, 3.2 + air, 3.2], color: colour, intensity: 34, range: 20 });
+    SP.draw();
 
     // Hull pips.
     for(let i = 0; i < 3; i++){
@@ -39071,8 +39323,10 @@ P.games.cutter = function(){
     onUp(){ lastG = null; }
   });
 
-  const aimOf = c => c.spin ? c.base + c.spin * (gameT * c.speed + c.phase)
-                            : c.base + Math.sin(gameT * c.speed + c.phase) * c.span;
+  // The lamps sweep on their own clock (lampT), which the specials can slow.
+  let lampT = 0;
+  const aimOf = c => c.spin ? c.base + c.spin * (lampT * c.speed + c.phase)
+                            : c.base + Math.sin(lampT * c.speed + c.phase) * c.span;
   const inCone = (c, px, pz) => {
     const dx = px - c.x, dz = pz - c.z;
     const d = Math.hypot(dx, dz);
@@ -39089,6 +39343,16 @@ P.games.cutter = function(){
       if(!inCone(c, me.x, me.z)) break;
     }
   }
+
+  // ⚡ v60 · the specials (SPECIALS FOR THE 3D MISSIONS): Time Warp and
+  // Time Freeze slow or stop the lamps' sweep, an EMP blacks them out, a
+  // Phase Shift or Shield Burst keeps you unseen in a beam, the Magnet Field
+  // reaches for nodes, Overcharge doubles a tag.
+  const SP = K.specials3d(w, {
+    kinds: ['warp', 'phase', 'emp', 'magnet', 'freeze', 'overdrive', 'shield'], every: 180,
+    player: () => [me.x, 1, me.z],
+    clearFire(){ expo = 0; }
+  });
 
   registerRoundClock(n => {
     time += n;
@@ -39116,19 +39380,21 @@ P.games.cutter = function(){
   runLoop(dt => {
     if(scored) return false;
     gameT += dt;
+    SP.tick(dt, score);
+    lampT += dt * SP.foeScale();
     if(calm > 0) calm = Math.max(0, calm - dt);
 
     if(!over){
-      litNow = calm <= 0 && cones.some(c => inCone(c, me.x, me.z));
+      litNow = calm <= 0 && !SP.guard() && !SP.jammed() && cones.some(c => inCone(c, me.x, me.z));
       if(litNow) expo = Math.min(1, expo + dt * (0.62 * diff));
       else       expo = Math.max(0, expo - dt * 0.42);
       if(expo >= 1) detected();
 
       for(const n of nodes){
         if(n.got){ n.pulse = Math.max(0, n.pulse - dt * 2); continue; }
-        if(Math.hypot(n.x - me.x, n.z - me.z) < 1.5){
+        if(Math.hypot(n.x - me.x, n.z - me.z) < (SP.active('magnet') ? 4.5 : 1.5)){
           n.got = true; n.pulse = 1; tagged++;
-          score += NODE_PTS;
+          score += NODE_PTS * SP.scoreMul();
           setLive(capRaw(1250, score));
           snd('node', { semi: tagged * 2 });
           w.burst([n.x, 1.1, n.z], '#39ff88', 12, { speed: 6, life: 0.6, size: 0.22, vy: 3 });
@@ -39272,6 +39538,7 @@ P.games.cutter = function(){
                litNow ? '#ff2442' : '#cfe4ff', 14);
     status.at(0, 2.4, -HZ - 0.2);
     lab.sync(r);
+    SP.draw();
     w.end();
   });
 
@@ -44638,6 +44905,7 @@ function lcSim(opts){
   if(ARENA && ARENA.start){ player.x = ARENA.start.x; player.y = ARENA.start.y; player.dir = { ...ARENA.start.dir }; }
 
   function occupy(r, x, y){ grid[at(x, y)] = r.id + 1; r.trail.push([x, y]); r.x = x; r.y = y; }
+  const pend = [];
   function wipe(r, keepHead){
     for(const [x, y] of r.trail) if(grid[at(x, y)] === r.id + 1) grid[at(x, y)] = 0;
     r.trail = keepHead ? [[r.x, r.y]] : [];
@@ -44811,9 +45079,19 @@ function lcSim(opts){
       if((x === last.x && y === last.y) || (x === -last.x && y === -last.y)) return;
       if(player.queue.length < 2) player.queue.push({ x, y });
     },
+    // ⚡ v60 · A special (the 3D build's missiles and nova) derezzes a rival.
+    kill(r){
+      if(!r || r.player || !r.alive || S.over) return false;
+      pend.push({ type: 'derez', color: r.color, x: r.x, y: r.y, trail: r.trail.slice() });
+      r.alive = false;
+      wipe(r, false);
+      S.kills++;
+      if(player.alive) S.score += LC.KILL;
+      return true;
+    },
     // Advances the world by dt seconds; returns what happened.
     update(dt){
-      const ev = [];
+      const ev = pend.splice(0);
       if(S.over) return ev;
       if(S.nextWaveIn >= 0){
         S.nextWaveIn -= dt;
@@ -44836,7 +45114,10 @@ let lcLast = null;
 // the renderer's; it gets the sim and the events of the frame.
 function lcRound(o){
   const diff = getDifficultyModifier();
-  const sim = lcSim({ diff, color: getEquippedColorHex(), absorb: () => survivedFatal(),
+  o = o || {};
+  // ⚡ A 3D round's Shield Burst / Phase Shift (o.guard) burns through a wall
+  // the way the Shield Overlay perk does, without spending the perk.
+  const sim = lcSim({ diff, color: getEquippedColorHex(), absorb: () => (o.guard ? !!o.guard() : false) || survivedFatal(),
                       arena: (typeof labArena === 'function') ? labArena() : null });
   const S = sim.S;
   const time0 = Math.round(LC.CLOCK * getTimeModifier());
@@ -44907,7 +45188,7 @@ function lcRound(o){
     // One frame: advance, publish, and hand the events to the renderer.
     frame(dt){
       if(ended) return [];
-      const ev = sim.update(dt);
+      const ev = sim.update(dt * (o.timeScale ? o.timeScale() : 1));
       for(const e of ev){
         if(e.type === 'derez'){ snd('explode'); }
         else if(e.type === 'dead'){ snd('bigExplode'); }
@@ -45099,9 +45380,20 @@ P.games.lightcycle = function(){
   }));
   if(!w) return;
   const r = w.r;
-  const round = lcRound();
+  let SP = null;
+  const round = lcRound({ guard: () => !!SP && SP.guard(), timeScale: () => SP ? (SP.active('freeze') ? 0.35 : SP.foeScale()) : 1 });
   const S = round.S;
   const { COLS, ROWS } = LC;
+  // ⚡ v60 · the specials (SPECIALS FOR THE 3D MISSIONS): missiles and a nova
+  // derez rivals, a shield or a phase burns through a wall, Time Warp and
+  // Time Freeze slow the grid.
+  const lcPos = rd => [rd.x - COLS / 2 + 0.5, 0.6, rd.y - ROWS / 2 + 0.5];
+  SP = K.specials3d(w, {
+    kinds: ['shield', 'smart', 'warp', 'nova', 'phase', 'freeze', 'salvo'], every: 160, novaR: 7,
+    player: () => lcPos(round.sim.player),
+    targets: () => S.riders.filter(q => q.alive && !q.player).map(q => ({ p: lcPos(q), r: 0.8, obj: q })),
+    hit(q){ round.sim.kill(q); }
+  });
   const wx = x => x - COLS / 2 + 0.5;
   const wz = y => y - ROWS / 2 + 0.5;
   const WALL_H = 0.9, WALL_W = 0.14;
@@ -45240,6 +45532,8 @@ P.games.lightcycle = function(){
       // Only yours carries a lamp (a rival is lit by the scene, see ENEMY_PAINT).
       if(rd.player) r.light({ pos:[hx, 1.6, hz], color, intensity: 110, range: 11 });
     }
+    SP.tick(dt, S.score);
+    SP.draw();
     w.end();
   });
 };
@@ -45893,7 +46187,10 @@ function dmSim(opts){
       }
     }
     stepPlayer(dt, ev);
-    ghosts.forEach(g => stepGhost(g, dt));
+    // ⚡ A 3D round's Time Warp / Time Freeze slows or holds the daemons.
+    const gdt = dt * (opts.ghostScale ? opts.ghostScale() : 1);
+    if(gdt > 0) ghosts.forEach(g => stepGhost(g, gdt));
+    ev.push(...pend.splice(0));
 
     // Contact.
     const p = ppos();
@@ -45928,17 +46225,30 @@ function dmSim(opts){
     return ev;
   }
 
+  // ⚡ v60 · A special (the 3D build's missiles and nova) sends a daemon home.
+  const pend = [];
+  function zap(g){
+    if(!g || (g.state !== 'active' && g.state !== 'fright')) return false;
+    const q = gpos(g), pts = DM.GHOST_PTS[0];
+    S.eaten++; S.score += pts;
+    g.state = 'eyes';
+    pend.push({ type: 'eat', x: q.x, y: q.y, pts, color: g.color });
+    return true;
+  }
   return {
-    S, player, ghosts, dots, cores, cell, walkable, ppos, gpos, update,
+    S, player, ghosts, dots, cores, cell, walkable, ppos, gpos, update, zap,
     steer(x, y){ player.want = { x, y }; }
   };
 }
 
 // ── THE ROUND ──────────────────────────────────────────────────────────
 let dmLast = null;             // the last round, for the console
-function dmRound(){
+function dmRound(o){
+  o = o || {};
   const diff = getDifficultyModifier();
-  const sim = dmSim({ diff, absorb: () => survivedFatal(),
+  // ⚡ o.guard: a 3D round's Shield Burst / Phase Shift throws a daemon home
+  // the way the Shield Overlay perk does, without spending the perk.
+  const sim = dmSim({ diff, absorb: () => (o.guard ? !!o.guard() : false) || survivedFatal(), ghostScale: o.ghostScale,
                       maze: (typeof labMaze === 'function') ? labMaze() : null });
   const S = sim.S;
   const time0 = Math.round(DM.CLOCK * getTimeModifier());
@@ -46188,11 +46498,21 @@ P.games.muncher = function(){
   const w = begin3d(Object.assign({ ease: 0.1 }, NIGHT));
   if(!w) return;
   const r = w.r;
-  const round = dmRound();
+  let SP = null;
+  const round = dmRound({ guard: () => !!SP && SP.guard(), ghostScale: () => SP ? SP.foeScale() : 1 });
   const sim = round.sim, S = round.S;
   const { COLS, ROWS } = DM;
   const wx = x => x - COLS / 2 + 0.5;
   const wz = y => y - ROWS / 2 + 0.5;
+  // ⚡ v60 · the specials (SPECIALS FOR THE 3D MISSIONS): missiles and a nova
+  // send daemons home, a shield or a phase throws one off, Time Warp and Time
+  // Freeze slow or hold them.
+  SP = K.specials3d(w, {
+    kinds: ['shield', 'freeze', 'smart', 'warp', 'nova', 'phase'], every: 400, novaR: 5,
+    player: () => { const p = sim.ppos(); return [wx(p.x), 0.7, wz(p.y)]; },
+    targets: () => sim.ghosts.filter(g => g.state === 'active' || g.state === 'fright').map(g => { const q = sim.gpos(g); return { p: [wx(q.x), 0.7, wz(q.y)], r: 0.6, obj: g }; }),
+    hit(g){ sim.zap(g); }
+  });
   const me = mine();
   let mouth = 0;
 
@@ -46280,6 +46600,8 @@ P.games.muncher = function(){
     }
     r.light({ pos:[-8, 12, -8], color:'#4f7dff', intensity: 260, range: 40 });
     r.light({ pos:[ 8, 12,  8], color:'#ff5ad8', intensity: 180, range: 40 });
+    SP.tick(dt, S.score);
+    SP.draw();
     w.end();
   });
 };
@@ -54020,6 +54342,8 @@ function abortOpenWorld(){
 // so a lane can never leak into the next solo round. A mission with no world
 // on this build plays classic inside an open-world run.
 var owLane = null;
+// 🧊 The running mode and the way it plays: '2d' (classic), '3d' or 'open'.
+var laneMode = null, laneKind = null;
 var OW_LANES_KEY = 'pi_ow_lanes';
 var OW_LANE_NAMES = { campaign: 'CAMPAIGN', arena: 'NETWORK ARENA', bossrush: 'BOSS RUSH', party: 'PARTY MODE',
                       lab: 'BRICK LAB', daily: 'DAILY HACK', endless: 'ENDLESS PROTOCOL', anomaly: 'WEEKLY ANOMALY' };
@@ -54027,22 +54351,37 @@ function owLanePrefs(){
   try{ const o = JSON.parse(localStorage.getItem(OW_LANES_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; }
   catch(e){ return {}; }
 }
-function owLanePref(mode){ return !!owLanePrefs()[mode]; }
-function owSetLanePref(mode, on){
+// The way a mode plays on this device. Unset, it follows the arcade's 2D/3D
+// setting. (v60's first cut stored 1 / 0 for open / classic.)
+function laneKindPref(mode){
+  const v = owLanePrefs()[mode];
+  if(v === 'open' || v === 1) return 'open';
+  if(v === '3d' || v === '2d') return v;
+  return (window.PI3D && PI3D.wanted && PI3D.wanted() === '3d') ? '3d' : '2d';
+}
+function owLanePref(mode){ return laneKindPref(mode) === 'open'; }
+function owSetLaneKind(mode, kind){
   const o = owLanePrefs();
-  o[mode] = on ? 1 : 0;
+  o[mode] = kind;
   try{ localStorage.setItem(OW_LANES_KEY, JSON.stringify(o)); }catch(e){}
   owPaintLanes();
 }
 function owWorldsOk(){ return !!(window.PI3D && PI3D.supported && PI3D.supported() && PI3D.startOW); }
+function gl3dOk(){ return !!(window.PI3D && PI3D.supported && PI3D.supported()); }
 // A mode arms its lane as it starts: from its banner's switch, or `on` when
 // the choice was made elsewhere (a Network Arena room carries its host's).
 function owLaneArm(mode, on){
-  owLane = ((on === undefined ? owLanePref(mode) : !!on) && owWorldsOk()) ? mode : null;
+  let kind = laneKindPref(mode);
+  if(on === true) kind = 'open';
+  else if(on === false && kind === 'open') kind = (window.PI3D && PI3D.wanted && PI3D.wanted() === '3d') ? '3d' : '2d';
+  if(kind === 'open' && !owWorldsOk()) kind = '2d';
+  laneMode = mode; laneKind = kind;
+  owLane = kind === 'open' ? mode : null;
+  try{ if(window.PI3D && PI3D.syncBody) PI3D.syncBody(); }catch(e){}
   return !!owLane;
 }
-function owLaneLive(){
-  switch(owLane){
+function laneLive(mode){
+  switch(mode){
     case 'daily':    return !!dailyActive;
     case 'bossrush': return !!bossRush;
     case 'endless':  return !!endless;
@@ -54054,6 +54393,13 @@ function owLaneLive(){
   }
   return false;
 }
+function owLaneLive(){ return !!owLane && laneLive(owLane); }
+// The renderer asks this for every round (PI3D.is3D): the running mode's own
+// 2D / 3D choice, or nothing (the arcade's setting).
+if(window.PI3D) PI3D.modeOverride = () => {
+  if(!laneMode || !laneLive(laneMode)) return null;
+  return laneKind === '3d' ? '3d' : laneKind === '2d' ? '2d' : null;
+};
 // True when THIS round of the running mode is the mission's open world.
 function owLaneFor(gid){
   return !!owLane && owLaneLive() && !!(window.PI3D && PI3D.hasOW && PI3D.hasOW(gid));
@@ -54061,6 +54407,7 @@ function owLaneFor(gid){
 // The one start a mode's round goes through: the open world when its lane is
 // on, else the 3D build, else 2D. Returns true when a world started.
 function startMissionRound(gid){
+  try{ if(window.PI3D && PI3D.syncBody) PI3D.syncBody(); }catch(e){}
   if(owLaneFor(gid)){
     owRun = { gid, t0: Date.now(), lane: owLane };
     document.getElementById('game-screen').classList.add('canvas-game');
@@ -54085,31 +54432,37 @@ function startMissionRound(gid){
 // every player at the party — rides the same world.
 function owSaltFrom(n){ if(window.PI3D) PI3D.owSalt = (n | 0) & 0x7fffffff; }
 
-// The switches on the mode banners.
+// The switches on the mode banners: ▶ 2D CLASSIC · 🧊 3D · 🌐 OPEN WORLD.
 function owPaintLanes(){
-  const prefs = owLanePrefs(), ok = owWorldsOk();
+  const okOW = owWorldsOk(), ok3 = gl3dOk();
   document.querySelectorAll('.lane-pick[data-lane]').forEach(box => {
-    const on = !!prefs[box.dataset.lane] && ok;
-    box.classList.toggle('no-ow', !ok);
+    let kind = laneKindPref(box.dataset.lane);
+    if(kind === 'open' && !okOW) kind = '2d';
+    if(kind === '3d' && !ok3) kind = '2d';
+    box.classList.toggle('no-ow', !okOW);
     box.querySelectorAll('.lp-seg').forEach(b => {
-      const mine = (b.dataset.v === 'open') === on;
+      const v = b.dataset.v === 'classic' ? '2d' : b.dataset.v;
+      const mine = v === kind;
       b.classList.toggle('on', mine);
       b.setAttribute('aria-pressed', String(mine));
     });
-    box.closest('.mp-banner')?.classList.toggle('lane-ow', on);
+    box.closest('.mp-banner')?.classList.toggle('lane-ow', kind === 'open');
   });
 }
 document.querySelectorAll('.lane-pick[data-lane] .lp-seg').forEach(b => b.addEventListener('click', ev => {
   ev.stopPropagation();
-  const box = b.closest('.lane-pick'), mode = box.dataset.lane, on = b.dataset.v === 'open';
-  if(on && !owWorldsOk()){ snd('deny'); toast('🌐 Open worlds are 3D — this browser has no WebGL2.', 3000); return; }
-  if(on === owLanePref(mode)) return;
-  owSetLanePref(mode, on);
+  const box = b.closest('.lane-pick'), mode = box.dataset.lane;
+  const kind = b.dataset.v === 'classic' ? '2d' : b.dataset.v;
+  if(kind === 'open' && !owWorldsOk()){ snd('deny'); toast('🌐 Open worlds are 3D — this browser has no WebGL2.', 3000); return; }
+  if(kind === '3d' && !gl3dOk()){ snd('deny'); toast('🧊 This browser has no WebGL2 — 3D cannot run here.', 3000); return; }
+  if(kind === laneKindPref(mode) && owLanePrefs()[mode] != null) return;
+  owSetLaneKind(mode, kind);
   snd('tab');
   const name = OW_LANE_NAMES[mode] || mode.toUpperCase();
-  toast(on ? '🌐 ' + name + ' — every round plays in its open world'
-             + (mode === 'arena' ? ' (score races; live duels stay classic)' : '')
-           : '▶ ' + name + ' — the classic missions', 2600);
+  toast(kind === 'open' ? '🌐 ' + name + ' — every round plays in its open world'
+                          + (mode === 'arena' ? ' (score races only)' : '')
+      : kind === '3d' ? '🧊 ' + name + ' — every round plays in 3D'
+      : '▶ ' + name + ' — the classic 2D missions', 2600);
 }));
 try{ owPaintLanes(); }catch(e){}
 
@@ -63788,7 +64141,9 @@ P.ow.cutter = function(){
         const d = lightDir(it);
         r.draw('cylinder', { pos: [it.p[0], 1.6, it.p[2]], scale: [1, 3.2, 1], color: '#2a2a34', metallic: 0.8, roughness: 0.3 });
         const dark = SP.jammed();
-        r.draw('turret', { pos: [it.p[0], 3.4, it.p[2]], rot: [0, Math.atan2(-d[0], -d[2]), 0], scale: 1, color: '#6a6a7a', metallic: 0.6, roughness: 0.3, emissive: '#ffd27a', emissiveStrength: dark ? 0.05 : 0.8 });
+        // ✨ v60 · A hostile like the others: painted bright, not a grey hull
+        // with a lamp glow (its beam is the light it gives).
+        r.draw('turret', { pos: [it.p[0], 3.4, it.p[2]], rot: [0, Math.atan2(-d[0], -d[2]), 0], scale: 1, ...P.kit.foeLook(dark ? '#8a7a3a' : '#ffc23a', false) });
         if(!dark){
           fan(it.p, d, it.range, it.half, '#ffd27a', 1);
           if(nl++ < 4) r.light({ pos: V.add(it.p, [d[0] * 8, 3, d[2] * 8]), color: '#ffe0a0', intensity: 70, range: 16 });

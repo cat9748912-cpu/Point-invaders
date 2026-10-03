@@ -5621,7 +5621,7 @@ body.mode-3d .lab-sw.on{box-shadow:0 1px 0 #0a8f9a,0 2px 0 #0a8f9a,0 3px 0 #0554
    modes' lane switches and the in-round HUD canvas. Furniture reused
    (.mp-banner, .fb-overlay); only the accents are new.
    ══════════════════════════════════════════════════════════════ */
-/* 🌐 v60 · The modes' lane switches: ▶ CLASSIC or 🌐 OPEN WORLD on each event
+/* 🌐 v60 · The modes' lane switches: ▶ CLASSIC, 🧊 3D or 🌐 OPEN WORLD on each event
    banner (§ 31), in the grid switch's language at a banner's size. */
 .lane-pick{
   display:inline-flex;margin-top:8px;max-width:100%;position:relative;z-index:1;
@@ -5636,11 +5636,16 @@ body.mode-3d .lab-sw.on{box-shadow:0 1px 0 #0a8f9a,0 2px 0 #0a8f9a,0 3px 0 #0554
 .lp-seg:focus-visible{outline:2px solid var(--cyan);outline-offset:-2px}
 .lp-seg.on{color:#fff;background:linear-gradient(90deg,rgba(0,245,255,.22),rgba(0,245,255,.08))}
 .lp-seg[data-v="open"].on{background:linear-gradient(90deg,rgba(255,45,154,.38),rgba(255,138,58,.26));box-shadow:inset 0 0 14px rgba(255,90,180,.25)}
-.lane-pick.no-ow .lp-seg[data-v="open"]{opacity:.4;cursor:not-allowed}
+.lp-seg[data-v="3d"].on{background:linear-gradient(90deg,rgba(168,85,247,.38),rgba(0,245,255,.18));box-shadow:inset 0 0 14px rgba(168,85,247,.25)}
+.lp-seg+.lp-seg{border-left:1px solid var(--border2)}
+.lane-pick.no-ow .lp-seg[data-v="open"],.lane-pick.no-ow .lp-seg[data-v="3d"]{opacity:.4;cursor:not-allowed}
 /* A banner on its open-world lane wears the grid's open-world edge. */
 .mp-banner.lane-ow{border-color:rgba(255,120,200,.5);box-shadow:0 0 26px rgba(255,45,154,.12)}
 @media(max-width:700px){
   .lane-pick{margin-left:auto;margin-right:auto}
+}
+@media(max-width:380px){
+  .lp-seg{padding:6px 8px;letter-spacing:.04em}
 }
 
 /* The mode switch above the grid. */
@@ -5693,6 +5698,7 @@ body.mode-3d .lab-sw.on{box-shadow:0 1px 0 #0a8f9a,0 2px 0 #0a8f9a,0 3px 0 #0554
   align-items:center;pointer-events:none;z-index:3;font:700 11px/1 'Orbitron','Rajdhani',sans-serif;
   letter-spacing:.06em;white-space:nowrap}
 .gl-abil:empty{display:none}
+.gl-abil.tap .ga-next{pointer-events:auto;cursor:pointer}
 .gl-abil .ga-next,.gl-abil .ga-on{position:relative;overflow:hidden;padding:7px 11px;border-radius:7px;
   background:rgba(4,8,18,.72);border:1.5px solid var(--ac,#00f5ff);color:#fff;
   box-shadow:0 0 10px color-mix(in srgb,var(--ac,#00f5ff) 45%,transparent)}
