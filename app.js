@@ -54156,7 +54156,7 @@ var OW_INFO = {
   click:      { tag: 'Reactor cores drift through an endless sky-dock — dive at each one and overload it before it vents.' },
   nebula:     { tag: 'Free flight through an endless asteroid belt — hunt raider squadrons and gut capital frigates.' },
   tetris:     { tag: 'A well with no walls: blocks fall on an endless floor, and any ten in a row clear.' },
-  dodge:      { tag: 'An open plain under a bombardment that never ends — keep moving, grab the energy, stay alive.' },
+  dodge:      { tag: 'An open plain under a bombardment — outlast the clock for the full cap; grab the energy, stay alive.' },
   memory:     { tag: 'Monoliths stand all over an endless field. Flip one, remember WHERE, find its twin.' },
   math:       { tag: 'Answer gates float in an open sky — read the sum, fly through the right number.' },
   reaction:   { tag: 'Beacons ignite anywhere around you — turn, burn, and reach each one before it dies.' },
@@ -54169,7 +54169,7 @@ var OW_INFO = {
   hacker:     { tag: 'Network nodes scattered to the horizon — reach them in sequence before the trace closes.' },
   meteor:     { tag: 'Defend a station adrift in open space — meteors come from every direction now.' },
   battlebots: { tag: 'Siege across an open battlefield — deploy anywhere, burn every enemy outpost.' },
-  path:       { tag: 'Lay power cable across an endless board — every relay you connect overclocks the grid.' },
+  path:       { tag: 'Lay power cable across an endless board — power 20 relays to complete the circuit (the full cap); every relay overclocks the grid.' },
   freq:       { tag: 'Radio towers across an endless dark — drive into range and tune each one in.' },
   rhythm:     { tag: 'Beat gates on an open plain — steer through each on the pulse, anywhere ahead.' },
   merge:      { tag: 'You ARE a core. Absorb your equals, double up, and never touch anything bigger.' },
@@ -56594,14 +56594,23 @@ P.ow.nebula = function(){
     // with black stripes that the sun reads like the player's own airframe.
     // The neon sprite on the nose and the red lamp hung round each one are
     // gone — at range they were a red smudge with a dark hull nobody could see.
+    // ✨ v60 · A squadron is a MIX of the Blender hulls, like the 3D
+    // mission's: its leader flies the twin-nacelle HEAVY (purple), the odd
+    // wingmen the needle DART (orange), the rest the RAIDER (red). Same flight
+    // model and the same one-hit kill for all three — the hull is the read on
+    // where each sits in the formation.
     for(const f of foes){
       const fb = basisLook(f.f, [0, 1, 0], f.bank);
-      r.draw('raider', { pos: f.p, m3: fb.m3z, scale: 2.3, color: f.flash > 0 ? '#ffffff' : ENEMY_PAINT.red,
-                         metallic: ENEMY_FINISH.metallic, roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7 });
-      for(const s of [-1, 1]){
-        const ep = V.add(V.madd(f.p, f.f, -1.45), V.add(V.mul(fb.r, s * 0.55), V.mul(fb.u, -0.14)));
-        plume(w, ep, V.mul(f.f, -1), { len: 3.2, width: 0.55, color: '#ff8a3a', core: '#ffe6c8', gain: 0.9, ph: s * 3 });
-      }
+      const hull = f.slot === 0 ? 'heavy' : f.slot % 2 ? 'dart' : 'raider';
+      const paint = hull === 'heavy' ? ENEMY_PAINT.purple : hull === 'dart' ? ENEMY_PAINT.orange : ENEMY_PAINT.red;
+      r.draw(hull, { pos: f.p, m3: fb.m3z, scale: hull === 'heavy' ? 2.2 : 2.3, color: f.flash > 0 ? '#ffffff' : paint,
+                     metallic: ENEMY_FINISH.metallic, roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7 });
+      // Flames out of each hull's own nozzles.
+      const noz = hull === 'heavy' ? [[-1.23, -0.04, -1.5], [1.23, -0.04, -1.5]] : hull === 'dart' ? [[0, 0, -1.72]] : [[-0.55, -0.14, -1.45], [0.55, -0.14, -1.45]];
+      noz.forEach(([x, y, z], i) => {
+        const ep = V.add(V.madd(f.p, f.f, z), V.add(V.mul(fb.r, x), V.mul(fb.u, y)));
+        plume(w, ep, V.mul(f.f, -1), { len: hull === 'dart' ? 3.8 : 3.2, width: hull === 'dart' ? 0.7 : 0.55, color: '#ff8a3a', core: '#ffe6c8', gain: 0.9, ph: i * 3 - 1 });
+      });
     }
 
     // Shots.
@@ -62876,8 +62885,17 @@ P.ow.path = function(){
   const say = (s, t) => { msg = s; msgT = t || 2; };
   const stepTime = () => Math.max(0.11, 0.17 - relays * 0.0015) / Math.min(1.3, diff);
 
+  // 🔌 v60 · COMPLETING the circuit: power RELAY_GOAL relays and the mission
+  // is done — it pays its full cap, as the classic board does when every
+  // square is routed. What the run banks after that is carried past the cap,
+  // where it separates two finished circuits.
+  const RELAY_GOAL = 20;
   function connect(x, z){
     relays++;
+    if(relays === RELAY_GOAL){
+      snd('victory'); w.kick(1.4);
+      say('🔌 CIRCUIT COMPLETE — FULL ' + META.path.maxPts + ' BANKED · KEEP ROUTING', 3.2);
+    }
     powered.add(key(x, z));
     for(const k of live){ const c = cable.get(k); if(c) c.locked = true; }
     const left = SPOOL - live.length;
@@ -62925,9 +62943,11 @@ P.ow.path = function(){
   function finish(why){
     if(finished) return;
     finished = true;
-    owFinish('path', score, {
-      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
-      '⚡ Relays Powered': relays,
+    const done = relays >= RELAY_GOAL, full = META.path.maxPts;
+    owFinish('path', score + (done ? full : 0), {
+      '📡 Run': done ? 'CIRCUIT COMPLETE' : why === 'clock' ? 'CLOCK EXPIRED' : 'ENDED',
+      '⚡ Relays Powered': relays + ' / ' + RELAY_GOAL,
+      ...(done ? { '🔌 Circuit Complete': 'FULL ' + full + ' · +' + score + ' past the cap' } : {}),
       '⏫ Best Overclock': '×' + bestOc,
       '🧵 Cable Laid': laid * S + ' m',
       '💥 Shorts': shorts,
@@ -63014,7 +63034,7 @@ P.ow.path = function(){
     hud.text(Wd / 2, 26, 'OVERCLOCK ×' + oc, { size: 16, color: OCC[(oc - 1) % OCC.length] });
     const left = SPOOL - live.length;
     hud.bar(Wd / 2 - 80, 54, 160, 7, left / SPOOL, left < 8 ? '#ff4a4a' : '#00f5ff', 'SPOOL');
-    hud.text(Wd - 16, Ht - 40, '⚡ ' + relays, { size: 14, align: 'right', color: '#ffd700' });
+    hud.text(Wd - 16, Ht - 40, '⚡ ' + relays + (relays < RELAY_GOAL ? ' / ' + RELAY_GOAL : ' ✓ COMPLETE'), { size: 14, align: 'right', color: '#ffd700' });
     hud.text(Wd - 16, Ht - 20, live.length + ' / ' + SPOOL + ' laid', { size: 12, align: 'right', color: '#bff6ff' });
     if(msgT > 0) hud.text(Wd / 2, 80, msg, { size: 13, color: '#ffffff', alpha: clamp(msgT, 0, 1) });
     hud.touchPad(I);
