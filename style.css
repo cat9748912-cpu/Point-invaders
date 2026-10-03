@@ -5682,3 +5682,19 @@ body.mode-3d .lab-sw.on{box-shadow:0 1px 0 #0a8f9a,0 2px 0 #0a8f9a,0 3px 0 #0554
 
 /* The in-round HUD: one canvas over the board, never in the way of input. */
 .ow-hud{position:absolute;left:0;top:0;pointer-events:none}
+
+/* ⚡ v60 · THE ABILITY STRIP — the 3D builds' readout of banked special
+   abilities (see abilityStrip() in app.js). Rides the GL fx layer, bottom
+   centre, above the board's own edge and clear of the touch pad. */
+.gl-abil{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);display:flex;gap:8px;
+  align-items:center;pointer-events:none;z-index:3;font:700 11px/1 'Orbitron','Rajdhani',sans-serif;
+  letter-spacing:.06em;white-space:nowrap}
+.gl-abil:empty{display:none}
+.gl-abil .ga-next,.gl-abil .ga-on{position:relative;overflow:hidden;padding:7px 11px;border-radius:7px;
+  background:rgba(4,8,18,.72);border:1.5px solid var(--ac,#00f5ff);color:#fff;
+  box-shadow:0 0 10px color-mix(in srgb,var(--ac,#00f5ff) 45%,transparent)}
+.gl-abil .ga-next b{color:var(--ac,#00f5ff);margin-right:4px}
+.gl-abil .ga-next em{font-style:normal;opacity:.65;margin-left:4px}
+.gl-abil .ga-on{color:var(--ac,#00f5ff)}
+.gl-abil .ga-on i{position:absolute;left:0;bottom:0;height:2px;background:var(--ac,#00f5ff)}
+@media (max-width:520px){.gl-abil{font-size:9px;bottom:6px}.gl-abil .ga-next,.gl-abil .ga-on{padding:5px 8px}}

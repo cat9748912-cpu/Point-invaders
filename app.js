@@ -2840,6 +2840,8 @@ function resetGameStage(gid){
   // and would pay the player for it.
   chaos.last = null;
   chaos.lastStack = [];
+  // 🔺 …and so does how far past its cap the last round went.
+  roundRaw = 0;
   // 🎬 The last round's clip belongs to the last round's card (§ 27).
   try{ if(typeof clipReset === 'function') clipReset(); }catch(e){}
   // 🌳 Signal Filter's per-round allowance. Zeroed here and restocked by
@@ -3418,8 +3420,42 @@ function abortBossRush(){
 let vsLiveTap = null;      // (n) => void            — the on-screen number changed
 let vsResultTap = null;    // (gid, pts, bd) => bool — true means "I've taken it"
 
+// 🔺 THE SCORE ABOVE THE CAP. Every mission clamps what it PAYS to its cap, so
+// two runs that both reach it used to be indistinguishable: a capped run could
+// never take down a capped challenge, and a race between two of them was a
+// draw. The clamp stays — the award, medals and records are all measured on
+// the capped number — but the round remembers how far past the cap it really
+// went, and that is what decides between two runs that both hit the ceiling.
+//
+// One number per round, reset by resetGameStage(): the highest score the round
+// SHOWED (setLive) or REPORTED (capRaw, at the clamp in each mission's ending).
+let roundRaw = 0;
+function noteRawScore(n){
+  const v = Math.round(+n || 0);
+  if(v > roundRaw) roundRaw = v;
+}
+// The clamp every mission ends on, with the uncapped number noted on the way.
+function capRaw(cap, raw){
+  noteRawScore(raw);
+  return Math.min(cap, raw);
+}
+// What this round actually scored, uncapped — never below the capped figure.
+const roundRawOf = pts => Math.max(Math.round(+pts || 0), roundRaw);
+// How a capped run compares with another. `a`/`b` are { pts, raw } on the same
+// mission: the higher capped score wins, and only when BOTH reached the cap
+// does the score past it break the tie. Returns 1, -1 or 0.
+function capCompare(gid, a, b){
+  const cap = (META[gid] && META[gid].maxPts) || 0;
+  const ap = Math.round(+a.pts || 0), bp = Math.round(+b.pts || 0);
+  if(ap !== bp) return ap > bp ? 1 : -1;
+  if(!(cap > 0 && cap < 90000) || ap < cap) return 0;
+  const ar = Math.max(ap, Math.round(+a.raw || 0)), br = Math.max(bp, Math.round(+b.raw || 0));
+  return ar > br ? 1 : ar < br ? -1 : 0;
+}
+
 const setLive=n=>{
   document.getElementById('g-pts').textContent=n;
+  noteRawScore(n);
   // 📈 The pace ghost rides here because this is the one line every mission in
   // the arcade already calls to publish its live score. Nothing opts in, nothing
   // can forget to, and a mission added tomorrow gets a personal best to race
@@ -3492,7 +3528,9 @@ function showResultsCard(gid,pts,bd,opts){
   // ⚔️ Settled here for the same reason everything else is: it is a fact about
   // what this round PAYS. Stands the challenge down either way — a challenge is
   // taken once, win or lose — and hands back the tier it borrowed.
-  const chalRes = opts.internal ? null : settleChallenge(gid, pts);
+  // 🔺 The run uncapped (see roundRaw) — the tie-break between capped runs.
+  const rawTop = roundRawOf(pts);
+  const chalRes = opts.internal ? null : settleChallenge(gid, pts, rawTop);
   const chalMult = chalRes ? chalRes.mult : 1;
   const finalPts = Math.round(pts * (opts.noBonus ? 1 : tier.pointMult) * perkMult * chaosMult * chipMult * echoMult * chalMult);
   // ♾️ The cap a run is measured against. Ordinarily the mission's own, but an
@@ -3537,6 +3575,13 @@ function showResultsCard(gid,pts,bd,opts){
   // Rows the round itself can't know about: the perk cut it just paid, the
   // modifier it was played under, and the seed if it was the Daily Hack.
   bd = { ...bd };
+  // 🔺 A run that reached its cap and kept going says how far — that margin is
+  // what wins a challenge, a race or a board tie between two capped runs.
+  // (An open world's card is the `openworld` lane, held to its MISSION's cap.)
+  const capOf = (opts.capGid && META[opts.capGid] ? META[opts.capGid].maxPts : (META[gid] && META[gid].maxPts)) || 0;
+  if(capOf > 0 && capOf < 90000 && pts >= capOf && rawTop > capOf){
+    bd['🔺 Past The Cap'] = `+${(rawTop - capOf).toLocaleString()} · breaks ties at ${capOf.toLocaleString()}`;
+  }
   if(perkMult > 1) bd['🌳 Perk · Arcade Boost'] = `+${Math.round((perkMult-1)*100)}%`;
   if(chipMult > 1) bd['⚙️ Overclock Chip'] = `+${Math.round((chipMult-1)*100)}%`;
   // `none` means there was a pace ghost RECORDING but nothing to race, which is
@@ -3617,11 +3662,11 @@ function showResultsCard(gid,pts,bd,opts){
   // also hands the player's stability dial back. It runs on `dailyActive`, not
   // on `dailyRun`: a practice replay has nothing to post but still has a tier
   // to release.
-  if(dailyActive) settleDailyRun(gid, finalPts);
+  if(dailyActive) settleDailyRun(gid, finalPts, rawTop);
   // 🌒 The same shape, one bucket up: the week's one slot, claimed by the first
   // run that banks something, and handed the player's own stability dial back
   // whichever way the round ended.
-  if(anomalyActive) settleAnomalyRun(gid, finalPts);
+  if(anomalyActive) settleAnomalyRun(gid, finalPts, rawTop);
 
   // ⚔️ POST AS CHALLENGE. Offered only for a run that can actually be raced:
   // a solo mission (a duel, a Boss Rush total and the Daily Hack are all runs
@@ -3639,7 +3684,7 @@ function showResultsCard(gid,pts,bd,opts){
     if(postable){
       postBtn.onclick = async () => {
         postBtn.disabled = true;
-        const ok = await postChallenge(gid, pts, tier.key, curve);
+        const ok = await postChallenge(gid, pts, tier.key, curve, rawTop);
         postBtn.textContent = ok ? '⚔️ Challenge Posted' : '⚔️ Post As Challenge';
         postBtn.disabled = ok;
       };
@@ -3648,7 +3693,7 @@ function showResultsCard(gid,pts,bd,opts){
     }
   }
   // 🔗 Tells 📣 Share Score whether this run can travel as a challenge link.
-  try{ if(typeof clNoteRun === 'function') clNoteRun(gid, pts, tier.key, paceRes, clFlags, chalRes); }
+  try{ if(typeof clNoteRun === 'function') clNoteRun(gid, pts, tier.key, paceRes, clFlags, chalRes, rawTop); }
   catch(e){ console.warn('Challenge link note failed:', e); }
   // 🎬 The clip's button — shown now if the clip is ready, or the moment it is (§ 27).
   try{ if(typeof clipPaintButton === 'function') clipPaintButton(); }catch(e){}
@@ -4066,7 +4111,7 @@ function thinCurve(pts){
   return out;
 }
 
-async function postChallenge(gid, pts, tier, curve){
+async function postChallenge(gid, pts, tier, curve, raw){
   if(!user) return false;
   if(!db || offlineMode){
     snd('deny');
@@ -4079,9 +4124,16 @@ async function postChallenge(gid, pts, tier, curve){
     at: Date.now(),
     curve: thinCurve(curve)
   };
+  // 🔺 How far past the cap the run went. Kept OUT of the challenge record —
+  // its shape predates it and a validated shape refuses a new child, taking
+  // the whole post down with it — in a key of its own, tied to this post by
+  // its timestamp so a stale one can never vouch for a newer challenge.
+  const tb = { at: rec.at, raw: Math.max(rec.pts, Math.round(+raw || 0)) };
   try{
     await db.ref(`players/${user.uid}/challenge`).set(rec);
-    user.challenge = rec;
+    db.ref(`players/${user.uid}/tiebreak/chal`).set(tb)
+      .catch(e => console.warn('Challenge tie-break not stored (rules?):', e && e.code));
+    user.challenge = { ...rec, raw: tb.raw };
     snd('purchase');
     toast(`⚔️ CHALLENGE POSTED — ${META[gid].emoji} ${META[gid].name} · ${rec.pts.toLocaleString()} to beat`, 3600);
     loadChallenges();
@@ -4124,7 +4176,10 @@ function loadChallenges(){
       const ch = d.challenge;
       if(!ch || !ch.gid || !META[ch.gid] || !(ch.pts > 0)) return;
       if(c.key === user?.uid) return;                  // yours is shown separately
-      list.push({ uid: c.key, ...ch });
+      // 🔺 The run past its cap, when the post carried one (see postChallenge).
+      const tb = d.tiebreak && d.tiebreak.chal;
+      const raw = (tb && tb.at === ch.at && +tb.raw > 0) ? Math.round(+tb.raw) : ch.pts;
+      list.push({ uid: c.key, ...ch, raw });
     });
     // Freshest first: a challenge from this morning is a better invitation than
     // a record someone set in March.
@@ -4168,7 +4223,9 @@ function renderChallenges(){
         `<div class="chal-txt">` +
           `<div class="chal-name">${esc(m.name)}</div>` +
           `<div class="chal-meta">${esc(String(c.name || 'OPERATIVE')).slice(0, 14)} · ` +
-          `<strong>${(c.pts || 0).toLocaleString()}</strong> PTS · ${tier.icon} ${esc(tier.label)}` +
+          `<strong>${(c.pts || 0).toLocaleString()}</strong> PTS` +
+          (c.raw > c.pts ? ` <em title="Past the cap — a capped run has to beat this too">+${(c.raw - c.pts).toLocaleString()}</em>` : '') +
+          ` · ${tier.icon} ${esc(tier.label)}` +
           (edge ? ` · <em>${edge}</em>` : '') + `</div>` +
         `</div>` +
         (locked
@@ -4230,14 +4287,20 @@ function chalRival(){
 // Settled on the results card. Returns the breakdown rows it wants added and
 // the multiplier it earned, then stands the challenge down — win or lose, a
 // challenge is taken once.
-function settleChallenge(gid, pts){
+function settleChallenge(gid, pts, raw){
   if(!chalActive) return null;
   const c = chalActive;
   chalActive = null;
   if(chalPrevTier){ setDifficultyTier(chalPrevTier); chalPrevTier = null; }
   unlockDifficultySelector();
   if(c.gid !== gid) return null;                 // not the round that was accepted
-  const won = pts > (c.pts || 0);
+  // 🔺 Two runs that both reached the cap are decided by how far past it each
+  // went (capCompare): a capped challenge can be taken down after all.
+  const mine = { pts, raw: raw != null ? raw : pts }, theirs = { pts: c.pts || 0, raw: c.raw != null ? c.raw : c.pts };
+  const won = capCompare(gid, mine, theirs) > 0;
+  const capOf = (META[gid] && META[gid].maxPts) || 0;
+  const capped = pts === (c.pts || 0) && capOf > 0 && capOf < 90000 && pts >= capOf;
+  const margin = capped ? Math.max(mine.raw, pts) - Math.max(theirs.raw, theirs.pts) : pts - (c.pts || 0);
   // 🔗 A LINK can be written by hand, so its bonus is gated (§ 22): never for
   // racing your own, and once per mission per day for anyone else's.
   let pays = won, note = null;
@@ -4245,16 +4308,18 @@ function settleChallenge(gid, pts){
     if(typeof clIsOwn === 'function' && clIsOwn(c)){ pays = false; note = 'YOUR OWN LINK · NO BONUS'; }
     else if(typeof clPayOnce === 'function' && !clPayOnce(gid)){ pays = false; note = 'BONUS ALREADY PAID TODAY'; }
   }
+  const past = capped ? ' past the cap' : '';
   setTimeout(() => {
     snd(won ? 'victory' : 'results');
     toast(won
-      ? `⚔️ CHALLENGE TAKEN DOWN — beat ${String(c.name || 'RIVAL').slice(0, 14)} by ${(pts - c.pts).toLocaleString()}`
-      : `⚔️ CHALLENGE HELD — ${String(c.name || 'RIVAL').slice(0, 14)} keeps it by ${((c.pts || 0) - pts).toLocaleString()}`,
+      ? `⚔️ CHALLENGE TAKEN DOWN — beat ${String(c.name || 'RIVAL').slice(0, 14)} by ${Math.abs(margin).toLocaleString()}${past}`
+      : `⚔️ CHALLENGE HELD — ${String(c.name || 'RIVAL').slice(0, 14)} keeps it by ${Math.abs(margin).toLocaleString()}${past}`,
       3600);
   }, 1600);
   const rows = {
-    [c.link ? '🔗 Challenge Link' : '⚔️ Rival Challenge']: `${esc(String(c.name || 'RIVAL').slice(0, 14))} · ${(c.pts || 0).toLocaleString()} PTS`,
-    '⚔️ Outcome': won ? 'TAKEN DOWN' : 'HELD'
+    [c.link ? '🔗 Challenge Link' : '⚔️ Rival Challenge']: `${esc(String(c.name || 'RIVAL').slice(0, 14))} · ${(c.pts || 0).toLocaleString()} PTS` +
+      (theirs.raw > theirs.pts ? ` (+${(theirs.raw - theirs.pts).toLocaleString()} past the cap)` : ''),
+    '⚔️ Outcome': (won ? 'TAKEN DOWN' : 'HELD') + (capped && margin !== 0 ? ' · ON THE SCORE PAST THE CAP' : '')
   };
   if(note) rows['⚔️ Takedown Bonus'] = note;
   return { won, mult: pays ? 1 + CHAL_BONUS : 1, rows };
@@ -5456,7 +5521,7 @@ function startClick(){
   btn.disabled=false;
   // The blip climbs an octave over eight clicks and wraps, so a fast streak
   // sounds like it's accelerating even though the button is doing one thing.
-  btn.onclick=()=>{if(!ended){clicks++;const m=FZ?FZ[Math.max(0,Math.min(9,10-t))]:1;earned+=8*m;snd(m?'bounce':'deny',{semi:(clicks%8)*2});document.getElementById('click-count').textContent=clicks;setLive(Math.min(500,FZ?earned:clicks*8))}};
+  btn.onclick=()=>{if(!ended){clicks++;const m=FZ?FZ[Math.max(0,Math.min(9,10-t))]:1;earned+=8*m;snd(m?'bounce':'deny',{semi:(clicks%8)*2});document.getElementById('click-count').textContent=clicks;setLive(capRaw(500,FZ?earned:clicks*8))}};
   gTimer=setInterval(()=>{
     t--;document.getElementById('g-time').textContent=t;
     if(FZ&&t>0) fzShow();
@@ -5464,7 +5529,7 @@ function startClick(){
     if(t<=3&&t>0) snd('tick');
     if(t<=0){
       clearInterval(gTimer);ended=true;btn.disabled=true;btn.onclick=null;
-      const pts=Math.min(500,FZ?earned:clicks*8);
+      const pts=capRaw(500,FZ?earned:clicks*8);
       // ⚡ OVERCLOCKED wants the ceiling itself, not "close to it": 500 is the
       // cap and 63 clicks is what reaches it, so the flag is the clamp firing.
       const maxed=pts>=500;
@@ -6334,7 +6399,7 @@ function startNebula(){
   function end() {
     if (isOver) return; isOver = true;
     snd('gameOver');
-    const finalPts = Math.min(1000, score);
+    const finalPts = capRaw(1000, score);
     showResults('nebula', finalPts, {
       '👾 Alien Matrices Purged': Math.floor(score / 20),
       '⚡ Plasma Orbs Absorbed': plasmaOrbs,
@@ -6644,7 +6709,7 @@ function startTetris(){
     // Only a top-out is a death; running the clock out is a finished round.
     snd(time<=0 ? 'results' : 'gameOver');
     repeatStoppers.forEach(stop=>stop());   // don't leave a held arrow ticking
-    showResults('tetris',Math.min(1500,score),{'🧱 Base Core Lines Resolved':linesCleared, '🏆 Final Output Score':`${score} PTS`});
+    showResults('tetris',capRaw(1500,score),{'🧱 Base Core Lines Resolved':linesCleared, '🏆 Final Output Score':`${score} PTS`});
   }
   
   gameLoopId=requestAnimationFrame(loop);
@@ -6653,13 +6718,16 @@ function startTetris(){
 // ══════════════════════════════════════════════════════════════════════
 //  💥 GAME 4: DODGE CORES (STABILIZED SMOOTH MOUSE TRAIL TRACKING)
 // ══════════════════════════════════════════════════════════════════════
+// Paid when the core outlasts the clock. 30 s × 25 is 750, so without it the
+// mission's own 800 cap was out of reach of a flawless run (both builds).
+const DODGE_SURVIVE_BONUS = 50;
 function startDodge(){
   document.getElementById('g-canvas-holder').style.display='block';
   setControls(null);   // pure drag control — no pad to steal board height
   setControlHint('DRAG ANYWHERE TO STEER YOUR CORE', 'MOVE THE MOUSE TO STEER YOUR CORE');
   showTouchHint('DRAG ANYWHERE TO STEER');
   fitCanvas();
-  let score=0, time=30, isGameOver=false, player={x:BOARD_W/2,y:BOARD_H/2,r:8}, obstacles=[];
+  let score=0, time=30, isGameOver=false, survived=false, player={x:BOARD_W/2,y:BOARD_H/2,r:8}, obstacles=[];
   document.getElementById('g-time').textContent=time;
 
   Ghost.begin('dodge');
@@ -6703,7 +6771,14 @@ function startDodge(){
     score+=25;setLive(score);
     // Surviving another second IS the scoring event here, so it gets a beat.
     snd(time<=5&&time>0 ? 'tick' : 'score', {semi:-7});
-    if(time<=0) end();
+    if(time<=0){
+      // 🛡️ A core that lasts the whole clock has FINISHED the mission, and a
+      // finished mission is worth its full cap: thirty seconds at 25 a second
+      // is only 750, so a perfect run used to stop 50 short of the 800 on the
+      // card no matter how well it was flown.
+      survived=true; score+=DODGE_SURVIVE_BONUS; setLive(score);
+      end();
+    }
   },1000);
 
   let obstacleColors = ['#ff6600','#ff2442','#ffd700','#ff0090','#a855f7'];
@@ -6806,11 +6881,12 @@ function startDodge(){
   
   function end(){
     clearCanvasDrag();
-    const earned=Math.min(800,score);
+    const earned=capRaw(800,score);
     const wasRacing=Ghost.racing, target=Ghost.target;
     const beat=Ghost.finish(earned);
     showResults('dodge',earned,{
-      '⏱️ Operational Lifespan':score/25+'s',
+      '⏱️ Operational Lifespan':(30-Math.max(0,time))+'s',
+      ...(survived?{'🛡️ Full Survival Bonus':`+${DODGE_SURVIVE_BONUS}`}:{}),
       ...(wasRacing?{'👻 Ghost To Beat':`${target} PTS`}:{}),
       ...(wasRacing&&beat?{'👻 Result':'GHOST BEATEN'}:{}),
       '🏆 Score Accumulation':`${earned} PTS`
@@ -6863,7 +6939,7 @@ function startMemory(){
     wrap.appendChild(card);
   });
   let memEnded=false;
-  function end(){if(memEnded)return;memEnded=true;showResults('memory',Math.min(600,score),{'🧩 Clusters Unified':matched,'🏆 Score Accumulation':`${score} PTS`})}
+  function end(){if(memEnded)return;memEnded=true;showResults('memory',capRaw(600,score),{'🧩 Clusters Unified':matched,'🏆 Score Accumulation':`${score} PTS`})}
 }
 
 // ════════════════════════════════════════════
@@ -6907,7 +6983,7 @@ function startMath(){
     time--;document.getElementById('g-time').textContent=time;
     document.getElementById('prog-fill').style.width=`${time/time0*100}%`;
     if(time<=5&&time>0) snd('tick');
-    if(time<=0&&!mathEnded){mathEnded=true;document.getElementById('math-answer').onkeydown=null;document.getElementById('math-submit').onclick=null;showResults('math',Math.min(750,score),{'🔢 Nodes Resolved':score/50,'🏆 Score Accumulation':`${score} PTS`})}
+    if(time<=0&&!mathEnded){mathEnded=true;document.getElementById('math-answer').onkeydown=null;document.getElementById('math-submit').onclick=null;showResults('math',capRaw(750,score),{'🔢 Nodes Resolved':score/50,'🏆 Score Accumulation':`${score} PTS`})}
   },1000);
 }
 
@@ -6974,7 +7050,7 @@ function startReaction(){
       later(()=>{if(time>0){state='wait';box.style.background='var(--rx-wait)';txt.textContent='WAIT...';trigger=armRx(1000,2000)}},1500);
     }
   };
-  function end(){if(reactionEnded)return;reactionEnded=true;gCancel(trigger);if(fakeT)gCancel(fakeT);box.onpointerdown=null;showResults('reaction',Math.min(400,score),{'🏆 Final Sync Score':score})}
+  function end(){if(reactionEnded)return;reactionEnded=true;gCancel(trigger);if(fakeT)gCancel(fakeT);box.onpointerdown=null;showResults('reaction',capRaw(400,score),{'🏆 Final Sync Score':score})}
 }
 
 // ════════════════════════════════════════════
@@ -7191,7 +7267,7 @@ function startPong(){
 
   function end(){
     if(isOver)return; isOver=true;
-    const pts = Math.min(900, Math.max(0, (userScore - cpuScore) * 50));
+    const pts = capRaw(900, Math.max(0, (userScore - cpuScore) * 50));
     showResults('pong', pts, {'🏓 Your Goals': userScore, '🤖 CPU Goals': cpuScore, '🏆 Final Score': `${pts} PTS`});
   }
 
@@ -7430,7 +7506,7 @@ function startSnake(){
   function end(reason){
     if(isOver)return;isOver=true;
     if(reason!=='timeout') snd('gameOver');
-    const earned=Math.min(1200,score);
+    const earned=capRaw(1200,score);
     const wasRacing=Ghost.racing, target=Ghost.target;
     const beat=Ghost.finish(earned);
     showResults('snake',earned,{
@@ -7637,7 +7713,7 @@ function startFlappy(){
 
   function end(){
     if(isOver)return;isOver=true;
-    const earned=Math.min(1000,score*50);
+    const earned=capRaw(1000,score*50);
     const wasRacing=Ghost.racing, target=Ghost.target;
     const beat=Ghost.finish(earned);
     showResults('flappy',earned,{
@@ -8037,7 +8113,7 @@ function startBreaker(){
     // Shields are worth points on the way out, so playing the last one
     // carefully beats throwing it away for one more brick.
     const survive=shields*40;
-    const final=Math.min(1100,score+survive);
+    const final=capRaw(1100,score+survive);
     showResults('breaker',final,{
       '📡 Run Terminated': reason==='cleared'?'ICE WALL CLEARED':reason==='timeout'?'CLOCK EXPIRED':'SHIELDS BREACHED',
       '🧊 ICE Shattered': `${broken}/${bricks.length}`,
@@ -9686,7 +9762,7 @@ function startRunner(){
 
   function end(){
     if(isOver)return; isOver=true;
-    const final=Math.min(1200, score());
+    const final=capRaw(1200, score());
     const wasRacing=Ghost.racing, target=Ghost.target;
     const beat=Ghost.finish(final);
     showResults('runner', final, {
@@ -10074,7 +10150,7 @@ function startHacker(){
   function end(reason){
     if(ended) return; ended=true;
     grid.classList.add('locked');
-    const final=Math.min(800,score);
+    const final=capRaw(800,score);
     showResults('hacker',final,{
       '📡 Run Terminated': reason==='timeout'?'TRACE TIMEOUT':'SYSTEM LOCK',
       '🔓 Mainframes Decrypted': cleared,
@@ -10342,7 +10418,7 @@ function startMeteor(){
     if(isOver) return; isOver=true;
     const aliveN=bases.filter(b=>b.alive).length;
     const survive=aliveN*70;
-    const final=Math.min(1100, score+survive);
+    const final=capRaw(1100, score+survive);
     showResults('meteor',final,{
       '📡 Run Terminated': reason==='overrun'?'ALL SERVERS DOWN':'MISSION CLOCK EXPIRED',
       '☄️ Fragments Purged': killed,
@@ -11673,7 +11749,7 @@ function startBattleBots(){
     let pts, verdict;
 
     if(win){
-      pts = Math.min(BB.score.cap,
+      pts = capRaw(BB.score.cap,
         BB.score.win +
         Math.round(BB.score.hpBonus * Math.max(0, mainHP) / BB.baseHP) +
         Math.round(BB.score.timeBonus * Math.min(1, (Math.max(0, time) / TOTAL) / BB.score.timeFull)));
@@ -11725,6 +11801,8 @@ function startBattleBots(){
 // unsolvable board is indistinguishable from a player who is simply too slow.
 // Carving first makes "solvable" a property of the generator instead of
 // something to test for afterwards.
+// The clear bonus, shared by both builds: 700 for the route + this = the cap.
+const PATH_CLEAR_BONUS = 400;
 function startOverclockPath(){
   const wrap=document.getElementById('g-path');
   wrap.style.display='flex';
@@ -11759,7 +11837,12 @@ function startOverclockPath(){
   // Floored, because 15 × 0.5 is a different game rather than a harder one.
   const time0=Math.max(10, Math.round(15*getTimeModifier()));
 
-  const ROUTE_PTS=700, CLEAR_BONUS=250, SPEED_PTS=15;
+  // A FINISHED circuit is the mission, so route + clear is exactly the 1100
+  // cap. The clear used to pay 250, which left a completed board 150 short
+  // unless it was finished with ten of its fifteen seconds still on the clock
+  // (on Overclock, with eleven, never). Speed now pays OVER the cap: it is
+  // what separates two finished boards (see capRaw).
+  const ROUTE_PTS=700, CLEAR_BONUS=PATH_CLEAR_BONUS, SPEED_PTS=15;
   const rc=i=>[Math.floor(i/N), i%N];
   const neighbours=i=>{
     const [r,c]=rc(i), out=[];
@@ -12034,14 +12117,15 @@ function startOverclockPath(){
     ended=true; locked=true;
     const cleared=reason==='complete';
     const left=Math.max(0,time);
-    const final=Math.min(1100,
-      routeScore(best) + (cleared ? CLEAR_BONUS + left*SPEED_PTS : 0));
+    const speed=cleared ? left*SPEED_PTS : 0;
+    const raw=routeScore(best) + (cleared ? CLEAR_BONUS + speed : 0);
+    const final=capRaw(1100, raw);
     showResults('path', final, {
       '🔌 Circuit Status': cleared ? 'FULLY OVERCLOCKED' : 'POWER DRAINED',
       '🧩 Nodes Routed': `${best} / ${OPEN}`,
       '💀 Dead Code Bypassed': DEAD_COUNT,
       '♻️ Recalibrations': resets,
-      ...(cleared ? {'⏱️ Current To Spare': `${left}s`} : {}),
+      ...(cleared ? {'⏱️ Current To Spare': `${left}s · +${speed} over the cap`} : {}),
       '🏆 Score Accumulation': `${final} PTS`
     }, cleared ? undefined : { sound:'gameOver' });
   }
@@ -12178,7 +12262,7 @@ function startFrequencyModulator(){
     const gained=85+speed;
     if(stage===1 && firstTryClean) perfectSync=true;
     score+=gained; cleared++; stage++;
-    setLive(Math.min(950,score));
+    setLive(capRaw(950,score));
     snd('levelUp');
     banner=`✅ NODE STABILISED · +${gained} PTS`;
     bannerT=1100;
@@ -12371,7 +12455,7 @@ function startFrequencyModulator(){
 
   function end(){
     if(ended) return; ended=true;
-    const final=Math.min(950,score);
+    const final=capRaw(950,score);
     showResults('freq', final, {
       '📡 Node Array': cleared ? `${cleared} NODE${cleared===1?'':'S'} STABILISED` : 'ARRAY UNSTABLE',
       '🎚️ Stages Cleared': cleared,
@@ -12522,7 +12606,7 @@ function startPulseSync(){
     const mult = 1 + Math.min(1, Math.floor(combo / 8) * 0.25);
     const gain = Math.round(base * mult);
     score += gain;
-    setLive(Math.min(1400, score));
+    setLive(capRaw(1400, score));
     snd(grade === 'PERFECT' ? 'match' : 'correct', { semi: Math.min(combo, 14) });
     if(grade === 'PERFECT') shake = Math.max(shake, 4);
     pops.push({ x: lane * LANE_W + LANE_W / 2, y: HIT_Y - 26, life: 1,
@@ -12680,7 +12764,7 @@ function startPulseSync(){
     // Accuracy is worth points on the way out, so a clean round beats a longer
     // sloppy one — the same shape as Ice Breaker paying for intact shields.
     const bonus = Math.round(acc * 160);
-    const final = Math.min(1400, score + bonus);
+    const final = capRaw(1400, score + bonus);
     showResults('rhythm', final, {
       '🎵 Pulses Struck': `${hits}/${hits + misses}`,
       '🎯 Perfect Sync': perfects,
@@ -12835,7 +12919,7 @@ function startCoreMerge(){
       const sum = gained.reduce((a, b) => a + b, 0);
       score += sum;
       best = Math.max(best, ...gained);
-      setLive(Math.min(1300, score));
+      setLive(capRaw(1300, score));
       // The chime climbs with the size of the core, so a 256 sounds like a 256.
       snd('match', { semi: Math.min(16, Math.round(Math.log2(Math.max(...gained))) * 2) });
     }else{
@@ -13010,7 +13094,7 @@ function startCoreMerge(){
     // A core still standing on the board is worth a quarter of itself, so
     // building one big core beats farming small merges right up to the buzzer.
     const standing = Math.round(grid.reduce((a, b) => a + b, 0) * 0.25);
-    const final = Math.min(1300, score + standing);
+    const final = capRaw(1300, score + standing);
     showResults('merge', final, {
       '🧮 Run Terminated': reason === 'gridlock' ? 'LATTICE GRIDLOCKED' : 'CLOCK EXPIRED',
       '🔷 Largest Core': best || '—',
@@ -13190,7 +13274,7 @@ function startOrbitalUplink(){
       const dist = Math.round((rl.x - PAD_X) / 10);
       const gain = 40 + dist * 2 + Math.min(80, (streak - 1) * 20);
       score += gain;
-      setLive(Math.min(1000, score));
+      setLive(capRaw(1000, score));
       snd('correct', { semi: Math.min(14, streak * 2) });
       shake = 8;
       for(let i = 0; i < 26; i++) sparks.push({
@@ -13447,7 +13531,7 @@ function startOrbitalUplink(){
     if(over) return; over = true;
     clearCanvasDrag();
     const acc = shots ? sunk / shots : 0;
-    const final = Math.min(1000, score);
+    const final = capRaw(1000, score);
     showResults('uplink', final, {
       '🛰️ Relays Linked': `${sunk}/${shots}`,
       '🎯 Link Accuracy': `${Math.round(acc * 100)}%`,
@@ -13659,7 +13743,7 @@ function startIceCutter(){
       if(Math.hypot(n.x - player.x, n.y - player.y) < 16 + player.r){
         n.got = true; n.pulse = 1; tagged++;
         score += NODE_PTS;
-        setLive(Math.min(1250, score));
+        setLive(capRaw(1250, score));
         snd('node', { semi: tagged * 2 });
         if(tagged === NODES){ over = true; snd('victory'); gLater(() => end('clear'), 620); }
       }
@@ -13762,7 +13846,7 @@ function startIceCutter(){
     clearCanvasDrag();
     const cleared = reason === 'clear';
     const left = Math.max(0, time);
-    const final = Math.min(1250, score + (cleared ? CLEAR_BONUS + left * PER_SEC : 0));
+    const final = capRaw(1250, score + (cleared ? CLEAR_BONUS + left * PER_SEC : 0));
     showResults('cutter', final, {
       '❄️ Entry Status': cleared ? 'FLOOR CLEARED — NEVER BURNED'
                        : reason === 'spotted' ? 'BURNED — PATROL LOCK' : 'EXTRACTED ON THE CLOCK',
@@ -13970,7 +14054,7 @@ function startPacketSort(){
       // clean packets — which, with five integrity and a rule flip every twenty
       // seconds, is a shift you have to survive rather than one you outlast.
       score += 30 + Math.min(36, streak * 3);
-      setLive(Math.min(1150, score));
+      setLive(capRaw(1150, score));
       snd('coin', { semi: Math.min(14, streak) });
     }else{
       wrong++;
@@ -14147,7 +14231,7 @@ function startPacketSort(){
     strip.style.display = 'none';
     const handled = sorted + wrong + missed;
     const acc = handled ? sorted / handled : 0;
-    const final = Math.min(1150, score + Math.round(acc * 180) + flips * 24);
+    const final = capRaw(1150, score + Math.round(acc * 180) + flips * 24);
     showResults('sorter', final, {
       '🗂️ Floor Status': reason === 'overrun' ? 'FLOOR OVERRUN' : 'SHIFT COMPLETE',
       '✅ Packets Routed': sorted,
@@ -14281,13 +14365,13 @@ function startSignalTrace(){
     // Partial credit is the whole reason this scores on a curve: a cipher you
     // ran out of attempts on still narrowed, and the narrowing was the work.
     score += pegs.exact * PEG_PTS * 2 + pegs.present * PEG_PTS;
-    setLive(Math.min(900, score));
+    setLive(capRaw(900, score));
     if(pegs.exact === SLOTS){
       cracked++;
       winFlash = 1;
       const left = maxTry - attempts;
       score += SOLVE_BASE + left * 26;
-      setLive(Math.min(900, score));
+      setLive(capRaw(900, score));
       snd('victory');
       // Each crack widens the alphabet, up to the table's length. That is the
       // escalation: the board never moves faster, the space just gets bigger.
@@ -14462,7 +14546,7 @@ function startSignalTrace(){
     if(scored) return; scored = true; over = true;
     clearInterval(gTimer); gTimer = null;
     clearCanvasDrag();
-    const final = Math.min(900, score);
+    const final = capRaw(900, score);
     showResults('trace', final, {
       '📡 Trace Status': cracked ? 'SIGNAL DECODED' : 'TRACE COLD',
       '🔓 Ciphers Cracked': cracked,
@@ -14563,13 +14647,13 @@ function startDefrag(){
     if(!got) return 0;
     cleared += got;
     score += got * SECTOR_PTS;
-    setLive(Math.min(1050, score));
+    setLive(capRaw(1050, score));
     if(!quiet) snd('node', { semi: Math.min(16, got) });
     // A volume is complete when every clean sector is open.
     if(grid.every(c => c.bad || c.open)){
       volumes++;
       score += VOLUME_BONUS;
-      setLive(Math.min(1050, score));
+      setLive(capRaw(1050, score));
       snd('victory');
       toast('🧹 VOLUME DEFRAGGED — mounting the next one', 2400);
       gLater(() => { if(!over) newVolume(); }, 620);
@@ -14775,7 +14859,7 @@ function startDefrag(){
     clearCanvasDrag();
     aCanvas.oncontextmenu = null;
     if(markBtn) markBtn.onclick = null;
-    const final = Math.min(1050, score);
+    const final = capRaw(1050, score);
     showResults('defrag', final, {
       '🧹 Sweep Status': reason === 'lost' ? 'ALL DRIVES LOST' : volumes ? 'VOLUMES RECOVERED' : 'SWEEP TIMED OUT',
       '📦 Sectors Swept': cleared,
@@ -14941,7 +15025,7 @@ function startCoolant(){
         c.got = true; c.pulse = 1; vented++;
         heat = Math.max(0, heat - VENT);
         score += 46;
-        setLive(Math.min(1350, Math.round(score + dist * 0.34)));
+        setLive(capRaw(1350, Math.round(score + dist * 0.34)));
         snd('pickup', { semi: Math.min(12, vented) });
       }
     }
@@ -14957,7 +15041,7 @@ function startCoolant(){
       acc += sec;
       if(acc > 0.25) acc = 0.25;             // a stalled tab resumes, it does not teleport
       while(acc >= COOL_STEP && !over){ step(); acc -= COOL_STEP; }
-      setLive(Math.min(1350, Math.round(score + dist * 0.34)));
+      setLive(capRaw(1350, Math.round(score + dist * 0.34)));
     }
     if(shakeT > 0) shakeT = Math.max(0, shakeT - sec);
 
@@ -15097,7 +15181,7 @@ function startCoolant(){
     clearInterval(gTimer); gTimer = null;
     clearCanvasDrag();
     clearHold(document.getElementById('ctrl-action'));
-    const final = Math.min(1350, Math.round(score + dist * 0.34));
+    const final = capRaw(1350, Math.round(score + dist * 0.34));
     showResults('coolant', final, {
       '🌡️ Run Status': reason === 'crash' ? 'HULL BREACH'
                      : reason === 'overheat' ? 'CORE OVERHEAT' : 'SHAFT RUN COMPLETE',
@@ -16466,8 +16550,9 @@ function abortDailyRun(){
   paintDailyBanner();
 }
 
-// Called by showResultsCard() when a Daily Hack round lands.
-function settleDailyRun(gid, pts){
+// Called by showResultsCard() when a Daily Hack round lands. `raw` is the run
+// uncapped (🔺): it orders two operatives who both banked the day's cap.
+function settleDailyRun(gid, pts, raw){
   const day = dayKey();
   const scored = endDailyRun();
   paintDailyBanner();
@@ -16493,8 +16578,33 @@ function settleDailyRun(gid, pts){
   if(prev && prev.pts >= pts) return;
   user.daily = { day, pts, gid };
   saveProfilePatch({ daily: user.daily });
+  // 🔺 The board's own row is a validated shape that refuses a new child, so
+  // the tie-break rides in a key of its own beside it (see loadDailyBoard).
+  user.tiebreak = user.tiebreak || {};
+  user.tiebreak.daily = { day, raw: Math.max(0, Math.round(+raw || 0)) };
+  saveProfilePatch({ 'tiebreak/daily': user.tiebreak.daily });
   publishDailyScore(day, pts, gid);
   paintDailyBanner();
+}
+
+// 🔺 Orders rows that tie on points by how far past the cap each run went.
+// Only TIED rows are looked up — one small read each, off the tie-break key
+// settleDailyRun() writes — so an ordinary board costs nothing extra.
+async function dailyTieBreak(rows, day){
+  const seen = Object.create(null);
+  rows.forEach(r => { seen[r.pts] = (seen[r.pts] || 0) + 1; });
+  const tied = rows.filter(r => seen[r.pts] > 1);
+  if(!tied.length) return;
+  await Promise.all(tied.map(r => {
+    if(user && r.uid === user.uid){
+      const tb = user.tiebreak && user.tiebreak.daily;
+      if(tb && tb.day === day) r.raw = +tb.raw || 0;
+      return null;
+    }
+    return withTimeout(db.ref('players/' + r.uid + '/tiebreak/daily').once('value'), NET_WAIT)
+      .then(sn => { const tb = sn.val(); if(tb && tb.day === day) r.raw = +tb.raw || 0; })
+      .catch(() => {});
+  }));
 }
 
 // ── THE BOARD ──
@@ -16552,13 +16662,17 @@ function loadDailyBoard(){
 
   if(!db || offlineMode || !user){ localOnly(); return; }
 
-  withTimeout(db.ref('daily/' + day).orderByChild('pts').limitToLast(10).once('value'), NET_WAIT)
-    .then(snap => {
+  // Thirty read for ten shown: a day whose mission pays a capped clear can put
+  // more than ten runs on the same number, and the tie-break below decides
+  // which of them make the board.
+  withTimeout(db.ref('daily/' + day).orderByChild('pts').limitToLast(30).once('value'), NET_WAIT)
+    .then(async snap => {
       const rows = [];
-      snap.forEach(c => { const v = c.val() || {}; rows.push({ uid: c.key, name: v.name, pts: +v.pts || 0 }); });
+      snap.forEach(c => { const v = c.val() || {}; rows.push({ uid: c.key, name: v.name, pts: +v.pts || 0, raw: 0 }); });
       if(!rows.length){ localOnly(); return; }
-      rows.sort((a, b) => b.pts - a.pts);
-      panel.innerHTML = rows.map((r, i) => dailyRow(r, i + 1, r.uid === user.uid)).join('');
+      try{ await dailyTieBreak(rows, day); }catch(e){}
+      rows.sort((a, b) => (b.pts - a.pts) || (b.raw - a.raw));
+      panel.innerHTML = rows.slice(0, 10).map((r, i) => dailyRow(r, i + 1, r.uid === user.uid)).join('');
     })
     .catch(e => { console.warn('Daily board read failed:', e); localOnly(); });
 }
@@ -20124,7 +20238,10 @@ function startScoreDuel(modeKey){
   // Per-seat readouts keyed by uid. `live` is what that board is showing right
   // now; `fin` is written once, when that run is banked, and is what counts.
   const live = Object.create(null), fin = Object.create(null);
-  let myLive = 0, myFinal = null;
+  // 🔺 Each banked board's run UNCAPPED — what decides a race both sides
+  // finished at the cap (see capCompare). Never below that seat's `fin`.
+  const finRaw = Object.create(null);
+  let myLive = 0, myFinal = null, myRaw = 0;
   let myDone = false, over = false, finalized = false, lastSend = 0, lag = null;
   const bankedTold = Object.create(null);
   const pingTick = mpThrottle(500);
@@ -20158,19 +20275,20 @@ function startScoreDuel(modeKey){
   };
   vsResultTap = (g, pts) => {
     if(over || myDone || g !== gid) return false;
-    bank(Math.round(+pts || 0), false);
+    bank(Math.round(+pts || 0), false, roundRawOf(pts));
     return true;
   };
 
   // My solo round ended (or was ceilinged): freeze the board, publish the
   // number, and wait out the rest of the grid.
-  function bank(pts, forcedByClock){
+  function bank(pts, forcedByClock, raw){
     if(myDone || over) return;
     myDone = true;
     myFinal = Math.min(cap, Math.max(0, pts));
+    myRaw = Math.max(myFinal, Math.round(+raw || 0));
     vsHaltGame();
     onQuitGame = mpQuitRound;      // Cyber Arena swaps in its own quit — take it back
-    if(mp) mp.live.child('fin/' + myId).set({ pts: myFinal, t: netNow() }).catch(()=>{});
+    if(mp) mp.live.child('fin/' + myId).set({ pts: myFinal, raw: myRaw, t: netNow() }).catch(()=>{});
     // In a squad round the wait is for everyone still playing, mates included —
     // your run is in, but your side's number is not settled until theirs is.
     const waitingOn = squad
@@ -20196,20 +20314,35 @@ function startScoreDuel(modeKey){
     // Published per SEAT, not per side: mpShowDuelResult runs on each client and
     // each one re-adds its own side, so a guest never has to trust a total it
     // cannot check against its own board.
-    const scores = {};
-    scores[myId] = myFinal;
-    everyone.forEach(id => { scores[id] = fin[id] != null ? fin[id] : forceFin(live[id] || 0); });
-    mpFinishRound({ scores });
-    gLater(() => report(myScoreSettled(), settle(foes), 'Result write did not land — settled locally'), 4000);
+    const scores = {}, raws = {};
+    scores[myId] = myFinal; raws[myId] = myRaw;
+    everyone.forEach(id => {
+      scores[id] = fin[id] != null ? fin[id] : forceFin(live[id] || 0);
+      raws[id] = Math.max(scores[id], finRaw[id] || 0);
+    });
+    mpFinishRound({ scores, raws });
+    gLater(() => report(myScoreSettled(), settle(foes), 'Result write did not land — settled locally',
+                        undefined, myRawSettled(), rawOf(foes)), 4000);
   }
 
   const myScoreSettled = () => (myFinal == null ? forceFin(myLive) : myFinal) + settle(mates);
+  // A side's run uncapped: each banked seat's raw, or its settled score.
+  const rawOf = ids => ids.reduce((s, id) => s + Math.max(fin[id] != null ? fin[id] : forceFin(live[id] || 0), finRaw[id] || 0), 0);
+  const myRawSettled = () => Math.max(myFinal == null ? forceFin(myLive) : myFinal, myRaw) + rawOf(mates);
 
   // Idempotent: whichever ending gets here first is the one that counts.
-  function report(mine, theirs, note, forced){
+  // 🔺 mineRaw / theirsRaw: the two sides uncapped. They only ever decide a
+  // round that would otherwise be a DRAW AT THE CEILING — both sides at their
+  // cap — where the side that went further past it takes the round.
+  function report(mine, theirs, note, forced, mineRaw, theirsRaw){
     if(over) return;
     over = true;
-    const outcome = forced || (mine > theirs ? 'win' : (mine < theirs ? 'loss' : 'draw'));
+    let outcome = forced || (mine > theirs ? 'win' : (mine < theirs ? 'loss' : 'draw'));
+    let pastCap = false;
+    if(outcome === 'draw' && mine >= sideCap && mineRaw != null && theirsRaw != null && mineRaw !== theirsRaw){
+      outcome = mineRaw > theirsRaw ? 'win' : 'loss';
+      pastCap = true;
+    }
     const pts = Math.min(sideCap, Math.round(mine) + (outcome === 'win' ? winBonus : 0));
     const bd = squad
       ? {
@@ -20226,6 +20359,7 @@ function startScoreDuel(modeKey){
           '🏆 Awarded': pts + ' PTS'
         };
     if(note) bd['🔌 Note'] = note;
+    if(pastCap) bd['🔺 Decided Past The Cap'] = `${Math.round(mineRaw).toLocaleString()} vs ${Math.round(theirsRaw).toLocaleString()}`;
     mpShowDuelResult(gid, pts, outcome, bd);
   }
 
@@ -20244,6 +20378,7 @@ function startScoreDuel(modeKey){
       const v = s.val();
       if(!v || !mp) return;
       fin[id] = Math.max(0, Math.round(+v.pts || 0));
+      finRaw[id] = Math.max(fin[id], Math.round(+v.raw || 0));
       paintHud();
       if(!myDone && !bankedTold[id]){
         bankedTold[id] = true;
@@ -20258,7 +20393,7 @@ function startScoreDuel(modeKey){
   const droppedEarly = mpInstallRound({
     onOppLeft(){
       mpResetRoom();
-      if(!myDone){ myDone = true; myFinal = forceFin(myLive); vsHaltGame(); }
+      if(!myDone){ myDone = true; myFinal = forceFin(myLive); myRaw = Math.max(myFinal, roundRawOf(myLive)); vsHaltGame(); }
       report(myScoreSettled(), settle(foes),
              squad ? 'The other squad left the grid — walkover' : 'Rival dropped the link — walkover', 'win');
     },
@@ -20272,10 +20407,16 @@ function startScoreDuel(modeKey){
     },
     onResult(result){
       const s = (result && result.scores) || {};
+      const rw = (result && result.raws) || {};
       const pick = id => s[id] != null ? +s[id] : (fin[id] != null ? fin[id] : forceFin(live[id] || 0));
+      const pickRaw = id => Math.max(pick(id), rw[id] != null ? +rw[id] : (finRaw[id] || 0));
       const mine = (s[myId] != null ? +s[myId] : (myFinal == null ? forceFin(myLive) : myFinal))
                  + mates.reduce((a, id) => a + pick(id), 0);
-      report(mine, foes.reduce((a, id) => a + pick(id), 0));
+      const mineRaw = Math.max(s[myId] != null ? +s[myId] : (myFinal == null ? forceFin(myLive) : myFinal),
+                               rw[myId] != null ? +rw[myId] : myRaw)
+                    + mates.reduce((a, id) => a + pickRaw(id), 0);
+      report(mine, foes.reduce((a, id) => a + pick(id), 0), undefined, undefined,
+             mineRaw, foes.reduce((a, id) => a + pickRaw(id), 0));
     }
   });
 
@@ -20285,10 +20426,11 @@ function startScoreDuel(modeKey){
   vsTimer = setInterval(() => {
     if(over || !mp){ clearInterval(vsTimer); vsTimer = 0; return; }
     const now = netNow();
-    if(!myDone && now > endsAt) bank(forceFin(myLive), true);
+    if(!myDone && now > endsAt) bank(forceFin(myLive), true, roundRawOf(myLive));
     if(myDone) maybeFinalize();
     if(!isHost && myDone && now > endsAt + 8000){
-      report(myScoreSettled(), settle(foes), 'Host went quiet — settled on the last synced score');
+      report(myScoreSettled(), settle(foes), 'Host went quiet — settled on the last synced score',
+             undefined, myRawSettled(), rawOf(foes));
       return;
     }
     if(pingTick()) mpPing(lag);
@@ -28183,6 +28325,36 @@ function seeded(seed){
 
 const NEON = ['#00f5ff', '#ff0090', '#a855f7', '#ffd700', '#39ff88', '#ff6600'];
 
+// ✨ v60 · ENEMY PAINT. Every hostile machine in the 3D missions and the open
+// worlds is PAINTED in one of these — bright, saturated liveries the lighting
+// reads the way it reads a car's paint — and none of them carries a glow: no
+// halo sprite, no coloured lamp hung round it, no hull lit from inside. Some
+// enemies used to be dark chrome under a neon halo and others glowing toys;
+// this is the one look. Drawn with ENEMY_FINISH (glossy paint, a soft rim).
+const ENEMY_PAINT = {
+  red:     '#e3262b',
+  orange:  '#ff6a12',
+  yellow:  '#ffc20d',
+  purple:  '#8e44ff',
+  magenta: '#ee2496',
+  green:   '#2bcf47',
+  blue:    '#1e84ff',
+  white:   '#eef2f6'
+};
+const ENEMY_FINISH = { metallic: 0.28, roughness: 0.4, rim: 0.45 };
+// A neon accent colour → the nearest enemy paint, for the enemies whose type
+// colour was a neon (the type keeps its hue, loses the glow).
+function enemyPaint(hex){
+  const h = String(hex || '').toLowerCase();
+  const map = { '#ff2442': 'red', '#ff3a5a': 'red', '#ff4060': 'red', '#ff2a3a': 'red', '#ff5a5a': 'red',
+                '#ff8a00': 'orange', '#ff6600': 'orange', '#ff7a1a': 'orange', '#ffb03a': 'orange',
+                '#ffd700': 'yellow', '#ffe14a': 'yellow',
+                '#a855f7': 'purple', '#b26bff': 'purple', '#9b5cff': 'purple',
+                '#ff0090': 'magenta', '#ff2d9a': 'magenta', '#ff4fa0': 'magenta',
+                '#39ff88': 'green', '#39ff14': 'green', '#00f5ff': 'blue', '#46c8ff': 'blue' };
+  return ENEMY_PAINT[map[h]] || (h.startsWith('#') ? h : ENEMY_PAINT.red);
+}
+
 // ══════════════════════════════════════════════
 //  🌍 WORLD LOOKS — the city each world theme builds
 // ══════════════════════════════════════════════
@@ -30320,7 +30492,7 @@ const API = {
   },
 
   // Shared scaffolding, consumed by games3d.js.
-  kit: { createWorld, begin3d, runLoop, mine, nx, ny, rnd, clamp, seeded, NEON, mount },
+  kit: { createWorld, begin3d, runLoop, mine, nx, ny, rnd, clamp, seeded, NEON, mount, ENEMY_PAINT, ENEMY_FINISH, enemyPaint },
 
   // Populated by games3d.js: gid → start function.
   games: Object.create(null),
@@ -30428,7 +30600,49 @@ return API;
 const P = window.PI3D;
 if(!P) return;
 const K = P.kit;
-const { begin3d, runLoop, mine, nx, ny, rnd, clamp, seeded, NEON } = K;
+const { begin3d, runLoop, mine, nx, ny, rnd, clamp, seeded, NEON, ENEMY_PAINT, ENEMY_FINISH, enemyPaint } = K;
+
+// ══════════════════════════════════════════════
+//  ⚡ THE ABILITY STRIP — v60
+// ══════════════════════════════════════════════
+// The 2D builds bank special abilities and say so along the bottom of their
+// board (Nebula's specials, Meteor's battery, Breaker's chips). The 3D builds
+// had the abilities' effects and nowhere to say what was queued, so most of
+// them never got the abilities at all. One DOM readout over the board, shared:
+// what fires next and on which key, how many are banked, and what is running.
+//   set(queue, active, key) — queue: [{label, color}], active: {label, color, frac} | null
+function abilityStrip(){
+  const layer = document.getElementById('gl-fx');
+  const el = document.createElement('div');
+  el.className = 'gl-abil';
+  el.setAttribute('aria-live', 'polite');
+  if(layer) layer.appendChild(el);
+  let last = '';
+  const esc2 = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  return {
+    set(queue, active, key){
+      let html = '';
+      if(active){
+        html = '<span class="ga-on" style="--ac:' + active.color + '">ACTIVE · ' + esc2(active.label) +
+               '<i style="width:' + Math.round(clamp(active.frac == null ? 1 : active.frac, 0, 1) * 100) + '%"></i></span>';
+      }
+      if(queue && queue.length){
+        html += '<span class="ga-next" style="--ac:' + queue[0].color + '"><b>' + esc2(key || (isTouchDevice ? 'TAP ⚡' : 'Q / E')) + '</b> ' +
+                esc2(queue[0].label) + (queue.length > 1 ? ' <em>+' + (queue.length - 1) + '</em>' : '') + '</span>';
+      }
+      if(html !== last){ el.innerHTML = html; last = html; el.style.display = html ? '' : 'none'; }
+    },
+    destroy(){ el.remove(); }
+  };
+}
+K.abilityStrip = abilityStrip;
+
+// begin3d() claims onStopGame for unmount(); a mission that also owns DOM
+// chains onto it (the same helper the later parts each carry).
+function onQuit(fn){
+  const prev = onStopGame;
+  onStopGame = () => { try{ fn(); }catch(e){} if(prev) prev(); };
+}
 
 // ══════════════════════════════════════════════
 //  🏙️ SHARED SET DRESSING
@@ -30528,8 +30742,8 @@ P.games.nebula = function(){
   if(!w) return;
   const r = w.r;
 
-  setControls({ left:'◀', action: isTouchDevice ? '⚡ FIRE' : 'SHOOT / ABILITY', right:'▶' });
-  setControlHint('HOLD TO FIRE · DRAG TO FLY', '← → ↑ ↓ = FLY · SPACE = FIRE · Q = NOVA');
+  setControls({ left:'◀', action: isTouchDevice ? '⚡ FIRE / ABILITY' : 'SHOOT / ABILITY', right:'▶' });
+  setControlHint('HOLD TO FIRE · DRAG TO FLY · ⚡ = ABILITY', '← → ↑ ↓ = FLY · SPACE = FIRE · Q / E = ABILITY');
   showTouchHint('HOLD ANYWHERE TO FIRE · DRAG TO FLY');
 
   const diff = getDifficultyModifier();
@@ -30538,10 +30752,32 @@ P.games.nebula = function(){
   const XL = 11.5, YL = 5.2;                  // the flyable box, in world units
   const ship = { x: 0, y: -1.2, vx: 0, vy: 0, tx: 0, ty: -1.2, roll: 0, pitch: 0 };
   let score = 0, time = Math.round(60 * getTimeModifier()), shield = 100, over = false;
-  let orbs = 0, weapon = 1, nova = 0, cool = 0, spawnT = 0, spawnGap = 0.95, scroll = 0;
+  let orbs = 0, weapon = 1, cool = 0, spawnT = 0, spawnGap = 0.95, scroll = 0;
   let firing = false, hitFlash = 0, killed = 0, best = 0, chain = 0;
 
-  const bolts = [], foes = [], flak = [], orbsList = [];
+  const bolts = [], foes = [], flak = [], orbsList = [], smarts = [];
+
+  // ⚡ v60 · THE 2D BUILD'S SPECIALS. Past weapon level three every plasma orb
+  // banks a special, in the 2D game's rotation — the 3D build only ever had the
+  // Nova. Q / E (or the ⚡ button) fires the next one in the queue.
+  const ABILITY_DEFS = [
+    { id:'SMART_MISSILE', label:'🎯 SMART MISSILE', color:'#00f5ff', desc:'MISSILES LOCK ON!' },
+    { id:'SHIELD_BURST',  label:'🛡️ SHIELD BURST',  color:'#a855f7', desc:'SHIELD RESTORED!' },
+    { id:'TIME_WARP',     label:'⏳ TIME WARP',     color:'#ffd700', desc:'TIME SLOWED!' },
+    { id:'NOVA_BOMB',     label:'💥 NOVA BOMB',     color:'#ff0090', desc:'SCREEN NUKE!' }
+  ];
+  const abilities = [];
+  let active = null, activeT = 0, activeMax = 0, warpT = 0, bubbleT = 0, abilEarned = 0;
+  const strip = K.abilityStrip ? K.abilityStrip() : null;
+  onQuit(() => { if(strip) strip.destroy(); });
+  // Time Warp halves the speed of everything that is not you.
+  const warp = () => warpT > 0 ? 0.5 : 1;
+  // Test hooks (console / harness only), like the open worlds' owDebug.
+  P.dbg3d = {
+    grant(n){ for(let i = 0; i < (n || 1); i++) abilities.push(ABILITY_DEFS[abilEarned++ % ABILITY_DEFS.length]); return abilities.map(a => a.id); },
+    use(){ deployAbility(); return active && active.id; },
+    state: () => ({ score, shield, foes: foes.length, smarts: smarts.length, warpT, bubbleT, queued: abilities.map(a => a.id), active: active && active.id, killed })
+  };
 
   w.buildCity({ seed: 4242, count: 70, spread: 120, hole: 30, y: -26 });
   w.buildStars(150, 210);
@@ -30558,7 +30794,7 @@ P.games.nebula = function(){
   window.onkeydown = e => {
     if(['Space','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS','KeyQ','KeyE'].includes(e.code)) e.preventDefault();
     keys[e.code] = true;
-    if(e.code === 'KeyQ' || e.code === 'KeyE') fireNova();
+    if((e.code === 'KeyQ' || e.code === 'KeyE') && !e.repeat) deployAbility();
   };
   window.onkeyup = e => { keys[e.code] = false; };
 
@@ -30580,7 +30816,7 @@ P.games.nebula = function(){
 
   bindHold(document.getElementById('ctrl-left'),  () => { dragging = false; keys.padL = true; },  () => keys.padL = false);
   bindHold(document.getElementById('ctrl-right'), () => { dragging = false; keys.padR = true; },  () => keys.padR = false);
-  document.getElementById('ctrl-action').onclick = () => { if(nova > 0) fireNova(); else shoot(); };
+  document.getElementById('ctrl-action').onclick = () => { if(abilities.length && !active) deployAbility(); else shoot(); };
 
   gTimer = setInterval(() => {
     if(over) return;
@@ -30611,17 +30847,52 @@ P.games.nebula = function(){
   }
 
   function fireNova(){
-    if(nova <= 0 || over) return;
-    nova--;
     snd('bigExplode');
     w.kick(1.8);
-    w.pop([ship.x, ship.y + 2.4, -2], '💥 NOVA', '#ff0090', { size: 20 });
+    w.pop([ship.x, ship.y + 2.4, -2], '💥 NOVA BOMB', '#ff0090', { size: 20 });
     // Everything in the forward half of the corridor dies at once.
     for(let i = foes.length - 1; i >= 0; i--){
       const f = foes[i];
       if(f.z > -70){ kill(f, i, true); }
     }
     flak.length = 0;
+    w.burst([ship.x, ship.y, -8], '#ff0090', 60, { speed: 26, life: 0.9, size: 0.5 });
+    w.burst([ship.x, ship.y, -8], '#ffd700', 40, { speed: 18, life: 0.8, size: 0.4 });
+  }
+  function deployAbility(){
+    if(over || active || !abilities.length) return;
+    const a = abilities.shift();
+    active = a; activeT = activeMax = 2.5;
+    snd('ability');
+    w.pop([ship.x, ship.y + 2.6, -2], a.label + '!', a.color, { size: 18 });
+    if(a.id === 'SMART_MISSILE'){
+      // Three homing missiles off the nose, each on a different raider where
+      // there are three, staggered so the launch reads as a salvo.
+      const order = foes.slice().sort((p, q) => q.z - p.z);
+      [0, 1, 2].forEach(i => gLater(() => {
+        if(over) return;
+        const tgt = order.length ? order[i % order.length] : null;
+        smarts.push({ x: ship.x + (i - 1) * 0.5, y: ship.y, z: -1.4, vx: (i - 1) * 6, vy: 3, vz: -30, tgt, life: 3.2, trail: 0 });
+        w.spark([ship.x, ship.y, -1.6], '#00f5ff', 0.8, 0.2);
+        snd('missile');
+      }, i * 120));
+    }else if(a.id === 'SHIELD_BURST'){
+      // The bar back to full, every shot in the air gone, and three seconds
+      // inside a bubble nothing can get through.
+      snd('shield');
+      shield = 100; bar.style.width = '100%';
+      bubbleT = 3; activeT = activeMax = 3;
+      flak.length = 0;
+      w.kick(1.2);
+      w.burst([ship.x, ship.y, 0], '#a855f7', 44, { speed: 14, life: 0.8 });
+    }else if(a.id === 'TIME_WARP'){
+      warpT = 4; activeT = activeMax = 4;
+      w.kick(0.8);
+      w.burst([ship.x, ship.y, -6], '#ffd700', 36, { speed: 10, life: 1.0 });
+    }else{
+      fireNova();
+      activeT = activeMax = 1.2;
+    }
   }
 
   // ── FOES ──
@@ -30662,6 +30933,8 @@ P.games.nebula = function(){
   }
 
   function takeHit(dmg, at){
+    // 🛡️ Inside a Shield Burst's bubble nothing gets through.
+    if(bubbleT > 0){ w.burst(at, '#a855f7', 10, { speed: 7, life: 0.35 }); return; }
     shield -= dmg;
     chain = 0;
     hitFlash = 0.35;
@@ -30687,6 +30960,9 @@ P.games.nebula = function(){
     scroll += 42 * dt * diff;
     cool -= dt;
     hitFlash = Math.max(0, hitFlash - dt);
+    warpT = Math.max(0, warpT - dt); bubbleT = Math.max(0, bubbleT - dt);
+    if(active){ activeT -= dt; if(activeT <= 0) active = null; }
+    if(strip && dt > 0) strip.set(abilities, active ? { label: active.label, color: active.color, frac: activeT / (activeMax || 1) } : null);
 
     // Steering: pad and keys nudge the target, the drag sets it outright, and
     // the hull eases toward it so the ship has mass.
@@ -30735,37 +31011,77 @@ P.games.nebula = function(){
       spawnT = spawnGap / diff;
     }
 
-    // Bolts.
+    // Bolts. 🎯 v60 · SWEPT: the bolt's whole step against the raider's whole
+    // step this frame (it closes on you as the bolt flies out), so a frame that
+    // runs long can no longer carry a bolt through a raider without a hit.
     for(let i = bolts.length - 1; i >= 0; i--){
       const b = bolts[i];
+      const bx0 = b.x, bz0 = b.z;
       b.z += b.vz * dt; b.x += b.vx * dt;
       if(b.z < -140){ bolts.splice(i, 1); continue; }
       let hit = false;
       for(let j = foes.length - 1; j >= 0; j--){
         const f = foes[j];
-        const dx = f.x - b.x, dy = f.y - b.y, dz = f.z - b.z;
-        if(dx*dx + dy*dy + dz*dz < (f.t.r + 0.6) * (f.t.r + 0.6) * 4){
+        const fz1 = f.z + f.spd * warp() * dt, fx1 = f.x + f.vx * warp() * dt;
+        // Relative motion over the frame: start gap d0, change dv; nearest t.
+        const d0x = bx0 - f.x, d0y = b.y - f.y, d0z = bz0 - f.z;
+        const dvx = (b.x - bx0) - (fx1 - f.x), dvz = (b.z - bz0) - (fz1 - f.z);
+        const vv = dvx * dvx + dvz * dvz;
+        const t = vv > 1e-9 ? clamp(-(d0x * dvx + d0z * dvz) / vv, 0, 1) : 0;
+        const gx = d0x + dvx * t, gz = d0z + dvz * t;
+        const R2 = (f.t.r + 0.6) * (f.t.r + 0.6) * 4;
+        if(gx * gx + d0y * d0y + gz * gz < R2){
           hit = true;
           f.hp--;
+          f.flash = 0.14;
           w.burst([b.x, b.y, b.z], '#ffffff', 5, { speed: 6, life: 0.22, size: 0.22 });
           if(f.hp <= 0) kill(f, j);
-          else snd('hit', { semi: 4 });
+          else{ snd('hit', { semi: 4 }); w.burst([f.x, f.y, f.z], '#ffb070', 8, { speed: 8, life: 0.35, size: 0.3 }); }
           break;
         }
       }
       if(hit) bolts.splice(i, 1);
     }
 
-    // Foes.
+    // 🎯 Smart missiles: steer onto their raider, or the nearest live one if
+    // theirs is already gone, and down it on contact.
+    for(let i = smarts.length - 1; i >= 0; i--){
+      const m = smarts[i];
+      m.life -= dt;
+      if(!m.tgt || !foes.includes(m.tgt)){
+        let bestD = 1e9; m.tgt = null;
+        for(const f of foes){ const d = (f.x - m.x) ** 2 + (f.y - m.y) ** 2 + (f.z - m.z) ** 2; if(d < bestD){ bestD = d; m.tgt = f; } }
+      }
+      const sp = Math.hypot(m.vx, m.vy, m.vz) || 1;
+      if(m.tgt){
+        const dx = m.tgt.x - m.x, dy = m.tgt.y - m.y, dz = m.tgt.z - m.z, l = Math.hypot(dx, dy, dz) || 1;
+        const k = clamp(6 * dt, 0, 1), nsp = Math.min(110, sp + 70 * dt);
+        m.vx += (dx / l * nsp - m.vx) * k; m.vy += (dy / l * nsp - m.vy) * k; m.vz += (dz / l * nsp - m.vz) * k;
+      }
+      m.x += m.vx * dt; m.y += m.vy * dt; m.z += m.vz * dt;
+      m.trail -= dt;
+      if(m.trail <= 0){ m.trail = 0.02; w.spark([m.x, m.y, m.z], '#9ff6ff', 0.32, 0.35); }
+      let boom = m.life <= 0 || m.z < -150;
+      if(m.tgt && (m.tgt.x - m.x) ** 2 + (m.tgt.y - m.y) ** 2 + (m.tgt.z - m.z) ** 2 < (m.tgt.t.r + 1.2) ** 2){
+        const j = foes.indexOf(m.tgt);
+        if(j >= 0) kill(m.tgt, j);
+        boom = true;
+      }
+      if(boom){ w.burst([m.x, m.y, m.z], '#00f5ff', 20, { speed: 10, life: 0.5 }); smarts.splice(i, 1); }
+    }
+
+    // Foes. ⏳ A Time Warp halves everything they do.
     for(let i = foes.length - 1; i >= 0; i--){
       const f = foes[i];
-      f.z += f.spd * dt;
-      f.x = clamp(f.x + f.vx * dt, -XL - 1, XL + 1);
-      f.y = clamp(f.y + f.vy * dt, -YL, YL + 1);
-      f.spin += dt * 1.6;
+      const wk = warp();
+      f.flash = Math.max(0, (f.flash || 0) - dt);
+      f.z += f.spd * wk * dt;
+      f.x = clamp(f.x + f.vx * wk * dt, -XL - 1, XL + 1);
+      f.y = clamp(f.y + f.vy * wk * dt, -YL, YL + 1);
+      f.spin += dt * 1.6 * wk;
       if(Math.abs(f.x) >= XL) f.vx *= -1;
       // Fire at the player once inside effective range.
-      f.fireT -= dt;
+      f.fireT -= dt * wk;
       if(f.fireT <= 0 && f.z > -85 && f.z < -6){
         f.fireT = rnd(1.2, 3.0) / diff;
         const dx = ship.x - f.x, dy = ship.y - f.y, dz = -2 - f.z;
@@ -30787,7 +31103,8 @@ P.games.nebula = function(){
     // Enemy fire.
     for(let i = flak.length - 1; i >= 0; i--){
       const b = flak[i];
-      b.x += b.vx * dt; b.y += b.vy * dt; b.z += b.vz * dt;
+      const wk = warp();
+      b.x += b.vx * wk * dt; b.y += b.vy * wk * dt; b.z += b.vz * wk * dt;
       if(b.z > 14 || Math.abs(b.x) > 24 || Math.abs(b.y) > 16){ flak.splice(i, 1); continue; }
       const dx = b.x - ship.x, dy = b.y - ship.y, dz = b.z + 1;
       if(dx*dx + dy*dy + dz*dz < 1.5){
@@ -30806,7 +31123,12 @@ P.games.nebula = function(){
         orbsList.splice(i, 1);
         orbs++;
         if(orbs <= 2){ weapon = Math.min(3, weapon + 1); w.pop([ship.x, ship.y + 2, -2], '⚡ WEAPON ' + weapon, '#ffd700', { size: 18 }); }
-        else { nova++; w.pop([ship.x, ship.y + 2, -2], '💥 NOVA READY', '#ff0090', { size: 18 }); }
+        else{
+          // The 2D game's rotation: missile, shield, warp, nova, and round again.
+          const a = ABILITY_DEFS[abilEarned++ % ABILITY_DEFS.length];
+          abilities.push(a);
+          w.pop([ship.x, ship.y + 2, -2], a.label + ' READY', a.color, { size: 18 });
+        }
         snd('powerup');
         score += 25; setLive(score);
         w.burst([o.x, o.y, o.z], '#ffd700', 18, { speed: 7, life: 0.6 });
@@ -30883,16 +31205,16 @@ P.games.nebula = function(){
     // hot sensor eye, and — for the nearest few only — a real point light. The
     // renderer has ten light slots and the player's rig owns three, so the list
     // is sorted by proximity and only the closest handful get one.
-    const nearFoes = foes.slice().sort((a, b) => b.z - a.z);
     for(let fi = 0; fi < foes.length; fi++){
       const f = foes[fi];
-      // ✨ v57 · The hull tint was 0.55, which lit the whole airframe in its
-      // type colour like a plastic toy; a quarter of that still separates it
-      // from the deck, and the eye, the lamps and the glow do the rest.
+      // ✨ v60 · PAINTED IN ITS TYPE COLOUR (ENEMY_PAINT), not dark chrome
+      // under a coloured glow: a grunt is red, a dart orange, a heavy purple,
+      // the way the 2D invaders are — read by the scene's light, with no halo
+      // and no lamp hung round it. White for the instant a bolt lands.
       r.draw(f.t.geo, {
         pos: [f.x, f.y, f.z], rot: [0, Math.sin(f.spin) * 0.25, f.spin * 0.7], scale: f.t.sc,
-        color: '#2f3646', metallic: 0.8, roughness: 0.32, rim: 1.2,
-        emissive: f.t.col, emissiveStrength: 0.14, accent: 2
+        color: f.flash > 0 ? '#ffffff' : enemyPaint(f.t.col), metallic: ENEMY_FINISH.metallic,
+        roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7
       });
       // Sensor eye — the read on "which way is it facing" and the brightest
       // thing on the model, so it is what the eye tracks at range.
@@ -30902,11 +31224,20 @@ P.games.nebula = function(){
       // user had every model's blobs of light removed): the Blender raider's own
       // eye and tip lamps light in the type colour from the emissive above.
     }
-    for(let fi = 0; fi < Math.min(4, nearFoes.length); fi++){
-      const f = nearFoes[fi];
-      if(f.z < -95) break;
-      r.light({ pos:[f.x, f.y, f.z + 2], color: f.t.col, intensity: 70, range: 26 });
+    // ⚡ The specials in flight: smart missiles, and the shield bubble.
+    for(const m of smarts){
+      const l = Math.hypot(m.vx, m.vy, m.vz) || 1;
+      r.draw('missile', { pos: [m.x, m.y, m.z], rot: [Math.asin(clamp(m.vy / l, -1, 1)), Math.atan2(-m.vx, -m.vz), 0], scale: 0.9,
+                          color: '#d9dde4', metallic: 0.3, roughness: 0.4, emissive: '#00f5ff', emissiveStrength: 0.5, accent: 4 });
+      r.streak([m.x - m.vx * 0.02, m.y - m.vy * 0.02, m.z - m.vz * 0.02], [m.x, m.y, m.z], 0.22, '#9ff6ff', 2.4, 0.9);
     }
+    if(bubbleT > 0){
+      const k = Math.min(1, bubbleT * 2);
+      r.draw('sphere', { pos: [ship.x, ship.y, 0], scale: 3.4 + Math.sin(w.t * 9) * 0.08, color: '#a855f7', emissive: '#c084fc',
+                         emissiveStrength: 0.5 * k, alpha: 0.16 * k, blend: true, metallic: 0, roughness: 0.2, rim: 1.4 });
+    }
+    if(warpT > 0) r.draw('thintorus', { pos: [ship.x, ship.y, -10], rot: [Math.PI / 2, 0, w.t], scale: 14 + Math.sin(w.t * 3) * 0.4,
+                                        color: '#ffd700', emissive: '#ffd700', emissiveStrength: 0.9 * Math.min(1, warpT), alpha: 0.25, blend: true });
 
     for(const b of flak){
       r.draw('sphere', { pos: [b.x, b.y, b.z], scale: 0.6, color: b.col, emissive: b.col, emissiveStrength: 6 });
@@ -30928,12 +31259,12 @@ P.games.nebula = function(){
     if(over) return;
     over = true;
     clearCanvasDrag();
-    const pts = Math.min(1000, score);
+    const pts = capRaw(1000, score);
     showResults('nebula', pts, {
       '📡 Run Terminated': reason === 'clock' ? 'MISSION CLOCK EXPIRED' : 'HULL DESTROYED',
       '💥 Raiders Downed': killed,
       '🔥 Best Chain': best + '×',
-      '⚡ Weapon Level': weapon + (nova ? ` (+${nova} NOVA)` : ''),
+      '⚡ Weapon Level': weapon + (abilities.length ? ` (+${abilities.length} SPECIAL${abilities.length === 1 ? '' : 'S'} BANKED)` : ''),
       '🛡️ Shield Remaining': Math.max(0, Math.round(shield)) + '%',
       '🏆 Score Accumulation': `${pts} PTS`
     });
@@ -30963,7 +31294,7 @@ P.games.dodge = function(){
   const colour = mine();
   const XL = 12, ZN = 7, ZF = -11;             // the deck the player may occupy
 
-  let score = 0, time = 30, over = false, ended = false, scroll = 0, spawnT = 0, frame = 0;
+  let score = 0, time = 30, over = false, ended = false, survived = false, scroll = 0, spawnT = 0, frame = 0;
   const me = { x: 0, z: -1, r: 0.85, bob: 0 };
   const cores = [];
   const BARRAGE = (typeof labBarrage === 'function') ? labBarrage() : null;
@@ -31013,7 +31344,9 @@ P.games.dodge = function(){
     score += 25;
     setLive(score);
     snd(time <= 5 && time > 0 ? 'tick' : 'score', { semi: -7 });
-    if(time <= 0) end();
+    // 🛡️ Outlasting the clock finishes the mission at its full cap (see
+    // DODGE_SURVIVE_BONUS) — 30 s at 25 a second stopped at 750 of 800.
+    if(time <= 0){ survived = true; score += DODGE_SURVIVE_BONUS; setLive(score); end(); }
   }, 1000);
 
   runLoop(dt => {
@@ -31148,11 +31481,12 @@ P.games.dodge = function(){
     if(ended) return;
     ended = true; over = true;
     clearCanvasDrag();
-    const earned = Math.min(800, score);
+    const earned = capRaw(800, score);
     const wasRacing = Ghost.racing, target = Ghost.target;
     const beat = Ghost.finish(earned);
     showResults('dodge', earned, {
-      '⏱️ Operational Lifespan': score / 25 + 's',
+      '⏱️ Operational Lifespan': (30 - Math.max(0, time)) + 's',
+      ...(survived ? { '🛡️ Full Survival Bonus': `+${DODGE_SURVIVE_BONUS}` } : {}),
       ...(wasRacing ? { '👻 Ghost To Beat': `${target} PTS` } : {}),
       ...(wasRacing && beat ? { '👻 Result': 'GHOST BEATEN' } : {}),
       '🏆 Score Accumulation': `${earned} PTS`
@@ -31292,7 +31626,7 @@ P.games.tetris = function(){
       }
     }
     if(swept){
-      setLive(Math.min(1500, score));
+      setLive(capRaw(1500, score));
       document.getElementById('tetris-lvl').textContent = level;
       w.kick(0.6 + swept * 0.5);
       snd('lineClear', { semi: swept * 2 });
@@ -31332,7 +31666,7 @@ P.games.tetris = function(){
     let d = 0;
     while(!hits(piece.m, piece.x, piece.y + 1)){ piece.y++; d++; }
     score += d;
-    setLive(Math.min(1500, score));
+    setLive(capRaw(1500, score));
     snd('hardDrop');
     w.kick(1.0);
     lock();
@@ -31536,7 +31870,7 @@ P.games.tetris = function(){
     over = true;
     clearCanvasDrag();
     snd('gameOver');
-    const pts = Math.min(1500, score);
+    const pts = capRaw(1500, score);
     showResults('tetris', pts, {
       '🧱 Base Core Lines Resolved': lines,
       '📶 Level Reached': level,
@@ -31755,7 +32089,7 @@ P.games.pong = function(){
     if(over) return;
     over = true;
     clearCanvasDrag();
-    const pts = Math.min(900, Math.max(0, (myScore - cpuScore) * 50));
+    const pts = capRaw(900, Math.max(0, (myScore - cpuScore) * 50));
     showResults('pong', pts, {
       '🏓 Your Goals': myScore,
       '🤖 CPU Goals': cpuScore,
@@ -31886,7 +32220,7 @@ P.games.snake = function(){
       snake.unshift(head);
       if(head.x === food.x && head.y === food.y){
         score += 30; eaten++; lastEat = w.t;
-        setLive(Math.min(1200, score));
+        setLive(capRaw(1200, score));
         snd('eat', { semi: Math.min(eaten, 12) });
         w.burst([wx(food.x), 0.9, wz(food.y)], '#39ff88', 22, { speed: 9, life: 0.7 });
         w.pop([wx(food.x), 2.2, wz(food.y)], '+30', '#39ff88');
@@ -32011,7 +32345,7 @@ P.games.snake = function(){
     over = true;
     clearCanvasDrag();
     if(reason !== 'timeout') snd('gameOver');
-    const earned = Math.min(1200, score);
+    const earned = capRaw(1200, score);
     const wasRacing = Ghost.racing, target = Ghost.target;
     const beat = Ghost.finish(earned);
     showResults('snake', earned, {
@@ -32126,7 +32460,7 @@ P.games.flappy = function(){
         g.scored = true;
         score++;
         best = Math.max(best, score);
-        setLive(Math.min(1000, score * 50));
+        setLive(capRaw(1000, score * 50));
         snd('score', { semi: Math.min(score, 14) });
         w.pop([0, y + 2.2, -2], '+50', g.col, { size: 18 });
         w.kick(0.25);
@@ -32233,7 +32567,7 @@ P.games.flappy = function(){
 
   function end(){
     clearCanvasDrag();
-    const earned = Math.min(1000, score * 50);
+    const earned = capRaw(1000, score * 50);
     const wasRacing = Ghost.racing, target = Ghost.target;
     const beat = Ghost.finish(earned);
     showResults('flappy', earned, {
@@ -32345,7 +32679,7 @@ P.games.breaker = function(){
     bestCombo = Math.max(bestCombo, combo);
     // A 🧱 lab wall's gold CORE pays three times a brick's base.
     score += (b.core ? 45 : 15) + Math.min(combo, 10) * 2;
-    setLive(Math.min(1100, score + shields * 40));
+    setLive(capRaw(1100, score + shields * 40));
     snd('brick', { semi: Math.min(combo, 12) });
     w.burst([b.x, 0.75, b.z], b.col, 18, { speed: 9, life: 0.6, size: 0.32 });
     if(combo > 1) w.pop([b.x, 2.4, b.z], `${combo}× CHAIN`, b.col, { size: 15 });
@@ -32471,7 +32805,7 @@ P.games.breaker = function(){
     over = true;
     clearCanvasDrag();
     const survive = Math.max(0, shields) * 40;
-    const final = Math.min(1100, score + survive);
+    const final = capRaw(1100, score + survive);
     showResults('breaker', final, {
       '📡 Run Terminated': reason === 'cleared' ? 'ICE WALL CLEARED' : reason === 'timeout' ? 'CLOCK EXPIRED' : 'SHIELDS BREACHED',
       '🧊 ICE Shattered': `${broken}/${bricks.length}`,
@@ -32599,7 +32933,7 @@ P.games.runner = function(){
     x += (laneX(lane) - x) * (1 - Math.pow(0.0002, dt));
     // A clean arc: sin over the jump window, so take-off and landing both ease.
     const air = jumpT > 0 ? Math.sin((1 - jumpT / 0.62) * Math.PI) * 2.9 : 0;
-    setLive(Math.min(1200, score()));
+    setLive(capRaw(1200, score()));
     Ghost.sample((x / (LANE * 1.5) * 0.5 + 0.5) * BOARD_W);
 
     // Rows are spaced by DISTANCE, so a faster run does not become a denser one.
@@ -32717,7 +33051,7 @@ P.games.runner = function(){
     if(over) return;
     over = true;
     clearCanvasDrag();
-    const final = Math.min(1200, score());
+    const final = capRaw(1200, score());
     const wasRacing = Ghost.racing, target = Ghost.target;
     const beat = Ghost.finish(final);
     showResults('runner', final, {
@@ -32747,13 +33081,27 @@ P.games.meteor = function(){
   if(!w) return;
   const r = w.r;
 
-  setControls({ action: isTouchDevice ? '🎯 FIRE' : 'FIRE' });
-  setControlHint('TAP A FRAGMENT TO LOCK AND FIRE', 'MOVE TO AIM · CLICK OR SPACE TO FIRE');
+  setControls({ action: isTouchDevice ? '🎯 FIRE' : 'FIRE', drop: '⚡ ABIL' });
+  setControlHint('TAP A FRAGMENT TO LOCK AND FIRE · ⚡ = BATTERY ABILITY', 'MOVE TO AIM · CLICK OR SPACE TO FIRE · Q / E = BATTERY ABILITY');
   showTouchHint('TAP THE INCOMING FRAGMENTS');
 
   const diff = getDifficultyModifier();
   const colour = mine();
   const XL = 13, TOP = 26;
+
+  // ⚡ v60 · THE BATTERY, from the 2D build. One charge per wave, cycling the
+  // list; Q / E or the ⚡ pad deploys the next. The queue holds three.
+  const ABILITIES = [
+    { id:'SALVO',  label:'🔥 RAPID SALVO', color:'#ff6600', desc:'AUTO-SALVO FIRING' },
+    { id:'AEGIS',  label:'🛡️ AEGIS DOME',  color:'#39ff14', desc:'DOME ABSORBING HITS' },
+    { id:'OVER',   label:'⚡ OVERCHARGE',  color:'#ffd700', desc:'WIDE BLASTS · FAST RELOAD' },
+    { id:'REPAIR', label:'🔧 NANO-REPAIR', color:'#00f5ff', desc:'SERVER RESTORED' }
+  ];
+  const ABIL_MAX = 3, OVER_S = 7, DOME_S = 7, SALVO_SHOTS = 6;
+  const abilQueue = [];
+  let abilEarned = 0, activeAbil = null, abilT = 0, abilMax = 1, salvoLeft = 0, salvoT = 0, domeT = 0, overT = 0;
+  const strip = K.abilityStrip ? K.abilityStrip() : null;
+  onQuit(() => { if(strip) strip.destroy(); });
   const SHOT_V = 62;        // bolt speed, world units a second
   const HIT_PAD = 0.8;      // the bolt's own radius, added to the fragment's
   const LOCK_SLACK = 1.35;  // how far off the sight line a fragment may still lock
@@ -32845,8 +33193,39 @@ P.games.meteor = function(){
   });
   window.onkeydown = e => {
     if(e.code === 'Space' || e.code === 'Enter'){ e.preventDefault(); fire(); }
+    if((e.code === 'KeyQ' || e.code === 'KeyE') && !e.repeat){ e.preventDefault(); deployAbility(); }
   };
   document.getElementById('ctrl-action').onclick = fire;
+  { const dropBtn = document.getElementById('ctrl-drop'); if(dropBtn) dropBtn.onclick = () => deployAbility(); }
+
+  function grantAbility(){
+    // A full bank loses the wave's charge but does not advance the rotation —
+    // the 2D build's rule, so hoarding can never skip past the repair.
+    if(abilQueue.length >= ABIL_MAX) return;
+    const a = ABILITIES[abilEarned++ % ABILITIES.length];
+    abilQueue.push(a);
+    w.pop([0, 12, 0], a.label + ' READY', a.color, { size: 18 });
+  }
+  function deployAbility(){
+    if(over || !abilQueue.length) return;
+    const a = abilQueue.shift();
+    activeAbil = a; abilT = abilMax = 2.8;
+    w.kick(0.7);
+    snd(a.id === 'REPAIR' ? 'heal' : a.id === 'AEGIS' ? 'shield' : 'ability');
+    w.pop([0, 13.5, 0], a.label, a.color, { size: 20 });
+    if(a.id === 'SALVO'){ salvoLeft = SALVO_SHOTS; salvoT = 0; abilT = abilMax = 2.4; }
+    else if(a.id === 'AEGIS'){ domeT = DOME_S; abilT = abilMax = DOME_S; }
+    else if(a.id === 'OVER'){ overT = OVER_S; abilT = abilMax = OVER_S; cool = 0; }
+    else{
+      // Revive a downed server first, else patch the most damaged one; with
+      // every rack whole the charge pays out instead of doing nothing.
+      const dead = bases.find(b => !b.alive);
+      const hurt = bases.filter(b => b.alive && b.hp < 2).sort((p, q) => p.hp - q.hp)[0];
+      if(dead){ dead.alive = true; dead.hp = 1; dead.hit = w.t; w.pop([dead.x, 4.5, 0], 'SERVER ONLINE', '#39ff14'); w.burst([dead.x, 1.5, 0], '#39ff14', 30, { speed: 8, life: 0.8 }); }
+      else if(hurt){ hurt.hp = 2; hurt.hit = w.t; w.pop([hurt.x, 4.5, 0], 'SHIELD RESTORED', '#39ff14'); w.burst([hurt.x, 1.5, 0], '#39ff14', 22, { speed: 7, life: 0.7 }); }
+      else{ score += 60; setLive(capRaw(1100, score + bases.filter(b => b.alive).length * 70)); w.pop([0, 9, 0], 'RACKS WHOLE +60', '#39ff14'); }
+    }
+  }
 
   gTimer = setInterval(() => {
     if(over) return;
@@ -32901,9 +33280,9 @@ P.games.meteor = function(){
     return [k.x + k.vx * t, k.y + k.vy * t, k.z];
   }
 
-  function fire(){
-    if(over || cool > 0) return;
-    cool = 0.17;
+  function fire(auto){
+    if(over || (cool > 0 && !auto)) return;
+    if(!auto) cool = overT > 0 ? 0.06 : 0.17;
     snd('shoot');
     // Snap the mount onto the shot before the muzzle is measured. The traverse
     // is smoothed, so a tap can beat the gimbal to its target — and a bolt
@@ -32915,7 +33294,7 @@ P.games.meteor = function(){
     const from = muzzlePoint(tYaw, tPitch * PITCH_FRAC, muzSide, 0);
     // No lock is an honest miss: the bolt goes where the reticle is and hits
     // whatever it happens to run into on the way.
-    const lock = sightLock();
+    const lock = auto || sightLock();
     const to = lock ? leadPoint(lock, from) : [aimX, aimY, 0];
     const d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     const l = Math.hypot(d[0], d[1], d[2]) || 1;
@@ -32963,7 +33342,7 @@ P.games.meteor = function(){
     bestChain = Math.max(bestChain, chain);
     const pts = (k.r > 1.2 ? 55 : 30) + Math.min(chain, 8) * 4;
     score += pts;
-    setLive(Math.min(1100, score + bases.filter(b => b.alive).length * 70));
+    setLive(capRaw(1100, score + bases.filter(b => b.alive).length * 70));
     snd('explode', { semi: Math.min(chain, 10) });
     w.burst([k.x, k.y, k.z], k.col, 24, { speed: 10, life: 0.7, size: 0.4, grav: 5 });
     w.pop([k.x, k.y + 1.4, k.z], '+' + pts, k.col);
@@ -33001,7 +33380,26 @@ P.games.meteor = function(){
     tMuzzle *= Math.pow(1e-9,   dt); if(tMuzzle < 0.02) tMuzzle = 0;
 
     waveT += dt;
-    if(waveT > 12){ waveT = 0; wave++; w.pop([0, 14, 0], 'WAVE ' + wave, '#ffd700', { size: 24, life: 1.6 }); snd('wave'); }
+    if(waveT > 12){ waveT = 0; wave++; w.pop([0, 14, 0], 'WAVE ' + wave, '#ffd700', { size: 24, life: 1.6 }); snd('wave'); grantAbility(); }
+
+    // ⚡ The battery's timers, and the salvo's own trigger: the lowest
+    // fragment first (the closest to landing), led like any other shot. Shots
+    // stay banked while the sky is empty, so a late salvo is not wasted.
+    if(dt > 0){
+      overT = Math.max(0, overT - dt); domeT = Math.max(0, domeT - dt);
+      if(activeAbil){ abilT -= dt; if(abilT <= 0) activeAbil = null; }
+      if(salvoLeft > 0){
+        salvoT += dt;
+        if(salvoT >= 0.13 && rocks.length){
+          salvoT = 0;
+          let low = rocks[0];
+          for(const k of rocks) if(k.y < low.y) low = k;
+          fire(low);
+          salvoLeft--;
+        }
+      }
+      if(strip) strip.set(abilQueue, activeAbil ? { label: activeAbil.label, color: activeAbil.color, frac: abilT / (abilMax || 1) } : null);
+    }
 
     spawnT -= dt;
     if(spawnT <= 0){
@@ -33036,7 +33434,8 @@ P.games.meteor = function(){
         let u = vv > 0 ? -(rx*vx + ry*vy + rz*vz) / vv : 0;
         u = u < 0 ? 0 : (u > dt ? dt : u);
         const cx = rx + vx*u, cy = ry + vy*u, cz = rz + vz*u;
-        const rad = k.r + HIT_PAD;
+        // ⚡ OVERCHARGE: wide blasts, as in the 2D build (×1.7 the reach).
+        const rad = (k.r + HIT_PAD) * (overT > 0 ? 1.7 : 1);
         if(cx*cx + cy*cy + cz*cz > rad*rad) continue;
         done = true;
         k.hp--;
@@ -33056,6 +33455,8 @@ P.games.meteor = function(){
         // of every server is a near miss and costs only the chain.
         let target = null, bestD = 4.2;
         for(const b of bases){ if(!b.alive) continue; const d = Math.abs(b.x - k.x); if(d < bestD){ bestD = d; target = b; } }
+        // 🛡️ AEGIS DOME: a fragment that reaches the dome burns out on it.
+        if(target && domeT > 0){ w.burst([k.x, 2.4, k.z], '#39ff14', 18, { speed: 8, life: 0.5 }); snd('shieldHit'); target = null; continue; }
         if(target) hitBase(target, k);
         else { chain = 0; w.burst([k.x, 0.6, k.z], '#5a5f70', 12, { speed: 6, life: 0.5, grav: 6 }); snd('land'); }
         if(over) return false;
@@ -33105,6 +33506,13 @@ P.games.meteor = function(){
         r.draw('cube', { pos:[b.x, 0.55, 0], rot:[0.1, 0.3, 0.12], scale:[2.4, 1.1, 2.0],
                          color:'#0a0c14', metallic: 0.5, roughness: 0.7, rim: 0.8 });
       }
+    }
+
+    // 🛡️ The Aegis dome over the server row while it holds.
+    if(domeT > 0){
+      const k = Math.min(1, domeT * 1.5);
+      r.draw('sphere', { pos:[0, -2, 0], scale:[XL * 2.3, 9, 7], color:'#39ff14', emissive:'#39ff14',
+                         emissiveStrength: 0.35 * k, alpha: 0.12 * k, blend: true, metallic: 0, roughness: 0.2, rim: 1.4 });
     }
 
     // ── FRAGMENTS ──
@@ -33180,7 +33588,7 @@ P.games.meteor = function(){
     clearCanvasDrag();
     const aliveN = bases.filter(b => b.alive).length;
     const survive = aliveN * 70;
-    const final = Math.min(1100, score + survive);
+    const final = capRaw(1100, score + survive);
     showResults('meteor', final, {
       '📡 Run Terminated': reason === 'overrun' ? 'ALL SERVERS DOWN' : 'MISSION CLOCK EXPIRED',
       '☄️ Fragments Purged': killed,
@@ -33228,7 +33636,7 @@ P.games.click = function(){
     heat = Math.min(1, heat + 0.045);
     spinRate = 1 + heat * 5;
     snd('bounce', { semi: (clicks % 8) * 2 });
-    setLive(Math.min(500, FZ ? earned : clicks * 8));
+    setLive(capRaw(500, FZ ? earned : clicks * 8));
     w.kick(0.55 + heat * 0.7);
     w.burst([0, 1.2, 0], heat > 0.7 ? '#ff2442' : colour, 10 + (heat * 14) | 0,
             { speed: 9 + heat * 8, life: 0.5, size: 0.3 });
@@ -33251,7 +33659,7 @@ P.games.click = function(){
     if(t <= 0){
       clearInterval(gTimer); gTimer = null;
       over = true;
-      const pts = Math.min(500, FZ ? earned : clicks * 8);
+      const pts = capRaw(500, FZ ? earned : clicks * 8);
       w.burst([0, 1.2, 0], '#ffffff', 60, { speed: 20, life: 1.1, size: 0.55 });
       w.kick(4);
       snd('bigExplode');
@@ -33403,7 +33811,7 @@ P.games.reaction = function(){
       const earned = Math.max(10, 400 - ms);
       score += earned; reads++;
       best = best ? Math.min(best, ms) : ms;
-      setLive(Math.min(400, score));
+      setLive(capRaw(400, score));
       snd('correct', { semi: clamp(8 - ms / 40, -6, 10) });
       w.kick(1.0);
       w.burst([0, 1.4, 0], GO_COL, 34, { speed: 13, life: 0.8, size: 0.4 });
@@ -33475,7 +33883,7 @@ P.games.reaction = function(){
     gCancel(trigger);
     if(fakeT) gCancel(fakeT);
     clearCanvasDrag();
-    const pts = Math.min(400, score);
+    const pts = capRaw(400, score);
     showResults('reaction', pts, {
       '⚡ Reads Landed': reads,
       ...(best ? { '🏁 Fastest Read': `${best} ms` } : {}),
@@ -33879,7 +34287,7 @@ P.games.memory = function(){
     const [a, b] = flipped;
     if(a.tok === b.tok){
       score += 75; matched++;
-      setLive(Math.min(600, score));
+      setLive(capRaw(600, score));
       snd('match', { semi: matched * 2 });
       w.kick(0.6);
       const T = TOKENS[a.tok];
@@ -34029,7 +34437,7 @@ P.games.memory = function(){
     if(scored) return; scored = true; ended = true;
     clearInterval(gTimer); gTimer = null;
     clearCanvasDrag();
-    showResults('memory', Math.min(600, score), {
+    showResults('memory', capRaw(600, score), {
       '🧩 Clusters Unified': matched,
       '🏆 Score Accumulation': `${score} PTS`
     });
@@ -34114,7 +34522,7 @@ P.games.math = function(){
     const input = parseInt(ansEl.value, 10);
     if(input === curAns){
       score += 50; solved++; streak++; best = Math.max(best, streak);
-      setLive(Math.min(750, score));
+      setLive(capRaw(750, score));
       snd('correct', { semi: Math.min(12, streak * 2) });
       shatter = 1; pulse = 1;
       w.kick(0.7 + Math.min(1, streak * 0.12));
@@ -34243,7 +34651,7 @@ P.games.math = function(){
     clearInterval(gTimer); gTimer = null;
     ansEl.onkeydown = null;
     document.getElementById('math-submit').onclick = null;
-    const pts = Math.min(750, score);
+    const pts = capRaw(750, score);
     showResults('math', pts, {
       '🔢 Nodes Resolved': solved,
       ...(best > 1 ? { '🔥 Best Streak': `${best} IN A ROW` } : {}),
@@ -34348,12 +34756,12 @@ P.games.hacker = function(){
     if(seq[inputIdx] === i){
       flash(i, 190);
       nodes[i].hit = 1;
-      inputIdx++; score += 5; setLive(Math.min(800, score));
+      inputIdx++; score += 5; setLive(capRaw(800, score));
       if(inputIdx === seq.length){
         phase = 'clear';
         cleared++;
         const bonus = 40 + level * 12;
-        score += bonus; setLive(Math.min(800, score));
+        score += bonus; setLive(capRaw(800, score));
         snd('success');
         w.kick(1.1);
         w.pop([0, 7, 0], `NODE DECRYPTED · +${bonus}`, '#39ff88', { size: 22, life: 1.3 });
@@ -34524,7 +34932,7 @@ P.games.hacker = function(){
     if(scored) return; scored = true; ended = true;
     clearInterval(gTimer); gTimer = null;
     clearCanvasDrag();
-    const final = Math.min(800, score);
+    const final = capRaw(800, score);
     showResults('hacker', final, {
       '📡 Run Terminated': reason === 'timeout' ? 'TRACE TIMEOUT' : 'SYSTEM LOCK',
       '🔓 Mainframes Decrypted': cleared,
@@ -34545,7 +34953,7 @@ P.games.hacker = function(){
 //
 // Generation, rules and scoring are the 2D build's, unchanged: a carved
 // self-avoiding route, a 15 second clock scaled by the tier, 700 for the route,
-// 250 for a clear, 15 a second left, 1100 cap.
+// 400 for a clear (a finished board is the 1100 cap), 15 a second left over it.
 P.games.path = function(){
   const w = begin3d(Object.assign({ ease: 0.22 }, CITY_NIGHT, {
     env: { zenith:'#04081a', horizon:'#2b1250', ground:'#04060e', intensity: 1.35 },
@@ -34572,7 +34980,8 @@ P.games.path = function(){
   const DEAD_COUNT = LBOARD ? LBOARD.dead.length : Math.min(9, 4 + Math.max(0, Math.round((diffMod - 1) * 2)));
   const OPEN = CELLS - DEAD_COUNT;
   const time0 = Math.max(10, Math.round(15 * getTimeModifier()));
-  const ROUTE_PTS = 700, CLEAR_BONUS = 250, SPEED_PTS = 15;
+  // Route + clear is the full cap; speed pays over it (see the 2D build).
+  const ROUTE_PTS = 700, CLEAR_BONUS = PATH_CLEAR_BONUS, SPEED_PTS = 15;
 
   const rc = i => [Math.floor(i / N), i % N];
   const neighbours = i => {
@@ -34670,7 +35079,7 @@ P.games.path = function(){
     }
     steps.forEach(s => { route.push(s); heat[s] = 1; });
     best = Math.max(best, route.length);
-    setLive(Math.min(1100, routeScore(best)));
+    setLive(capRaw(1100, routeScore(best)));
     snd('node', { semi: (route.length % 8) * 2 });
     pulse = 1;
     if(route.length === OPEN) complete();
@@ -34884,13 +35293,15 @@ P.games.path = function(){
     clearCanvasDrag();
     const cleared = reason === 'complete';
     const left = Math.max(0, time);
-    const final = Math.min(1100, routeScore(best) + (cleared ? CLEAR_BONUS + left * SPEED_PTS : 0));
+    const speed = cleared ? left * SPEED_PTS : 0;
+    const raw = routeScore(best) + (cleared ? CLEAR_BONUS + speed : 0);
+    const final = capRaw(1100, raw);
     showResults('path', final, {
       '🔌 Circuit Status': cleared ? 'FULLY OVERCLOCKED' : 'POWER DRAINED',
       '🧩 Nodes Routed': `${best} / ${OPEN}`,
       '💀 Dead Code Bypassed': DEAD_COUNT,
       '♻️ Recalibrations': resets,
-      ...(cleared ? { '⏱️ Current To Spare': `${left}s` } : {}),
+      ...(cleared ? { '⏱️ Current To Spare': `${left}s · +${speed} over the cap` } : {}),
       '🏆 Score Accumulation': `${final} PTS`
     }, cleared ? undefined : { sound:'gameOver' });
   }
@@ -35003,7 +35414,7 @@ P.games.freq = function(){
     const gained = 85 + speed;
     if(stage === 1 && firstTryClean) perfectSync = true;
     score += gained; cleared++; stage++;
-    setLive(Math.min(950, score));
+    setLive(capRaw(950, score));
     snd('levelUp');
     flash = 1;
     w.kick(1.3);
@@ -35191,7 +35602,7 @@ P.games.freq = function(){
   function end(){
     if(scored) return; scored = true; ended = true;
     clearInterval(gTimer); gTimer = null;
-    const final = Math.min(950, score);
+    const final = capRaw(950, score);
     showResults('freq', final, {
       '📡 Node Array': cleared ? `${cleared} NODE${cleared === 1 ? '' : 'S'} STABILISED` : 'ARRAY UNSTABLE',
       '🎚️ Stages Cleared': cleared,
@@ -36681,7 +37092,7 @@ P.games.battlebots = function(){
     const win = outcome === 'win';
     let pts, verdict;
     if(win){
-      pts = Math.min(BB.score.cap,
+      pts = capRaw(BB.score.cap,
         BB.score.win +
         Math.round(BB.score.hpBonus * Math.max(0, mainHP) / BB.baseHP) +
         Math.round(BB.score.timeBonus * Math.min(1, (Math.max(0, time) / TOTAL) / BB.score.timeFull)));
@@ -37450,7 +37861,7 @@ P.games.rhythm = function(){
     const mult = 1 + Math.min(1, Math.floor(combo / 8) * 0.25);
     const gain = Math.round(base * mult);
     score += gain;
-    setLive(Math.min(1400, score));
+    setLive(capRaw(1400, score));
     snd(grade === 'PERFECT' ? 'match' : 'correct', { semi: Math.min(combo, 14) });
     const col = grade === 'PERFECT' ? '#39ff88' : grade === 'GOOD' ? '#00f5ff' : '#ffd700';
     w.burst([LANE_X[lane], 1.2, 0], col, grade === 'PERFECT' ? 34 : 18,
@@ -37585,7 +37996,7 @@ P.games.rhythm = function(){
     clearCanvasDrag();
     const acc = hits + misses > 0 ? hits / (hits + misses) : 0;
     const bonus = Math.round(acc * 160);
-    const final = Math.min(1400, score + bonus);
+    const final = capRaw(1400, score + bonus);
     showResults('rhythm', final, {
       '🎵 Pulses Struck': `${hits}/${hits + misses}`,
       '🎯 Perfect Sync': perfects,
@@ -37731,7 +38142,7 @@ P.games.merge = function(){
       const sum = gained.reduce((a, b) => a + b, 0);
       score += sum;
       best = Math.max(best, ...gained);
-      setLive(Math.min(1300, score));
+      setLive(capRaw(1300, score));
       snd('match', { semi: Math.min(16, Math.round(Math.log2(Math.max(...gained))) * 2) });
       w.kick(Math.min(1.6, 0.3 + Math.log2(Math.max(...gained)) * 0.12));
     }else{
@@ -37921,7 +38332,7 @@ P.games.merge = function(){
     if(over) return; over = true;
     clearCanvasDrag();
     const standing = Math.round(grid.reduce((a, b) => a + b, 0) * 0.25);
-    const final = Math.min(1300, score + standing);
+    const final = capRaw(1300, score + standing);
     showResults('merge', final, {
       '🧮 Run Terminated': reason === 'gridlock' ? 'LATTICE GRIDLOCKED' : 'CLOCK EXPIRED',
       '🔷 Largest Core': best || '—',
@@ -38070,7 +38481,7 @@ P.games.uplink = function(){
       const dist = Math.round((relay.x - PAD[0]) * 2.4);
       const gain = 40 + dist * 2 + Math.min(80, (streak - 1) * 20);
       score += gain;
-      setLive(Math.min(1000, score));
+      setLive(capRaw(1000, score));
       snd('correct', { semi: Math.min(14, streak * 2) });
       w.kick(1.8);
       w.burst([relay.x, by, 0], '#39ff88', 40, { speed: 13, life: 0.9, size: 0.4 });
@@ -38236,7 +38647,7 @@ P.games.uplink = function(){
     if(over) return; over = true;
     clearCanvasDrag();
     const acc = shots ? sunk / shots : 0;
-    const final = Math.min(1000, score);
+    const final = capRaw(1000, score);
     showResults('uplink', final, {
       '🛰️ Relays Linked': `${sunk}/${shots}`,
       '🎯 Link Accuracy': `${Math.round(acc * 100)}%`,
@@ -38534,7 +38945,7 @@ P.games.cutter = function(){
         if(Math.hypot(n.x - me.x, n.z - me.z) < 1.5){
           n.got = true; n.pulse = 1; tagged++;
           score += NODE_PTS;
-          setLive(Math.min(1250, score));
+          setLive(capRaw(1250, score));
           snd('node', { semi: tagged * 2 });
           w.burst([n.x, 1.1, n.z], '#39ff88', 12, { speed: 6, life: 0.6, size: 0.22, vy: 3 });
           w.pop([n.x, 1.8, n.z], '+' + NODE_PTS, '#39ff88', { size: 16 });
@@ -38686,7 +39097,7 @@ P.games.cutter = function(){
     clearCanvasDrag();
     const cleared = reason === 'clear';
     const left = Math.max(0, time);
-    const final = Math.min(1250, score + (cleared ? CLEAR_BONUS + left * PER_SEC : 0));
+    const final = capRaw(1250, score + (cleared ? CLEAR_BONUS + left * PER_SEC : 0));
     showResults('cutter', final, {
       '❄️ Entry Status': cleared ? 'FLOOR CLEARED — NEVER BURNED'
                        : reason === 'spotted' ? 'BURNED — PATROL LOCK' : 'EXTRACTED ON THE CLOCK',
@@ -38816,7 +39227,7 @@ P.games.sorter = function(){
       sorted++; streak++;
       bestStreak = Math.max(bestStreak, streak);
       score += 30 + Math.min(36, streak * 3);
-      setLive(Math.min(1150, score));
+      setLive(capRaw(1150, score));
       snd('coin', { semi: Math.min(14, streak) });
       w.burst([ports[portIdx].x, 1.6, PORT_Z], pkt.col, 10, { speed: 6, life: 0.5, size: 0.24, vy: 3 });
     }else{
@@ -39043,7 +39454,7 @@ P.games.sorter = function(){
     strip.style.display = 'none';
     const handled = sorted + wrong + missed;
     const acc = handled ? sorted / handled : 0;
-    const final = Math.min(1150, score + Math.round(acc * 180) + flips * 24);
+    const final = capRaw(1150, score + Math.round(acc * 180) + flips * 24);
     showResults('sorter', final, {
       '🗂️ Floor Status': reason === 'overrun' ? 'FLOOR OVERRUN' : 'SHIFT COMPLETE',
       '✅ Packets Routed': sorted,
@@ -39147,12 +39558,12 @@ P.games.trace = function(){
     attempts++; probes++;
     entry = [];
     score += pegs.exact * PEG_PTS * 2 + pegs.present * PEG_PTS;
-    setLive(Math.min(900, score));
+    setLive(capRaw(900, score));
     if(pegs.exact === SLOTS){
       cracked++; winFlash = 1;
       const left = maxTry - attempts;
       score += SOLVE_BASE + left * 26;
-      setLive(Math.min(900, score));
+      setLive(capRaw(900, score));
       snd('victory'); w.kick(2);
       if(!LCI) symCount = Math.min(TRACE_SYMS.length, symCount + (cracked % 2 === 0 ? 1 : 0));
       gLater(() => { if(!over) newCipher(); }, 700);
@@ -39339,7 +39750,7 @@ P.games.trace = function(){
     if(scored) return; scored = true; over = true;
     clearInterval(gTimer); gTimer = null;
     clearCanvasDrag();
-    const final = Math.min(900, score);
+    const final = capRaw(900, score);
     showResults('trace', final, {
       '📡 Trace Status': cracked ? 'SIGNAL DECODED' : 'TRACE COLD',
       '🔓 Ciphers Cracked': cracked,
@@ -39442,12 +39853,12 @@ P.games.defrag = function(){
     if(!got) return 0;
     cleared += got;
     score += got * SECTOR_PTS;
-    setLive(Math.min(1050, score));
+    setLive(capRaw(1050, score));
     if(!quiet) snd('node', { semi: Math.min(16, got) });
     if(grid.every(c => c.bad || c.open)){
       volumes++;
       score += VOLUME_BONUS;
-      setLive(Math.min(1050, score));
+      setLive(capRaw(1050, score));
       snd('victory'); w.kick(2);
       toast('🧹 VOLUME DEFRAGGED — mounting the next one', 2400);
       gLater(() => { if(!over) newVolume(); }, 620);
@@ -39637,7 +40048,7 @@ P.games.defrag = function(){
     clearCanvasDrag();
     board.oncontextmenu = null;
     if(markBtn) markBtn.onclick = null;
-    const final = Math.min(1050, score);
+    const final = capRaw(1050, score);
     showResults('defrag', final, {
       '🧹 Sweep Status': reason === 'lost' ? 'ALL DRIVES LOST' : volumes ? 'VOLUMES RECOVERED' : 'SWEEP TIMED OUT',
       '📦 Sectors Swept': cleared,
@@ -39779,7 +40190,7 @@ P.games.coolant = function(){
         c.got = true; c.pulse = 1; vented++;
         heat = Math.max(0, heat - VENT);
         score += 46;
-        setLive(Math.min(1350, Math.round(score + dist * 0.34)));
+        setLive(capRaw(1350, Math.round(score + dist * 0.34)));
         snd('pickup', { semi: Math.min(12, vented) });
       }
     }
@@ -39799,7 +40210,7 @@ P.games.coolant = function(){
       acc += dt;
       if(acc > 0.25) acc = 0.25;
       while(acc >= COOL_STEP && !over){ step(); acc -= COOL_STEP; }
-      setLive(Math.min(1350, Math.round(score + dist * 0.34)));
+      setLive(capRaw(1350, Math.round(score + dist * 0.34)));
     }
     const x0 = dist + CRAFT_X;
 
@@ -39984,7 +40395,7 @@ P.games.coolant = function(){
     clearInterval(gTimer); gTimer = null;
     clearCanvasDrag();
     clearHold(document.getElementById('ctrl-action'));
-    const final = Math.min(1350, Math.round(score + dist * 0.34));
+    const final = capRaw(1350, Math.round(score + dist * 0.34));
     showResults('coolant', final, {
       '🌡️ Run Status': reason === 'crash' ? 'HULL BREACH'
                      : reason === 'overheat' ? 'CORE OVERHEAT' : 'SHAFT RUN COMPLETE',
@@ -40366,8 +40777,9 @@ function abortAnomaly(){
   paintAnomalyBanner();
 }
 
-// Called from showResultsCard's settle path via settleLaneRun().
-function settleAnomalyRun(gid, pts){
+// Called from showResultsCard's settle path via settleLaneRun(). `raw` is the
+// run uncapped (🔺), which orders two equal scores on the week's board.
+function settleAnomalyRun(gid, pts, raw){
   const wk = seasonKey();
   const scored = endAnomalyRun();
   paintAnomalyBanner();
@@ -40381,6 +40793,9 @@ function settleAnomalyRun(gid, pts){
   const prev = anomalyMine(wk);
   if(prev && prev.pts >= pts) return;
   user.anomaly = { week: wk, pts, gid };
+  user.tiebreak = user.tiebreak || {};
+  user.tiebreak.anomaly = { week: wk, raw: Math.max(0, Math.round(+raw || 0)) };
+  saveProfilePatch({ 'tiebreak/anomaly': user.tiebreak.anomaly });
   // Its own write, after the one that matters, with a catch that shrugs — the
   // rules may not have been taught about this key yet, and a refusal must cost
   // this feature some precision and cost progression nothing. See the RTDB
@@ -40487,12 +40902,14 @@ function loadLaneBoards(){
                                            tag: (META[top.gid] ? META[top.gid].emoji : '') + ' ' + top.waves + 'w' });
         }
         if(v.anomaly && v.anomaly.week === wk && (+v.anomaly.pts || 0) > 0){
-          an.push({ uid: c.key, name: nm, pts: +v.anomaly.pts,
+          const tb = v.tiebreak && v.tiebreak.anomaly;
+          an.push({ uid: c.key, name: nm, pts: +v.anomaly.pts, raw: (tb && tb.week === wk) ? (+tb.raw || 0) : 0,
                     tag: META[v.anomaly.gid] ? META[v.anomaly.gid].emoji : '' });
         }
       });
       en.sort((a, b) => b.pts - a.pts);
-      an.sort((a, b) => b.pts - a.pts);
+      // 🔺 Equal scores on the week's board go to the run that went further.
+      an.sort((a, b) => (b.pts - a.pts) || (b.raw - a.raw));
       if(enPanel) enPanel.innerHTML = en.length
         ? en.slice(0, 8).map((r, i) => laneRow(r, i + 1, r.uid === user.uid)).join('')
         : '<div class="lb-empty">No endless runs banked yet — be the first.</div>';
@@ -41099,7 +41516,7 @@ const MISSION_HOW = {
   click:   'Hammer the button. Ten seconds, eight points a click, nothing to dodge. This is the one that teaches you the results card.',
   nebula:  'Slide to aim, hold to fire. Invaders drop in waves and the wave below is the one that reaches you.',
   tetris:  'Arrows move, ↑ rotates, ⬇⬇ hard-drops. A full row clears; four at once is worth far more than four ones.',
-  dodge:   'Steer your core. Nothing to shoot — every second you survive is twenty-five points, and the field only gets busier.',
+  dodge:   'Steer your core. Nothing to shoot — every second you survive is twenty-five points, last the whole clock for the full 800, and the field only gets busier.',
   memory:  'Turn two tiles. A pair stays open, a mismatch flips back. Eight pairs, one clock.',
   math:    'Read the sum, type the answer, submit. Speed is the whole score; a wrong answer just costs you the time.',
   reaction:'Wait for green. Click the instant it lands — too early and the round resets on you.',
@@ -41112,7 +41529,7 @@ const MISSION_HOW = {
   hacker:  'Watch the node pulse, then replay it. Each mainframe adds one step to the sequence.',
   meteor:  'Tap where the rogue code is and the battery fires there. Three servers to keep standing, and a blast takes time to travel.',
   battlebots:'Spend RAM on units from the deck. Each lane is its own fight — deploy where you are losing, not where you are winning.',
-  path:    'Start at node A and route the current through every live node exactly once, without crossing your own trace.',
+  path:    'Start at node A and route the current through every live node exactly once, without crossing your own trace. A finished circuit pays the full cap; time to spare counts past it.',
   freq:    'Match the target waveform with the two sliders. Get both within the margin and hold it for a second and a half.',
   rhythm:  'Three lanes, one beat. Strike a pulse as it reaches the gate — the chart is written against your equipped Music Drive.',
   merge:   'Push cores together. Two of the same height fuse into one taller. Keep the lattice from gridlocking.',
@@ -41249,7 +41666,7 @@ const MISSION_BRIEF = {
     steps: [
       "Your core follows your finger or your cursor. You have no weapon.",
       "Firewall blocks bounce around the field. Touching one ends the round.",
-      "Survive. Every second alive is 25 points, banked as you go.",
+      "Survive. Every second alive is 25 points, banked as you go — and lasting the whole clock pays a 50-point bonus, the full 800.",
       "The field keeps adding hazards, so the last seconds are the dangerous ones.",
     ],
     tips: [
@@ -41394,6 +41811,7 @@ const MISSION_BRIEF = {
       "Route the current from node to node, drawing a trace behind you.",
       "You must reach every live node exactly once.",
       "The trace cannot cross itself, and you cannot revisit a node.",
+      "A finished circuit pays the full 1,100. Every second left on the clock counts past the cap — it is what wins a tie.",
     ],
     tips: [
       "Plan the ENDING first. The last node has to be reachable from the second-to-last, and dead ends are what fail this puzzle.",
@@ -44281,7 +44699,7 @@ function lcRound(o){
     ended = true;
     clearCanvasDrag();
     if(reason !== 'timeout') snd('gameOver');
-    const earned = Math.min(LC.CAP, Math.round(S.score));
+    const earned = capRaw(LC.CAP, Math.round(S.score));
     gLater(() => showResults('lightcycle', earned, {
       '🏍️ Riders Derezzed': S.kills,
       '🌊 Waves Cleared': S.waves,
@@ -44827,7 +45245,7 @@ function stackRound(o){
     if(ended) return;
     ended = true;
     clearCanvasDrag();
-    const earned = Math.min(SK.CAP, Math.round(S.score));
+    const earned = capRaw(SK.CAP, Math.round(S.score));
     gLater(() => showResults('stack', earned, {
       '🗄️ Floors Stacked': S.placed,
       '✨ Perfect Drops': S.perfects,
@@ -45389,7 +45807,7 @@ function dmRound(){
     ended = true;
     clearCanvasDrag();
     if(reason !== 'timeout') snd('gameOver');
-    const earned = Math.min(DM.CAP, Math.round(S.score));
+    const earned = capRaw(DM.CAP, Math.round(S.score));
     gLater(() => showResults('muncher', earned, {
       '💾 Data Bits Eaten': S.bits,
       '👾 Daemons Eaten': S.eaten,
@@ -45992,7 +46410,7 @@ function startParty(){
   if(missions.length !== PARTY_ROUNDS){ snd('deny'); toast('🎉 Pick three missions.', 2400); return; }
   lsSet(LS_PARTY, names);
   party = {
-    players: names.map((name, i) => ({ name, color: PARTY_COLORS[i], scores: [] })),
+    players: names.map((name, i) => ({ name, color: PARTY_COLORS[i], scores: [], raws: [] })),
     missions, round: 0, turn: 0, stage: 'turn',
     seed: (Math.random() * 0xffffffff) >>> 0
   };
@@ -46000,9 +46418,18 @@ function startParty(){
   showPartyTurn();
 }
 
+// 🔺 The standings: the higher total first, and between two equal totals the
+// one whose runs went further past their caps — a party played on capped
+// missions would otherwise end level whenever everyone maxes the same rounds.
+function partyStandings(){
+  return party.players.map((p, i) => ({
+    i, p,
+    total: p.scores.reduce((a, b) => a + (b || 0), 0),
+    raw: p.scores.reduce((a, b, k) => a + Math.max(b || 0, (p.raws && p.raws[k]) || 0), 0)
+  })).sort((a, b) => (b.total - a.total) || (b.raw - a.raw));
+}
 function partyBoardHTML(highlight){
-  const totals = party.players.map((p, i) => ({ i, p, total: p.scores.reduce((a, b) => a + (b || 0), 0) }))
-    .sort((a, b) => b.total - a.total);
+  const totals = partyStandings();
   // Which mission each column is: three bare numbers mean nothing without it,
   // so the heading belongs to the board rather than to the final card alone.
   return `<div class="pt-board">` +
@@ -46056,7 +46483,7 @@ function partyGo(){
     const live = parseInt(document.getElementById('g-pts')?.textContent, 10) || 0;
     stopGame();
     setControls(null);
-    partyTurnDone(live);
+    partyTurnDone(live, roundRawOf(live));
   };
   snd('success');
   countdown(() => {
@@ -46081,14 +46508,15 @@ function partyTap(gid, pts){
   // running its loop — stop it here, the way a Boss Rush stage does.
   stopGame();
   setControls(null);
-  partyTurnDone(pts);
+  partyTurnDone(pts, roundRawOf(pts));
   return true;
 }
 
-function partyTurnDone(pts){
+function partyTurnDone(pts, raw){
   if(!party) return;
   const p = party.players[party.turn];
   p.scores[party.round] = Math.max(0, Math.round(+pts || 0));
+  (p.raws = p.raws || [])[party.round] = Math.max(p.scores[party.round], Math.round(+raw || 0));
   dailyRng = null;
   if(vsResultTap === partyTap) vsResultTap = null;
   onQuitGame = null;
@@ -46106,16 +46534,17 @@ function showPartyFinal(){
   const body = document.getElementById('party-body');
   const sub = document.getElementById('party-sub');
   if(!body) return;
-  const ranked = party.players.map((p, i) => ({ i, p, total: p.scores.reduce((a, b) => a + (b || 0), 0) }))
-    .sort((a, b) => b.total - a.total);
+  const ranked = partyStandings();
   const top = ranked[0];
-  const tie = ranked.length > 1 && ranked[1].total === top.total;
+  const tie = ranked.length > 1 && ranked[1].total === top.total && ranked[1].raw === top.raw;
+  const pastCap = ranked.length > 1 && ranked[1].total === top.total && ranked[1].raw !== top.raw;
   if(sub) sub.textContent = 'Final scores';
   body.innerHTML =
     `<div class="pt-win" style="--pc:${top.p.color}">` +
       `<div class="pt-crown">👑</div>` +
       `<div class="pt-wname">${tie ? 'A TIE AT THE TOP' : esc(top.p.name) + ' WINS'}</div>` +
       `<div class="pt-wpts">${top.total.toLocaleString()} PTS</div>` +
+      (pastCap ? `<div class="pt-wpts" style="font-size:.8em;opacity:.85">🔺 level on points — won on the score past the caps (${top.raw.toLocaleString()} vs ${ranked[1].raw.toLocaleString()})</div>` : '') +
     `</div>` +
     partyBoardHTML(-1) +
     `<div class="pt-final-btns">` +
@@ -46548,6 +46977,9 @@ document.addEventListener('keydown', e => {
 //
 // FORMAT — every character URL-unreserved, so no platform re-escapes it:
 //   1.<gid>.<pts b36>.<tier>.<name b64url>.<mods>.<curve>.<tag>.<sum>
+//   2.<gid>.<pts b36>.<tier>.<name b64url>.<mods>.<curve>.<tag>.<raw b36>.<sum>
+//         — version 2 only for a run that went PAST its cap: raw is the run
+//           uncapped, which is what decides between two capped runs (🔺)
 //   mods  = one letter per chaos modifier the run was armed with, or 0
 //   curve = "dt~dv_dt~dv…" in base36: deciseconds and points, each a delta
 //   tag   = 4 base36 chars of a hash of the author's uid (spots your own link)
@@ -46602,8 +47034,14 @@ function clEncode(r){
     return seg;
   }).join('_');
   const mods = [...new Set((r.mods || []).map(id => CL_MOD[id]).filter(Boolean))].join('') || '0';
-  const body = ['1', r.gid, Math.max(1, Math.round(r.pts)).toString(36), CL_TIER[r.tier] || 's',
-                clB64(String(r.name || 'OPERATIVE').slice(0, 20)), mods, cv, r.tag || '0000'].join('.');
+  const pts = Math.max(1, Math.round(r.pts)), raw = Math.round(+r.raw || 0);
+  // A run that stayed under its cap writes the version every older client
+  // reads; only one with a score past the cap needs the tenth field.
+  const v2 = raw > pts;
+  const f = [v2 ? '2' : '1', r.gid, pts.toString(36), CL_TIER[r.tier] || 's',
+             clB64(String(r.name || 'OPERATIVE').slice(0, 20)), mods, cv, r.tag || '0000'];
+  if(v2) f.push(raw.toString(36));
+  const body = f.join('.');
   return body + '.' + hashStr(body).toString(36);
 }
 
@@ -46611,13 +47049,22 @@ function clEncode(r){
 // truncated by strangers' apps, so every field is checked on the way in.
 function clDecode(raw){
   const parts = String(raw || '').trim().split('.');
-  if(parts.length !== 9 || parts[0] !== '1') return null;
-  const body = parts.slice(0, 8).join('.');
-  if(hashStr(body).toString(36) !== parts[8]) return null;
+  const ver = parts[0];
+  if(!((ver === '1' && parts.length === 9) || (ver === '2' && parts.length === 10))) return null;
+  const n = parts.length - 1;
+  const body = parts.slice(0, n).join('.');
+  if(hashStr(body).toString(36) !== parts[n]) return null;
   const [, gid, p36, t1, nm, mods, cv, tag] = parts;
   if(!META[gid] || !SOLO_START[gid]) return null;
   const pts = parseInt(p36, 36);
   if(!(pts > 0) || pts > (META[gid].maxPts || 1000) * 3) return null;
+  // 🔺 Version 2's run past the cap. Never below the capped score, and held to
+  // the same sanity ceiling as the score itself.
+  let over = pts;
+  if(ver === '2'){
+    over = parseInt(parts[8], 36);
+    if(!Number.isFinite(over) || over < pts || over > (META[gid].maxPts || 1000) * 6) return null;
+  }
   const tier = Object.keys(CL_TIER).find(k => CL_TIER[k] === t1);
   if(!tier || !DIFFICULTY_TIERS[tier]) return null;
   let name = 'RIVAL';
@@ -46635,7 +47082,7 @@ function clDecode(raw){
     curve.push([t * 100, v]);
   }
   if(curve.length < 2 || curve.length > 64) return null;
-  return { gid, pts, tier, name, mods: [...new Set(ids)], curve, tag: String(tag || ''), link: true };
+  return { gid, pts, raw: over, tier, name, mods: [...new Set(ids)], curve, tag: String(tag || ''), link: true };
 }
 
 function clUrl(r){
@@ -46662,12 +47109,14 @@ function clIsOwn(c){ return !!(c && c.link && user && c.tag === clTag(user.uid))
 // Called from showResultsCard with facts gathered BEFORE the card's settle
 // steps ran — the Daily Hack and the Weekly Anomaly both stand down inside
 // them, so reading their flags afterwards would say "neither was running".
-function clNoteRun(gid, pts, tierKey, paceRes, flags, chalRes){
+function clNoteRun(gid, pts, tierKey, paceRes, flags, chalRes, raw){
   const curve = paceRes && paceRes.curve;
   const ok = !flags.internal && !flags.daily && !flags.party && !flags.mp && !!SOLO_START[gid] &&
              pts > 0 && Array.isArray(curve) && curve.length > 1 && !!user;
   clLastRun = ok ? {
     gid, pts: Math.round(pts), tier: tierKey, curve,
+    // 🔺 Only worth carrying when the run reached its cap and went past it.
+    raw: (pts >= ((META[gid] && META[gid].maxPts) || Infinity)) ? Math.max(Math.round(pts), Math.round(+raw || 0)) : 0,
     // The modifiers ride along, so the friend races the run that was played,
     // not an easier one. A random CHAOS PROTOCOL roll included: it was part of
     // the round whether or not anyone chose it.
@@ -46752,6 +47201,7 @@ function openClOverlay(){
       `<div class="cl-mission">${esc(m.name)}</div>` +
       `<div class="cl-by">${own ? 'YOUR OWN LINK' : esc(c.name.toUpperCase()) + ' SCORED'}</div>` +
       `<div class="cl-pts">${c.pts.toLocaleString()}<em>PTS</em></div>` +
+      (c.raw > c.pts ? `<div class="cl-tier">🔺 +${(c.raw - c.pts).toLocaleString()} past the cap — match the cap and beat that</div>` : '') +
       `<div class="cl-tier">${tier.icon} ${esc(tier.label)}</div>` +
     `</div>` +
     (how ? `<div class="cl-how">${esc(how)}</div>` : '') +
@@ -50120,7 +50570,7 @@ function cmdRound(o){
     cmdShowKeys(false);
     const acc = S.keys ? S.letters / S.keys : 0;
     const survive = S.integrity * CMD.SURVIVE;
-    const earned = Math.min(CMD.CAP, Math.round(S.score + survive));
+    const earned = capRaw(CMD.CAP, Math.round(S.score + survive));
     gLater(() => showResults('cmdline', earned, {
       '📡 Session': reason === 'timeout' ? 'CLOCK EXPIRED' : 'SHELL BREACHED',
       '💀 Processes Killed': S.kills,
@@ -52573,7 +53023,7 @@ function pbRound(){
     held.L.clear(); held.R.clear();
     sim.flip('L', false); sim.flip('R', false);
     if(reason !== 'timeout') snd('gameOver');
-    const earned = Math.min(PB.CAP, Math.round(S.score));
+    const earned = capRaw(PB.CAP, Math.round(S.score));
     const st = S.stats;
     gLater(() => showResults('pinball', earned, {
       '🎯 Bumper Hits': st.bumpers,
@@ -53291,21 +53741,48 @@ function owPrep(gid){
       enterHub();
       return;
     }
+    // ⚡ v60 · The consumable kit, as every other round has it. The dock was
+    // never shown out here, so a Time Dilator or a Shield Overlay bought for
+    // the arcade simply did not exist in its biggest lane.
+    try{ showPowerDock(); }catch(e){ console.warn('Power dock failed:', e); }
     try{ if(typeof statsEvent === 'function') statsEvent('_ow_' + gid); }catch(e){}
   });
 }
 
+// The cap an open world's score is held to: its mission's own, the same
+// ceiling the 2D and 3D builds pay up to. Cyber Arena's "no ceiling" stays one.
+function owCapFor(gid){ return (META[gid] && META[gid].maxPts) || OW_CAP; }
+
 // Every open world ends here: its raw score, its breakdown rows.
+//
+// 📏 v60 · Held to the MISSION'S cap. An open world used to bank whatever it
+// counted up to (a 400-point Reaction Time could pay 3,000 out here), which
+// made the borderless lane the place to farm. The world's own count is kept —
+// past the cap it is what breaks a tie between two capped runs (capRaw).
 function owFinish(gid, raw, bd){
-  const pts = Math.max(0, Math.round(+raw || 0));
+  const run = owRun;
+  const full = Math.max(0, Math.round(+raw || 0));
+  const cap = owCapFor(gid);
+  const pts = cap < 90000 ? capRaw(cap, full) : (noteRawScore(full), full);
   owRun = null;
+  bd = { ...(bd || {}) };
+  if(full > pts) bd['🏆 Score'] = pts.toLocaleString() + ' PTS · capped at ' + cap.toLocaleString();
+  // 🌐 A round a MODE started (Boss Rush, a campaign chapter, the Daily Hack…)
+  // reports as its mission, so the mode's own seam — a stage tap, the daily
+  // board, a chapter's stars — takes it exactly as it takes a classic round.
+  if(run && run.lane){
+    showResults(gid, pts, bd, { ow: true, name: '🌐 ' + META[gid].name + ' · OPEN WORLD' });
+    return;
+  }
   try{ recordLaneBest('openworld', gid, pts); }catch(e){ console.warn('Open world best not stored:', e); }
-  showResults('openworld', pts, bd || {}, {
-    cap: OW_CAP,
+  showResults('openworld', pts, bd, {
+    cap: cap < 90000 ? cap : OW_CAP,
+    capGid: gid,
     emoji: '🌐',
     name: 'OPEN WORLD · ' + META[gid].name,
     badge: { text: '🌐 OPEN WORLD · NO BORDERS', cls: 'res-bonus-ow' },
     noChaosPay: true,
+    ow: true,
     again: { label: '🌐 Play Again', fn: () => startOpenWorld(gid) },
     hub: { label: 'Hub', fn: () => enterHub() }
   });
@@ -54316,7 +54793,11 @@ function owClock(secs, onEnd, onTick){
     if(onTick) onTick(left);
     if(left <= 0){ clearInterval(gTimer); gTimer = null; onEnd(); }
   }, 1000);
-  return { get left(){ return left; }, add(n){ left += n; if(el) el.textContent = left; } };
+  const add = n => { left += n; if(el) el.textContent = left; };
+  // ⏳ The Time Dilator's exact door (see THE ROUND CLOCK): the seconds are
+  // really added, rather than the clock being held for three ticks.
+  if(typeof registerRoundClock === 'function') registerRoundClock(add);
+  return { get left(){ return left; }, add };
 }
 
 P.owKit = { V, TAU, wrapAng, ease, ihash, basisYPR, basisLook, makeInput, makeHud, makeField, makeFx, makeDust,
@@ -54342,7 +54823,7 @@ const P = window.PI3D;
 if(!P || !P.owKit) return;
 const { V, TAU, ease, basisYPR, basisLook, makeField, makeDust, plume, drawBodies, owBegin, owClock,
         attFrom, attTurn, attLevelRoll, basisQ, yawOf, elevOf } = P.owKit;
-const { mine, clamp, runLoop } = P.kit;
+const { mine, clamp, runLoop, ENEMY_PAINT, ENEMY_FINISH } = P.kit;
 const FM = window.PI3D_ENGINE.mesh.FRIGATE_MOUNTS;
 const rr = (a, b) => a + Math.random() * (b - a);
 
@@ -54450,18 +54931,75 @@ P.ow.nebula = function(){
   }
 
   // ── FOES ──
+  // 🛩 v60 · SQUADRONS, FLOWN LIKE FIGHTERS.
+  // A raider used to steer, every frame, at a point just ahead of the player's
+  // nose — so whatever the player did, it turned to match. Trying to get on one's
+  // tail started a turning circle that never ended (two ships chasing each
+  // other's six), and the swirl made them impossible to read. They now fly
+  // ATTACK RUNS, the way a fighter pass actually works:
+  //   FORM    the squadron closes in a V on its leader's wing, guns cold
+  //   ATTACK  one pass at the player, leading the shot, firing inside range
+  //   BREAK   past the player (or too close): a hard turn AWAY from your nose,
+  //           in a direction fixed when the break starts
+  //   EXTEND  straight out for a few seconds, slower than your cruise, paying
+  //           you no attention — THIS is the moment to get on its tail
+  //   TURN    a wide, constant-rate turn back for the next pass
+  // Every turn is a fixed RATE (rotateToward), never an exponential snap, so a
+  // raider flies the same arc every time and you can see where it is going.
+  // On 🔵 Safe Mode and 🟢 Stable Core the next squadron launches only once
+  // every raider of the last one is down; the hotter tiers stack them.
+  const HOT = currentDifficultyTier === 'overclocked' || currentDifficultyTier === 'meltdown';
+  // One hit downs a raider on the gentle tiers; the hot ones armour them.
+  const RAIDER_HP = currentDifficultyTier === 'meltdown' ? 3 : HOT ? 2 : 1;
+  const spdK = clamp(diff, 0.7, 1.7);
+  const AI = {
+    attackSp: 58 * spdK,
+    extendSp: 40 * spdK,           // under the player's 46 cruise on Stable: a tail you can catch
+    turnAttack: (HOT ? 1.15 : 0.9) * Math.sqrt(spdK),
+    turnBreak: (HOT ? 1.45 : 1.15) * Math.sqrt(spdK),
+    turnBack: (HOT ? 0.95 : 0.75) * Math.sqrt(spdK),
+    breakT: 1.15,
+    extendT: HOT ? 2.2 : 3.2,
+    fireGap: HOT ? [0.9, 1.8] : [1.4, 2.6]
+  };
+  const RAIDER_R = 2.5;            // hit sphere: the wingtips at the 2.3 draw scale
+  const SQUAD_BREATHER = 5;        // seconds between one squadron's end and the next
+  let squadN = 0, hitMark = 0, hitKill = false;
+  // Turns unit vector `a` toward unit vector `b` by at most `maxAng` radians.
+  function rotateToward(a, b, maxAng){
+    const d = clamp(V.dot(a, b), -1, 1), ang = Math.acos(d);
+    if(ang <= maxAng || ang < 1e-5) return V.copy(b);
+    // Opposite vectors have no unique plane: turn about world up (or the side).
+    let ax = V.cross(a, b);
+    if(V.len(ax) < 1e-5) ax = Math.abs(a[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    ax = V.norm(ax);
+    const c = Math.cos(maxAng), sn = Math.sin(maxAng);
+    const axa = V.cross(ax, a);
+    return V.norm(V.add(V.add(V.mul(a, c), V.mul(axa, sn)), V.mul(ax, V.dot(ax, a) * (1 - c))));
+  }
   function spawnSquad(){
+    squadN++;
     const n = 2 + ((Math.random() * (diff > 1.2 ? 3 : 2)) | 0);
-    const dir = V.norm(V.add(V.mul(B.f, rr(0.4, 1.2)), [rr(-1, 1), rr(-0.35, 0.35), rr(-1, 1)]));
-    const c = V.madd(ship.p, dir, rr(420, 640));
+    // In front of the player and off to one side, so the squadron is seen
+    // coming in rather than discovered on the radar behind you.
+    const dir = V.norm(V.add(V.mul(B.f, rr(0.7, 1.2)), [rr(-0.8, 0.8), rr(-0.25, 0.25), rr(-0.8, 0.8)]));
+    const lead = V.madd(ship.p, dir, rr(480, 620));
+    const f0 = V.norm(V.sub(ship.p, lead));
+    const right = V.norm(V.cross(f0, [0, 1, 0]));
     for(let i = 0; i < n; i++){
-      const p = V.add(c, [rr(-40, 40), rr(-20, 20), rr(-40, 40)]);
-      foes.push({ p, f: V.norm(V.sub(ship.p, p)), v: [0, 0, 0], hp: 3, sp: rr(52, 66) * diff, fireT: rr(1.5, 3), ph: Math.random() * 6,
-                  orbit: Math.random() < 0.5 ? 1 : -1, bank: 0, flash: 0 });
+      // A V: the leader at the point, wingmen alternating left and right.
+      const k = Math.ceil(i / 2), side = i % 2 ? -1 : 1;
+      const off = i ? [side * 15 * k, -2 * k, 13 * k] : [0, 0, 0];      // right, up, back
+      const p = V.add(lead, V.add(V.add(V.mul(right, off[0]), [0, off[1], 0]), V.mul(f0, -off[2])));
+      foes.push({ p, prev: V.copy(p), f: V.copy(f0), hp: RAIDER_HP, hp0: RAIDER_HP, sq: squadN, slot: i, off,
+                  mode: i ? 'form' : 'attack', modeT: 0, fireT: rr(1.2, 2.4), ph: Math.random() * 6,
+                  bank: 0, flash: 0, smokeT: 0, dmg: 0, sp: AI.attackSp, breakDir: null, extDir: null, vel: V.mul(f0, AI.attackSp) });
     }
-    say('⚠ RAIDER SQUADRON INBOUND', 2.2);
+    say('⚠ SQUADRON ' + squadN + ' INBOUND — ' + n + ' RAIDERS', 2.4);
     snd('alarm');
   }
+  // A squadron's raiders still flying.
+  const squadLeft = sq => foes.reduce((a, f) => a + (f.sq === sq ? 1 : 0), 0);
   function spawnFrigate(){
     const a = Math.random() * TAU;
     const fwdH = V.norm([B.f[0], 0, B.f[2]]);
@@ -54488,15 +55026,34 @@ P.ow.nebula = function(){
     setLive(score);
     if(at) w.pop(at, '+' + (pts + bonus) + (label ? ' ' + label : ''), col || '#ffd27a', { size: 14 });
   }
-  function killFoe(i){
+  function killFoe(i, rammed){
     const f = foes[i];
     foes.splice(i, 1);
-    kills++;
-    fx.explode(f.p, 2.2, { color: '#ff5a2a' });
-    snd('explode');
-    award(60, V.add(f.p, [0, 3, 0]), '', '#ff9a6a');
-    if(kills % 5 === 0) dropPick(f.p, 'orb');
+    if(!rammed){
+      kills++;
+      fx.explode(f.p, 2.2, { color: '#ff5a2a' });
+      snd('explode');
+      award(60, V.add(f.p, [0, 3, 0]), '', '#ff9a6a');
+      if(kills % 5 === 0) dropPick(f.p, 'orb');
+      hitMark = 0.32; hitKill = true;
+    }
     if(lockOn === f){ lockOn = null; lockT = 0; }
+    // The squadron's last raider: a bonus for the clean sweep, and on the
+    // gentle tiers the signal for the next squadron (see SQUADRONS below).
+    if(!squadLeft(f.sq)){
+      if(!rammed) award(100, V.add(f.p, [0, 6, 0]), 'SQUADRON DOWN', '#ffd700');
+      squadT = SQUAD_BREATHER;
+      say(HOT ? '✅ SQUADRON ' + f.sq + ' DOWN' : '✅ SQUADRON ' + f.sq + ' DOWN — the next one launches in ' + SQUAD_BREATHER + 's', 2.6);
+      snd('success');
+    }
+  }
+  // A raider hit that did not bring it down: it flashes, trails smoke from
+  // then on, and the reticle ticks — so a hit never passes unnoticed.
+  function hurtFoe(f, dmg, at){
+    f.hp -= dmg; f.flash = 0.14; f.dmg = 1 - Math.max(0, f.hp) / f.hp0;
+    fx.sparks(at, 9, '#ffd8a0', 1.1, 14);
+    snd('hit', { semi: 4 });
+    hitMark = 0.2; hitKill = false;
   }
   function dropPick(p, kind){ pickups.push({ p: V.copy(p), kind, s: 1.6, ph: 0, life: 25 }); }
   const pickups = [];
@@ -54560,7 +55117,9 @@ P.ow.nebula = function(){
 
   // Test hooks (console / harness only): stage a fight without flying to it.
   P.owDebug = {
-    state: () => ({ score, kills, hull: ship.hull, foes: foes.length, frig: !!frig, turretsLeft: frig ? frig.turrets.filter(t => !t.dead).length : 0,
+    state: () => ({ score, kills, hull: ship.hull, foes: foes.length, squad: squadN, squadT: +squadT.toFixed(2), modes: foes.map(f => f.mode),
+                    hp: foes.map(f => f.hp), dists: foes.map(f => Math.round(V.len(V.sub(f.p, ship.p)))),
+                    frig: !!frig, turretsLeft: frig ? frig.turrets.filter(t => !t.dead).length : 0,
                     reactor: frig ? frig.reactorHp : 0, missiles: ship.missiles, lock: lockT, rocks: belt.map.size, fx: fx.list.length, p: ship.p.map(Math.round),
                     nose: B.f.map(v => +v.toFixed(3)), up: B.u.map(v => +v.toFixed(3)) }),
     frigateAhead(d){
@@ -54569,7 +55128,26 @@ P.ow.nebula = function(){
       const yaw = ship.yaw + Math.PI / 2;
       frig.fb = basisYPR(yaw, 0, 0); frig.yaw = yaw; frig.drift = 0;
     },
-    squad(){ spawnSquad(); for(const f of foes) f.p = V.add(V.madd(ship.p, B.f, 90 + Math.random() * 60), [Math.random() * 40 - 20, Math.random() * 20 - 10, Math.random() * 40 - 20]); },
+    squad(){ spawnSquad(); for(const f of foes){ f.p = V.add(V.madd(ship.p, B.f, 90 + Math.random() * 60), [Math.random() * 40 - 20, Math.random() * 20 - 10, Math.random() * 40 - 20]); f.prev = V.copy(f.p); } },
+    killAll(){ for(let i = foes.length - 1; i >= 0; i--){ if(i < foes.length) killFoe(i); } },
+    // Parks raider k `d` metres ahead, side-on, and holds every raider still (photo tests).
+    pose(k, d, yawDeg){
+      dbgFreeze = true;
+      const f = foes[k || 0]; if(!f) return false;
+      f.p = V.add(V.madd(ship.p, B.f, d || 22), V.mul(B.u, -1.5)); f.prev = V.copy(f.p);
+      const a = (yawDeg || 70) * Math.PI / 180;
+      f.f = V.norm(V.add(V.mul(B.r, Math.cos(a)), V.mul(B.f, -Math.sin(a)))); f.bank = 0.3;
+      return true;
+    },
+    unfreeze(){ dbgFreeze = false; },
+    // Fires one bolt straight at raider k from 60 m behind the ship's line, for hit tests.
+    boltAt(k, lead){
+      const f = foes[k || 0]; if(!f) return false;
+      const from = V.madd(f.p, V.norm(V.sub(ship.p, f.p)), 60);
+      const at = lead === false ? f.p : V.madd(f.p, f.vel || [0, 0, 0], 60 / SHOT_SP);
+      bolts.push({ p: from, v: V.mul(V.norm(V.sub(at, from)), SHOT_SP), life: 1.2, mine: true });
+      return true;
+    },
     stripTurrets(){ if(frig) for(const t of frig.turrets) if(!t.dead) damageTurret(t, 99, frigPos(t.q)); },
     killReactor(){ if(frig){ frig.shield = false; damageReactor(999, frigPos(frig.reactor.q)); } },
     god(on){ ship.inv = on ? 1e9 : 0; },
@@ -54618,6 +55196,115 @@ P.ow.nebula = function(){
     const L2 = V.dot(ab, ab) || 1e-6;
     const t = clamp(V.dot(ac, ab) / L2, 0, 1);
     return V.d2(V.madd(a, ab, t), c) < rad * rad;
+  }
+  // Two things both moving in straight lines over one frame — a bolt a0→a1 and
+  // a raider f0→f1: their gap is linear in t, so the closest approach has a
+  // closed form. Exact for a crossing shot, whatever the frame rate.
+  function sweptHit(a0, a1, f0, f1, rad){
+    const d0 = V.sub(a0, f0);
+    const dv = V.sub(V.sub(a1, a0), V.sub(f1, f0));
+    const vv = V.dot(dv, dv);
+    const t = vv > 1e-9 ? clamp(-V.dot(d0, dv) / vv, 0, 1) : 0;
+    const g = V.madd(d0, dv, t);
+    return V.dot(g, g) < rad * rad;
+  }
+
+  // ── RAIDER FLIGHT ── see SQUADRONS, FLOWN LIKE FIGHTERS (with spawnSquad).
+  function setMode(f, mode){
+    f.mode = mode; f.modeT = 0;
+    const toP = V.sub(ship.p, f.p), dist = V.len(toP) || 1, dirP = V.mul(toP, 1 / dist);
+    if(mode === 'break'){
+      // Away from the player's line of fire: the side of the player's nose the
+      // raider is already on, so a break never crosses back through the guns.
+      const rel = V.sub(f.p, ship.p);
+      let lat = V.sub(rel, V.mul(B.f, V.dot(rel, B.f)));
+      if(V.len(lat) < 4) lat = V.cross(B.f, [0, f.slot % 2 ? -1 : 1, 0]);
+      f.breakDir = V.norm(V.add(V.add(V.mul(f.f, 0.45), V.mul(V.norm(lat), 0.9)), [0, rr(-0.15, 0.3), 0]));
+    }else if(mode === 'extend'){
+      f.extDir = V.norm(V.add(V.mul(f.f, 0.65), V.mul(dirP, -0.55)));
+    }
+  }
+  let dbgFreeze = false;
+  function raiders(dt){
+    if(dt <= 0 || dbgFreeze) return;
+    const leaderOf = sq => foes.find(x => x.sq === sq && x.slot === 0 && x.mode !== 'form');
+    for(let i = foes.length - 1; i >= 0; i--){
+      const f = foes[i];
+      f.prev = V.copy(f.p);
+      f.flash = Math.max(0, f.flash - dt);
+      f.modeT += dt;
+      const toP = V.sub(ship.p, f.p), dist = V.len(toP) || 1, dirP = V.mul(toP, 1 / dist);
+      let want = f.f, rate = AI.turnAttack, speed = AI.attackSp;
+      if(f.mode === 'form'){
+        // On the leader's wing until the leader breaks; then each wingman makes
+        // its own pass, a beat apart, so they arrive one after another.
+        const L = leaderOf(f.sq);
+        if(!L || L.mode !== 'attack'){ if(f.modeT > 0.35 + f.slot * 0.45 || !L) setMode(f, 'attack'); }
+        if(L){
+          const r = V.norm(V.cross(L.f, [0, 1, 0]));
+          const slotP = V.add(L.p, V.add(V.add(V.mul(r, f.off[0]), [0, f.off[1], 0]), V.mul(L.f, -f.off[2])));
+          const tgt = V.madd(slotP, L.f, 24);
+          want = V.norm(V.sub(tgt, f.p));
+          rate = AI.turnBreak;
+          // Faster while it is out of position, so the V closes up and holds.
+          speed = AI.attackSp * clamp(0.85 + V.len(V.sub(slotP, f.p)) / 60, 0.85, 1.35);
+        }
+      }else if(f.mode === 'attack'){
+        // Lead the player by half the flight time — near enough to threaten,
+        // never a perfect solution, so a jink still beats it.
+        const tt = clamp(dist / (AI.attackSp + ship.speed), 0, 2.5);
+        const aimP = V.madd(ship.p, B.f, ship.speed * tt * 0.5);
+        want = V.norm(V.sub(aimP, f.p));
+        const passed = V.dot(f.f, dirP) < 0.15 && dist < 240;
+        if(dist < 60 || passed || f.modeT > 9) setMode(f, 'break');
+      }else if(f.mode === 'break'){
+        want = f.breakDir; rate = AI.turnBreak; speed = AI.attackSp * 1.05;
+        if(f.modeT > AI.breakT) setMode(f, 'extend');
+      }else if(f.mode === 'extend'){
+        // Straight out, with a slow even weave — the same rhythm every time.
+        // On your tail it weaves a little wider, but it never turns into you.
+        const tail = V.dot(f.f, dirP) < -0.85 && dist < 260;
+        const r = V.norm(V.cross(f.f, [0, 1, 0]));
+        const weave = Math.sin(w.t * 1.25 + f.ph) * (tail ? 0.3 : 0.16);
+        want = V.norm(V.madd(f.extDir, r, weave));
+        rate = AI.turnBack; speed = AI.extendSp;
+        if(f.modeT > AI.extendT + f.slot * 0.35 || dist > 900) setMode(f, 'turn');
+      }else{  // 'turn'
+        want = dirP; rate = AI.turnBack; speed = (AI.attackSp + AI.extendSp) / 2;
+        if(V.dot(f.f, dirP) > 0.93) setMode(f, 'attack');
+      }
+      const nf = rotateToward(f.f, want, rate * dt);
+      // Banked into the turn by its yaw RATE (cr[1] / dt), so the bank is the
+      // same at any frame rate — a fixed rate gives a steady bank, which is
+      // part of what makes the arc readable.
+      const cr = V.cross(f.f, nf);
+      f.bank += (clamp(cr[1] / dt * 0.65, -1.1, 1.1) - f.bank) * ease(dt, 0.18);
+      f.f = nf;
+      f.p = V.madd(f.p, f.f, speed * dt);
+      f.vel = V.mul(f.f, speed);
+      // Damaged raiders trail smoke: an armoured one that took a hit says so.
+      if(f.dmg > 0){
+        f.smokeT -= dt;
+        if(f.smokeT <= 0){ f.smokeT = 0.045; fx.puff(V.madd(f.p, f.f, -1.6), '#3a3634', 0.5 + f.dmg * 0.5, 1.1, V.mul(f.f, -4)); }
+      }
+      // Guns: only on an attack pass, inside range, with the nose on you.
+      f.fireT -= dt;
+      if(f.mode === 'attack' && f.fireT <= 0 && dist < 330 && !ship.dead){
+        if(V.dot(f.f, dirP) > 0.93){
+          f.fireT = rr(AI.fireGap[0], AI.fireGap[1]) / Math.sqrt(spdK);
+          const lead = V.madd(ship.p, B.f, ship.speed * dist / 170);
+          flak.push({ p: V.madd(f.p, f.f, 1.2), v: V.mul(V.norm(V.sub(lead, f.p)), 170), life: 2.4, c: '#ff3a5a', dmg: 7 });   // ✨ v59 off the nose
+          snd('enemyShot', { semi: -3 });
+        }else f.fireT = 0.25;
+      }
+      // Ramming the player costs both of you.
+      if(dist < 3.6 && !ship.dead){ takeHit(18, f.p); fx.explode(f.p, 2, {}); killFoe(i, true); continue; }
+    }
+    // Keep a squadron from flying through itself.
+    for(let i = 0; i < foes.length; i++) for(let j = i + 1; j < foes.length; j++){
+      const a = foes[i], b = foes[j], d = V.sub(a.p, b.p), l = V.len(d);
+      if(l > 0.01 && l < 9){ const push = V.mul(d, (9 - l) / l * 0.5); a.p = V.add(a.p, push); b.p = V.sub(b.p, push); }
+    }
   }
 
   // ── FRAME ──
@@ -54694,6 +55381,21 @@ P.ow.nebula = function(){
       if(!ship.dead && V.d2(ship.p, pk.p) < 9 * 9){ collect(pk, false); pickups.splice(i, 1); }
     }
 
+    // ── SQUADRONS ── (before the bolts: see sweptHit)
+    if(dt > 0 && !ship.dead){
+      if(HOT){
+        // Overclock and Meltdown stack squadrons on a clock, as they always did.
+        squadT -= dt;
+        if(squadT <= 0 && foes.length < 7){ spawnSquad(); squadT = rr(16, 26) / diff; }
+      }else if(!foes.length){
+        // Safe Mode and Stable Core: one squadron at a time. The breather only
+        // runs once the sky is clear, so the next one can never overlap.
+        squadT -= dt;
+        if(squadT <= 0){ spawnSquad(); squadT = SQUAD_BREATHER; }
+      }
+    }
+    raiders(dt);
+
     // ── BOLTS ──
     for(let i = bolts.length - 1; i >= 0; i--){
       const b = bolts[i];
@@ -54702,12 +55404,17 @@ P.ow.nebula = function(){
       b.life -= dt;
       let hit = b.life <= 0;
       if(!hit){
+        // 🎯 v60 · SWEPT, against where the raider was AND where it is now. The
+        // test used to be the bolt's path against the raider's position before
+        // it moved — and it was drawn after it moved, a metre or more away at
+        // 60 fps and several on a slow frame — so a bolt could be seen to pass
+        // clean through a raider and do nothing.
         for(let j = foes.length - 1; j >= 0 && !hit; j--){
           const f = foes[j];
-          if(segHit(a, b.p, f.p, 2.6)){
-            hit = true; f.hp--; f.flash = 0.12;
-            fx.sparks(b.p, 5, '#ffd8a0', 1, 12);
-            if(f.hp <= 0) killFoe(j); else snd('hit', { semi: 4 });
+          if(sweptHit(a, b.p, f.prev, f.p, RAIDER_R)){
+            hit = true;
+            hurtFoe(f, 1, b.p);
+            if(f.hp <= 0) killFoe(j);
           }
         }
       }
@@ -54787,38 +55494,6 @@ P.ow.nebula = function(){
         }
         missiles.splice(i, 1);
       }
-    }
-
-    // ── RAIDERS ──
-    squadT -= dt;
-    if(squadT <= 0 && foes.length < 7 && !ship.dead){ spawnSquad(); squadT = rr(16, 26) / diff; }
-    for(let i = foes.length - 1; i >= 0; i--){
-      const f = foes[i];
-      f.flash = Math.max(0, f.flash - dt);
-      const toP = V.sub(ship.p, f.p), dist = V.len(toP);
-      // Attack runs: close on a point beside the player, overshoot, come round.
-      const side = V.norm(V.cross(B.f, [0, 1, 0]));
-      const aim = V.add(ship.p, V.add(V.mul(side, f.orbit * 24 * Math.sin(w.t * 0.5 + f.ph)), V.mul(B.f, 18)));
-      const want = V.norm(V.sub(aim, f.p));
-      const turn = clamp(1.9 * dt, 0, 1);
-      const nf = V.norm(V.lerp(f.f, want, turn));
-      const cr = V.cross(f.f, nf);
-      f.bank += (clamp(cr[1] * 40, -1, 1) - f.bank) * ease(dt, 0.15);
-      f.f = nf;
-      f.p = V.madd(f.p, f.f, f.sp * dt);
-      f.fireT -= dt;
-      if(f.fireT <= 0 && dist < 300 && !ship.dead){
-        const ang = V.dot(f.f, V.mul(toP, 1 / dist));
-        if(ang > 0.86){
-          f.fireT = rr(1.0, 2.2) / diff;
-          // Lead the target.
-          const lead = V.madd(ship.p, B.f, ship.speed * dist / 170);
-          flak.push({ p: V.madd(f.p, f.f, 1.2), v: V.mul(V.norm(V.sub(lead, f.p)), 170), life: 2.4, c: '#ff3a5a', dmg: 7 });   // ✨ v59 off the nose
-          snd('enemyShot', { semi: -3 });
-        }else f.fireT = 0.3;
-      }
-      if(dist < 3.4 && !ship.dead){ takeHit(18, f.p); foes.splice(i, 1); fx.explode(f.p, 2, {}); continue; }
-      if(dist > 1600) foes.splice(i, 1);
     }
 
     // ── THE FRIGATE ──
@@ -54987,21 +55662,18 @@ P.ow.nebula = function(){
       }
     }
 
-    // Raiders.
-    let nl = 0;
+    // Raiders. ✨ v60 · PAINTED, NOT LIT (see ENEMY_PAINT): a crimson livery
+    // with black stripes that the sun reads like the player's own airframe.
+    // The neon sprite on the nose and the red lamp hung round each one are
+    // gone — at range they were a red smudge with a dark hull nobody could see.
     for(const f of foes){
       const fb = basisLook(f.f, [0, 1, 0], f.bank);
-      // ✨ v57 · A faint emissive is enough to light the eye and the nozzles
-      // (LAMP and HEAT parts glow at any strength); at 0.12 it also lit the
-      // whole hull red, and a raider read as a pink plastic toy.
-      r.draw('raider', { pos: f.p, m3: fb.m3z, scale: 2.3, color: f.flash > 0 ? '#ffffff' : '#323846', metallic: 0.72, roughness: 0.34, rim: 0.9,
-                         emissive: '#ff2442', emissiveStrength: 0.03, accent: 2 });
-      r.glow(V.madd(f.p, f.f, 1.05), 0.9, '#ff3050', 1.4);
+      r.draw('raider', { pos: f.p, m3: fb.m3z, scale: 2.3, color: f.flash > 0 ? '#ffffff' : ENEMY_PAINT.red,
+                         metallic: ENEMY_FINISH.metallic, roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7 });
       for(const s of [-1, 1]){
         const ep = V.add(V.madd(f.p, f.f, -1.45), V.add(V.mul(fb.r, s * 0.55), V.mul(fb.u, -0.14)));
-        plume(w, ep, V.mul(f.f, -1), { len: 3.2, width: 0.55, color: '#ff4a5a', core: '#ffd0d8', gain: 0.9, ph: s * 3 });
+        plume(w, ep, V.mul(f.f, -1), { len: 3.2, width: 0.55, color: '#ff8a3a', core: '#ffe6c8', gain: 0.9, ph: s * 3 });
       }
-      if(nl++ < 3 && V.d2(f.p, ship.p) < 160 * 160) r.light({ pos: f.p, color: '#ff3a50', intensity: 140, range: 30 });
     }
 
     // Shots.
@@ -55053,6 +55725,49 @@ P.ow.nebula = function(){
     const aimP = hud.proj(V.madd(ship.p, B.f, 140));
     if(aimP.on && !ship.dead) hud.crosshair(aimP.x, aimP.y, '#bff6ff', 9);
     if(I.device === 'mouse' && I.mouseOn) hud.crosshair((I.mx + 1) / 2 * Wd, (I.my + 1) / 2 * Ht, 'rgba(255,190,120,0.9)', 5);
+    // 🎯 v60 · The hit marker: four ticks round the reticle for every bolt that
+    // lands — gold for a hit, red and wider for a kill — so a hit is never in
+    // doubt, even on a raider too far off to see the sparks.
+    if(dt > 0) hitMark = Math.max(0, hitMark - dt);
+    if(hitMark > 0 && aimP.on){
+      const g = hud.ctx, k = hitKill ? 1.4 : 1, a = Math.min(1, hitMark * 5);
+      g.save(); g.globalAlpha = a; g.strokeStyle = hitKill ? '#ff5a3a' : '#ffd27a'; g.lineWidth = 2; g.shadowColor = g.strokeStyle; g.shadowBlur = 6;
+      g.beginPath();
+      for(const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]){ g.moveTo(aimP.x + sx * 7 * k, aimP.y + sy * 7 * k); g.lineTo(aimP.x + sx * 14 * k, aimP.y + sy * 14 * k); }
+      g.stroke(); g.restore();
+    }
+    // The squadron in the air, top right — how many are left to bring down.
+    if(foes.length){
+      const sq = foes[0].sq;
+      hud.text(Wd - 14, 22, '✈ SQUADRON ' + sq + ' · ' + squadLeft(sq) + ' LEFT' + (foes.length > squadLeft(sq) ? ' +' + (foes.length - squadLeft(sq)) : ''),
+               { size: 11, align: 'right', color: '#ffb0a0' });
+    }else if(!HOT && squadT > 0 && squadN){
+      hud.text(Wd - 14, 22, '✈ NEXT SQUADRON · ' + Math.ceil(squadT) + 's', { size: 11, align: 'right', color: '#9fdcff' });
+    }
+    // 🎯 v60 · LEAD PIPS. The cannons fire straight down the nose, and a raider
+    // crossing at fifty metres a second has moved a wingspan or two by the time
+    // a bolt gets there — aiming AT one is aiming behind it. Each raider ahead
+    // carries a pip where it WILL be when a bolt fired now arrives: put the
+    // reticle on the pip, not the ship.
+    if(!ship.dead){
+      const vb = SHOT_SP + ship.speed;
+      let n = 0;
+      for(const f of foes){
+        const d = V.sub(f.p, ship.p), dist = V.len(d);
+        if(dist > 700 || V.dot(d, B.f) < dist * 0.5 || n >= 3) continue;
+        const tt = dist / vb;
+        const lp = V.madd(f.p, f.vel || [0, 0, 0], tt);
+        const q = hud.proj(lp), q0 = hud.proj(f.p);
+        if(!q.on) continue;
+        n++;
+        const g = hud.ctx, s = 5;
+        g.save();
+        g.strokeStyle = '#ffd27a'; g.lineWidth = 1.5; g.globalAlpha = 0.9; g.shadowColor = '#ffb050'; g.shadowBlur = 5;
+        g.beginPath(); g.moveTo(q.x, q.y - s); g.lineTo(q.x + s, q.y); g.lineTo(q.x, q.y + s); g.lineTo(q.x - s, q.y); g.closePath(); g.stroke();
+        if(q0.on){ g.globalAlpha = 0.35; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(q0.x, q0.y); g.lineTo(q.x, q.y); g.stroke(); }
+        g.restore();
+      }
+    }
     // Targets.
     const tl = [];
     targetsEach((t, p, sz, col, lbl) => tl.push({ t, p, sz, col, lbl, d: Math.sqrt(V.d2(p, ship.p)) }));
@@ -56085,10 +56800,17 @@ P.ow.dodge = function(){
   function finish(why){
     if(finished) return;
     finished = true;
-    owFinish('dodge', score, {
-      '📡 Run': why === 'clock' ? 'CLOCK EXPIRED — SURVIVED' : 'CORE IMPACT',
+    // 🛡️ Outlasting the bombardment FINISHES the mission, and a finished
+    // mission pays its full cap — the same rule as the classic board. What the
+    // run earned on the way (time and shards) is carried past the cap, where it
+    // separates two survivors.
+    const survived = why === 'clock';
+    const full = META.dodge.maxPts;
+    owFinish('dodge', score + (survived ? full : 0), {
+      '📡 Run': survived ? 'CLOCK EXPIRED — SURVIVED' : 'CORE IMPACT',
       '⏱ Survived': Math.round(alive) + ' s',
       '💠 Shards': shards,
+      ...(survived ? { '🛡️ Bombardment Survived': 'FULL ' + full + ' · +' + score + ' past the cap' } : {}),
       '🏆 Score': score + ' PTS'
     });
   }
