@@ -5617,28 +5617,31 @@ body.mode-3d .lab-sw.on{box-shadow:0 1px 0 #0a8f9a,0 2px 0 #0a8f9a,0 3px 0 #0554
 
 /* ══════════════════════════════════════════════════════════════
    § v56 — 🌐 OPEN WORLD (app.js § 31)
-   Every mission's world with no borders. The banner, the grid's mode
-   switch, the picker and the in-round HUD canvas. Furniture reused
-   (.mp-banner, .en-grid, .fb-overlay); only the accents are new.
+   Every mission's world with no borders. The grid's mode switch, the
+   modes' lane switches and the in-round HUD canvas. Furniture reused
+   (.mp-banner, .fb-overlay); only the accents are new.
    ══════════════════════════════════════════════════════════════ */
-.ow-banner{
-  border-color:rgba(255,120,200,.42);
-  background:
-    radial-gradient(120% 140% at 0% 0%,rgba(168,85,247,.22),transparent 55%),
-    radial-gradient(120% 140% at 100% 100%,rgba(0,245,255,.14),transparent 55%),
-    linear-gradient(135deg,rgba(255,0,144,.10),rgba(255,140,40,.06));
-  box-shadow:0 0 28px rgba(255,0,144,.10),inset 0 0 0 1px rgba(255,255,255,.03)
+/* 🌐 v60 · The modes' lane switches: ▶ CLASSIC or 🌐 OPEN WORLD on each event
+   banner (§ 31), in the grid switch's language at a banner's size. */
+.lane-pick{
+  display:inline-flex;margin-top:8px;max-width:100%;position:relative;z-index:1;
+  border:1px solid var(--border2);border-radius:999px;overflow:hidden;background:rgba(4,8,18,.55)
 }
-.ow-banner .mp-banner-title{
-  background:linear-gradient(90deg,#ff5ab4,#ffb35c 45%,#5ee7ff);
-  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent
+.lp-seg{
+  font-family:var(--fd);font-size:.5rem;font-weight:700;letter-spacing:.08em;
+  padding:6px 11px;border:0;background:transparent;color:var(--dim);cursor:pointer;
+  transition:background .18s,color .18s;white-space:nowrap
 }
-.ow-banner .mp-banner-icon{filter:drop-shadow(0 0 10px rgba(255,140,60,.6))}
-.ow-new{
-  font-style:normal;font-size:.5rem;letter-spacing:.14em;vertical-align:middle;margin-left:6px;
-  padding:2px 7px;border-radius:20px;border:1px solid #ffb35c;color:#ffb35c;-webkit-text-fill-color:#ffb35c
+.lp-seg:hover{color:#fff}
+.lp-seg:focus-visible{outline:2px solid var(--cyan);outline-offset:-2px}
+.lp-seg.on{color:#fff;background:linear-gradient(90deg,rgba(0,245,255,.22),rgba(0,245,255,.08))}
+.lp-seg[data-v="open"].on{background:linear-gradient(90deg,rgba(255,45,154,.38),rgba(255,138,58,.26));box-shadow:inset 0 0 14px rgba(255,90,180,.25)}
+.lane-pick.no-ow .lp-seg[data-v="open"]{opacity:.4;cursor:not-allowed}
+/* A banner on its open-world lane wears the grid's open-world edge. */
+.mp-banner.lane-ow{border-color:rgba(255,120,200,.5);box-shadow:0 0 26px rgba(255,45,154,.12)}
+@media(max-width:700px){
+  .lane-pick{margin-left:auto;margin-right:auto}
 }
-#btn-openworld{background:linear-gradient(90deg,#ff2d9a,#ff8a3a);border-color:transparent;color:#fff}
 
 /* The mode switch above the grid. */
 .ow-switch{

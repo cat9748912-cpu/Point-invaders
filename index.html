@@ -223,28 +223,21 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <div class="mp-banner-txt">
           <div class="mp-banner-title">CAMPAIGN · ROOT ACCESS</div>
           <div class="mp-banner-sub" id="cp-banner-sub">Twenty chapters against THE GLITCH, the thing that broke out of Battle Bots. Start at chapter one.</div>
+          <!-- 🌐 v60 · ▶ CLASSIC or 🌐 OPEN WORLD for this mode's rounds (§ 31). -->
+          <div class="lane-pick" data-lane="campaign" role="group" aria-label="Campaign: classic missions or open worlds"><button type="button" class="lp-seg on" data-v="classic" aria-pressed="true">▶ CLASSIC</button><button type="button" class="lp-seg" data-v="open" aria-pressed="false">🌐 OPEN WORLD</button></div>
         </div>
         <button class="btn btn-primary" id="btn-campaign">PLAY →</button>
       </div>
       <!-- 🌐 NETWORK ARENA — the door to live head-to-head play. Sits above the
            mission grid because it's a different KIND of thing from the solo
            cards: a lobby, not a round you can start on the spot. -->
-      <!-- 🌐 OPEN WORLD (v56, § 31) — every mission rebuilt as a world with
-           no borders. First on the hub because it is the arcade's biggest
-           door: thirty-one worlds, one per mission. -->
-      <div class="mp-banner ow-banner" id="ow-banner">
-        <span class="mp-banner-icon">🪐</span>
-        <div class="mp-banner-txt">
-          <div class="mp-banner-title">OPEN WORLD <em class="ow-new">NEW</em></div>
-          <div class="mp-banner-sub" id="ow-banner-sub">Every mission rebuilt as a world with no borders — fly, drive and run in any direction. 3D.</div>
-        </div>
-        <button class="btn btn-primary" id="btn-openworld">🌐 EXPLORE →</button>
-      </div>
       <div class="mp-banner" id="mp-banner">
         <span class="mp-banner-icon">🌐</span>
         <div class="mp-banner-txt">
           <div class="mp-banner-title">NETWORK ARENA</div>
           <div class="mp-banner-sub">Every mission, head-to-head — quick match, room codes, or duel a training droid when the grid is quiet.</div>
+          <!-- 🌐 v60 · ▶ CLASSIC or 🌐 OPEN WORLD for this mode's rounds (§ 31). -->
+          <div class="lane-pick" data-lane="arena" role="group" aria-label="Network Arena: classic missions or open worlds" title="Score races play in the missions’ open worlds; live duels stay classic."><button type="button" class="lp-seg on" data-v="classic" aria-pressed="true">▶ CLASSIC</button><button type="button" class="lp-seg" data-v="open" aria-pressed="false">🌐 OPEN WORLD</button></div>
         </div>
         <button class="btn btn-primary" id="btn-mp-open">ENTER →</button>
       </div>
@@ -256,6 +249,8 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <div class="mp-banner-txt">
           <div class="mp-banner-title">BOSS RUSH</div>
           <div class="mp-banner-sub">Five random missions back-to-back. One combined score, no breaks — quit and you forfeit the lot.</div>
+          <!-- 🌐 v60 · ▶ CLASSIC or 🌐 OPEN WORLD for this mode's rounds (§ 31). -->
+          <div class="lane-pick" data-lane="bossrush" role="group" aria-label="Boss Rush: classic missions or open worlds"><button type="button" class="lp-seg on" data-v="classic" aria-pressed="true">▶ CLASSIC</button><button type="button" class="lp-seg" data-v="open" aria-pressed="false">🌐 OPEN WORLD</button></div>
         </div>
         <button class="btn btn-primary" id="btn-boss-rush">RUN IT →</button>
       </div>
@@ -266,6 +261,8 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <div class="mp-banner-txt">
           <div class="mp-banner-title">PARTY MODE</div>
           <div class="mp-banner-sub">2–6 players, one device. Everyone takes a turn on the same three missions — the highest total wins.</div>
+          <!-- 🌐 v60 · ▶ CLASSIC or 🌐 OPEN WORLD for this mode's rounds (§ 31). -->
+          <div class="lane-pick" data-lane="party" role="group" aria-label="Party Mode: classic missions or open worlds"><button type="button" class="lp-seg on" data-v="classic" aria-pressed="true">▶ CLASSIC</button><button type="button" class="lp-seg" data-v="open" aria-pressed="false">🌐 OPEN WORLD</button></div>
         </div>
         <button class="btn btn-primary" id="btn-party">🎉 START A PARTY</button>
       </div>
@@ -279,6 +276,8 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
           <div class="mp-banner-sub">Build your own level for ANY mission — walls, mazes, courses, word lists — test it, and send it to a friend.</div>
           <!-- ⭐ The gallery's Level of the Day (§ 29) — one tap plays it. -->
           <button class="lab-lotd" id="lab-lotd" type="button" hidden></button>
+          <!-- 🌐 v60 · ▶ CLASSIC or 🌐 OPEN WORLD for this mode's rounds (§ 31). -->
+          <div class="lane-pick" data-lane="lab" role="group" aria-label="Brick Lab: test levels on the classic board or in the open world" title="A level is built for the classic board; in the open world its code seeds the world."><button type="button" class="lp-seg on" data-v="classic" aria-pressed="true">▶ CLASSIC</button><button type="button" class="lp-seg" data-v="open" aria-pressed="false">🌐 OPEN WORLD</button></div>
         </div>
         <button class="btn btn-primary" id="btn-lab">🧱 OPEN THE LAB</button>
       </div>
@@ -290,6 +289,8 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <div class="mp-banner-txt">
           <div class="mp-banner-title">DAILY HACK</div>
           <div class="mp-banner-sub" id="dh-banner-sub">One seeded run, identical for every operative on the grid. Resets at 00:00 UTC.</div>
+          <!-- 🌐 v60 · ▶ CLASSIC or 🌐 OPEN WORLD for this mode's rounds (§ 31). -->
+          <div class="lane-pick" data-lane="daily" role="group" aria-label="Daily Hack: classic mission or open world"><button type="button" class="lp-seg on" data-v="classic" aria-pressed="true">▶ CLASSIC</button><button type="button" class="lp-seg" data-v="open" aria-pressed="false">🌐 OPEN WORLD</button></div>
         </div>
         <button class="btn btn-primary" id="btn-daily-hack">📅 DAILY HACK</button>
       </div>
@@ -302,6 +303,8 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <div class="mp-banner-txt">
           <div class="mp-banner-title">ENDLESS PROTOCOL</div>
           <div class="mp-banner-sub" id="en-banner-sub">Score in any mission once and its endless lane opens. No clock, no cap — it ramps until it wins.</div>
+          <!-- 🌐 v60 · ▶ CLASSIC or 🌐 OPEN WORLD for this mode's rounds (§ 31). -->
+          <div class="lane-pick" data-lane="endless" role="group" aria-label="Endless Protocol: classic missions or open worlds"><button type="button" class="lp-seg on" data-v="classic" aria-pressed="true">▶ CLASSIC</button><button type="button" class="lp-seg" data-v="open" aria-pressed="false">🌐 OPEN WORLD</button></div>
         </div>
         <button class="btn btn-primary" id="btn-endless">♾️ PICK A LANE</button>
       </div>
@@ -313,6 +316,8 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <div class="mp-banner-txt">
           <div class="mp-banner-title" id="an-banner-title">WEEKLY ANOMALY</div>
           <div class="mp-banner-sub" id="an-banner-sub">One curated modifier stack, one mission, all week. Resets on Monday.</div>
+          <!-- 🌐 v60 · ▶ CLASSIC or 🌐 OPEN WORLD for this mode's rounds (§ 31). -->
+          <div class="lane-pick" data-lane="anomaly" role="group" aria-label="Weekly Anomaly: classic mission or open world"><button type="button" class="lp-seg on" data-v="classic" aria-pressed="true">▶ CLASSIC</button><button type="button" class="lp-seg" data-v="open" aria-pressed="false">🌐 OPEN WORLD</button></div>
         </div>
         <button class="btn btn-primary" id="btn-anomaly">🌒 RUN THE ANOMALY</button>
       </div>
@@ -1154,20 +1159,6 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
   </div>
 </div>
 
-<!-- ══════════════════════════════════════════════════════════════
-     🌐 OPEN WORLD PICKER (v56, § 31) — every mission's world with no
-     borders, with your best in each.
-     ══════════════════════════════════════════════════════════════ -->
-<div class="fb-overlay ow-tint" id="ow-overlay" aria-hidden="true">
-  <div class="fb-modal dossier-modal" role="dialog" aria-modal="true" aria-labelledby="ow-heading">
-    <button class="fb-close" id="ow-close" aria-label="Close open world picker">✕</button>
-    <div class="fb-head">
-      <div class="fb-title" id="ow-heading">🌐 OPEN WORLD</div>
-      <div class="fb-sub" id="ow-sub">—</div>
-    </div>
-    <div class="dossier-body" id="ow-body"></div>
-  </div>
-</div>
 
 <!-- ══════════════════════════════════════════════════════════════
      🎒 LOADOUTS — name and save a kit, swap it in one tap.
