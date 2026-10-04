@@ -2072,10 +2072,30 @@ function clearCanvasDrag(){
 // empty around it. It now grows into whatever space the layout leaves over,
 // and the canvas's backing store grows with it, so a bigger board is drawn at
 // full resolution rather than being a stretched-up 400×500 bitmap.
+//
+// 👍 The controls a thumb works, in document order — the first one showing is
+// the one the thumb-zone gap goes above (see the end of fitCanvas()).
+const THUMB_TARGETS = ['arcade-controls', 'bb-deck', 'g-freq-ctl', 'g-type-keys', 'g-math'];
+// What the bottom of a game screen has to keep clear: the screen's own bottom
+// padding — max(20px, the home-indicator inset) — read back rather than
+// assumed, or, offline, the 📴 bar pinned over the bottom of every screen. A
+// flat 24px was 10px short of the 34px inset an iPhone opened from its home
+// screen has, and nowhere near the offline bar; neither showed while the pad
+// sat in the middle of the glass, and both would now that it sits at the
+// bottom.
+function bottomReserve(scr){
+  const padB = (scr && parseFloat(getComputedStyle(scr).paddingBottom)) || 20;
+  const bar = document.getElementById('offline-bar');
+  const barH = bar ? bar.getBoundingClientRect().height : 0;
+  return Math.max(24, padB + 4, barH ? barH + 8 : 0);
+}
 function fitCanvas(){
   // Before the guard below: Memory Match, Math Blitz and Reaction Time hide the
   // canvas holder entirely and would otherwise never fit their header.
   fitHud();
+  // 👍 Last fit's thumb gap comes off first, so a round that has no use for one
+  // (or a holder that is hidden) cannot inherit the previous mission's.
+  THUMB_TARGETS.forEach(id => { const el = document.getElementById(id); if(el) el.style.marginTop = ''; });
   const holder = document.getElementById('g-canvas-holder');
   if(!holder || holder.style.display === 'none' || !aCanvas) return;
   const area = document.querySelector('.g-area');
@@ -2084,8 +2104,11 @@ function fitCanvas(){
   const controls = document.getElementById('arcade-controls');
   const ctrlVisible = controls && getComputedStyle(controls).display !== 'none';
   // Landscape parks the pad beside the board instead of beneath it, so it eats
-  // width there and height everywhere else.
-  const beside = ctrlVisible && getComputedStyle(holder).display === 'flex';
+  // width there and height everywhere else. The holder is a flex ROW then; a
+  // portrait phone makes it a flex COLUMN (board over pad), so the direction is
+  // the test, not the display.
+  const holderCs = getComputedStyle(holder);
+  const beside = ctrlVisible && holderCs.display === 'flex' && holderCs.flexDirection.indexOf('row') === 0;
   const ctrlBox = ctrlVisible ? controls.getBoundingClientRect() : null;
   const ctrlH = (ctrlVisible && !beside) ? ctrlBox.height + 10 : 0;   // + #arcade-controls margin-top
   const ctrlW = beside ? ctrlBox.width + 12 : 0;
@@ -2097,21 +2120,28 @@ function fitCanvas(){
   // and — in 3D mode, where the sum itself is rendered in the world — Math
   // Blitz's answer field. All are siblings of the holder inside .g-area, and
   // all carry a 10px top margin.
-  let deckH = 0;
+  // 📱 A landscape phone turns .g-area into a ROW for the consoles that cannot
+  // afford to sit underneath (Command Line's keyboard: three rows of keys under
+  // a 390px-tall screen left the board 150px wide). A console beside the board
+  // costs it width instead, exactly the way the pad beside it does.
+  const areaRow = getComputedStyle(area).flexDirection.indexOf('row') === 0;
+  let deckH = 0, deckW = 0;
   for(const id of ['bb-deck', 'g-freq-ctl', 'g-math', 'g-sort-rule', 'g-type-keys']){
     const el = document.getElementById(id);
     if(el && getComputedStyle(el).display !== 'none'){
-      deckH += el.getBoundingClientRect().height + 10;
+      const r = el.getBoundingClientRect();
+      if(areaRow) deckW += r.width + 12;
+      else deckH += r.height + 10;
     }
   }
 
-  const availW = area.clientWidth - ctrlW;
+  const availW = area.clientWidth - ctrlW - deckW;
   // The header is measured, never assumed, so its exact height (title line,
   // stat pills, hint caption) costs the board only what it actually uses.
   // holder.top is independent of the canvas's own height, so measuring it
-  // before resizing doesn't feed back on itself. The 24px covers the screen's
-  // bottom padding and the home-indicator safe area.
-  const availH = window.innerHeight - holder.getBoundingClientRect().top - ctrlH - deckH - 24;
+  // before resizing doesn't feed back on itself. The bottom reserve covers the
+  // home-indicator inset and the offline bar (see bottomReserve).
+  const availH = window.innerHeight - holder.getBoundingClientRect().top - ctrlH - deckH - bottomReserve(area.closest('.screen'));
 
   // Floor is deliberately low: on a landscape phone there genuinely isn't much
   // height, and a small board beats one whose bottom half is off-screen. In
@@ -2131,6 +2161,32 @@ function fitCanvas(){
   if(cssW <= 0 || cssH <= 0){ scheduleFit(); return; }
   aCanvas.style.width  = cssW + 'px';
   aCanvas.style.height = cssH + 'px';
+
+  // 👍 THE THUMB ZONE. A 560×500 board is WIDTH-bound on a portrait phone: it
+  // fills the width and then stops, and everything under it — the pad, the
+  // deploy deck, the keyboard — sat right against its bottom edge, in the
+  // middle of the glass, over a band of dead screen (245px of it on a 390×844
+  // phone). Thumbs live at the bottom of a phone, not the middle. So the height
+  // the board could not use becomes a gap ABOVE the first control, which puts
+  // the controls on the bottom edge where the thumbs already are, and leaves
+  // the board where the eyes are: right under the clock and the score.
+  //
+  // Nothing measured above moves with it — the gap is a margin, the board's
+  // size comes from the heights of the controls (not their positions), and
+  // availH already reserved the screen's bottom padding — so the next fit
+  // computes the same gap and the layout cannot creep.
+  //
+  // Touch and portrait only. A desktop window is never a thumb, and a short
+  // screen (an SE in Safari) is height-bound with no spare height to hand out.
+  // The Packet Sort rule strip is not a control and stays with the board.
+  if(isTouchDevice && !beside && !areaRow && window.innerHeight > window.innerWidth){
+    const spare = Math.floor(availH - cssH);
+    if(spare > 8){
+      const target = THUMB_TARGETS.map(id => document.getElementById(id))
+        .find(el => el && getComputedStyle(el).display !== 'none');
+      if(target) target.style.marginTop = (10 + spare) + 'px';
+    }
+  }
 
   // Let the header and progress bar track the board's width, so the three read
   // as one unit rather than a narrow field under a full-width bar. The CSS
@@ -2208,9 +2264,26 @@ function fitHud(){
     return stats.getBoundingClientRect().height > tallest + 2;
   };
   for(const c of HUD_TIERS){
-    if(!wrapped()) return;
+    if(!wrapped()) break;
     hdr.classList.add(c);
   }
+  fitAreaHeight();
+}
+
+// 📐 THE HEIGHT UNDER THE HEADER, as --g-avail-h on the game screen. The
+// missions built out of DOM rather than a canvas (Memory Match, Node Hacker,
+// Overclock Path, Reaction Time, the Math Blitz number pad) used to size
+// themselves against a fixed share of the viewport — 54vh, 52vh, 300px — which
+// knew nothing about how tall the header actually came out. On a short phone
+// Node Hacker's bottom row sat 19px under the fold; in landscape a whole row of
+// Memory Match did. Measured after the header has settled (fitHud's tiers can
+// change its height) and from the area's top, which nothing below it can move.
+function fitAreaHeight(){
+  const gs = document.getElementById('game-screen');
+  const area = gs && gs.querySelector('.g-area');
+  if(!area) return;
+  const h = Math.floor(window.innerHeight - area.getBoundingClientRect().top - bottomReserve(gs));
+  gs.style.setProperty('--g-avail-h', Math.max(160, h) + 'px');
 }
 let _hudRaf = 0;
 function scheduleHudFit(){ cancelAnimationFrame(_hudRaf); _hudRaf = requestAnimationFrame(fitHud); }
@@ -2868,10 +2941,14 @@ function resetGameStage(gid){
   document.getElementById('bb-ram-pill').style.display='none';
   // ⌨️ COMMAND LINE's keypad (§ 26). Optional-chained: an older cached page has no such element.
   { const tk = document.getElementById('g-type-keys'); if(tk) tk.style.display='none'; }
+  document.getElementById('game-screen')?.classList.remove('type-keys-on');
   // …and there P is a letter, not the pause key (see pauseLettersOwned, § 13).
   document.getElementById('btn-pause')?.setAttribute('title', gid === 'cmdline' ? 'Pause (Esc)' : 'Pause (Esc / P)');
   setControls(null);                 // every game re-declares its own pad
   document.getElementById('g-controls').textContent='';   // and its own hint
+  // 📐 Every round re-measures the height under the header (fitAreaHeight):
+  // the DOM missions size their grids by it and not all of them set a hint.
+  scheduleHudFit();
   // 🧊 A 3D round always plays on the board, including the missions whose 2D
   // build is pure DOM — so the landscape layout that parks the pad beside the
   // board has to know about them too.
@@ -6955,7 +7032,9 @@ function startMemory(){
 //  🔢 GAME 6: MATH BLITZ
 // ════════════════════════════════════════════
 function startMath(){
-  document.getElementById('g-math').style.display='block';
+  // '' rather than 'block': the panel is a block on a desktop either way, and
+  // a phone's number pad lays it out as a column of its own (§ 32).
+  document.getElementById('g-math').style.display='';
   let score=0, time=Math.round(20*safeTime()), curAns=0;
   const time0=time;   // 🔵 Safe Mode stretches the clock
   document.getElementById('g-time').textContent=time;
@@ -35242,7 +35321,7 @@ P.games.math = function(){
   const panel = document.getElementById('g-math');
   const qEl = document.getElementById('math-question');
   const ansEl = document.getElementById('math-answer');
-  panel.style.display = 'block';
+  panel.style.display = '';   // '' not 'block' — see startMath()
   panel.classList.add('math-3d');
   qEl.style.display = 'none';
 
@@ -44327,10 +44406,15 @@ function paintPauseMenu(){
     const t = document.getElementById('g-time')?.textContent || '—';
     const p = document.getElementById('g-pts')?.textContent || '0';
     const title = document.getElementById('g-title')?.textContent || (m ? m.name : 'MISSION');
+    // 📱 The mission's controls, from the header's hint line. A short phone
+    // hides that line to give the board its height (§ 32 in style.css), and a
+    // paused round is exactly when a player looks for how to play it.
+    const ctl = (document.getElementById('g-controls')?.textContent || '').trim();
     stats.innerHTML =
       `<div class="ps-name">${m ? m.emoji + ' ' : ''}${esc(title)}</div>` +
       `<div class="ps-row"><span>⏱️ <b>${esc(t)}</b></span><span>⭐ <b>${esc(p)}</b></span>` +
-      `<span>${DIFFICULTY_TIERS[currentDifficultyTier].icon} ${DIFFICULTY_TIERS[currentDifficultyTier].label}</span></div>`;
+      `<span>${DIFFICULTY_TIERS[currentDifficultyTier].icon} ${DIFFICULTY_TIERS[currentDifficultyTier].label}</span></div>` +
+      (ctl ? `<div class="ps-ctl">🎮 ${esc(ctl)}</div>` : '');
   }
   const rs = document.getElementById('pause-restart');
   if(rs) rs.style.display = pauseCanRestart() ? '' : 'none';
@@ -44338,7 +44422,9 @@ function paintPauseMenu(){
   if(qb) qb.textContent = bossRush ? '✕ ABANDON THE RUSH' : '✕ QUIT TO HUB';
   // ⌨️ In a typed mission P is a letter, so the menu must not promise it.
   const hint = document.querySelector('#pause-overlay .pause-hint');
-  if(hint) hint.textContent = pauseLettersOwned() ? 'Esc to resume · START on a controller'
+  // A phone has neither key: there, the hint is the one gesture it does have.
+  if(hint) hint.textContent = (isTouchDevice && !hasFinePointer) ? '◀ Back resumes the round too'
+                            : pauseLettersOwned() ? 'Esc to resume · START on a controller'
                                                   : 'Esc or P to resume · START on a controller';
   paintPauseAudio();
 }
@@ -51480,6 +51566,10 @@ function cmdShowKeys(on){
   const want = !!on && (typeof isTouchDevice !== 'undefined' ? isTouchDevice : false);
   if(want) cmdBuildKeys();
   el.style.display = want ? '' : 'none';
+  // 📱 Lets a landscape phone stand the keyboard BESIDE the board (style.css,
+  // § 32): three rows of keys under the board on a 390px-tall screen left the
+  // board 150px wide and pushed the bottom row off the glass.
+  document.getElementById('game-screen')?.classList.toggle('type-keys-on', want);
   if(!on) cmdKeysHandlers = null;
 }
 
@@ -65051,3 +65141,256 @@ P.ow.cmdline = function(){
 })();
 
 // <<OW:END>>
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 32 · v62 — 📱 MOBILE · the thumb zone, a number pad, the back gesture,
+//                            and a screen that stays on
+// ══════════════════════════════════════════════════════════════════════
+// The arcade has been playable on a phone for a long time; this is the pass
+// that makes it feel like it was MADE for one. The layout half lives in
+// style.css (§ 32 there) and in fitCanvas()'s thumb gap; this is the behaviour
+// half. Placed after the open-world splice on purpose, so a re-splice of
+// § 31 between its markers can never take it with it. Optional-chained like
+// § 10: a cached older index.html against this app.js loses a feature, not
+// the file.
+
+// ── 📐 RE-FIT WHEN ANYTHING ABOVE THE BOARD CHANGES SIZE ──────────────────
+// The power-up dock appears after the round has started, the chaos banner
+// shrinks to a chip a few seconds in, a pace-ghost pill turns up once there is
+// a best to race. Each of those moves the board down AFTER the mission's own
+// fitCanvas() has run. That used to cost nothing anyone could see, because the
+// pad had dead screen beneath it to be pushed into. The thumb gap hands that
+// screen to the pad, so the fit now follows the layout — otherwise a late dock
+// would push the bottom of the pad off the glass. The consoles are watched for
+// the same reason: Battle Bots deals its deck AFTER the first fit, which on a
+// short phone ran the deck 16px off the bottom of the screen. The fit
+// converges: it moves margins, and the one console whose width follows the
+// board (the keyboard) keeps a fixed height. Touch only, like the gap itself:
+// a desktop has no gap to protect.
+(function(){
+  if(!window.ResizeObserver || !isTouchDevice) return;
+  const gs = document.getElementById('game-screen');
+  if(!gs) return;
+  const ro = new ResizeObserver(() => { if(gs.classList.contains('active')) scheduleFit(); });
+  ['.g-hdr', '#chaos-banner', '#pu-dock', '#mp-hud', '#ob-coach', '#arcade-controls',
+   '#bb-deck', '#g-freq-ctl', '#g-sort-rule', '#g-type-keys', '#g-math'].forEach(sel => {
+    const el = gs.querySelector(sel);
+    if(el) ro.observe(el);
+  });
+  // 📴 Losing the connection mid-round pins the offline bar over the bottom of
+  // the screen — where the pad now sits — so the fit makes room for it, and
+  // gives the room back when the bar goes.
+  new MutationObserver(() => { if(gs.classList.contains('active')) scheduleFit(); })
+    .observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+})();
+
+// ── 🔢 MATH BLITZ'S NUMBER PAD ────────────────────────────────────────────
+// The answer box was a type="number" field, which on a phone means the
+// system keyboard: half the screen gone under it, a tap on the field first to
+// raise it at all (a focus() from a timer does not open a keyboard on iOS) —
+// and on the digit pad a phone raises for a number field, no minus key, when
+// every subtraction in the mission can come out below zero. A pad of its own
+// fixes all three: it is always up, it has a minus, and SUBMIT is the tall key
+// under the right thumb.
+//
+// It only ever writes the field's value and clicks Submit, so both builds —
+// startMath() and the 3D solver core — run through it untouched: they read the
+// value on submit exactly as before, and whichever one is running owns
+// Submit's onclick at that moment (and has nulled it once the clock is out).
+(function(){
+  if(!isTouchDevice) return;
+  const panel = document.getElementById('g-math');
+  const ans = document.getElementById('math-answer');
+  const sub = document.getElementById('math-submit');
+  if(!panel || !ans || !sub || document.getElementById('math-keys')) return;
+  // A number field sanitises a lone "-" to "" the moment it is assigned, so a
+  // negative answer could never be started in one. Text it is, and
+  // inputmode="none" keeps the system keyboard down when the round focuses the
+  // field — while a hardware keyboard on a tablet still types straight in.
+  ans.type = 'text';
+  ans.setAttribute('inputmode', 'none');
+  ans.setAttribute('autocomplete', 'off');
+  ans.setAttribute('autocorrect', 'off');
+  ans.setAttribute('autocapitalize', 'off');
+  ans.spellcheck = false;
+  // DOM order is reading order (1–9, −, 0, ⌫, then SUBMIT); the grid in
+  // style.css stands SUBMIT up the whole right-hand column.
+  const KEYS = [['1'],['2'],['3'],['4'],['5'],['6'],['7'],['8'],['9'],
+                ['-', '−', 'Minus', 'neg'], ['0'], ['back', '⌫', 'Delete', 'back'],
+                ['ok', '✓', 'Submit answer', 'ok']];
+  const pad = document.createElement('div');
+  pad.id = 'math-keys';
+  pad.className = 'mk-pad';
+  pad.setAttribute('role', 'group');
+  pad.setAttribute('aria-label', 'Number pad');
+  pad.innerHTML = KEYS.map(([k, label, aria, kind]) =>
+    `<button type="button" class="mk-key mk-${kind || 'n'}" data-k="${k}" aria-label="${aria || k}">${label || k}</button>`
+  ).join('');
+  panel.appendChild(pad);
+  panel.classList.add('has-keys');
+  pad.addEventListener('pointerdown', e => {
+    const b = e.target.closest && e.target.closest('.mk-key');
+    if(!b) return;
+    // pointerdown, not click: a click waits for the finger to lift, and the
+    // whole mission is a race against a twenty-second clock.
+    e.preventDefault();
+    b.classList.add('down');
+    setTimeout(() => b.classList.remove('down'), 110);
+    const k = b.dataset.k;
+    if(k === 'ok'){ sub.click(); return; }
+    let v = ans.value || '';
+    if(k === 'back') v = v.slice(0, -1);
+    else if(k === '-') v = v[0] === '-' ? v.slice(1) : '-' + v;
+    else if(v.replace('-', '').length < 5) v = v.replace(/^(-?)0$/, '$1') + k;
+    ans.value = v;
+    try{ haptic('node'); }catch(err){}
+  });
+})();
+
+// ── ☀️ A SCREEN THAT STAYS ON THROUGH A ROUND ─────────────────────────────
+// A phone dims after thirty seconds without a touch, and plenty of rounds
+// here are thirty seconds without a touch: a Signal Trace cipher being
+// THOUGHT about, Battle Bots marching on their own, a party passing the phone
+// round the room. The screen dimmed, then locked — and a locked screen is a
+// hidden page, so the round paused itself and the player came back to a menu
+// instead of the board. A wake lock is held while a round is on screen and
+// let go the moment it is not: paused, over, or back in the hub. Browsers
+// release it on their own when the page is hidden, so it is asked for again
+// whenever the page comes back.
+const Wake = { lock: null, busy: false };
+function wakeWanted(){
+  if(document.visibilityState !== 'visible') return false;
+  if(document.body.classList.contains('round-paused')) return false;
+  if(document.getElementById('game-screen')?.classList.contains('active')) return true;
+  return !!document.getElementById('party-overlay')?.classList.contains('show');
+}
+async function wakeSync(){
+  if(!('wakeLock' in navigator)) return;
+  const want = wakeWanted();
+  if(want && !Wake.lock && !Wake.busy){
+    Wake.busy = true;
+    try{
+      const l = await navigator.wakeLock.request('screen');
+      Wake.lock = l;
+      l.addEventListener('release', () => { if(Wake.lock === l) Wake.lock = null; });
+    }catch(e){ /* refused (battery saver, no permission) — the screen keeps its own timeout */ }
+    Wake.busy = false;
+    // The round may have ended while the request was in flight.
+    if(!wakeWanted() && Wake.lock) wakeSync();
+    return;
+  }
+  if(!want && Wake.lock){
+    const l = Wake.lock;
+    Wake.lock = null;
+    try{ await l.release(); }catch(e){}
+  }
+}
+
+// ── ◀ THE BACK GESTURE ────────────────────────────────────────────────────
+// A phone's back gesture is a swipe in from the edge of the screen — exactly
+// where a finger steering Neon Nebula or Ice Breaker's paddle goes. The arcade
+// is one page with no history of its own, so BACK left it: mid-round, with no
+// warning, the run gone with the tab. On Android it closed an installed app.
+//
+// So while there is something on screen that BACK should close or hold — a
+// round, a results card, the market, the arena, any overlay — the page keeps
+// one history entry of its own on top. BACK pops that entry instead of the
+// page and does what B on a controller does: puts photo mode's camera down,
+// closes the overlay on top, holds a live round in the pause menu (Quit is one
+// tap away for a player who meant it), and steps a results card, the market or
+// the arena back to the hub. The moment the hub is all that is left, the entry
+// is taken back off, so BACK from the hub leaves the arcade first time, as it
+// always did. Only ever ONE entry: history is never padded to trap a player.
+const BackGuard = { pending: false, tok: 0, timer: 0 };
+const backGuardOn = () => !!(history.state && history.state.piBack);
+function backGuardWanted(){
+  if(document.querySelector('.fb-overlay.show')) return true;
+  const s = document.querySelector('.screen.active');
+  return !!s && s.id !== 'hub-screen' && s.id !== 'auth-screen';
+}
+function backGuardPush(){
+  if(backGuardOn()) return;
+  try{ history.pushState(Object.assign({}, history.state, { piBack: 1 }), ''); }catch(e){}
+}
+function backGuardSync(){
+  // An unwind is in flight: its popstate re-syncs. Acting now would stack a
+  // second history step on top of an asynchronous first one.
+  if(BackGuard.pending) return;
+  if(backGuardWanted()){ backGuardPush(); return; }
+  if(!backGuardOn()) return;
+  BackGuard.pending = true;
+  const tok = ++BackGuard.tok;
+  // A popstate that never arrives must not wedge the guard off for good.
+  setTimeout(() => { if(BackGuard.tok === tok) BackGuard.pending = false; }, 1500);
+  try{ history.back(); }catch(e){ BackGuard.pending = false; }
+}
+// Screens swap by dropping .active from one and adding it to the next 40ms
+// later (showScreen), so the guard waits for the dust to settle rather than
+// unwinding and re-pushing across every transition.
+function backGuardSoon(){ clearTimeout(BackGuard.timer); BackGuard.timer = setTimeout(backGuardSync, 160); }
+function backAct(){
+  if(typeof photoActive === 'function' && photoActive()){ photoToggle(); return; }
+  const ov = (typeof padTopOverlay === 'function') ? padTopOverlay() : document.querySelector('.fb-overlay.show');
+  if(ov){ closeOverlay(ov.id); return; }
+  const s = document.querySelector('.screen.active');
+  if(!s) return;
+  if(s.id === 'game-screen'){
+    if(typeof pauseRound === 'function' && pauseRound('back')) return;
+    // A duel cannot be held — and must not be lost to a stray edge swipe.
+    if(mp){ snd('deny'); toast('◀ A live duel can’t be paused — tap ← QUIT if you mean to leave it.', 3200); }
+    return;
+  }
+  const exit = { 'results-screen': 'btn-hub', 'market-screen': 'btn-market-back', 'mp-screen': 'btn-mp-back' }[s.id];
+  if(exit) document.getElementById(exit)?.click();
+}
+addEventListener('popstate', e => {
+  if(BackGuard.pending){ BackGuard.pending = false; BackGuard.tok++; backGuardSync(); return; }
+  if(e.state && e.state.piBack) return;      // FORWARD onto our own entry: nothing to undo
+  backAct();
+  // Straight back on, not after the settle delay: a second swipe a beat later
+  // must land on the guard too, not on the page behind it.
+  if(backGuardWanted()) backGuardPush();
+  backGuardSoon();
+});
+
+// One watcher for both: every screen and overlay announces itself through its
+// class list, and so does the body when a round is paused.
+(function(){
+  const mo = new MutationObserver(() => { wakeSync(); backGuardSoon(); });
+  const watch = el => { if(el) mo.observe(el, { attributes: true, attributeFilter: ['class'] }); };
+  document.querySelectorAll('.screen, .fb-overlay').forEach(watch);
+  watch(document.body);
+  document.addEventListener('visibilitychange', wakeSync);
+})();
+
+// ── 🎮 THE MODE RAIL'S DOTS ───────────────────────────────────────────────
+// On a phone the hub's banners are one row you swipe through (style.css § 32),
+// and a row that scrolls sideways needs to say where in it you are and how
+// much of it there is. One dot per banner on show — the seasonal one comes and
+// goes, so the row is recounted whenever the rail's children change. On a
+// wider screen the rail is display:contents and the dots are never shown.
+(function(){
+  const rail = document.getElementById('mode-rail');
+  const dots = document.getElementById('mode-rail-dots');
+  if(!rail || !dots) return;
+  const cards = () => [...rail.children].filter(c => c.classList.contains('mp-banner') && c.offsetParent !== null);
+  let raf = 0;
+  function paint(){
+    raf = 0;
+    const list = cards();
+    if(dots.children.length !== list.length) dots.innerHTML = list.map(() => '<i></i>').join('');
+    if(list.length < 2) return;
+    const step = (list[1].offsetLeft - list[0].offsetLeft) || 1;
+    const max = rail.scrollWidth - rail.clientWidth;
+    // The last card can never snap to the start edge — the rail runs out of
+    // scroll first — so the far end of the scroll IS the last card.
+    const idx = rail.scrollLeft >= max - 2 ? list.length - 1
+              : Math.max(0, Math.min(list.length - 1, Math.round(rail.scrollLeft / step)));
+    [...dots.children].forEach((d, i) => d.classList.toggle('on', i === idx));
+  }
+  const soon = () => { if(!raf) raf = requestAnimationFrame(paint); };
+  rail.addEventListener('scroll', soon, { passive: true });
+  new MutationObserver(soon).observe(rail, { childList: true });
+  addEventListener('resize', soon);
+  soon();
+})();
