@@ -33460,15 +33460,18 @@ P.games.runner = function(){
     // trailing light below used to wash the whole hull in one colour.
     keyRig(w, [x, 1.2 + air, 0], colour, { key: 170, fill: 100 });
     if(!blink){
-      r.draw('ship', { pos:[x, 1.1 + air, 0], rot:[0.12, Math.PI, bank], scale: 1.5,
+      // The hull noses down −Z, into the track (as Neon Nebula draws it) —
+      // it used to be turned round and raced along tail-first.
+      r.draw('ship', { pos:[x, 1.1 + air, 0], rot:[0.06, 0, bank], scale: 1.5,
                        color:'#a9b1bf', metallic: 0.62, roughness: 0.3, rim: 0.8,
                        emissive: colour, emissiveStrength: 0.004, accent: 0 });
       r.draw('thintorus', { pos:[x, 0.35 + air * 0.4, 0], rot:[0, w.t * 2, 0], scale: [3.0, 1, 3.0],
                             color: colour, emissive: colour, emissiveStrength: 1.6, alpha: 0.45 });
-      // ✨ v59 · flames out of the nozzles (the ship is turned round: they point −Z)
+      // ✨ v59 · flames out of the nozzles (the model's anchors at z +0.86),
+      // trailing back toward the camera.
       for(const s of [-1, 1]){
         const ex = x + s * 0.54, ey = 1.07 + air, len = 1.5 + Math.sin(run * 40 + s) * 0.1;
-        r.streak([ex, ey, -1.26], [ex, ey, -1.26 - len], 0.36, colour, 1.7, s > 0 ? 2.37 : 2.79);
+        r.streak([ex, ey, 1.29], [ex, ey, 1.29 + len], 0.36, colour, 1.7, s > 0 ? 2.37 : 2.79);
       }
     }
     r.light({ pos:[x, 3.2 + air, 3.2], color: colour, intensity: 34, range: 20 });
