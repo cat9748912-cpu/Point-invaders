@@ -30000,6 +30000,10 @@ function createWorld(cfg){
     const a = (typeof activeEvent === 'function') ? activeEvent() : null;
     if(a && a.ev.snow && env.sky !== false){
       const g = seeded(0x5a0f1a4e);
+      // 🌐 Where each flake sits in an open world's windows (ox, oz: see
+      // snowFrame) comes from a stream of its own, so every draw from g — and
+      // with them the corridor's storm — is exactly what it was.
+      const go = seeded(0x0f1a4e5a);
       snow = [];
       const n = Math.max(48, Math.round(300 * Q.props));
       for(let i = 0; i < n; i++){
@@ -30017,13 +30021,51 @@ function createWorld(cfg){
           band,
           y0: g() * 60, v: 1.1 + g() * 1.9, a: 0.4 + g() * 1.5, f: 0.25 + g() * 0.6, ph: g() * 6.283,
           s: band === 0 ? 0.2 + g() * 0.25 : 0.6 + g() * 0.7,
-          k: 0.5 + g() * 0.35
+          k: 0.5 + g() * 0.35,
+          ox: go(), oz: go()
         });
       }
     }
   }catch(e){ snow = null; }
+  // 🌐 The bands as an open world lays them out (snowFrame): the half-width of
+  // the square window round the eye, and the distance from the eye a flake
+  // fades in over. The big FAR and SKY flakes are sized to be seen from a
+  // distance, so out here they keep to one, beyond the NEAR band's reach.
+  const SNOW_OPEN = [
+    { h: 40,  in0: 1.5, in1: 4.5 },   // NEAR — right up to the lens, never on it
+    { h: 110, in0: 35,  in1: 60 },    // FAR
+    { h: 110, in0: 35,  in1: 60 }     // SKY — as FAR: no corridor out here to keep it over
+  ];
+  // 1 inside a window, falling to 0 at its edge over the margin m.
+  const snowEdge = (d, h, m) => clamp((h - Math.abs(d)) / m, 0, 1);
   function snowFrame(){
     const sz = w._sz || 0, t = w.t;
+    // 🌐 An open world (w.origin, § 31) has no corridor and no city scroll:
+    // the player roams, and the bands would stand where the world began while
+    // they left them behind. There each flake falls through a square window
+    // centred on the eye actually installed (eyeNow), wrapped across it as the
+    // eye moves the way the bands wrap against the scroll, and fades out toward
+    // the window's edges — which is where it wraps, so nothing pops. The slab
+    // it falls through rides the eye as well: the corridor's own −10…52, slid
+    // just far enough to keep 20 of it above the eye and 20 below, so a flying
+    // world's climb and the depths of space are snowed on too. Still a pure
+    // function of w.t and the eye, so photo mode holds it still.
+    if(w.origin){
+      const e = eyeNow, lo = Math.min(Math.max(-10, e[1] - 42), e[1] - 20);
+      for(let i = 0; i < snow.length; i++){
+        const f = snow[i], O = SNOW_OPEN[f.band], h = O.h, span = h * 2;
+        const x = wrapTo(f.ox * span + f.a * Math.sin(t * f.f + f.ph), e[0] - h, span);
+        const z = wrapTo(f.oz * span, e[2] - h, span);
+        const y = wrapTo(52 - (f.y0 + f.v * t), lo, 62);
+        const dx = x - e[0], dy = y - e[1], dz = z - e[2];
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const k = f.k * snowEdge(dx, h, h * 0.35) * snowEdge(dz, h, h * 0.35)
+                * clamp(Math.min(y - lo, lo + 62 - y) / 8, 0, 1)
+                * clamp((d - O.in0) / (O.in1 - O.in0), 0, 1);
+        if(k > 0.004) r.glowFx([x, y, z], f.s, '#e6f6ff', k);
+      }
+      return;
+    }
     for(let i = 0; i < snow.length; i++){
       const f = snow[i];
       // The sky band falls through its own 16–60 slab and wraps back to the
