@@ -48,7 +48,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=61">
+<link rel="stylesheet" href="style.css?v=63">
 </head>
 <body>
 
@@ -133,7 +133,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <div class="hub-uname" id="h-uname">PLAYER</div>
       <div class="hub-pts" id="h-pts">🏆 0 PTS</div>
       <div class="hub-credits" id="h-credits">💎 0 CR</div>
-      <button class="btn btn-secondary btn-sm" id="btn-market">🛒 Black Market</button>
+      <button class="btn btn-secondary btn-sm" id="btn-market">🛒 <span class="hb-long">Black </span>Market</button>
       <button class="btn btn-secondary btn-sm btn-sound" id="btn-sound-hub" title="Audio">🔊</button>
       <button class="btn btn-secondary btn-sm" id="btn-fs-hub" title="Toggle Fullscreen">⛶</button>
       <!-- ⚙️ SETTINGS — the render mode, Save Account and Feedback, behind one
@@ -215,6 +215,13 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
   <div class="loadout-rail" id="loadout-rail"></div>
   <div class="hub-body">
     <div>
+      <!-- 📱 THE MODE RAIL (§ 32). On a desktop it is display:contents — the
+           banners lay out exactly as if it were not there. On a phone the ten
+           banners were ten screen-wide cards stacked one under another, 2,400px
+           of scrolling before the first mission card; there they become one
+           row you swipe through. The dots under it are built by app.js. -->
+      <div class="mode-rail-label" aria-hidden="true"><span>🎮 GAME MODES</span><em>SWIPE ⇆</em></div>
+      <div class="mode-rail" id="mode-rail">
       <!-- 📖 CAMPAIGN — ROOT ACCESS. Twenty chapters in four acts against THE
            GLITCH (§ 21). First on the page because it is a PATH: the banners
            below are doors into one round, this one is the story around them. -->
@@ -321,6 +328,8 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         </div>
         <button class="btn btn-primary" id="btn-anomaly">🌒 RUN THE ANOMALY</button>
       </div>
+      </div><!-- /.mode-rail -->
+      <div class="mode-rail-dots" id="mode-rail-dots" aria-hidden="true"></div>
       <!-- 🔒 The clearance summary. Painted by paintMissionLocks(); says how many
            missions are still shut so a player can tell at a glance without
            scanning twenty-one cards for a padlock. -->
@@ -1615,7 +1624,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=61"></script>
+<script src="app.js?v=63"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker

@@ -5707,3 +5707,233 @@ body.mode-3d .lab-sw.on{box-shadow:0 1px 0 #0a8f9a,0 2px 0 #0a8f9a,0 3px 0 #0554
 .gl-abil .ga-on{color:var(--ac,#00f5ff)}
 .gl-abil .ga-on i{position:absolute;left:0;bottom:0;height:2px;background:var(--ac,#00f5ff)}
 @media (max-width:520px){.gl-abil{font-size:9px;bottom:6px}.gl-abil .ga-next,.gl-abil .ga-on{padding:5px 8px}}
+
+/* ══════════════════════════════════════════════════════════════════════
+   § 32 · v62 — 📱 MOBILE · the thumb zone, the phone header, side consoles,
+                            grids that fit, and Math Blitz's number pad
+   The layout half of the phone pass; app.js § 32 is the behaviour half, and
+   fitCanvas() carries the thumb gap. Every rule here is scoped to a phone
+   (touch, or a narrow / short viewport): a desktop renders exactly as before.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── 👍 A PAD SIZED FOR A THUMB ──
+   fitCanvas() lands the pad on the bottom edge of a portrait phone, and the
+   dead screen it used to sit over is room the buttons can grow into. A tenth
+   of the screen's height, so a short phone keeps the 68px it had and a tall one
+   gets a button that can be hit without looking. */
+@media (pointer:coarse) and (orientation:portrait){
+  .ctrl-btn{min-height:clamp(68px,10vh,92px)}
+}
+
+/* ── 📱 THE PHONE HEADER ──
+   Four rows on a portrait phone — title, controls, readouts, hint — and every
+   row of chrome above an aspect-locked board comes straight off the board on a
+   short screen (an iPhone SE in Safari drew Neon Nebula at 296px wide on a
+   363px column). In 2D, 📸 and ✨ have nothing to act on: photo mode needs the
+   3D renderer and says so, and the graphics profile only draws in 3D. With
+   them gone the title fits BETWEEN Quit and the cluster, on the control row,
+   in up to two lines. 3D keeps the full cluster and its title row. */
+@media (max-width:700px) and (orientation:portrait){
+  body:not(.mode-3d) .g-actions #btn-photo,
+  body:not(.mode-3d) .g-actions #btn-gfx-game{display:none}
+  body:not(.mode-3d) .g-hdr > #btn-quit,
+  body:not(.mode-3d) .g-hdr > .g-actions{grid-row:1}
+  body:not(.mode-3d) .g-title{
+    grid-column:2;grid-row:1;min-width:0;
+    font-size:.62rem;line-height:1.35;letter-spacing:.04em;
+    display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+    overflow:hidden;overflow-wrap:anywhere
+  }
+  body:not(.mode-3d) .g-stats{grid-row:2}
+  body:not(.mode-3d) .g-controls{grid-row:3}
+}
+/* A SHORT portrait phone gives up the hint line too — the same trade the
+   landscape layout already makes. The gesture was shown over the board as the
+   round began, and the pause menu repeats it (paintPauseMenu). */
+@media (pointer:coarse) and (orientation:portrait) and (max-height:620px){
+  .g-controls{display:none}
+}
+
+/* ── ⌨️ CONSOLES BESIDE THE BOARD, ON A LANDSCAPE PHONE ──
+   Command Line's keyboard is three rows of keys tracking the board's width.
+   Under the board on a 390px-tall screen it left the board 150px wide, squeezed
+   the keys to slivers and still ran its bottom row off the glass. In landscape
+   the width is the spare thing, so the keyboard (and Math Blitz's 3D answer
+   console, with its pad) stands BESIDE the board instead; fitCanvas() sees
+   .g-area turn into a row and charges the console to the board's width. */
+@media (max-height:500px) and (orientation:landscape){
+  #game-screen.type-keys-on .g-area,
+  #game-screen.canvas-game:has(#g-math.math-3d.has-keys) .g-area{
+    flex-direction:row;justify-content:center;align-items:center;column-gap:12px
+  }
+  #game-screen.type-keys-on #g-type-keys{width:min(46vw,440px);margin:0;flex-shrink:0}
+  #game-screen.canvas-game:has(#g-math.math-3d.has-keys) #g-math{width:min(40vw,300px);margin:0;flex-shrink:0;padding-top:0}
+}
+
+/* ── 📐 GRIDS THAT FIT UNDER THE HEADER ──
+   --g-avail-h is the height left under the header, measured by fitAreaHeight()
+   (app.js) every round. The existing caps stay; this one is added to them, so a
+   grid only shrinks where it would otherwise have run under the fold. */
+.mem-card{height:clamp(44px,calc((var(--g-avail-h,400px) - 30px) / 4),75px)}
+.hack-grid{width:min(100%,380px,54vh,calc(var(--g-avail-h,100vh) - 84px))}
+.path-board{width:min(100%,400px,52vh,calc(var(--g-avail-h,100vh) - 84px))}
+.reaction-box{height:min(300px,var(--g-avail-h,300px))}
+@media (max-height:500px) and (orientation:landscape){
+  .path-board{width:min(100%,340px,58vh,calc(var(--g-avail-h,100vh) - 72px))}
+  /* Click Frenzy stacks an 80px count, a label and a 180px button: 312px of
+     column under a header, on a screen 390px tall. The button's bottom third
+     was off the glass — the one mission whose whole game is that button. */
+  .click-wrap{gap:8px}
+  #click-count{font-size:3.2rem}
+  #click-btn{width:min(150px,calc(var(--g-avail-h,300px) - 90px));height:min(150px,calc(var(--g-avail-h,300px) - 90px));font-size:2.6rem}
+}
+
+/* ── 🔢 MATH BLITZ'S NUMBER PAD (touch only — built by app.js § 32) ──
+   A phone keypad with SUBMIT standing up the whole right-hand column, under
+   the right thumb. The keys size themselves from the height under the header,
+   so a short phone gets a shorter pad rather than a scrolling one. */
+.math-wrap.has-keys #math-submit{display:none}
+.mk-pad{
+  --mk-h:clamp(44px,calc((var(--g-avail-h,520px) - 190px) / 4),60px);
+  display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.15fr);gap:8px;margin-top:14px
+}
+.mk-key{
+  height:var(--mk-h);padding:0;border-radius:10px;cursor:pointer;
+  border:1px solid var(--border2);
+  background:linear-gradient(180deg,rgba(255,255,255,.1),rgba(255,255,255,.035));
+  color:var(--text);font-family:var(--fd);font-size:1.3rem;font-weight:700;line-height:1;
+  box-shadow:0 2px 0 rgba(0,0,0,.45);
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+  -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+  transition:background .08s,border-color .08s,transform .08s
+}
+.mk-key.down{background:rgba(255,215,0,.22);border-color:var(--gold);transform:translateY(1px)}
+.mk-neg,.mk-back{color:var(--pink)}
+.mk-ok{
+  grid-column:4;grid-row:1 / span 4;height:auto;border:none;color:#000;font-size:1.9rem;
+  background:linear-gradient(160deg,var(--cyan),var(--purple));box-shadow:0 0 20px rgba(0,245,255,.25)
+}
+.mk-ok.down{background:linear-gradient(160deg,var(--cyan),var(--purple));filter:brightness(1.3)}
+/* 2D: the sum and the answer up top, the pad on the bottom edge — the same
+   thumb zone the canvas missions' pads use. */
+.math-wrap.has-keys:not(.math-3d){display:flex;flex-direction:column;min-height:var(--g-avail-h,auto)}
+.math-wrap.has-keys:not(.math-3d) .mk-pad{margin-top:auto;padding-top:14px}
+/* 3D: the pad rides in the console under the board, which every pixel of
+   it costs, so it stays compact. */
+.math-wrap.math-3d.has-keys .mk-pad{--mk-h:44px;margin-top:10px}
+@media (max-height:500px) and (orientation:landscape){
+  /* Side by side: the sum and the answer on the left, the pad on the right. */
+  .math-wrap.has-keys:not(.math-3d){
+    display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:18px;
+    max-width:600px;min-height:0;align-items:center
+  }
+  .math-wrap.has-keys:not(.math-3d) #math-question{grid-column:1;grid-row:1;align-self:end;font-size:2.4rem;margin-bottom:10px}
+  .math-wrap.has-keys:not(.math-3d) #math-answer{grid-column:1;grid-row:2;align-self:start;margin-bottom:0}
+  .math-wrap.has-keys:not(.math-3d) .mk-pad{
+    grid-column:2;grid-row:1 / span 2;margin-top:0;padding-top:0;
+    --mk-h:clamp(36px,calc((var(--g-avail-h,280px) - 30px) / 4),54px)
+  }
+  .math-wrap.math-3d.has-keys .mk-pad{--mk-h:36px;margin-top:8px}
+}
+
+/* ── ⏸️ The pause menu's controls line (paintPauseMenu) ── */
+.ps-ctl{margin-top:9px;padding-top:9px;border-top:1px solid var(--border);
+  font-family:var(--fd);font-size:.52rem;line-height:1.7;letter-spacing:.06em;color:var(--dim)}
+
+/* ── 🎮 THE MODE RAIL — the hub's banners, on a phone ──
+   Ten banners stacked one under another were ten screen-wide cards: on a
+   390×844 phone the first mission card sat 3,400px down the page, behind four
+   screens of banners. On a phone they become ONE row you swipe through — the
+   next card peeks in from the right edge to say there is more — and the hub
+   gets two thousand pixels shorter. On a wider screen the rail is
+   display:contents, so the banners lay out exactly as they always have. */
+.mode-rail{display:contents}
+.mode-rail-label,.mode-rail-dots{display:none}
+/* A sideways phone and a touch tablet too: there the banners kept the
+   desktop's row layout, whose widest (the Weekly Anomaly's, 577px) forced the
+   hub's left column wider than the screen and pushed the leaderboard column
+   off the right edge — 79px on a sideways iPhone, 103px on an iPad held
+   upright. One column and the rail fit both. */
+@media (max-width:700px), (max-height:500px) and (orientation:landscape), (pointer:coarse) and (max-width:1100px){
+  .mode-rail-label{
+    display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin:2px 0 10px;
+    font-family:var(--fd);font-size:.6rem;font-weight:700;letter-spacing:.2em;color:var(--cyan)
+  }
+  .mode-rail-label em{font-style:normal;font-size:.5rem;letter-spacing:.18em;color:var(--dimmer)}
+  .mode-rail{
+    display:flex;gap:10px;align-items:stretch;
+    overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;
+    scroll-snap-type:x mandatory;scroll-padding:0 20px;-webkit-overflow-scrolling:touch;
+    /* Edge to edge: the rail runs under the screen's 20px side padding, so a
+       card scrolls in from the glass's edge rather than from an invisible line. */
+    margin:0 -20px 8px;padding:2px 20px 4px
+  }
+  /* A finger swipes the rail and the dots say where it is, so the scrollbar
+     goes. A narrow desktop window keeps it: a mouse has no other way across. */
+  @media (pointer:coarse){
+    .mode-rail{scrollbar-width:none}
+    .mode-rail::-webkit-scrollbar{display:none}
+  }
+  /* A grid track's floor is its content's min-content width, and a row of ten
+     cards has a very wide one: left at 1fr, the hub's single column grew to
+     2,500px to hold the rail, and everything under it ran off the glass with
+     it. minmax(0,1fr) + min-width:0 keeps the column to the screen, which is
+     what makes the rail scroll instead of stretch. */
+  .hub-body{grid-template-columns:minmax(0,1fr)}
+  .hub-body > *{min-width:0}
+  .mode-rail > .mp-banner{flex:0 0 min(84%,340px);margin:0;scroll-snap-align:start;
+    flex-direction:column;text-align:center;gap:10px;padding:16px 14px}
+  .mode-rail > .mp-banner .btn{width:100%}
+  .mode-rail > .mp-banner .lane-pick{margin-left:auto;margin-right:auto}
+  /* Every card is as tall as the tallest, so the buttons line up along one
+     edge: the text fills, and the lane switch and the button sit at the foot. */
+  .mode-rail > .mp-banner .mp-banner-txt{flex:1 1 auto;display:flex;flex-direction:column;align-items:center}
+  .mode-rail > .mp-banner .lane-pick{margin-top:auto}
+  .mode-rail-dots{display:flex;justify-content:center;gap:6px;margin:0 0 18px;min-height:6px}
+  .mode-rail-dots i{width:6px;height:6px;border-radius:50%;background:var(--border2);transition:background .2s,transform .2s}
+  .mode-rail-dots i.on{background:var(--cyan);transform:scale(1.35);box-shadow:0 0 8px var(--cyan)}
+  /* "Black Market" → "Market": the one word that put Exit on a row of its own. */
+  #btn-market .hb-long{display:none}
+}
+
+/* ── 👆 THUMB-SIZED HUB CONTROLS ──
+   The audit's list of things a finger kept missing: the banners' lane switch
+   (22px tall), the Chaos switch (27px), the Heat button (24px), the grid's
+   filter chips (26px), a contract's GO (24px) and the grid's mode switch
+   (31px). 40px is the floor here — just under the 44px the pad gets, because
+   these are picked deliberately, not hit mid-round. */
+@media (pointer:coarse){
+  .lp-seg{min-height:40px;padding-top:0;padding-bottom:0}
+  .chaos-toggle,.heat-open{min-height:40px}
+  .mp-filter{min-height:40px}
+  .ow-seg{min-height:42px}
+  .lo-chip{min-height:38px}
+  .ct-go{min-height:40px!important;padding:8px 14px!important;font-size:.56rem!important}
+}
+/* A contract's GO used to drop onto a row of its own under the text; it is a
+   column of its own instead, beside the text and the reward. */
+@media (max-width:520px){
+  .ct-row{grid-template-columns:auto 1fr auto;grid-template-areas:"ico txt go" "ico cr go";column-gap:10px;row-gap:2px}
+  .ct-ico{grid-area:ico}
+  .ct-txt{grid-area:txt;font-size:.8rem}
+  .ct-cr{grid-area:cr}
+  .ct-go{grid-area:go;justify-self:end}
+}
+
+/* ── 📈 THE OPERATIVE RAIL ON A PHONE ──
+   Portrait: the level bar on a line of its own and the four doors as a 2×2
+   block, instead of three ragged rows with DOSSIER alone on the last. The
+   bar's 50% basis is what forces the break on every phone width.
+   Landscape: the rail used to be display:none (it shares a block with the
+   in-round rules that DO need the height), which left the Perk Tree, the
+   Season Track and the Dossier with no door at all on a sideways phone. The
+   hub scrolls; one 50px row costs it nothing. */
+@media (max-width:520px){
+  .xp-track{flex:1 1 50%}
+  .xp-rail .btn{flex:1 1 calc(50% - 5px)}
+}
+@media (max-height:560px) and (orientation:landscape){
+  .xp-rail{display:flex}
+}
+/* The hub's ⛶ was the one control left under a thumb's width (30px). */
+@media (pointer:coarse){ #btn-fs-hub{min-width:44px} }

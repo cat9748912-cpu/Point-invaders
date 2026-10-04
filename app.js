@@ -2072,10 +2072,30 @@ function clearCanvasDrag(){
 // empty around it. It now grows into whatever space the layout leaves over,
 // and the canvas's backing store grows with it, so a bigger board is drawn at
 // full resolution rather than being a stretched-up 400×500 bitmap.
+//
+// 👍 The controls a thumb works, in document order — the first one showing is
+// the one the thumb-zone gap goes above (see the end of fitCanvas()).
+const THUMB_TARGETS = ['arcade-controls', 'bb-deck', 'g-freq-ctl', 'g-type-keys', 'g-math'];
+// What the bottom of a game screen has to keep clear: the screen's own bottom
+// padding — max(20px, the home-indicator inset) — read back rather than
+// assumed, or, offline, the 📴 bar pinned over the bottom of every screen. A
+// flat 24px was 10px short of the 34px inset an iPhone opened from its home
+// screen has, and nowhere near the offline bar; neither showed while the pad
+// sat in the middle of the glass, and both would now that it sits at the
+// bottom.
+function bottomReserve(scr){
+  const padB = (scr && parseFloat(getComputedStyle(scr).paddingBottom)) || 20;
+  const bar = document.getElementById('offline-bar');
+  const barH = bar ? bar.getBoundingClientRect().height : 0;
+  return Math.max(24, padB + 4, barH ? barH + 8 : 0);
+}
 function fitCanvas(){
   // Before the guard below: Memory Match, Math Blitz and Reaction Time hide the
   // canvas holder entirely and would otherwise never fit their header.
   fitHud();
+  // 👍 Last fit's thumb gap comes off first, so a round that has no use for one
+  // (or a holder that is hidden) cannot inherit the previous mission's.
+  THUMB_TARGETS.forEach(id => { const el = document.getElementById(id); if(el) el.style.marginTop = ''; });
   const holder = document.getElementById('g-canvas-holder');
   if(!holder || holder.style.display === 'none' || !aCanvas) return;
   const area = document.querySelector('.g-area');
@@ -2084,8 +2104,11 @@ function fitCanvas(){
   const controls = document.getElementById('arcade-controls');
   const ctrlVisible = controls && getComputedStyle(controls).display !== 'none';
   // Landscape parks the pad beside the board instead of beneath it, so it eats
-  // width there and height everywhere else.
-  const beside = ctrlVisible && getComputedStyle(holder).display === 'flex';
+  // width there and height everywhere else. The holder is a flex ROW then; a
+  // portrait phone makes it a flex COLUMN (board over pad), so the direction is
+  // the test, not the display.
+  const holderCs = getComputedStyle(holder);
+  const beside = ctrlVisible && holderCs.display === 'flex' && holderCs.flexDirection.indexOf('row') === 0;
   const ctrlBox = ctrlVisible ? controls.getBoundingClientRect() : null;
   const ctrlH = (ctrlVisible && !beside) ? ctrlBox.height + 10 : 0;   // + #arcade-controls margin-top
   const ctrlW = beside ? ctrlBox.width + 12 : 0;
@@ -2097,21 +2120,28 @@ function fitCanvas(){
   // and — in 3D mode, where the sum itself is rendered in the world — Math
   // Blitz's answer field. All are siblings of the holder inside .g-area, and
   // all carry a 10px top margin.
-  let deckH = 0;
+  // 📱 A landscape phone turns .g-area into a ROW for the consoles that cannot
+  // afford to sit underneath (Command Line's keyboard: three rows of keys under
+  // a 390px-tall screen left the board 150px wide). A console beside the board
+  // costs it width instead, exactly the way the pad beside it does.
+  const areaRow = getComputedStyle(area).flexDirection.indexOf('row') === 0;
+  let deckH = 0, deckW = 0;
   for(const id of ['bb-deck', 'g-freq-ctl', 'g-math', 'g-sort-rule', 'g-type-keys']){
     const el = document.getElementById(id);
     if(el && getComputedStyle(el).display !== 'none'){
-      deckH += el.getBoundingClientRect().height + 10;
+      const r = el.getBoundingClientRect();
+      if(areaRow) deckW += r.width + 12;
+      else deckH += r.height + 10;
     }
   }
 
-  const availW = area.clientWidth - ctrlW;
+  const availW = area.clientWidth - ctrlW - deckW;
   // The header is measured, never assumed, so its exact height (title line,
   // stat pills, hint caption) costs the board only what it actually uses.
   // holder.top is independent of the canvas's own height, so measuring it
-  // before resizing doesn't feed back on itself. The 24px covers the screen's
-  // bottom padding and the home-indicator safe area.
-  const availH = window.innerHeight - holder.getBoundingClientRect().top - ctrlH - deckH - 24;
+  // before resizing doesn't feed back on itself. The bottom reserve covers the
+  // home-indicator inset and the offline bar (see bottomReserve).
+  const availH = window.innerHeight - holder.getBoundingClientRect().top - ctrlH - deckH - bottomReserve(area.closest('.screen'));
 
   // Floor is deliberately low: on a landscape phone there genuinely isn't much
   // height, and a small board beats one whose bottom half is off-screen. In
@@ -2131,6 +2161,32 @@ function fitCanvas(){
   if(cssW <= 0 || cssH <= 0){ scheduleFit(); return; }
   aCanvas.style.width  = cssW + 'px';
   aCanvas.style.height = cssH + 'px';
+
+  // 👍 THE THUMB ZONE. A 560×500 board is WIDTH-bound on a portrait phone: it
+  // fills the width and then stops, and everything under it — the pad, the
+  // deploy deck, the keyboard — sat right against its bottom edge, in the
+  // middle of the glass, over a band of dead screen (245px of it on a 390×844
+  // phone). Thumbs live at the bottom of a phone, not the middle. So the height
+  // the board could not use becomes a gap ABOVE the first control, which puts
+  // the controls on the bottom edge where the thumbs already are, and leaves
+  // the board where the eyes are: right under the clock and the score.
+  //
+  // Nothing measured above moves with it — the gap is a margin, the board's
+  // size comes from the heights of the controls (not their positions), and
+  // availH already reserved the screen's bottom padding — so the next fit
+  // computes the same gap and the layout cannot creep.
+  //
+  // Touch and portrait only. A desktop window is never a thumb, and a short
+  // screen (an SE in Safari) is height-bound with no spare height to hand out.
+  // The Packet Sort rule strip is not a control and stays with the board.
+  if(isTouchDevice && !beside && !areaRow && window.innerHeight > window.innerWidth){
+    const spare = Math.floor(availH - cssH);
+    if(spare > 8){
+      const target = THUMB_TARGETS.map(id => document.getElementById(id))
+        .find(el => el && getComputedStyle(el).display !== 'none');
+      if(target) target.style.marginTop = (10 + spare) + 'px';
+    }
+  }
 
   // Let the header and progress bar track the board's width, so the three read
   // as one unit rather than a narrow field under a full-width bar. The CSS
@@ -2208,9 +2264,26 @@ function fitHud(){
     return stats.getBoundingClientRect().height > tallest + 2;
   };
   for(const c of HUD_TIERS){
-    if(!wrapped()) return;
+    if(!wrapped()) break;
     hdr.classList.add(c);
   }
+  fitAreaHeight();
+}
+
+// 📐 THE HEIGHT UNDER THE HEADER, as --g-avail-h on the game screen. The
+// missions built out of DOM rather than a canvas (Memory Match, Node Hacker,
+// Overclock Path, Reaction Time, the Math Blitz number pad) used to size
+// themselves against a fixed share of the viewport — 54vh, 52vh, 300px — which
+// knew nothing about how tall the header actually came out. On a short phone
+// Node Hacker's bottom row sat 19px under the fold; in landscape a whole row of
+// Memory Match did. Measured after the header has settled (fitHud's tiers can
+// change its height) and from the area's top, which nothing below it can move.
+function fitAreaHeight(){
+  const gs = document.getElementById('game-screen');
+  const area = gs && gs.querySelector('.g-area');
+  if(!area) return;
+  const h = Math.floor(window.innerHeight - area.getBoundingClientRect().top - bottomReserve(gs));
+  gs.style.setProperty('--g-avail-h', Math.max(160, h) + 'px');
 }
 let _hudRaf = 0;
 function scheduleHudFit(){ cancelAnimationFrame(_hudRaf); _hudRaf = requestAnimationFrame(fitHud); }
@@ -2868,10 +2941,14 @@ function resetGameStage(gid){
   document.getElementById('bb-ram-pill').style.display='none';
   // ⌨️ COMMAND LINE's keypad (§ 26). Optional-chained: an older cached page has no such element.
   { const tk = document.getElementById('g-type-keys'); if(tk) tk.style.display='none'; }
+  document.getElementById('game-screen')?.classList.remove('type-keys-on');
   // …and there P is a letter, not the pause key (see pauseLettersOwned, § 13).
   document.getElementById('btn-pause')?.setAttribute('title', gid === 'cmdline' ? 'Pause (Esc)' : 'Pause (Esc / P)');
   setControls(null);                 // every game re-declares its own pad
   document.getElementById('g-controls').textContent='';   // and its own hint
+  // 📐 Every round re-measures the height under the header (fitAreaHeight):
+  // the DOM missions size their grids by it and not all of them set a hint.
+  scheduleHudFit();
   // 🧊 A 3D round always plays on the board, including the missions whose 2D
   // build is pure DOM — so the landscape layout that parks the pad beside the
   // board has to know about them too.
@@ -6955,7 +7032,9 @@ function startMemory(){
 //  🔢 GAME 6: MATH BLITZ
 // ════════════════════════════════════════════
 function startMath(){
-  document.getElementById('g-math').style.display='block';
+  // '' rather than 'block': the panel is a block on a desktop either way, and
+  // a phone's number pad lays it out as a column of its own (§ 32).
+  document.getElementById('g-math').style.display='';
   let score=0, time=Math.round(20*safeTime()), curAns=0;
   const time0=time;   // 🔵 Safe Mode stretches the clock
   document.getElementById('g-time').textContent=time;
@@ -23449,6 +23528,12 @@ float gAlpha = 1.0;
 // ✨ v58 · Share of the wear's normal relief a surface takes (see hullWear);
 // set by the HULL style, lower on a Blender model's painted skin.
 float gWearRelief = 1.0;
+// ✨ v63 · STANDOUT — 1 for an instance drawn with draw's 'standout' (every
+// hostile, through foeLook), 0 for everything else. It rides in the rim
+// channel as 8.0 of extra magnitude, sign kept (STANDOUT_RIM in the renderer);
+// set first thing in main() so the surface styles can read it too. See the
+// STANDOUT block there.
+float gStandout = 0.0;
 #ifdef ULTRA
 // 1 when the world has an open sky (a city horizon to reflect), 0 for an
 // enclosed set, which reflects its own ceiling lights instead.
@@ -23618,7 +23703,11 @@ void applyPart(float part, inout vec3 albedo, inout float metallic, inout float 
     // lifted toward off-white, the way a fighter's upper surfaces are a pale
     // grey over a darker belly. Still the instance colour underneath, so a hit
     // flash or a team tint reaches it too.
-    albedo   = mix(albedo, vec3(0.80, 0.81, 0.82), 0.62);
+    // ✨ v63 · A STANDOUT's second tone is lifted a third as far. The drone is
+    // mostly second tone, so at 62% every hostile drone — the arena's hunters,
+    // the maze's daemons, the shell's processes, the patrols — came out white
+    // with a hint of its colour. Still two-tone; the paint leads now.
+    albedo   = mix(albedo, vec3(0.80, 0.81, 0.82), 0.62 - 0.42 * gStandout);
     metallic = metallic * 0.55;
     rough    = clamp(rough + 0.06, 0.2, 0.7);
     // ✨ v57 · Only machines carry a second tone, so it is damped like BODY.
@@ -24130,7 +24219,10 @@ void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
       float lum = mix(ma.x, mb.x, 0.45);
       float occ = (0.5 + 1.0 * ma.y) * (0.7 + 0.6 * mb.y);
       vec3 rock = albedo * (0.3 + 1.4 * lum) * occ;
-      rock = mix(vec3(dot(rock, vec3(0.2126, 0.7152, 0.0722))), rock, 0.72);
+      // ✨ v63 · …except a STANDOUT's: a hostile rock is the enemy's paint in
+      // mineral form, and drawing it toward grey is exactly what made the
+      // firewall cores and the meteors read as dead stone.
+      rock = mix(vec3(dot(rock, vec3(0.2126, 0.7152, 0.0722))), rock, mix(0.72, 1.0, gStandout));
       albedo  = mix(albedo, rock, amt);
       rough   = mix(rough, clamp(0.95 - (occ - 1.0) * 0.3, 0.74, 1.0), amt);
       Nw = normalize(toWorld(normalize(nO + nA)));
@@ -24329,6 +24421,7 @@ void main(){
   // Two-sided: thin panels and holo sheets are drawn without culling, and a
   // back face lit by its front normal goes black.
   if(!gl_FrontFacing) N = -N;
+  gStandout = step(4.0, abs(vMat.z));
 
   vec3  albedo    = vColor.rgb;
   float metallic  = clamp(vMat.x, 0.0, 1.0);
@@ -24503,13 +24596,14 @@ void main(){
   // or a planet hundreds of units off, which the fog below would otherwise
   // erase. Its magnitude is still the rim strength. No draw passed a negative
   // rim before the world looks, so every existing model is untouched.
-  float rim = pow(1.0 - clamp(dot(Ng, V), 1e-4, 1.0), 3.5) * abs(vMat.z);
+  float rim = pow(1.0 - clamp(dot(Ng, V), 1e-4, 1.0), 3.5) * (abs(vMat.z) - 8.0 * gStandout);
   // ✨ v57 · In deep space a dusty, rough surface keeps little of it: rock has
   // almost no Fresnel, and against a bright nebula it needs no help to read.
-  rim *= mix(1.0, 0.35, uSpaceOn * smoothstep(0.55, 0.95, rough));
+  // (A STANDOUT keeps all of it — see below.)
+  rim *= mix(1.0, 0.35, uSpaceOn * smoothstep(0.55, 0.95, rough) * (1.0 - gStandout));
   float fogFree = step(vMat.z, -1e-4);
 #ifdef ULTRA
-  rim *= RIM_ULTRA;
+  rim *= mix(RIM_ULTRA, 1.0, gStandout);
 #endif
   // ✨ v57 · The edge takes the colour of what a grazing edge REFLECTS (the
   // horizon; in deep space, the nebula behind it), and takes the instance's
@@ -24519,7 +24613,24 @@ void main(){
   // a machine. A real neon (strength 0.5 and up) keeps its coloured edge.
   float neon = 0.6 * smoothstep(0.02, 0.5, emisPart);
   vec3 edgeEnv = uSpaceOn > 0.5 ? envRefl(reflect(-V, Ng), 0.55) * 1.4 + uHorizon * 0.4 : uHorizon;
-  vec3 rimCol = mix(edgeEnv, vEmis.rgb, neon) * rim * 2.4;
+  vec3 edgeTint = mix(edgeEnv, vEmis.rgb, neon);
+  // ✨ v63 · STANDOUT. Every hostile is PAINTED, NOT LIT (ENEMY_PAINT) — no
+  // glow, no halo, no lamp — which left its colour entirely to the scene's
+  // light. A night city and a dark open world have very little of it, so a
+  // magenta daemon came out maroon, a red raider brown, a drone a black shape
+  // wrapped in a sky-coloured edge: the enemies with "no colour". Three things,
+  // none of them a glow, keep the paint legible in any light:
+  //   · the edge takes the instance's OWN paint (its emissive, if it genuinely
+  //     burns — a falling core's cracks), not the sky's, and keeps its full
+  //     strength in deep space and under Ultra — a silhouette outlined in the
+  //     enemy's colour against whatever is behind it;
+  //   · the paint keeps a floor (below), lit by nothing, so its hue survives a
+  //     scene with no light to give it;
+  //   · the haze takes half as much of it (below), so a hostile still reads
+  //     as red at the distance a building has already faded to sky.
+  vec3 ownTint = mix(vColor.rgb, vEmis.rgb, step(0.5, vEmis.a));
+  edgeTint = mix(edgeTint, ownTint, gStandout);
+  vec3 rimCol = edgeTint * rim * 2.4;
 
   // ── Emission. This is the neon, and it is allowed well past 1.0 — the HDR
   // target and the bloom pyramid downstream are the entire point.
@@ -24530,6 +24641,11 @@ void main(){
   // its root). Emission is never occluded.
   float occ = 1.0 - vOcc;
   vec3 color = direct * mix(1.0, occ, 0.55) + ambient * occ + rimCol * occ + emissive;
+  // ✨ v63 · A STANDOUT's paint floor: the diffuse colour (so bare metal, glass
+  // and the black livery stripes stay as they are) at a fixed share, on top of
+  // whatever light it is given — a matte paint you can see in the dark, not a
+  // panel that glows.
+  color += diffCol * 0.28 * gStandout * occ;
 
   // ── Fog. exp2 of the squared distance, i.e. proper exponential-squared haze,
   // tinted by the environment in the view direction so distant geometry melts
@@ -24537,7 +24653,7 @@ void main(){
   float d = length(uCam - vWorld);
   float fogAmt = 1.0 - exp2(-pow(d * uFogDensity, 2.0));
   vec3 fogCol = uSpaceOn > 0.5 ? mix(uFogCol, envRefl(-V, 0.75), 0.5) : mix(uFogCol, envSample(-V), 0.35);
-  color = mix(color, fogCol, clamp(fogAmt, 0.0, 1.0) * (1.0 - fogFree));
+  color = mix(color, fogCol, clamp(fogAmt, 0.0, 1.0) * (1.0 - fogFree) * (1.0 - 0.5 * gStandout));
 
   // ✨ v56 · Opacity above 1 is an opaque instance carrying a livery index
   // (see ACCENT); gAlpha is what a cut style (ring lanes) took away.
@@ -25609,6 +25725,9 @@ const MAX_LIGHTS = 10;
 // ✨ v57 · Scale-over-distance below which a geometry's low-poly twin is drawn.
 const LOD_K = 0.07;
 const FLOATS_PER_INSTANCE = 16 + 4 + 4 + 4;   // model, colour, emissive, material
+// ✨ v63 · Added to the rim MAGNITUDE of a STANDOUT instance (draw's 'standout');
+// FS_MESH reads |rim| above 4 as "standout, |rim| − 8". Keep the two in step.
+const STANDOUT_RIM = 8;
 const FLOATS_PER_GLOW = 8;                    // centre+size, tint+intensity
 const FLOATS_PER_STREAK = 12;                 // ✨ v56 tail+width, head+intensity, tint+head bias
 const FLOATS_PER_FIRE = 12;                   // ✨ v59 centre+size, tint+intensity, age+seed+2 spare
@@ -26710,6 +26829,13 @@ function createRenderer(canvas, opts){
       const col = hexToLinear(o.color || '#ffffff');
       const emisCol = o.emissive ? hexToLinear(o.emissive) : col;
       const emisStr = o.emissiveStrength != null ? o.emissiveStrength : (o.emissive ? 1 : 0);
+      // ✨ v63 · A STANDOUT instance (draw's `standout`, set by foeLook for every
+      // hostile) rides in the rim channel as STANDOUT_RIM of extra MAGNITUDE.
+      // No rim is drawn beyond ±2.2, and the sign is left alone — a negative rim
+      // still means "outside the haze" — so neither reading can be mistaken for
+      // the other. See STANDOUT in FS_MESH.
+      const rim0 = o.rim != null ? o.rim : 0.6;
+      const rim = o.standout ? rim0 + (rim0 < 0 ? -STANDOUT_RIM : STANDOUT_RIM) : rim0;
       const sc = o.scale;
       if(sc == null){ _s[0] = _s[1] = _s[2] = 1; }
       else if(typeof sc === 'number'){ _s[0] = _s[1] = _s[2] = sc; }
@@ -26727,7 +26853,7 @@ function createRenderer(canvas, opts){
           col, alpha, emisCol, emisStr,
           metallic: o.metallic != null ? o.metallic : 0.1,
           roughness: o.roughness != null ? o.roughness : 0.55,
-          rim: o.rim != null ? o.rim : 0.6,
+          rim,
           detail: o.detail != null ? o.detail : g.surf,
           z: 0
         });
@@ -26750,7 +26876,7 @@ function createRenderer(canvas, opts){
       b.data[off+20] = emisCol[0]; b.data[off+21] = emisCol[1]; b.data[off+22] = emisCol[2]; b.data[off+23] = emisStr;
       b.data[off+24] = o.metallic  != null ? o.metallic  : 0.1;
       b.data[off+25] = o.roughness != null ? o.roughness : 0.55;
-      b.data[off+26] = o.rim       != null ? o.rim       : 0.6;
+      b.data[off+26] = rim;
       b.data[off+27] = o.detail    != null ? o.detail    : g.surf;
       b.n++;
     },
@@ -28425,9 +28551,12 @@ function enemyPaint(hex){
 // nearest livery), the glossy finish, black livery stripes, white for the
 // instant it is hit — and NO emissive, so not a panel of it glows. Spread into
 // a draw call: r.draw(geo, { pos, rot, scale, ...foeLook(col, flash) }).
+// ✨ v63 · …and STANDOUT, so the paint reads in any light: an edge in its own
+// colour, a floor under the paint and half the haze (see STANDOUT in FS_MESH).
+// Without it, "no glow" had come to mean "no colour" in every dark world.
 function foeLook(col, flash, o){
   const L = { color: flash ? '#ffffff' : enemyPaint(col), metallic: ENEMY_FINISH.metallic,
-              roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7 };
+              roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7, standout: true };
   return o ? Object.assign(L, o) : L;
 }
 // Where a hovering hostile is over the floor, without a glowing ring: a dark
@@ -31864,7 +31993,7 @@ P.games.nebula = function(){
       r.draw(f.t.geo, {
         pos: [f.x, f.y, f.z], rot: [0, Math.sin(f.spin) * 0.25, f.spin * 0.7], scale: f.t.sc,
         color: f.flash > 0 ? '#ffffff' : enemyPaint(f.t.col), metallic: ENEMY_FINISH.metallic,
-        roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7
+        roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7, standout: true   // ✨ v63 (see foeLook)
       });
       // Sensor eye — the read on "which way is it facing" and the brightest
       // thing on the model, so it is what the eye tracks at range.
@@ -32128,9 +32257,13 @@ P.games.dodge = function(){
     for(const c of cores){
       // ✨ v60 · PAINTED, NOT LIT (see ENEMY_PAINT): each core's shell glazed in
       // its colour — no dark husk round a glowing heart, no halo, no lamp.
+      // ✨ v63 · STANDOUT (see foeLook), and the rock's mineral surface at under
+      // half its default (7.75 → 7.45): at full strength the regolith and the
+      // scanned rock buried the glaze, and the cores came down the road as grey
+      // stones nobody could see against the city.
       r.draw(c.geo, {
         pos:[c.x, c.y + 1.0, c.z], rot:[c.sx, c.sy, c.sx * 0.5], scale: c.r * 2.2,
-        color: enemyPaint(c.col), metallic: 0.2, roughness: 0.45, rim: 0.5
+        color: enemyPaint(c.col), metallic: 0.2, roughness: 0.45, rim: 0.5, detail: 7.45, standout: true
       });
     }
 
@@ -34299,8 +34432,10 @@ P.games.meteor = function(){
       // its type colour — orange, red for a fast one, purple for a big one — as
       // a glazed mineral, with no emissive glow on it, no halo and no lamp.
       // A trail of embers is all the entry heat it keeps.
+      // ✨ v63 · STANDOUT, and the mineral surface at under half (see the Dodge
+      // cores): the glaze is the type colour, and it has to survive the rock.
       r.draw(k.geo, { pos:[k.x, k.y, k.z], rot:[k.sx, k.sy, k.sx * 0.6], scale: k.r * 2.1,
-                      color: enemyPaint(k.col), metallic: 0.12, roughness: 0.6, rim: 0.5 });
+                      color: enemyPaint(k.col), metallic: 0.12, roughness: 0.6, rim: 0.5, detail: 7.45, standout: true });
       if(Math.random() < 0.5) w.spark([k.x, k.y + k.r, k.z], '#ffb35a', 0.3, 0.45, [rnd(-1,1), rnd(2,5), rnd(-1,1)]);
     }
 
@@ -35242,7 +35377,7 @@ P.games.math = function(){
   const panel = document.getElementById('g-math');
   const qEl = document.getElementById('math-question');
   const ansEl = document.getElementById('math-answer');
-  panel.style.display = 'block';
+  panel.style.display = '';   // '' not 'block' — see startMath()
   panel.classList.add('math-3d');
   qEl.style.display = 'none';
 
@@ -44327,10 +44462,15 @@ function paintPauseMenu(){
     const t = document.getElementById('g-time')?.textContent || '—';
     const p = document.getElementById('g-pts')?.textContent || '0';
     const title = document.getElementById('g-title')?.textContent || (m ? m.name : 'MISSION');
+    // 📱 The mission's controls, from the header's hint line. A short phone
+    // hides that line to give the board its height (§ 32 in style.css), and a
+    // paused round is exactly when a player looks for how to play it.
+    const ctl = (document.getElementById('g-controls')?.textContent || '').trim();
     stats.innerHTML =
       `<div class="ps-name">${m ? m.emoji + ' ' : ''}${esc(title)}</div>` +
       `<div class="ps-row"><span>⏱️ <b>${esc(t)}</b></span><span>⭐ <b>${esc(p)}</b></span>` +
-      `<span>${DIFFICULTY_TIERS[currentDifficultyTier].icon} ${DIFFICULTY_TIERS[currentDifficultyTier].label}</span></div>`;
+      `<span>${DIFFICULTY_TIERS[currentDifficultyTier].icon} ${DIFFICULTY_TIERS[currentDifficultyTier].label}</span></div>` +
+      (ctl ? `<div class="ps-ctl">🎮 ${esc(ctl)}</div>` : '');
   }
   const rs = document.getElementById('pause-restart');
   if(rs) rs.style.display = pauseCanRestart() ? '' : 'none';
@@ -44338,7 +44478,9 @@ function paintPauseMenu(){
   if(qb) qb.textContent = bossRush ? '✕ ABANDON THE RUSH' : '✕ QUIT TO HUB';
   // ⌨️ In a typed mission P is a letter, so the menu must not promise it.
   const hint = document.querySelector('#pause-overlay .pause-hint');
-  if(hint) hint.textContent = pauseLettersOwned() ? 'Esc to resume · START on a controller'
+  // A phone has neither key: there, the hint is the one gesture it does have.
+  if(hint) hint.textContent = (isTouchDevice && !hasFinePointer) ? '◀ Back resumes the round too'
+                            : pauseLettersOwned() ? 'Esc to resume · START on a controller'
                                                   : 'Esc or P to resume · START on a controller';
   paintPauseAudio();
 }
@@ -51480,6 +51622,10 @@ function cmdShowKeys(on){
   const want = !!on && (typeof isTouchDevice !== 'undefined' ? isTouchDevice : false);
   if(want) cmdBuildKeys();
   el.style.display = want ? '' : 'none';
+  // 📱 Lets a landscape phone stand the keyboard BESIDE the board (style.css,
+  // § 32): three rows of keys under the board on a 390px-tall screen left the
+  // board 150px wide and pushed the bottom row off the glass.
+  document.getElementById('game-screen')?.classList.toggle('type-keys-on', want);
   if(!on) cmdKeysHandlers = null;
 }
 
@@ -57001,7 +57147,8 @@ P.ow.nebula = function(){
       const hull = f.slot === 0 ? 'heavy' : f.slot % 2 ? 'dart' : 'raider';
       const paint = hull === 'heavy' ? ENEMY_PAINT.purple : hull === 'dart' ? ENEMY_PAINT.orange : ENEMY_PAINT.red;
       r.draw(hull, { pos: f.p, m3: fb.m3z, scale: hull === 'heavy' ? 2.2 : 2.3, color: f.flash > 0 ? '#ffffff' : paint,
-                     metallic: ENEMY_FINISH.metallic, roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7 });
+                     metallic: ENEMY_FINISH.metallic, roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7,
+                     standout: true });   // ✨ v63 (see foeLook)
       // Flames out of each hull's own nozzles.
       const noz = hull === 'heavy' ? [[-1.23, -0.04, -1.5], [1.23, -0.04, -1.5]] : hull === 'dart' ? [[0, 0, -1.72]] : [[-0.55, -0.14, -1.45], [0.55, -0.14, -1.45]];
       noz.forEach(([x, y, z], i) => {
@@ -58395,7 +58542,9 @@ P.ow.dodge = function(){
     let nl = 0;
     for(const c of cores){
       if(V.d2(c.p, eye) > 200 * 200) continue;
-      r.draw('rock', { pos: c.p, rot: c.rot, scale: c.s, color: '#5a4038', metallic: 0.1, roughness: 0.85, rim: 0.4, emissive: '#ff6a10', emissiveStrength: 1.4, detail: MAGMA });
+      // ✨ v63 · STANDOUT (see foeLook). A core really burns, so its edge takes
+      // the cracks' orange rather than the charred crust's brown.
+      r.draw('rock', { pos: c.p, rot: c.rot, scale: c.s, color: '#5a4038', metallic: 0.1, roughness: 0.85, rim: 0.4, emissive: '#ff6a10', emissiveStrength: 1.4, detail: MAGMA, standout: true });
       if(c.falling) r.fire(V.add(c.p, [0, c.s * 0.7, 0]), c.s * 2.4, 1.5, 0.28, (c.s * 0.37) % 1);   // ✨ v59 burning as it falls
       if(c.falling) r.streak(V.add(c.p, [0, 8, 0]), c.p, c.s * 0.7, '#ff8a3a', 1.6, 1);
       if(nl++ < 3) r.light({ pos: c.p, color: '#ff7a2a', intensity: 90, range: 14 });
@@ -60259,7 +60408,12 @@ P.ow.meteor = function(){
       // ✨ v60 · PAINTED, NOT LIT (see ENEMY_PAINT): an orange mineral glaze
       // the sun reads, not a hull glowing from inside; the entry burn behind it
       // is the only fire it carries.
-      r.draw(m.g, { pos: m.p, rot: m.rot, scale: m.s, color: m.big ? '#e3262b' : '#ff6a12', metallic: 0.12, roughness: 0.62, rim: 0.5, detail: 10.92 });
+      // ✨ v63 · …which it was not: the surface was still MAGMA (10.92), the
+      // charred style that darkens the paint to a fifth and lets only EMISSIVE
+      // cracks show — and the glow had been taken off, so every meteor came
+      // down as a black rock. MINERAL at under half, as the v60 note intended,
+      // and STANDOUT (see foeLook).
+      r.draw(m.g, { pos: m.p, rot: m.rot, scale: m.s, color: m.big ? '#e3262b' : '#ff6a12', metallic: 0.12, roughness: 0.62, rim: 0.5, detail: 7.45, standout: true });
       r.fire(m.p, m.s * 2.2, 1.3, 0.3, (m.s * 0.41) % 1);   // ✨ v59 an entry burn
       r.streak(V.madd(m.p, V.norm(m.v), -m.s * 4), m.p, m.s * 0.6, '#ff9a4a', 0.9, 1);
     }
@@ -65051,3 +65205,256 @@ P.ow.cmdline = function(){
 })();
 
 // <<OW:END>>
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 32 · v62 — 📱 MOBILE · the thumb zone, a number pad, the back gesture,
+//                            and a screen that stays on
+// ══════════════════════════════════════════════════════════════════════
+// The arcade has been playable on a phone for a long time; this is the pass
+// that makes it feel like it was MADE for one. The layout half lives in
+// style.css (§ 32 there) and in fitCanvas()'s thumb gap; this is the behaviour
+// half. Placed after the open-world splice on purpose, so a re-splice of
+// § 31 between its markers can never take it with it. Optional-chained like
+// § 10: a cached older index.html against this app.js loses a feature, not
+// the file.
+
+// ── 📐 RE-FIT WHEN ANYTHING ABOVE THE BOARD CHANGES SIZE ──────────────────
+// The power-up dock appears after the round has started, the chaos banner
+// shrinks to a chip a few seconds in, a pace-ghost pill turns up once there is
+// a best to race. Each of those moves the board down AFTER the mission's own
+// fitCanvas() has run. That used to cost nothing anyone could see, because the
+// pad had dead screen beneath it to be pushed into. The thumb gap hands that
+// screen to the pad, so the fit now follows the layout — otherwise a late dock
+// would push the bottom of the pad off the glass. The consoles are watched for
+// the same reason: Battle Bots deals its deck AFTER the first fit, which on a
+// short phone ran the deck 16px off the bottom of the screen. The fit
+// converges: it moves margins, and the one console whose width follows the
+// board (the keyboard) keeps a fixed height. Touch only, like the gap itself:
+// a desktop has no gap to protect.
+(function(){
+  if(!window.ResizeObserver || !isTouchDevice) return;
+  const gs = document.getElementById('game-screen');
+  if(!gs) return;
+  const ro = new ResizeObserver(() => { if(gs.classList.contains('active')) scheduleFit(); });
+  ['.g-hdr', '#chaos-banner', '#pu-dock', '#mp-hud', '#ob-coach', '#arcade-controls',
+   '#bb-deck', '#g-freq-ctl', '#g-sort-rule', '#g-type-keys', '#g-math'].forEach(sel => {
+    const el = gs.querySelector(sel);
+    if(el) ro.observe(el);
+  });
+  // 📴 Losing the connection mid-round pins the offline bar over the bottom of
+  // the screen — where the pad now sits — so the fit makes room for it, and
+  // gives the room back when the bar goes.
+  new MutationObserver(() => { if(gs.classList.contains('active')) scheduleFit(); })
+    .observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+})();
+
+// ── 🔢 MATH BLITZ'S NUMBER PAD ────────────────────────────────────────────
+// The answer box was a type="number" field, which on a phone means the
+// system keyboard: half the screen gone under it, a tap on the field first to
+// raise it at all (a focus() from a timer does not open a keyboard on iOS) —
+// and on the digit pad a phone raises for a number field, no minus key, when
+// every subtraction in the mission can come out below zero. A pad of its own
+// fixes all three: it is always up, it has a minus, and SUBMIT is the tall key
+// under the right thumb.
+//
+// It only ever writes the field's value and clicks Submit, so both builds —
+// startMath() and the 3D solver core — run through it untouched: they read the
+// value on submit exactly as before, and whichever one is running owns
+// Submit's onclick at that moment (and has nulled it once the clock is out).
+(function(){
+  if(!isTouchDevice) return;
+  const panel = document.getElementById('g-math');
+  const ans = document.getElementById('math-answer');
+  const sub = document.getElementById('math-submit');
+  if(!panel || !ans || !sub || document.getElementById('math-keys')) return;
+  // A number field sanitises a lone "-" to "" the moment it is assigned, so a
+  // negative answer could never be started in one. Text it is, and
+  // inputmode="none" keeps the system keyboard down when the round focuses the
+  // field — while a hardware keyboard on a tablet still types straight in.
+  ans.type = 'text';
+  ans.setAttribute('inputmode', 'none');
+  ans.setAttribute('autocomplete', 'off');
+  ans.setAttribute('autocorrect', 'off');
+  ans.setAttribute('autocapitalize', 'off');
+  ans.spellcheck = false;
+  // DOM order is reading order (1–9, −, 0, ⌫, then SUBMIT); the grid in
+  // style.css stands SUBMIT up the whole right-hand column.
+  const KEYS = [['1'],['2'],['3'],['4'],['5'],['6'],['7'],['8'],['9'],
+                ['-', '−', 'Minus', 'neg'], ['0'], ['back', '⌫', 'Delete', 'back'],
+                ['ok', '✓', 'Submit answer', 'ok']];
+  const pad = document.createElement('div');
+  pad.id = 'math-keys';
+  pad.className = 'mk-pad';
+  pad.setAttribute('role', 'group');
+  pad.setAttribute('aria-label', 'Number pad');
+  pad.innerHTML = KEYS.map(([k, label, aria, kind]) =>
+    `<button type="button" class="mk-key mk-${kind || 'n'}" data-k="${k}" aria-label="${aria || k}">${label || k}</button>`
+  ).join('');
+  panel.appendChild(pad);
+  panel.classList.add('has-keys');
+  pad.addEventListener('pointerdown', e => {
+    const b = e.target.closest && e.target.closest('.mk-key');
+    if(!b) return;
+    // pointerdown, not click: a click waits for the finger to lift, and the
+    // whole mission is a race against a twenty-second clock.
+    e.preventDefault();
+    b.classList.add('down');
+    setTimeout(() => b.classList.remove('down'), 110);
+    const k = b.dataset.k;
+    if(k === 'ok'){ sub.click(); return; }
+    let v = ans.value || '';
+    if(k === 'back') v = v.slice(0, -1);
+    else if(k === '-') v = v[0] === '-' ? v.slice(1) : '-' + v;
+    else if(v.replace('-', '').length < 5) v = v.replace(/^(-?)0$/, '$1') + k;
+    ans.value = v;
+    try{ haptic('node'); }catch(err){}
+  });
+})();
+
+// ── ☀️ A SCREEN THAT STAYS ON THROUGH A ROUND ─────────────────────────────
+// A phone dims after thirty seconds without a touch, and plenty of rounds
+// here are thirty seconds without a touch: a Signal Trace cipher being
+// THOUGHT about, Battle Bots marching on their own, a party passing the phone
+// round the room. The screen dimmed, then locked — and a locked screen is a
+// hidden page, so the round paused itself and the player came back to a menu
+// instead of the board. A wake lock is held while a round is on screen and
+// let go the moment it is not: paused, over, or back in the hub. Browsers
+// release it on their own when the page is hidden, so it is asked for again
+// whenever the page comes back.
+const Wake = { lock: null, busy: false };
+function wakeWanted(){
+  if(document.visibilityState !== 'visible') return false;
+  if(document.body.classList.contains('round-paused')) return false;
+  if(document.getElementById('game-screen')?.classList.contains('active')) return true;
+  return !!document.getElementById('party-overlay')?.classList.contains('show');
+}
+async function wakeSync(){
+  if(!('wakeLock' in navigator)) return;
+  const want = wakeWanted();
+  if(want && !Wake.lock && !Wake.busy){
+    Wake.busy = true;
+    try{
+      const l = await navigator.wakeLock.request('screen');
+      Wake.lock = l;
+      l.addEventListener('release', () => { if(Wake.lock === l) Wake.lock = null; });
+    }catch(e){ /* refused (battery saver, no permission) — the screen keeps its own timeout */ }
+    Wake.busy = false;
+    // The round may have ended while the request was in flight.
+    if(!wakeWanted() && Wake.lock) wakeSync();
+    return;
+  }
+  if(!want && Wake.lock){
+    const l = Wake.lock;
+    Wake.lock = null;
+    try{ await l.release(); }catch(e){}
+  }
+}
+
+// ── ◀ THE BACK GESTURE ────────────────────────────────────────────────────
+// A phone's back gesture is a swipe in from the edge of the screen — exactly
+// where a finger steering Neon Nebula or Ice Breaker's paddle goes. The arcade
+// is one page with no history of its own, so BACK left it: mid-round, with no
+// warning, the run gone with the tab. On Android it closed an installed app.
+//
+// So while there is something on screen that BACK should close or hold — a
+// round, a results card, the market, the arena, any overlay — the page keeps
+// one history entry of its own on top. BACK pops that entry instead of the
+// page and does what B on a controller does: puts photo mode's camera down,
+// closes the overlay on top, holds a live round in the pause menu (Quit is one
+// tap away for a player who meant it), and steps a results card, the market or
+// the arena back to the hub. The moment the hub is all that is left, the entry
+// is taken back off, so BACK from the hub leaves the arcade first time, as it
+// always did. Only ever ONE entry: history is never padded to trap a player.
+const BackGuard = { pending: false, tok: 0, timer: 0 };
+const backGuardOn = () => !!(history.state && history.state.piBack);
+function backGuardWanted(){
+  if(document.querySelector('.fb-overlay.show')) return true;
+  const s = document.querySelector('.screen.active');
+  return !!s && s.id !== 'hub-screen' && s.id !== 'auth-screen';
+}
+function backGuardPush(){
+  if(backGuardOn()) return;
+  try{ history.pushState(Object.assign({}, history.state, { piBack: 1 }), ''); }catch(e){}
+}
+function backGuardSync(){
+  // An unwind is in flight: its popstate re-syncs. Acting now would stack a
+  // second history step on top of an asynchronous first one.
+  if(BackGuard.pending) return;
+  if(backGuardWanted()){ backGuardPush(); return; }
+  if(!backGuardOn()) return;
+  BackGuard.pending = true;
+  const tok = ++BackGuard.tok;
+  // A popstate that never arrives must not wedge the guard off for good.
+  setTimeout(() => { if(BackGuard.tok === tok) BackGuard.pending = false; }, 1500);
+  try{ history.back(); }catch(e){ BackGuard.pending = false; }
+}
+// Screens swap by dropping .active from one and adding it to the next 40ms
+// later (showScreen), so the guard waits for the dust to settle rather than
+// unwinding and re-pushing across every transition.
+function backGuardSoon(){ clearTimeout(BackGuard.timer); BackGuard.timer = setTimeout(backGuardSync, 160); }
+function backAct(){
+  if(typeof photoActive === 'function' && photoActive()){ photoToggle(); return; }
+  const ov = (typeof padTopOverlay === 'function') ? padTopOverlay() : document.querySelector('.fb-overlay.show');
+  if(ov){ closeOverlay(ov.id); return; }
+  const s = document.querySelector('.screen.active');
+  if(!s) return;
+  if(s.id === 'game-screen'){
+    if(typeof pauseRound === 'function' && pauseRound('back')) return;
+    // A duel cannot be held — and must not be lost to a stray edge swipe.
+    if(mp){ snd('deny'); toast('◀ A live duel can’t be paused — tap ← QUIT if you mean to leave it.', 3200); }
+    return;
+  }
+  const exit = { 'results-screen': 'btn-hub', 'market-screen': 'btn-market-back', 'mp-screen': 'btn-mp-back' }[s.id];
+  if(exit) document.getElementById(exit)?.click();
+}
+addEventListener('popstate', e => {
+  if(BackGuard.pending){ BackGuard.pending = false; BackGuard.tok++; backGuardSync(); return; }
+  if(e.state && e.state.piBack) return;      // FORWARD onto our own entry: nothing to undo
+  backAct();
+  // Straight back on, not after the settle delay: a second swipe a beat later
+  // must land on the guard too, not on the page behind it.
+  if(backGuardWanted()) backGuardPush();
+  backGuardSoon();
+});
+
+// One watcher for both: every screen and overlay announces itself through its
+// class list, and so does the body when a round is paused.
+(function(){
+  const mo = new MutationObserver(() => { wakeSync(); backGuardSoon(); });
+  const watch = el => { if(el) mo.observe(el, { attributes: true, attributeFilter: ['class'] }); };
+  document.querySelectorAll('.screen, .fb-overlay').forEach(watch);
+  watch(document.body);
+  document.addEventListener('visibilitychange', wakeSync);
+})();
+
+// ── 🎮 THE MODE RAIL'S DOTS ───────────────────────────────────────────────
+// On a phone the hub's banners are one row you swipe through (style.css § 32),
+// and a row that scrolls sideways needs to say where in it you are and how
+// much of it there is. One dot per banner on show — the seasonal one comes and
+// goes, so the row is recounted whenever the rail's children change. On a
+// wider screen the rail is display:contents and the dots are never shown.
+(function(){
+  const rail = document.getElementById('mode-rail');
+  const dots = document.getElementById('mode-rail-dots');
+  if(!rail || !dots) return;
+  const cards = () => [...rail.children].filter(c => c.classList.contains('mp-banner') && c.offsetParent !== null);
+  let raf = 0;
+  function paint(){
+    raf = 0;
+    const list = cards();
+    if(dots.children.length !== list.length) dots.innerHTML = list.map(() => '<i></i>').join('');
+    if(list.length < 2) return;
+    const step = (list[1].offsetLeft - list[0].offsetLeft) || 1;
+    const max = rail.scrollWidth - rail.clientWidth;
+    // The last card can never snap to the start edge — the rail runs out of
+    // scroll first — so the far end of the scroll IS the last card.
+    const idx = rail.scrollLeft >= max - 2 ? list.length - 1
+              : Math.max(0, Math.min(list.length - 1, Math.round(rail.scrollLeft / step)));
+    [...dots.children].forEach((d, i) => d.classList.toggle('on', i === idx));
+  }
+  const soon = () => { if(!raf) raf = requestAnimationFrame(paint); };
+  rail.addEventListener('scroll', soon, { passive: true });
+  new MutationObserver(soon).observe(rail, { childList: true });
+  addEventListener('resize', soon);
+  soon();
+})();
