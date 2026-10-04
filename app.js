@@ -23528,6 +23528,12 @@ float gAlpha = 1.0;
 // ✨ v58 · Share of the wear's normal relief a surface takes (see hullWear);
 // set by the HULL style, lower on a Blender model's painted skin.
 float gWearRelief = 1.0;
+// ✨ v63 · STANDOUT — 1 for an instance drawn with draw's 'standout' (every
+// hostile, through foeLook), 0 for everything else. It rides in the rim
+// channel as 8.0 of extra magnitude, sign kept (STANDOUT_RIM in the renderer);
+// set first thing in main() so the surface styles can read it too. See the
+// STANDOUT block there.
+float gStandout = 0.0;
 #ifdef ULTRA
 // 1 when the world has an open sky (a city horizon to reflect), 0 for an
 // enclosed set, which reflects its own ceiling lights instead.
@@ -23697,7 +23703,11 @@ void applyPart(float part, inout vec3 albedo, inout float metallic, inout float 
     // lifted toward off-white, the way a fighter's upper surfaces are a pale
     // grey over a darker belly. Still the instance colour underneath, so a hit
     // flash or a team tint reaches it too.
-    albedo   = mix(albedo, vec3(0.80, 0.81, 0.82), 0.62);
+    // ✨ v63 · A STANDOUT's second tone is lifted a third as far. The drone is
+    // mostly second tone, so at 62% every hostile drone — the arena's hunters,
+    // the maze's daemons, the shell's processes, the patrols — came out white
+    // with a hint of its colour. Still two-tone; the paint leads now.
+    albedo   = mix(albedo, vec3(0.80, 0.81, 0.82), 0.62 - 0.42 * gStandout);
     metallic = metallic * 0.55;
     rough    = clamp(rough + 0.06, 0.2, 0.7);
     // ✨ v57 · Only machines carry a second tone, so it is damped like BODY.
@@ -24209,7 +24219,10 @@ void surfaceDetail(inout vec3 albedo, inout float rough, inout float metal,
       float lum = mix(ma.x, mb.x, 0.45);
       float occ = (0.5 + 1.0 * ma.y) * (0.7 + 0.6 * mb.y);
       vec3 rock = albedo * (0.3 + 1.4 * lum) * occ;
-      rock = mix(vec3(dot(rock, vec3(0.2126, 0.7152, 0.0722))), rock, 0.72);
+      // ✨ v63 · …except a STANDOUT's: a hostile rock is the enemy's paint in
+      // mineral form, and drawing it toward grey is exactly what made the
+      // firewall cores and the meteors read as dead stone.
+      rock = mix(vec3(dot(rock, vec3(0.2126, 0.7152, 0.0722))), rock, mix(0.72, 1.0, gStandout));
       albedo  = mix(albedo, rock, amt);
       rough   = mix(rough, clamp(0.95 - (occ - 1.0) * 0.3, 0.74, 1.0), amt);
       Nw = normalize(toWorld(normalize(nO + nA)));
@@ -24408,6 +24421,7 @@ void main(){
   // Two-sided: thin panels and holo sheets are drawn without culling, and a
   // back face lit by its front normal goes black.
   if(!gl_FrontFacing) N = -N;
+  gStandout = step(4.0, abs(vMat.z));
 
   vec3  albedo    = vColor.rgb;
   float metallic  = clamp(vMat.x, 0.0, 1.0);
@@ -24582,13 +24596,14 @@ void main(){
   // or a planet hundreds of units off, which the fog below would otherwise
   // erase. Its magnitude is still the rim strength. No draw passed a negative
   // rim before the world looks, so every existing model is untouched.
-  float rim = pow(1.0 - clamp(dot(Ng, V), 1e-4, 1.0), 3.5) * abs(vMat.z);
+  float rim = pow(1.0 - clamp(dot(Ng, V), 1e-4, 1.0), 3.5) * (abs(vMat.z) - 8.0 * gStandout);
   // ✨ v57 · In deep space a dusty, rough surface keeps little of it: rock has
   // almost no Fresnel, and against a bright nebula it needs no help to read.
-  rim *= mix(1.0, 0.35, uSpaceOn * smoothstep(0.55, 0.95, rough));
+  // (A STANDOUT keeps all of it — see below.)
+  rim *= mix(1.0, 0.35, uSpaceOn * smoothstep(0.55, 0.95, rough) * (1.0 - gStandout));
   float fogFree = step(vMat.z, -1e-4);
 #ifdef ULTRA
-  rim *= RIM_ULTRA;
+  rim *= mix(RIM_ULTRA, 1.0, gStandout);
 #endif
   // ✨ v57 · The edge takes the colour of what a grazing edge REFLECTS (the
   // horizon; in deep space, the nebula behind it), and takes the instance's
@@ -24598,7 +24613,24 @@ void main(){
   // a machine. A real neon (strength 0.5 and up) keeps its coloured edge.
   float neon = 0.6 * smoothstep(0.02, 0.5, emisPart);
   vec3 edgeEnv = uSpaceOn > 0.5 ? envRefl(reflect(-V, Ng), 0.55) * 1.4 + uHorizon * 0.4 : uHorizon;
-  vec3 rimCol = mix(edgeEnv, vEmis.rgb, neon) * rim * 2.4;
+  vec3 edgeTint = mix(edgeEnv, vEmis.rgb, neon);
+  // ✨ v63 · STANDOUT. Every hostile is PAINTED, NOT LIT (ENEMY_PAINT) — no
+  // glow, no halo, no lamp — which left its colour entirely to the scene's
+  // light. A night city and a dark open world have very little of it, so a
+  // magenta daemon came out maroon, a red raider brown, a drone a black shape
+  // wrapped in a sky-coloured edge: the enemies with "no colour". Three things,
+  // none of them a glow, keep the paint legible in any light:
+  //   · the edge takes the instance's OWN paint (its emissive, if it genuinely
+  //     burns — a falling core's cracks), not the sky's, and keeps its full
+  //     strength in deep space and under Ultra — a silhouette outlined in the
+  //     enemy's colour against whatever is behind it;
+  //   · the paint keeps a floor (below), lit by nothing, so its hue survives a
+  //     scene with no light to give it;
+  //   · the haze takes half as much of it (below), so a hostile still reads
+  //     as red at the distance a building has already faded to sky.
+  vec3 ownTint = mix(vColor.rgb, vEmis.rgb, step(0.5, vEmis.a));
+  edgeTint = mix(edgeTint, ownTint, gStandout);
+  vec3 rimCol = edgeTint * rim * 2.4;
 
   // ── Emission. This is the neon, and it is allowed well past 1.0 — the HDR
   // target and the bloom pyramid downstream are the entire point.
@@ -24609,6 +24641,11 @@ void main(){
   // its root). Emission is never occluded.
   float occ = 1.0 - vOcc;
   vec3 color = direct * mix(1.0, occ, 0.55) + ambient * occ + rimCol * occ + emissive;
+  // ✨ v63 · A STANDOUT's paint floor: the diffuse colour (so bare metal, glass
+  // and the black livery stripes stay as they are) at a fixed share, on top of
+  // whatever light it is given — a matte paint you can see in the dark, not a
+  // panel that glows.
+  color += diffCol * 0.28 * gStandout * occ;
 
   // ── Fog. exp2 of the squared distance, i.e. proper exponential-squared haze,
   // tinted by the environment in the view direction so distant geometry melts
@@ -24616,7 +24653,7 @@ void main(){
   float d = length(uCam - vWorld);
   float fogAmt = 1.0 - exp2(-pow(d * uFogDensity, 2.0));
   vec3 fogCol = uSpaceOn > 0.5 ? mix(uFogCol, envRefl(-V, 0.75), 0.5) : mix(uFogCol, envSample(-V), 0.35);
-  color = mix(color, fogCol, clamp(fogAmt, 0.0, 1.0) * (1.0 - fogFree));
+  color = mix(color, fogCol, clamp(fogAmt, 0.0, 1.0) * (1.0 - fogFree) * (1.0 - 0.5 * gStandout));
 
   // ✨ v56 · Opacity above 1 is an opaque instance carrying a livery index
   // (see ACCENT); gAlpha is what a cut style (ring lanes) took away.
@@ -25688,6 +25725,9 @@ const MAX_LIGHTS = 10;
 // ✨ v57 · Scale-over-distance below which a geometry's low-poly twin is drawn.
 const LOD_K = 0.07;
 const FLOATS_PER_INSTANCE = 16 + 4 + 4 + 4;   // model, colour, emissive, material
+// ✨ v63 · Added to the rim MAGNITUDE of a STANDOUT instance (draw's 'standout');
+// FS_MESH reads |rim| above 4 as "standout, |rim| − 8". Keep the two in step.
+const STANDOUT_RIM = 8;
 const FLOATS_PER_GLOW = 8;                    // centre+size, tint+intensity
 const FLOATS_PER_STREAK = 12;                 // ✨ v56 tail+width, head+intensity, tint+head bias
 const FLOATS_PER_FIRE = 12;                   // ✨ v59 centre+size, tint+intensity, age+seed+2 spare
@@ -26789,6 +26829,13 @@ function createRenderer(canvas, opts){
       const col = hexToLinear(o.color || '#ffffff');
       const emisCol = o.emissive ? hexToLinear(o.emissive) : col;
       const emisStr = o.emissiveStrength != null ? o.emissiveStrength : (o.emissive ? 1 : 0);
+      // ✨ v63 · A STANDOUT instance (draw's `standout`, set by foeLook for every
+      // hostile) rides in the rim channel as STANDOUT_RIM of extra MAGNITUDE.
+      // No rim is drawn beyond ±2.2, and the sign is left alone — a negative rim
+      // still means "outside the haze" — so neither reading can be mistaken for
+      // the other. See STANDOUT in FS_MESH.
+      const rim0 = o.rim != null ? o.rim : 0.6;
+      const rim = o.standout ? rim0 + (rim0 < 0 ? -STANDOUT_RIM : STANDOUT_RIM) : rim0;
       const sc = o.scale;
       if(sc == null){ _s[0] = _s[1] = _s[2] = 1; }
       else if(typeof sc === 'number'){ _s[0] = _s[1] = _s[2] = sc; }
@@ -26806,7 +26853,7 @@ function createRenderer(canvas, opts){
           col, alpha, emisCol, emisStr,
           metallic: o.metallic != null ? o.metallic : 0.1,
           roughness: o.roughness != null ? o.roughness : 0.55,
-          rim: o.rim != null ? o.rim : 0.6,
+          rim,
           detail: o.detail != null ? o.detail : g.surf,
           z: 0
         });
@@ -26829,7 +26876,7 @@ function createRenderer(canvas, opts){
       b.data[off+20] = emisCol[0]; b.data[off+21] = emisCol[1]; b.data[off+22] = emisCol[2]; b.data[off+23] = emisStr;
       b.data[off+24] = o.metallic  != null ? o.metallic  : 0.1;
       b.data[off+25] = o.roughness != null ? o.roughness : 0.55;
-      b.data[off+26] = o.rim       != null ? o.rim       : 0.6;
+      b.data[off+26] = rim;
       b.data[off+27] = o.detail    != null ? o.detail    : g.surf;
       b.n++;
     },
@@ -28504,9 +28551,12 @@ function enemyPaint(hex){
 // nearest livery), the glossy finish, black livery stripes, white for the
 // instant it is hit — and NO emissive, so not a panel of it glows. Spread into
 // a draw call: r.draw(geo, { pos, rot, scale, ...foeLook(col, flash) }).
+// ✨ v63 · …and STANDOUT, so the paint reads in any light: an edge in its own
+// colour, a floor under the paint and half the haze (see STANDOUT in FS_MESH).
+// Without it, "no glow" had come to mean "no colour" in every dark world.
 function foeLook(col, flash, o){
   const L = { color: flash ? '#ffffff' : enemyPaint(col), metallic: ENEMY_FINISH.metallic,
-              roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7 };
+              roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7, standout: true };
   return o ? Object.assign(L, o) : L;
 }
 // Where a hovering hostile is over the floor, without a glowing ring: a dark
@@ -31943,7 +31993,7 @@ P.games.nebula = function(){
       r.draw(f.t.geo, {
         pos: [f.x, f.y, f.z], rot: [0, Math.sin(f.spin) * 0.25, f.spin * 0.7], scale: f.t.sc,
         color: f.flash > 0 ? '#ffffff' : enemyPaint(f.t.col), metallic: ENEMY_FINISH.metallic,
-        roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7
+        roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7, standout: true   // ✨ v63 (see foeLook)
       });
       // Sensor eye — the read on "which way is it facing" and the brightest
       // thing on the model, so it is what the eye tracks at range.
@@ -32207,9 +32257,13 @@ P.games.dodge = function(){
     for(const c of cores){
       // ✨ v60 · PAINTED, NOT LIT (see ENEMY_PAINT): each core's shell glazed in
       // its colour — no dark husk round a glowing heart, no halo, no lamp.
+      // ✨ v63 · STANDOUT (see foeLook), and the rock's mineral surface at under
+      // half its default (7.75 → 7.45): at full strength the regolith and the
+      // scanned rock buried the glaze, and the cores came down the road as grey
+      // stones nobody could see against the city.
       r.draw(c.geo, {
         pos:[c.x, c.y + 1.0, c.z], rot:[c.sx, c.sy, c.sx * 0.5], scale: c.r * 2.2,
-        color: enemyPaint(c.col), metallic: 0.2, roughness: 0.45, rim: 0.5
+        color: enemyPaint(c.col), metallic: 0.2, roughness: 0.45, rim: 0.5, detail: 7.45, standout: true
       });
     }
 
@@ -34378,8 +34432,10 @@ P.games.meteor = function(){
       // its type colour — orange, red for a fast one, purple for a big one — as
       // a glazed mineral, with no emissive glow on it, no halo and no lamp.
       // A trail of embers is all the entry heat it keeps.
+      // ✨ v63 · STANDOUT, and the mineral surface at under half (see the Dodge
+      // cores): the glaze is the type colour, and it has to survive the rock.
       r.draw(k.geo, { pos:[k.x, k.y, k.z], rot:[k.sx, k.sy, k.sx * 0.6], scale: k.r * 2.1,
-                      color: enemyPaint(k.col), metallic: 0.12, roughness: 0.6, rim: 0.5 });
+                      color: enemyPaint(k.col), metallic: 0.12, roughness: 0.6, rim: 0.5, detail: 7.45, standout: true });
       if(Math.random() < 0.5) w.spark([k.x, k.y + k.r, k.z], '#ffb35a', 0.3, 0.45, [rnd(-1,1), rnd(2,5), rnd(-1,1)]);
     }
 
@@ -57091,7 +57147,8 @@ P.ow.nebula = function(){
       const hull = f.slot === 0 ? 'heavy' : f.slot % 2 ? 'dart' : 'raider';
       const paint = hull === 'heavy' ? ENEMY_PAINT.purple : hull === 'dart' ? ENEMY_PAINT.orange : ENEMY_PAINT.red;
       r.draw(hull, { pos: f.p, m3: fb.m3z, scale: hull === 'heavy' ? 2.2 : 2.3, color: f.flash > 0 ? '#ffffff' : paint,
-                     metallic: ENEMY_FINISH.metallic, roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7 });
+                     metallic: ENEMY_FINISH.metallic, roughness: ENEMY_FINISH.roughness, rim: ENEMY_FINISH.rim, accent: 7,
+                     standout: true });   // ✨ v63 (see foeLook)
       // Flames out of each hull's own nozzles.
       const noz = hull === 'heavy' ? [[-1.23, -0.04, -1.5], [1.23, -0.04, -1.5]] : hull === 'dart' ? [[0, 0, -1.72]] : [[-0.55, -0.14, -1.45], [0.55, -0.14, -1.45]];
       noz.forEach(([x, y, z], i) => {
@@ -58485,7 +58542,9 @@ P.ow.dodge = function(){
     let nl = 0;
     for(const c of cores){
       if(V.d2(c.p, eye) > 200 * 200) continue;
-      r.draw('rock', { pos: c.p, rot: c.rot, scale: c.s, color: '#5a4038', metallic: 0.1, roughness: 0.85, rim: 0.4, emissive: '#ff6a10', emissiveStrength: 1.4, detail: MAGMA });
+      // ✨ v63 · STANDOUT (see foeLook). A core really burns, so its edge takes
+      // the cracks' orange rather than the charred crust's brown.
+      r.draw('rock', { pos: c.p, rot: c.rot, scale: c.s, color: '#5a4038', metallic: 0.1, roughness: 0.85, rim: 0.4, emissive: '#ff6a10', emissiveStrength: 1.4, detail: MAGMA, standout: true });
       if(c.falling) r.fire(V.add(c.p, [0, c.s * 0.7, 0]), c.s * 2.4, 1.5, 0.28, (c.s * 0.37) % 1);   // ✨ v59 burning as it falls
       if(c.falling) r.streak(V.add(c.p, [0, 8, 0]), c.p, c.s * 0.7, '#ff8a3a', 1.6, 1);
       if(nl++ < 3) r.light({ pos: c.p, color: '#ff7a2a', intensity: 90, range: 14 });
@@ -60349,7 +60408,12 @@ P.ow.meteor = function(){
       // ✨ v60 · PAINTED, NOT LIT (see ENEMY_PAINT): an orange mineral glaze
       // the sun reads, not a hull glowing from inside; the entry burn behind it
       // is the only fire it carries.
-      r.draw(m.g, { pos: m.p, rot: m.rot, scale: m.s, color: m.big ? '#e3262b' : '#ff6a12', metallic: 0.12, roughness: 0.62, rim: 0.5, detail: 10.92 });
+      // ✨ v63 · …which it was not: the surface was still MAGMA (10.92), the
+      // charred style that darkens the paint to a fifth and lets only EMISSIVE
+      // cracks show — and the glow had been taken off, so every meteor came
+      // down as a black rock. MINERAL at under half, as the v60 note intended,
+      // and STANDOUT (see foeLook).
+      r.draw(m.g, { pos: m.p, rot: m.rot, scale: m.s, color: m.big ? '#e3262b' : '#ff6a12', metallic: 0.12, roughness: 0.62, rim: 0.5, detail: 7.45, standout: true });
       r.fire(m.p, m.s * 2.2, 1.3, 0.3, (m.s * 0.41) % 1);   // ✨ v59 an entry burn
       r.streak(V.madd(m.p, V.norm(m.v), -m.s * 4), m.p, m.s * 0.6, '#ff9a4a', 0.9, 1);
     }
