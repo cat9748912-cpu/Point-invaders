@@ -30300,40 +30300,40 @@ function createWorld(cfg){
       }
     }
   }catch(e){ snow = null; }
-  // 🌐 The bands as an open world lays them out (snowFrame): the half-width of
-  // the square window round the eye, and the distance from the eye a flake
-  // fades in over. The big FAR and SKY flakes are sized to be seen from a
-  // distance, so out here they keep to one, beyond the NEAR band's reach.
+  // 🌐 The bands as an open world lays them out (snowFrame): the side of the
+  // square window round the eye, and the distance from the eye a flake fades
+  // in over. The big FAR and SKY flakes are sized to be seen from a distance,
+  // so out here they keep to one, beyond the NEAR band's reach.
   const SNOW_OPEN = [
-    { h: 40,  in0: 1.5, in1: 4.5 },   // NEAR — right up to the lens, never on it
-    { h: 110, in0: 35,  in1: 60 },    // FAR
-    { h: 110, in0: 35,  in1: 60 }     // SKY — as FAR: no corridor out here to keep it over
+    { span: 80,  in0: 1.5, in1: 4.5 },   // NEAR — right up to the lens, never on it
+    { span: 220, in0: 35,  in1: 60 },    // FAR
+    { span: 220, in0: 35,  in1: 60 }     // SKY — as FAR: no corridor out here to keep it over
   ];
-  // 1 inside a window, falling to 0 at its edge over the margin m.
-  const snowEdge = (d, h, m) => clamp((h - Math.abs(d)) / m, 0, 1);
   function snowFrame(){
     const sz = w._sz || 0, t = w.t;
     // 🌐 An open world (w.origin, § 31) has no corridor and no city scroll:
     // the player roams, and the bands would stand where the world began while
-    // they left them behind. There each flake falls through a square window
-    // centred on the eye actually installed (eyeNow), wrapped across it as the
-    // eye moves the way the bands wrap against the scroll, and fades out toward
-    // the window's edges — which is where it wraps, so nothing pops. The slab
-    // it falls through rides the eye as well: the corridor's own −10…52, slid
-    // just far enough to keep 20 of it above the eye and 20 below, so a flying
-    // world's climb and the depths of space are snowed on too. Still a pure
-    // function of w.t and the eye, so photo mode holds it still.
+    // they left them behind. There each flake wraps in a square window centred
+    // on the eye actually installed (eyeNow), the way THE SET IN AN OPEN WORLD
+    // lays out a theme's pieces (wrapNear, owFade): it keeps its place in the
+    // world, and fades out toward the window's edge, where it hops across, so
+    // nothing pops. The slab it falls through rides the eye too: the corridor's
+    // own −10…52, its centre (21) kept within 11 of the eye, so a flying
+    // world's climb and the depths of space are snowed on as well. The fades
+    // off the lens are taken in 3D, like the deep's marine snow, so a flake
+    // high overhead is not mistaken for one on the lens. Still a pure function
+    // of w.t and the eye, so photo mode holds it still.
     if(w.origin){
-      const e = eyeNow, lo = Math.min(Math.max(-10, e[1] - 42), e[1] - 20);
+      const e = eyeNow, yc = Math.min(Math.max(21, e[1] - 11), e[1] + 11);
       for(let i = 0; i < snow.length; i++){
-        const f = snow[i], O = SNOW_OPEN[f.band], h = O.h, span = h * 2;
-        const x = wrapTo(f.ox * span + f.a * Math.sin(t * f.f + f.ph), e[0] - h, span);
-        const z = wrapTo(f.oz * span, e[2] - h, span);
-        const y = wrapTo(52 - (f.y0 + f.v * t), lo, 62);
+        const f = snow[i], O = SNOW_OPEN[f.band], span = O.span;
+        const x = wrapNear(f.ox * span + f.a * Math.sin(t * f.f + f.ph), e[0], span);
+        const z = wrapNear(f.oz * span, e[2], span);
+        const y = wrapNear(52 - (f.y0 + f.v * t), yc, 62);
         const dx = x - e[0], dy = y - e[1], dz = z - e[2];
         const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        const k = f.k * snowEdge(dx, h, h * 0.35) * snowEdge(dz, h, h * 0.35)
-                * clamp(Math.min(y - lo, lo + 62 - y) / 8, 0, 1)
+        const k = f.k * owFade(dx, dz, span, 0, 1, span * 0.175)
+                * clamp((31 - Math.abs(y - yc)) / 8, 0, 1)
                 * clamp((d - O.in0) / (O.in1 - O.in0), 0, 1);
         if(k > 0.004) r.glowFx([x, y, z], f.s, '#e6f6ff', k);
       }
