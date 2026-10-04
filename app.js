@@ -25067,10 +25067,6 @@ void main(){
   // filtered feature below.
   vec3 fwd = fwidth(dir);
   float pix = max(length(fwd), 1e-5);
-  // ✨ v56 · Deep space has none of what follows: no horizon glow, no city,
-  // no clouds, no moon. Taken after the derivatives, in uniform flow.
-  if(uTheme > 4.5){ fragColor = vec4(skySpace(dir, pix), 1.0); return; }
-  vec3 c = envSample(dir);
 
   // 🕳️ The orbital theme's black hole bends the background around it, so the
   // stars and the nebula are looked up along the LENSED direction sdir. A point
@@ -25079,6 +25075,9 @@ void main(){
   // Faded to nothing by twelve shadow radii, so the bent patch has no seam.
   // uBodyB follows the hole's GEOMETRY: the world sends its direction and
   // angular size every frame as it drifts closer.
+  // 🌐 v61 · Taken before the deep-space branch below: the Orbital Deck hangs
+  // its black hole in the space worlds' skies too, and it bends their nebula.
+  // (Every other space world sends no hole, so uBodyB.w is 0 there.)
   vec3 sdir = dir;
   vec2 hp = vec2(1e3);
   bool hole = uTheme > 3.5 && uBodyB.w > 1e-4 && dot(dir, uBodyB.xyz) > 0.5;
@@ -25093,6 +25092,11 @@ void main(){
       sdir = normalize(uBodyB.xyz + (s.x * bt1 + s.y * bt2) * uBodyB.w);
     }
   }
+
+  // ✨ v56 · Deep space has none of what follows: no horizon glow, no city,
+  // no clouds, no moon. Taken after the derivatives, in uniform flow.
+  if(uTheme > 4.5){ fragColor = vec4(skySpace(sdir, pix), 1.0); return; }
+  vec3 c = envSample(dir);
 
   // A wide, slow band of light pollution sitting just above the horizon —
   // the thing that makes a night sky over a city read as a city.
@@ -29499,13 +29503,14 @@ function planSet(look, o, g, list){
 // props allocates nothing per frame; the engine copies what it keeps.
 const _do = { pos: [0, 0, 0], rot: [0, 0, 0], scale: [1, 1, 1] };
 const _dp = [0, 0, 0];
-function dressPut(r, geo, x, y, z, rx, ry, rz, sx, sy, sz, m, es){
+// `al` overrides the material's alpha for one instance (a piece fading out).
+function dressPut(r, geo, x, y, z, rx, ry, rz, sx, sy, sz, m, es, al){
   _do.pos[0] = x; _do.pos[1] = y; _do.pos[2] = z;
   _do.rot[0] = rx; _do.rot[1] = ry; _do.rot[2] = rz;
   _do.scale[0] = sx; _do.scale[1] = sy; _do.scale[2] = sz;
   _do.color = m.color; _do.emissive = m.emissive; _do.emissiveStrength = es != null ? es : m.es;
   _do.metallic = m.metallic; _do.roughness = m.roughness; _do.rim = m.rim;
-  _do.detail = m.detail; _do.alpha = m.alpha;
+  _do.detail = m.detail; _do.alpha = al != null ? al : m.alpha;
   r.draw(geo, _do);
 }
 const fract = v => v - Math.floor(v);
@@ -29850,7 +29855,10 @@ function drawGiant(r, t, P, eye, cull){
 // and the far side of the disc lensed over the top and under the bottom.
 // Clumps of hot gas orbit in the disc, the inner ones faster (Kepler), and two
 // thin jets leave along its axis. The sky pass bends the stars behind it.
-function drawHole(r, t, P, eye, cull){
+// `floorY` (an open world's horizon) cuts a jet off where it would reach below
+// it: out there no city stands in front of the lower one, and it ran on down
+// past the horizon like a beam striking the plain.
+function drawHole(r, t, P, eye, cull, floorY){
   const M = HZ_MAT, Rh = 20 * P.s;
   if(Rh < 0.3) return null;
   const AX = 0.2, AZ = 0.12;
@@ -29875,8 +29883,11 @@ function drawHole(r, t, P, eye, cull){
   }
   // Jets along the axis, pulsing.
   tiltVec(0, 1, 0, AX, AZ, _hq);
-  const L = Rh * 7, pulse = 0.75 + 0.25 * Math.sin(t * 2.3);
+  const L0 = Rh * 7, pulse = 0.75 + 0.25 * Math.sin(t * 2.3);
   for(const sd of [1, -1]){
+    let L = L0;
+    if(floorY != null && sd * _hq[1] < 0) L = Math.min(L0, (P.y - floorY) / (-sd * _hq[1]) - Rh);
+    if(L < 1) continue;
     dressPut(r, 'cylinder', P.x + _hq[0] * sd * (Rh + L * 0.5), P.y + _hq[1] * sd * (Rh + L * 0.5), P.z + _hq[2] * sd * (Rh + L * 0.5),
              AX, 0, AZ, Rh * 0.12, L, Rh * 0.12, M.jet, M.jet.es * pulse);
   }
@@ -29932,6 +29943,268 @@ function drawOrbitHorizon(r, t, sz, cull, eye){
     else drawRockWorld(r, t, _pose, eye, cull);
   }
   return lens;
+}
+
+// ══════════════════════════════════════════════
+//  🌐 THE HORIZON IN AN OPEN WORLD — the same pieces, at infinity, all round
+// ══════════════════════════════════════════════
+// Everything above was laid out for the missions' corridor: it stands at fixed
+// places down −Z and streams toward a camera that only ever looks that way. An
+// open world has no corridor. Its camera turns all the way round, and a craft
+// covers half a kilometre in seconds — straight into the deck's ringed giant,
+// on out past the desert's ranges, until the whole set is a speck behind it.
+// So in an open world (w.origin) the same pieces are laid out ROUND the camera
+// and carried along with it, the way the open worlds' own drawBodies() carries
+// their planets: wherever the player goes every piece keeps its bearing, none
+// can ever be reached, and there is something on every side.
+//   · 🏜️ the striped sun low in the north — the way every round starts facing —
+//     a ring of neon ranges right round the horizon cutting its foot, and
+//     pyramids standing out on the plain between them
+//   · 🪐 the deck's bodies spread round the sky, the giant and the black hole
+//     ahead and the rest behind, the whole sky wheeling slowly overhead
+// The ranges and pyramids stand ON the plain (y 0 is the floor of every ground
+// world), so a craft that climbs looks down on them; the sun and the bodies
+// hang off the eye itself, at infinity. Distances are a share of the far plane,
+// so every piece sits just inside it whatever a world sets, and every position
+// is a pure function of the clock and the eye, so photo mode holds them still.
+// ⚠️ Bearing a points along (−sin a, 0, −cos a): 0 is −Z, the way the open
+// worlds' cameras start (a chase rig's yaw 0), and a positive bearing is left.
+
+const HZ_RING = 0.62;      // the ring's radius, as a share of the camera's far plane
+const HZ_REF = 868;        // …and that radius under the ground worlds' usual far plane (1400)
+
+// Fog-free (negative rim) finishes for the pyramids: out on the ring they stand
+// beyond the city's haze, and a fogged pyramid in front of a crisp range read
+// as standing behind it.
+const HZ_PYR_FAR = { color: '#2a151a', metallic: 0.05, roughness: 0.9, rim: -0.9, detail: 0 };
+const HZ_PYR_EDGE_FAR = glowMat('#ffb347', 1.7);
+
+// 🏜️ Planned once per open world from its own seed, like the corridor's lanes.
+// The range that stands in front of the sun is a low one, so it cuts the foot
+// of the disc rather than hiding it.
+function planDesertRing(g){
+  const H = { ranges: [], pyramids: [] };
+  const N = 12;
+  for(let k = 0; k < N; k++){
+    const a = (k + 0.2 + g() * 0.6) / N * Math.PI * 2;
+    const ahead = Math.abs(Math.atan2(Math.sin(a), Math.cos(a))) < 0.45;
+    H.ranges.push({ a, f: 0.8 + g() * 0.17, w: 280 + g() * 160, h: (80 + g() * 90) * (ahead ? 0.55 : 1), d: 140 + g() * 60,
+                    ry: (g() - 0.5) * 0.35, v: (g() * 3) | 0 });
+  }
+  // Out on the plain between the ranges — never across the sun at bearing 0.
+  for(let k = 0; k < 4; k++){
+    H.pyramids.push({ a: 0.8 + (k + 0.2 + g() * 0.6) * (Math.PI * 2 - 1.6) / 4, f: 0.6 + g() * 0.12, s: 120 + g() * 70, ry: g() * Math.PI });
+  }
+  return H;
+}
+// 🌅 The striped sun on its own, anywhere: its slices (which face +Z) turned
+// to face the eye, its two glows just behind it. The open desert's sun, and the
+// desert's star in the space worlds (drawBodies in the open-world kit).
+const _ss = [0, 0, 0];
+function drawSynthSun(r, p, R, eye){
+  let ux = eye[0] - p[0], uy = eye[1] - p[1], uz = eye[2] - p[2];
+  const l = Math.hypot(ux, uy, uz) || 1;
+  ux /= l; uy /= l; uz /= l;
+  const rx = -Math.asin(Math.max(-1, Math.min(1, uy))), ry = Math.atan2(ux, uz);
+  for(let i = 0; i < SUN_SLICES.length; i++){
+    dressPut(r, 'w_sun' + i, p[0], p[1], p[2], rx, ry, 0, R * 2, R * 2, R * 2, HZ_MAT.sun[i]);
+  }
+  _ss[0] = p[0] - ux * 4; _ss[1] = p[1] - uy * 4; _ss[2] = p[2] - uz * 4;
+  r.glow(_ss, -R * 4.4, '#ff5a3a', 0.32);
+  r.glow(_ss, -R * 2.7, '#ffc24a', 0.42);
+}
+function drawDesertRing(r, t, H, eye, far){
+  const M = HZ_MAT, D = far * HZ_RING;
+  // The sun, six degrees over the eye's horizon and swelling as the round goes
+  // on, the way the corridor's does.
+  _hq[0] = eye[0]; _hq[1] = eye[1] + D * 0.1; _hq[2] = eye[2] - D;
+  drawSynthSun(r, _hq, D * (0.11 + 0.065 * (1 - Math.exp(-t / 50))), eye);
+  // The ranges, each turned side-on to the eye (a range's long axis is its X,
+  // and rot y = a turns +Z toward the eye), their feet sunk into the plain.
+  for(const m of H.ranges){
+    const dist = D * m.f, x = eye[0] - Math.sin(m.a) * dist, z = eye[2] - Math.cos(m.a) * dist, y = m.h * 0.5 - 24;
+    _hp[0] = x; _hp[1] = y; _hp[2] = z;
+    if(!r.viewDepth(_hp, 1.8)) continue;
+    dressPut(r, MTN_GEO[m.v], x, y, z, 0, m.a + m.ry, 0, m.w, m.h, m.d, M.mtnFar);
+    dressPut(r, MTN_GRID[m.v], x, y, z, 0, m.a + m.ry, 0, m.w, m.h, m.d, M.mtnLineFar);
+  }
+  for(const p of H.pyramids){
+    const dist = D * p.f, h = p.s * 0.66;
+    const x = eye[0] - Math.sin(p.a) * dist, z = eye[2] - Math.cos(p.a) * dist, y = h * 0.5 - 6;
+    _hp[0] = x; _hp[1] = y; _hp[2] = z;
+    if(!r.viewDepth(_hp, 1.8)) continue;
+    dressPut(r, 'w_pyramid', x, y, z, 0, p.ry, 0, p.s, h, p.s, HZ_PYR_FAR);
+    dressPut(r, 'w_pyredge', x, y, z, 0, p.ry, 0, p.s, h, p.s, HZ_PYR_EDGE_FAR);
+  }
+}
+
+// 🪐 The deck's bodies round an open world's sky: bearing, elevation and size
+// (× the corridor's) at the reference ring. The giant and the hole stand ahead,
+// where the round starts looking; the ice world, a grey moon and the red world
+// fill the rest of the circle, so no heading looks out on an empty sky. Low,
+// because the steepest chase rigs (the worm's) see only a few degrees above
+// the horizon. The whole sky turns together, a quarter of a degree a second, so
+// the bodies never drift into each other however long a round runs.
+const ORBIT_SKY = [
+  { kind: 'giant', a: 0.42,  e: 0.15, s: 1.45 },
+  { kind: 'hole',  a: -0.55, e: 0.11, s: 1.7 },
+  { kind: 'ice',   a: 2.0,   e: 0.22, s: 1.9 },
+  { kind: 'moon',  a: 3.1,   e: 0.3,  s: 2.2 },
+  { kind: 'rock',  a: -2.2,  e: 0.2,  s: 1.8 }
+];
+// 🌑 A plain grey moon, for the gap behind the player — brighter than the red
+// world's little one, since it has no key light of its own to catch.
+const HZ_MOON = { color: '#c3cad6', emissive: '#c3cad6', es: 0.32, metallic: 0.05, roughness: 0.9, rim: -0.9 };
+function drawMoon(r, t, P, eye, cull){
+  const R = 18 * P.s;
+  if(R < 0.3) return;
+  dressPut(r, 'rock2', P.x, P.y, P.z, 0.4, t * 0.02, 0.1, R * 2, R * 2, R * 2, HZ_MOON);
+  _hp[0] = P.x; _hp[1] = P.y; _hp[2] = P.z;
+  r.glow(_hp, -R * 3.2, '#c8d2e0', 0.1);
+  cullPush(cull, eye, P.x, P.y, P.z, R * 1.1);
+}
+// Returns the black hole's [dir, angular radius] for the sky pass, or null.
+// `o` is for the space worlds (drawBodies in the open-world kit): { dist,
+// size }, their own scale, and no horizon to cut the hole's jet at.
+function drawOrbitSky(r, t, eye, far, cull, o){
+  let lens = null;
+  const D = o && o.dist ? o.dist : far * HZ_RING, k = o && o.size ? o.size : D / HZ_REF;
+  const floorY = o ? null : eye[1];
+  const turn = t * 0.004;
+  for(const b of ORBIT_SKY){
+    const a = b.a + turn, e = b.e + Math.sin(t * 0.021 + b.a * 3) * 0.035, ce = Math.cos(e);
+    _pose.x = eye[0] - Math.sin(a) * ce * D;
+    _pose.y = eye[1] + Math.sin(e) * D;
+    _pose.z = eye[2] - Math.cos(a) * ce * D;
+    _pose.s = b.s * k;
+    _hp[0] = _pose.x; _hp[1] = _pose.y; _hp[2] = _pose.z;
+    if(!r.viewDepth(_hp, 2.2)) continue;
+    if(b.kind === 'giant') drawGiant(r, t, _pose, eye, cull);
+    else if(b.kind === 'hole') lens = drawHole(r, t, _pose, eye, cull, floorY);
+    else if(b.kind === 'ice') drawIce(r, t, _pose, eye, cull);
+    else if(b.kind === 'moon') drawMoon(r, t, _pose, eye, cull);
+    else drawRockWorld(r, t, _pose, eye, cull);
+  }
+  return lens;
+}
+
+// ══════════════════════════════════════════════
+//  🌐 THE SET IN AN OPEN WORLD — the theme's life round the player
+// ══════════════════════════════════════════════
+// In the corridor a theme's set pieces (planSet) stand along the city and
+// scroll with it. An open world has no "along", so each piece lives in a square
+// window centred on the camera and WRAPS: it keeps its place in the world as
+// the player moves, and hops to the far side of the window once they have left
+// it behind — faded out toward the edge first, so nothing ever pops. Nothing
+// comes near the play space either: every piece fades away as the camera
+// closes on it.
+//   · 🌊 jellyfish drifting through the water, shafts of light slanting down
+//     from the surface, and marine snow sinking past the lens
+//   · 🪐 shuttle traffic crossing high overhead, contrails and all
+//   · ☣️ vents in the plain, sludge welling up and green vapour climbing off it
+// Each kind is planned at its full count and drawn at the governor's share of
+// it (Q.props), so a struggling device sheds it with the skyline.
+const wrapNear = (v, c, span) => c + ((((v - c + span * 0.5) % span) + span) % span) - span * 0.5;
+const OW_SPAN = { jelly: 420, shaft: 760, snow: 90, ship: 1100, vent: 640 };
+
+function planOwSet(look, g){
+  const S = { jelly: [], shaft: [], snow: [], ship: [], vent: [] };
+  if(look === 'deep'){
+    for(let i = 0; i < 12; i++){
+      S.jelly.push({ x: g() * 420, z: g() * 420, y: 14 + g() * 40, s: 4 + g() * 3.5, vx: (g() - 0.5) * 1.6, vz: (g() - 0.5) * 1.6,
+                     m: jellyMat[(g() * jellyMat.length) | 0], ph: g() * 6.28 });
+    }
+    for(let i = 0; i < 7; i++) S.shaft.push({ x: g() * 760, z: g() * 760, w: 3 + g() * 3, ry: g() * 3.14, rz: (g() - 0.5) * 0.5, ph: g() * 6.28 });
+    for(let i = 0; i < 56; i++) S.snow.push({ x: g() * 90, y: g() * 50, z: g() * 90, v: 0.3 + g() * 0.5, s: g(), ph: g() * 6.28 });
+  }else if(look === 'orbit'){
+    for(let i = 0; i < 9; i++) S.ship.push({ x: g() * 1100, z: g() * 1100, y: g() * 90, s: 2.6 + g() * 2, yaw: g() * 6.28, v: 14 + g() * 14 });
+  }else if(look === 'toxic'){
+    for(let i = 0; i < 9; i++) S.vent.push({ x: g() * 640, z: g() * 640, rad: 4 + g() * 5, ph: g() });
+  }
+  return S;
+}
+
+// How much of a wrapped piece shows: gone within `near` of the eye (in the
+// ground plane) and back by `near + fade`, and gone again toward the window's
+// edge, where it is about to hop across.
+function owFade(dx, dz, span, near, fade, edge){
+  const n = near > 0 ? clamp((Math.hypot(dx, dz) - near) / fade, 0, 1) : 1;
+  return n * clamp((span * 0.5 - Math.max(Math.abs(dx), Math.abs(dz))) / edge, 0, 1);
+}
+const owCount = arr => arr.length ? Math.max(2, Math.min(arr.length, Math.round(arr.length * Q.props))) : 0;
+
+function drawOwSet(r, t, S, eye){
+  const M = DRESS_MAT;
+  for(let i = 0, n = owCount(S.jelly); i < n; i++){
+    const d = S.jelly[i], SP = OW_SPAN.jelly;
+    const x = wrapNear(d.x + d.vx * t, eye[0], SP), z = wrapNear(d.z + d.vz * t, eye[2], SP);
+    const k = owFade(x - eye[0], z - eye[2], SP, 34, 26, 50);
+    if(k < 0.02) continue;
+    const y = d.y + Math.sin(t * 0.35 + d.ph) * 3;
+    _hp[0] = x; _hp[1] = y; _hp[2] = z;
+    if(!r.viewDepth(_hp, 1.5)) continue;
+    const p = Math.sin(t * 2.2 + d.ph);
+    dressPut(r, 'w_jelly', x, y, z, 0, t * 0.2 + d.ph, 0, d.s * (1 - 0.07 * p), d.s * (1 + 0.12 * p), d.s * (1 - 0.07 * p),
+             d.m, null, d.m.alpha * k);
+  }
+  for(let i = 0, n = owCount(S.shaft); i < n; i++){
+    const d = S.shaft[i], SP = OW_SPAN.shaft;
+    const x = wrapNear(d.x, eye[0], SP), z = wrapNear(d.z, eye[2], SP);
+    const k = owFade(x - eye[0], z - eye[2], SP, 50, 40, 80);
+    if(k < 0.02) continue;
+    _hp[0] = x; _hp[1] = 40; _hp[2] = z;
+    if(!r.viewDepth(_hp, 1.6)) continue;
+    dressPut(r, 'box', x, 60, z, 0, d.ry, d.rz + Math.sin(t * 0.2 + d.ph) * 0.04, d.w, 150, d.w * 0.35, M.shaft,
+             M.shaft.es * (0.75 + 0.25 * Math.sin(t * 0.5 + d.ph)), M.shaft.alpha * k);
+  }
+  for(let i = 0, n = owCount(S.snow); i < n; i++){
+    const d = S.snow[i];
+    const x = wrapNear(d.x + Math.sin(t * 0.21 + d.ph) * 1.5, eye[0], OW_SPAN.snow);
+    const z = wrapNear(d.z + Math.cos(t * 0.17 + d.ph) * 1.5, eye[2], OW_SPAN.snow);
+    const y = wrapNear(d.y - t * d.v, eye[1], 50);
+    if(y < 0.3) continue;
+    // Clear of the lens, and thinning out toward the edge of its box.
+    const dd = Math.hypot(x - eye[0], y - eye[1], z - eye[2]);
+    const k = clamp((dd - 5) / 8, 0, 1) * clamp((44 - dd) / 12, 0, 1);
+    if(k < 0.02) continue;
+    _hp[0] = x; _hp[1] = y; _hp[2] = z;
+    r.glowFx(_hp, 0.28 + d.s * 0.22, '#a8f4ff', (0.16 + 0.08 * Math.sin(t * 1.3 + d.ph)) * k);
+  }
+  // Traffic flies a band over the camera's own height, so it is up in the sky
+  // for a rover on the deck and still above a craft at its ceiling.
+  const lane = Math.max(eye[1], 10) + 45;
+  for(let i = 0, n = owCount(S.ship); i < n; i++){
+    const d = S.ship[i], SP = OW_SPAN.ship, fx = -Math.sin(d.yaw), fz = -Math.cos(d.yaw);
+    const x = wrapNear(d.x + fx * d.v * t, eye[0], SP), z = wrapNear(d.z + fz * d.v * t, eye[2], SP);
+    const k = owFade(x - eye[0], z - eye[2], SP, 0, 1, 70);
+    if(k < 0.02) continue;
+    const y = lane + d.y, s = d.s * k;
+    _hp[0] = x; _hp[1] = y; _hp[2] = z;
+    if(!r.viewDepth(_hp, 1.4)) continue;
+    dressPut(r, 'ship', x, y, z, 0, d.yaw, 0, s, s, s, M.ship);
+    _hq[0] = x - fx * s * 0.7; _hq[1] = y; _hq[2] = z - fz * s * 0.7;
+    _hr[0] = x - fx * s * 7; _hr[1] = y; _hr[2] = z - fz * s * 7;
+    r.streak(_hr, _hq, s * 0.22, '#7df9ff', 1.1 * k, 1);
+  }
+  for(let i = 0, n = owCount(S.vent); i < n; i++){
+    const d = S.vent[i], SP = OW_SPAN.vent;
+    const x = wrapNear(d.x, eye[0], SP), z = wrapNear(d.z, eye[2], SP);
+    const k = owFade(x - eye[0], z - eye[2], SP, 90, 40, 60);
+    if(k < 0.02) continue;
+    _hp[0] = x; _hp[1] = 6; _hp[2] = z;
+    if(!r.viewDepth(_hp, 1.6)) continue;
+    const ph = d.ph * 6.28;
+    dressPut(r, 'w_disc', x, 0.08, z, 0, ph, 0, d.rad * 2 * k, 0.12, d.rad * 1.6 * k, M.pool, M.pool.es * (0.8 + 0.2 * Math.sin(t * 1.6 + ph)));
+    // A low bank of smog round the vent, and the plume climbing out of it,
+    // each puff swelling and leaning off downwind as it thins.
+    _hp[0] = x; _hp[1] = 3; _hp[2] = z;
+    r.glowFx(_hp, d.rad * 5, '#4dff2a', 0.07 * k);
+    for(let j = 0; j < 8; j++){
+      const u = fract(t * 0.07 + d.ph + j / 8);
+      _hp[0] = x + Math.sin(t * 0.3 + ph + j) * 1.5 + u * 9; _hp[1] = 2 + u * 44; _hp[2] = z + Math.cos(t * 0.27 + ph + j) * 1.5;
+      r.glowFx(_hp, (4 + d.rad * 0.6) * (0.9 + u * 1.8), '#6dff3a', 0.24 * Math.sin(u * Math.PI) * k);
+    }
+  }
 }
 
 function createWorld(cfg){
@@ -30044,12 +30317,25 @@ function createWorld(cfg){
   const HZ = look === 'desert' ? planDesertHorizon(seeded(0x5eed ^ 20260923)) : null;
   const hzCull = [], eyeNow = [0, 4, 14];
   w._sz = 0;
+  // 🌐 In an open world (w.origin, set by the open-world kit once this returns)
+  // the horizon is laid out round the camera instead, and the theme's set
+  // pieces live round the player (THE HORIZON / THE SET IN AN OPEN WORLD).
+  // Both are planned on the first frame that needs them, from seeds of their
+  // own, so every operative's desert is the same desert.
+  let HZO = null, OWS = null;
   function horizonFrame(){
     hzCull.length = 0;
     try{
-      if(look === 'desert') drawDesertHorizon(r, w.t, w._sz, HZ, hzCull, eyeNow);
+      if(w.origin){
+        const far = w.far || 1000;
+        if(look === 'desert') drawDesertRing(r, w.t, HZO || (HZO = planDesertRing(seeded(0x5eed ^ 20261004))), eyeNow, far);
+        else if(look === 'orbit') r.environment({ bodies: [null, drawOrbitSky(r, w.t, eyeNow, far, hzCull), null] });
+      }else if(look === 'desert') drawDesertHorizon(r, w.t, w._sz, HZ, hzCull, eyeNow);
       else if(look === 'orbit') r.environment({ bodies: [null, drawOrbitHorizon(r, w.t, w._sz, hzCull, eyeNow), null] });
     }catch(e){ console.warn('Horizon failed:', e); }
+    if(!w.origin) return;
+    try{ drawOwSet(r, w.t, OWS || (OWS = planOwSet(look, seeded(0x0b5e7 ^ 20261004))), eyeNow); }
+    catch(e){ console.warn('Open-world set failed:', e); }
   }
 
   // ── PARTICLES ──
@@ -30643,7 +30929,9 @@ const API = {
 
   // Shared scaffolding, consumed by games3d.js.
   kit: { createWorld, begin3d, runLoop, mine, nx, ny, rnd, clamp, seeded, NEON, mount, ENEMY_PAINT, ENEMY_FINISH, enemyPaint, foeLook, foeShadow,
-         drawWheels, drawRotors, drawMachine, wheelSpin, WHEEL_R, LOOKS, DRESS_PLAN, DRESS_KIND, drawDress },
+         drawWheels, drawRotors, drawMachine, wheelSpin, WHEEL_R, LOOKS, DRESS_PLAN, DRESS_KIND, drawDress,
+         // 🌐 v61 · a World theme's bodies for the open worlds in deep space
+         ensureDressGeos, drawOrbitSky, drawSynthSun },
 
   // Populated by games3d.js: gid → start function.
   games: Object.create(null),
@@ -47124,30 +47412,35 @@ if(typeof registerOverlayCloser === 'function') registerOverlayCloser('ptpick-ov
 //
 // A cosmetic like any other: bought with credits, equipped per profile, kept
 // forever. 3D only — the 2D boards draw their own flat palettes.
+//
+// 🌐 v61 · And every open world. A theme's horizon is laid round the player
+// there instead of down a corridor, its set pieces live round them (THE HORIZON
+// and THE SET IN AN OPEN WORLD, § 2), and the worlds in deep space take its
+// colours and bodies (SPACE_LOOKS, § 31).
 SHOP_ITEMS.worlds = [
   { id:'wld-rain',   name:'Rain City',    price:0,  emoji:'🌃', default:true,
     sky:['#04061a', '#3a1050'],
-    desc:'The house look — a rain-black city night in violet and neon, every 3D mission exactly as built.' },
+    desc:'The house look — a rain-black city night in violet and neon, every 3D mission and open world exactly as built.' },
   // 🏙️ `look` names the city a theme BUILDS (WORLD LOOKS in § 2): the props on
   // every tower, the window light and a sky of its own. The tint below it
   // still sets the colour of the air.
   { id:'wld-toxic',  name:'Toxic Sector', price:12, emoji:'☣️', look:'toxic',
     sky:['#021a06', '#1f7a12', '#041006'],
-    desc:'The grid after a meltdown nobody reported: towers overrun with glowing sludge, waste drums leaking on the roofs, green smog over a sick sun. Every 3D mission.',
+    desc:'The grid after a meltdown nobody reported: towers overrun with glowing sludge, waste drums leaking on the roofs, green smog over a sick sun. Every 3D mission and open world.',
     tint:{ zenith:'#021a06', horizon:'#39ff14', fog:'#0a2a10', sun:'#a8ff60', amount: 0.7, horizonAmount: 0.45, saturation: 1.08 } },
   { id:'wld-desert', name:'Synth Desert', price:14, emoji:'🌅', look:'desert',
     sky:['#2a0b3d', '#ff4d6d', '#3a1030'],
-    desc:'Neon-trimmed towers half buried in dunes, palms on the rooftops, and wireframe mountains and pyramids rolling in toward a striped sun that never finishes setting. Every 3D mission.',
+    desc:'Neon-trimmed towers half buried in dunes, palms on the rooftops, and wireframe mountains and pyramids rolling in toward a striped sun that never finishes setting. Every 3D mission and open world.',
     // Clear desert air (fog × 0.4): the ranges have to be seen coming in from
     // four hundred units out.
     tint:{ zenith:'#2a0b3d', horizon:'#ff4d6d', fog:'#3a1030', sun:'#ffb347', amount: 0.7, horizonAmount: 0.55, saturation: 1.08, fogDensity: 0.4 } },
   { id:'wld-deep',   name:'Deep Net',     price:16, emoji:'🌊', look:'deep',
     sky:['#021a2a', '#00a6b8', '#03303a'],
-    desc:'An undersea server farm: kelp swaying up the towers, coral on every ledge, jellyfish drifting between them and sunlight rippling down from the surface. Every 3D mission.',
+    desc:'An undersea server farm: kelp swaying up the towers, coral on every ledge, jellyfish drifting between them and sunlight rippling down from the surface. Every 3D mission and open world.',
     tint:{ zenith:'#021a2a', horizon:'#00a6b8', fog:'#04363f', sun:'#40e0d0', amount: 0.75, horizonAmount: 0.55, saturation: 1.05 } },
   { id:'wld-orbit',  name:'Orbital Deck', price:20, emoji:'🪐', look:'orbit',
     sky:['#000000', '#1a2250', '#02030a'],
-    desc:'The city as a space station — sky bridges, dishes, domes, solar wings and docking rings — while a ringed planet, an ice world and a black hole bending the starlight drift in overhead. Every 3D mission.',
+    desc:'The city as a space station — sky bridges, dishes, domes, solar wings and docking rings — while a ringed planet, an ice world and a black hole bending the starlight drift in overhead. Every 3D mission and open world.',
     tint:{ zenith:'#05070c', horizon:'#1b2440', fog:'#05070d', sun:'#f0f4ff', amount: 0.85, horizonAmount: 0.8,
            lum:{ zenith: 0.25, horizon: 0.45, fog: 0.3 }, fogDensity: 0.3, saturation: 0.9 } }
 ];
@@ -55366,21 +55659,70 @@ function plume(w, p, dir, o){
 // Bodies "at infinity": positioned off the camera every frame, with a little
 // parallax, so a planet stays a planet however far you fly — and still sits
 // behind every asteroid, because it is real geometry at a real depth.
+//
+// 🌍 v61 · A World theme out in deep space. The space worlds have no city for
+// a theme to dress and no plain to stand a range on, so a theme brings them
+// what it has that belongs out here: its colours, pulled into the world's own
+// nebula (spaceTheme, at owBegin), and its bodies —
+//   · 🪐 the Orbital Deck hangs its own sky in place of the world's planets:
+//     the ringed giant and its moons, the black hole bending the nebula behind
+//     it, the ice world, the grey moon and the red one (drawOrbitSky, § 2)
+//   · 🌅 the Synth Desert's star is its striped sun
+//   · ☣️🌊 the Toxic Sector and Deep Net turn the world's star and its gas
+//     giant to their own palettes
+// Each world keeps its nebula's shape, its belt and its lighting design.
+const SPACE_LOOKS = {
+  toxic:  { neb: ['#2f8a14', '#06240c', '#b6ff4a'], mix: 0.8, gas: '#8aa832', ring: '#c8e070', halo: '#a8ff60', sun: '#c6ff7a' },
+  desert: { neb: ['#ff3d7f', '#3a0d4a', '#ffb347'], mix: 0.8, gas: '#a8487e', ring: '#ffb347', halo: '#ff6ec7', synth: true },
+  deep:   { neb: ['#0aa6b8', '#04203a', '#5ff4ff'], mix: 0.8, gas: '#1d7f8c', ring: '#7df9ff', halo: '#40e0d0', sun: '#c8fbff' },
+  orbit:  { neb: ['#3a1466', '#0a3a52', '#9db4ff'], mix: 0.7, amount: 0.8, orbit: true }
+};
+// A space world's nebula settings, pulled toward a theme's three colours.
+// Pulled hard: a straight mix halfway from a world's green accent to the
+// desert's orange is khaki, and the theme has to read at a glance.
+function spaceTheme(sp, L){
+  const o = Object.assign({}, sp);
+  ['a', 'b', 'c'].forEach((k, i) => { if(o[k]) o[k] = evMix(o[k], L.neb[i], L.mix); });
+  if(L.amount != null) o.amount = (o.amount != null ? o.amount : 1) * L.amount;
+  return o;
+}
 function drawBodies(w, list){
-  const r = w.r, c = w.cam.eye;
+  const r = w.r, c = w.cam.eye, L = w.spaceLook ? SPACE_LOOKS[w.spaceLook] : null;
   for(const b of list){
+    // The deck's own sky stands in for the world's planets; its star stays.
+    if(L && L.orbit && b.kind !== 'sun') continue;
     const par = b.par == null ? 0.004 : b.par;
     const p = [c[0] + b.off[0] - c[0] * par, c[1] + b.off[1] - c[1] * par, c[2] + b.off[2] - c[2] * par];
+    // A theme's colours, worked out once per body rather than every frame.
+    if(L && b._look !== w.spaceLook){
+      b._look = w.spaceLook;
+      b._col = L.gas ? evMix(b.color || '#c8874c', L.gas, 0.75) : b.color;
+      b._ring = L.ring ? evMix(b.ringColor || '#d6c29c', L.ring, 0.6) : b.ringColor;
+    }
     if(b.kind === 'gas'){
-      r.draw('planet', { pos: p, rot: b.rot || [0.2, w.t * (b.spin || 0.004), 0.32], scale: b.size, color: b.color, metallic: 0, roughness: 0.92, rim: -(b.rim || 0.5) });
-      if(b.ring) r.draw('ringdisc', { pos: p, rot: b.ringRot || [0.2, 0, 0.32], scale: b.size * b.ring, color: b.ringColor || '#d6c29c', metallic: 0, roughness: 0.95, rim: -0.2, blend: true, alpha: 0.96 });
-      r.glow(p, -(b.size * 0.72), b.halo || '#ffb27a', 0.08);
+      r.draw('planet', { pos: p, rot: b.rot || [0.2, w.t * (b.spin || 0.004), 0.32], scale: b.size, color: L ? b._col : b.color, metallic: 0, roughness: 0.92, rim: -(b.rim || 0.5) });
+      if(b.ring) r.draw('ringdisc', { pos: p, rot: b.ringRot || [0.2, 0, 0.32], scale: b.size * b.ring, color: (L && b._ring) || b.ringColor || '#d6c29c', metallic: 0, roughness: 0.95, rim: -0.2, blend: true, alpha: 0.96 });
+      r.glow(p, -(b.size * 0.72), (L && L.halo) || b.halo || '#ffb27a', 0.08);
     }else if(b.kind === 'moon'){
       r.draw('rock' + (b.v || ''), { pos: p, rot: [0.3, w.t * 0.01, 0.1], scale: b.size, color: b.color || '#8a8580', metallic: 0, roughness: 0.95, rim: -(b.rim || 0.4) });
     }else if(b.kind === 'sun'){
-      r.glow(p, -b.size, b.color || '#fff1d6', b.gain || 3.2);
-      r.glow(p, -b.size * 4, b.color || '#ffd8a0', (b.gain || 3.2) * 0.12);
+      if(L && L.synth && K.drawSynthSun){ K.drawSynthSun(r, p, Math.hypot(b.off[0], b.off[1], b.off[2]) * 0.1, c); continue; }
+      const col = (L && L.sun) || b.color;
+      r.glow(p, -b.size, col || '#fff1d6', b.gain || 3.2);
+      r.glow(p, -b.size * 4, col || '#ffd8a0', (b.gain || 3.2) * 0.12);
     }
+  }
+  // A world with no star of its own (Defrag's data volume) still gets the
+  // desert's: the striped sun is the theme.
+  if(L && L.synth && K.drawSynthSun){
+    if(list._sun == null) list._sun = list.some(b => b.kind === 'sun');
+    if(!list._sun) K.drawSynthSun(r, [c[0] + 3000, c[1] + 1500, c[2] + 3500], 485, c);
+  }
+  // The deck's sky, at a share of the world's far plane and sized to look the
+  // way it does over the ground worlds — a little larger, with no horizon.
+  if(L && L.orbit && K.drawOrbitSky){
+    const D = Math.min(5600, (w.far || 9000) * 0.6);
+    r.environment({ bodies: [null, K.drawOrbitSky(r, w.t, c, w.far, null, { dist: D, size: D / 868 * 1.15 }), null] });
   }
 }
 
@@ -55655,16 +55997,26 @@ function owBegin(cfg){
   const merged = {
     env: Object.assign({}, base.env, cfg.env), fog: Object.assign({}, base.fog, cfg.fog),
     sun: Object.assign({}, base.sun, cfg.sun), grade: Object.assign({}, base.grade, cfg.grade), ease: 1,
-    // 🌍 A World theme dresses the ground worlds' cities (THE ENDLESS CITY);
-    // a world in deep space keeps its own sky.
+    // 🌍 A World theme dresses the ground worlds' cities (THE ENDLESS CITY)
+    // and lays its horizon round them (§ 2). A world in deep space has no
+    // city and no horizon: it takes the theme its own way (SPACE_LOOKS).
     noLook: base !== NIGHT
   };
+  let spaceLook = null;
+  try{
+    const id = (base === SPACE && typeof worldLook === 'function') ? worldLook() : null;
+    spaceLook = id && SPACE_LOOKS[id] ? id : null;
+  }catch(e){ spaceLook = null; }
   const w = begin3d(merged);
   if(!w) throw new Error('no 3D surface');
   w.origin = true;
   w.far = cfg.far || 6000;
   w.near = cfg.near || 0.3;
-  if(cfg.space) w.r.spaceSky(cfg.space);
+  if(spaceLook){
+    try{ if(K.ensureDressGeos) K.ensureDressGeos(w.r); w.spaceLook = spaceLook; }
+    catch(e){ console.warn('World theme unavailable in space:', e); spaceLook = null; }
+  }
+  if(cfg.space) w.r.spaceSky(spaceLook ? spaceTheme(cfg.space, SPACE_LOOKS[spaceLook]) : cfg.space);
   setControls(null);
   const hud = makeHud(w);
   const fx = makeFx(w);
