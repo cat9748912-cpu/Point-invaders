@@ -64108,6 +64108,14 @@ const { V, TAU, ease, makeField, drawFloor, owClock } = P.owKit;
 const { groundBegin, followCam, screenToGround, groundRing, beacon, makeCity } = P.owGround;
 const { mine, clamp, runLoop } = P.kit;
 const rr = (a, b) => a + Math.random() * (b - a);
+// ✨ v64 · Hue (0–360) of a #rrggbb colour; see `army` in the siege below.
+const hueOf = hex => {
+  const n = parseInt(hex.slice(1), 16), c = [n >> 16 & 255, n >> 8 & 255, n & 255];
+  const mx = Math.max(...c), d = mx - Math.min(...c);
+  if(!d) return 0;
+  const h = mx === c[0] ? (c[1] - c[2]) / d : mx === c[1] ? (c[2] - c[0]) / d + 2 : (c[0] - c[1]) / d + 4;
+  return (h * 60 + 360) % 360;
+};
 const DEPLOY_R = 34, RAM_MAX = 100;
 const UNITS = [
   { k: 'drone',  name: 'DRONE',  geo: 'drone', cost: 18, hp: 4,  sp: 13, range: 9,  dmg: 1, rate: 0.35, sc: 1.6, h: 2.2, key: '1' },
@@ -64120,6 +64128,12 @@ P.ow.battlebots = function(){
   const G = groundBegin({ sky: 'ember', env: { horizon: '#6a3410' }, input: { touch: 'tap' } });
   const { w, r, hud, fx, inp } = G;
   const colour = mine();
+  // ✨ v64 · The paint your units wear: your colour, like every other "this is
+  // you" in the arcade — unless it sits within 40° of the defenders' red
+  // (Crimson, Amber, Pumpkin, Pink), where the two armies would be one colour
+  // on a dark field. Those wear the friendly cyan the radar marks your units in.
+  const armyHue = hueOf(colour);
+  const army = armyHue > 40 && armyHue < 320 ? colour : '#00f5ff';
   const diff = getDifficultyModifier();
   setControlHint('LEFT: DRIVE · TAP A CARD, THEN THE GROUND: DEPLOY · ⚡ / LB: SPECIAL', 'WASD: DRIVE · 1 / 2 / 3 or Q/E: PICK A UNIT · CLICK THE GROUND: DEPLOY IT THERE · SPACE: DEPLOY AHEAD · V: SPECIAL');
 
@@ -64392,18 +64406,22 @@ P.ow.battlebots = function(){
     });
     // ✨ v60 · Every unit PAINTED, NOT LIT: the defenders red, yours silver
     // with blue livery stripes — no emissive hull, no halo.
+    // ✨ v64 · Silver read as no colour at all, a grey machine on a dark field,
+    // and this was the one army in the arcade not wearing its owner's colour.
+    // Yours now wear `army` with the light-grey stripes the 3D siege gives
+    // yours; the defenders keep their red with black ones.
     const drawBot = (b, U, col, enemy) => {
       if(V.d2(b.p, eye) > 260 * 260) return;
       const y = U.h ? U.h + Math.sin(w.t * 4 + (b.ph || 0)) * 0.3 : U.sc * 0.5;
       const look = enemy ? P.kit.foeLook(SP.frozen() ? '#9fe6ff' : '#ff4a4a', b.flash > 0)
-                         : P.kit.foeLook('#c9d1dd', b.flash > 0, { color: b.flash > 0 ? '#ffffff' : '#c9d1dd', metallic: 0.65, accent: 4 });
+                         : P.kit.foeLook(col, b.flash > 0, { color: b.flash > 0 ? '#ffffff' : col, accent: 1 });
       r.draw(U.geo, { pos: [b.p[0], y, b.p[2]], rot: [0, b.face, 0], scale: U.sc, ...look });
       if(U.geo === 'drone'){
         P.kit.foeShadow(r, b.p[0], b.p[2], U.sc * 0.9);
         P.kit.drawRotors(r, [b.p[0], y, b.p[2]], [0, b.face, 0], U.sc, w.t + (b.ph || 0), look);
       }
     };
-    for(const u of units) drawBot(u, u.U, '#00f5ff', false);
+    for(const u of units) drawBot(u, u.U, army, false);
     for(const f of foes) drawBot(f, FOE, '#ff4a4a', true);
     for(const s of shots){
       const p = V.lerp(s.a, s.b, s.t);
