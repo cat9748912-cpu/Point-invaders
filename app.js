@@ -1619,6 +1619,17 @@ const aCtx = aCanvas?.getContext('2d');
 // Nebula wider invader formations, and so on).
 const BOARD_W = 560, BOARD_H = 500;
 
+// 🚀 How big the player's OWN ship is drawn, against the size each mission was
+// built at: Neon Nebula (2D and 3D), Cyber Runner, the 3D Arena and the
+// open-world flights all multiply their hull — and everything hung off it, the
+// nozzles' flames, the gun ports, the deck rings — by this one number.
+// DRAWN size only: every hitbox and collision radius keeps the size it was
+// tuned at, so no run gets harder or easier and a score set before this change
+// is still the same score. Coolant's craft and the ground worlds' hover rovers
+// are left out on purpose — clearance to a wall is the whole of those games,
+// and a hull bigger than its hitbox would show contact that never happened.
+const PLAYER_SHIP_SCALE = 1.5;
+
 // A screen is hidden with opacity + pointer-events, never display:none, so the
 // buttons on the screen you just LEFT stay in the keyboard focus order. Clicking
 // "Play Again" therefore left #btn-again focused for the whole of the next round,
@@ -2691,18 +2702,41 @@ if(auth)auth.onAuthStateChanged(async u=>{
   try{await loadUser(u.uid)}catch(e){console.error('Session restore failed:',e)}
 });
 
+// This device's copy of the profile: the mirror, the banked runs and the local
+// flag. Left behind, the mirror IS a login (see THE CACHED LOGIN) — the auth
+// screen offers "Continue Offline as Guest_…" with every point intact, and the
+// banked runs replay into whatever account signs in next.
+function forgetLocalProfile(){
+  try{
+    localStorage.removeItem(LS_PROFILE);
+    localStorage.removeItem(LS_QUEUE);
+    localStorage.removeItem(LS_LOCAL);
+  }catch(e){}
+  // An offer drawn earlier this visit would still name the deleted profile.
+  ['btn-offline-resume', 'offline-resume-note'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.style.display = 'none';
+  });
+}
+
 // Wipes an unclaimed guest: removes their leaderboard node AND deletes the
 // anonymous identity, so abandoned guests don't pile up in Auth or the DB.
 // Only ever runs on an account still flagged isAnonymous — once a guest has
 // upgraded via linkWithCredential() this is a no-op and their data is safe.
+//
+// THROWS if the record could not be removed. The record has to go first,
+// while this session can still prove it owns it: once the identity is deleted
+// nothing but the Firebase console can remove it. Swallowing that failure used
+// to delete the identity anyway and report "wiped" over a row that was still
+// on the leaderboard — and now could never be removed by anyone.
 async function purgeGuestAccount(){
   const cu = auth && auth.currentUser;
   if(!cu || !cu.isAnonymous) return false;
   const uid = cu.uid;
-  try{ if(db) await db.ref('players/' + uid).remove(); }
-  catch(e){ console.warn('Guest data purge failed:', e); }
+  if(db) await withTimeout(db.ref('players/' + uid).remove(), NET_WAIT);
   try{ await cu.delete(); }            // delete() also ends the session
-  catch(e){ console.warn('Guest identity purge failed:', e); if(auth) auth.signOut(); }
+  catch(e){ console.warn('Guest identity purge failed:', e); if(auth) await auth.signOut().catch(() => {}); }
+  forgetLocalProfile();
   return true;
 }
 
@@ -2719,26 +2753,39 @@ document.getElementById('btn-logout').onclick=async()=>{
       ? `Exiting deletes this guest profile and its ${pts} PTS permanently.\n\nWant to keep them? Cancel, then open ⚙️ Settings → “💾 Save Account”.\n\nExit and delete anyway?`
       : 'Exiting deletes this guest profile permanently. Exit anyway?';
     if(!confirm(warn)) return;
+    let wiped = true;
     if(isLocalSession()){
       // A local profile lives in this browser, not in Firebase — wiping it
       // means clearing the mirror and the banked queue, or the next boot's
       // resume path would cheerfully resurrect what was just deleted.
-      try{
-        localStorage.removeItem(LS_PROFILE);
-        localStorage.removeItem(LS_QUEUE);
-        localStorage.removeItem(LS_LOCAL);
-      }catch(e){}
+      forgetLocalProfile();
     } else if(offlineMode){
       // A real guest's purge is two server deletes; offline they never settle
       // and the button would simply freeze. Refuse honestly instead.
       toast('📴 Deleting a guest profile needs a connection. Reconnect and try again.');
       return;
     } else {
-      await purgeGuestAccount();
+      let why = 'no guest session to delete it with';
+      try{ wiped = await purgeGuestAccount(); }
+      catch(e){
+        console.warn('Guest data purge failed:', e);
+        wiped = false;
+        why = e && e.isOffline ? 'no answer from the grid' : ((e && e.code) || 'refused');
+      }
+      if(!wiped){
+        // The record is still on the grid. Staying signed in keeps the one
+        // session that can retry; leaving anyway is the player's call, made
+        // knowing the row stays behind.
+        snd('error');
+        if(!confirm(`This guest profile could not be deleted (${why}) — it is still on the leaderboard.\n\nCancel to stay signed in and try Exit again.\n\nExit anyway and leave it behind?`)) return;
+        if(auth) await auth.signOut().catch(() => {});
+        forgetLocalProfile();
+      }
     }
     snd('logout');
     setOfflineMode(false);
-    user=null;showScreen('auth-screen');setErr('');toast('🗑️ Guest profile wiped from the grid.');
+    user=null;showScreen('auth-screen');setErr('');
+    toast(wiped ? '🗑️ Guest profile wiped from the grid.' : '👋 Signed out — the guest profile was left on the grid.');
     return;
   }
   if(auth)auth.signOut();
@@ -5991,6 +6038,9 @@ function startNebula(){
     },
     draw() {
       aCtx.save(); aCtx.translate(this.x + this.w/2, this.y + this.h/2); aCtx.rotate(this.angle);
+      // Drawn bigger than the w×h box it collides with (PLAYER_SHIP_SCALE);
+      // the bubble scales with it so it still clears the wingtips.
+      aCtx.scale(PLAYER_SHIP_SCALE, PLAYER_SHIP_SCALE);
       // Shield bubble visual
       if (shieldBubbleActive) {
         aCtx.strokeStyle = `rgba(168,85,247,${0.4 + Math.sin(shieldBubbleTimer*0.3)*0.3})`;
@@ -6005,7 +6055,7 @@ function startNebula(){
       aCtx.beginPath(); aCtx.moveTo(0, -this.h/3); aCtx.lineTo(-3, 3); aCtx.lineTo(3, 3); aCtx.closePath(); aCtx.fill();
       aCtx.fillStyle = Math.random() > 0.5 ? '#ff0844' : '#ff6600'; aCtx.fillRect(-3, this.h/2 - 2, 6, Math.random()*6+3);
       aCtx.restore();
-      drawSkinBadge(this.x + this.w/2, this.y - 10);
+      drawSkinBadge(this.x + this.w/2, this.y + this.h/2 - this.h/2 * PLAYER_SHIP_SCALE - 10);
     }
   };
 
@@ -7149,8 +7199,11 @@ function startReaction(){
 // weekly bucket and shows only rows from the CURRENT season, so last week's
 // numbers vanish on rollover without anyone having to reset anything; Friends
 // re-sorts the all-time pull down to the people you've added.
+//
+// Every view lists EVERY player — there is no top-N cut. The panel scrolls, so
+// a long board costs a scroll, not a layout.
 const LB_SCOPES = {
-  alltime: { label:'🏆 ALL-TIME',  title:'🏆 TOP PLAYERS' },
+  alltime: { label:'🏆 ALL-TIME',  title:'🏆 ALL PLAYERS' },
   weekly:  { label:'📅 THIS WEEK', title:'📅 WEEKLY SEASON' },
   friends: { label:'👥 FRIENDS',   title:'👥 YOUR RIVALS' }
 };
@@ -7220,21 +7273,22 @@ async function loadLeaderboard(){
     : d.totalPoints;
 
   try{
-    const q = scope === 'weekly'
-      ? db.ref('players').orderByChild('weekly/pts').limitToLast(20)
-      : db.ref('players').orderByChild('totalPoints').limitToLast(scope === 'friends' ? 200 : 20);
+    const q = db.ref('players').orderByChild(scope === 'weekly' ? 'weekly/pts' : 'totalPoints');
 
     q.once('value', snapshot => {
       if(!snapshot.exists()){ panel.innerHTML = '<div class="lb-empty">No logged scores inside network nodes.</div>'; return; }
       let players = [];
       snapshot.forEach(c => { players.push({ uid:c.key, ...c.val() }); });
       players.reverse();
+      // A record with no name is not a player: it is the stub a stray child
+      // write leaves behind after a profile was deleted (see purgeGuestAccount).
+      players = players.filter(d => d.username);
 
       if(scope === 'weekly'){
         players = players.filter(d => d.weekly && d.weekly.season === season && d.weekly.pts > 0);
       }else if(scope === 'friends'){
         const fr = (user && user.friends) || {};
-        players = players.filter(d => fr[d.uid] || (user && d.uid === user.uid)).slice(0, 20);
+        players = players.filter(d => fr[d.uid] || (user && d.uid === user.uid));
       }
 
       panel.innerHTML = `<div class="lb-title">${meta.title}</div>`;
@@ -23428,7 +23482,7 @@ const PIA_MODELS = {
 // pictures. The renderer uploads them (TEXTURE SETS) and builds the mip chains.
 //   PI_ASSETS[name] = { v: 1, size: 2048, paintRef: 0.35, kappa: 1,
 //                       maps: { base: [mime, b64], nrm: [...], orm: [...], mask: [...], emis?: [...] } }
-const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=65' };                          // set name → chunk file (filled by the v62 splice)
+const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=66' };                          // set name → chunk file (filled by the v62 splice)
 const piAssetState = Object.create(null);           // set name → { blobs, meta, loading }
 function piAssetChunk(file){
   return new Promise((resolve, reject) => {
@@ -33830,7 +33884,7 @@ P.games.nebula = function(){
     // the open world. A faint emissive in the player's colour is what lights
     // its lamps and nozzle throats.
     r.draw('ship', {
-      pos: [ship.x, ship.y, 0], rot: [ship.pitch, 0, ship.roll], scale: 1.95,
+      pos: [ship.x, ship.y, 0], rot: [ship.pitch, 0, ship.roll], scale: 1.95 * PLAYER_SHIP_SCALE,
       color: hitFlash > 0 ? '#ff6a6a' : '#a9b1bf', metallic: 0.62, roughness: 0.3, rim: 0.8,
       emissive: colour, emissiveStrength: 0.004, accent: 0
     });
@@ -33839,18 +33893,19 @@ P.games.nebula = function(){
     // hull's pitch and roll): a turbulent jet white-hot at the throat — no glow
     // blob, no spark spray.
     {
-      const cx = Math.cos(ship.pitch), sx = Math.sin(ship.pitch), cz = Math.cos(ship.roll), sz = Math.sin(ship.roll), S = 1.95;
+      const cx = Math.cos(ship.pitch), sx = Math.sin(ship.pitch), cz = Math.cos(ship.roll), sz = Math.sin(ship.roll), S = 1.95 * PLAYER_SHIP_SCALE;
       const at = q => [ship.x + (cz * q[0] - sz * cx * q[1] + sz * sx * q[2]) * S, ship.y + (sz * q[0] + cz * cx * q[1] - cz * sx * q[2]) * S, (sx * q[1] + cx * q[2]) * S];
       const back = [sz * sx, -cz * sx, cx];
       for(const s of [-1, 1]){
-        const ep = at([s * 0.36, -0.02, 0.86]), len = 2.2 + Math.sin(w.t * 37 + s) * 0.15;
-        r.streak(ep, [ep[0] + back[0] * len, ep[1] + back[1] * len, ep[2] + back[2] * len], 0.5, colour, 1.9, s > 0 ? 2.31 : 2.73);
+        const ep = at([s * 0.36, -0.02, 0.86]), len = (2.2 + Math.sin(w.t * 37 + s) * 0.15) * PLAYER_SHIP_SCALE;
+        r.streak(ep, [ep[0] + back[0] * len, ep[1] + back[1] * len, ep[2] + back[2] * len], 0.5 * PLAYER_SHIP_SCALE, colour, 1.9, s > 0 ? 2.31 : 2.73);
       }
     }
     // Weapon-level ring: a flat halo under the hull, so it reads as a status
     // indicator on the deck rather than as a bubble around the ship.
     r.draw('thintorus', {
-      pos: [ship.x, ship.y - 0.55, 0.2], rot: [0, w.t * 1.6, 0], scale: [2.2 + weapon * 0.28, 1, 2.2 + weapon * 0.28],
+      pos: [ship.x, ship.y - 0.55 * PLAYER_SHIP_SCALE, 0.2], rot: [0, w.t * 1.6, 0],
+      scale: [(2.2 + weapon * 0.28) * PLAYER_SHIP_SCALE, 1, (2.2 + weapon * 0.28) * PLAYER_SHIP_SCALE],
       color: colour, emissive: colour, emissiveStrength: 1.1, alpha: 0.42
     });
 
@@ -35808,16 +35863,19 @@ P.games.runner = function(){
     if(!blink){
       // The hull noses down −Z, into the track (as Neon Nebula draws it) —
       // it used to be turned round and raced along tail-first.
-      r.draw('ship', { pos:[x, 1.1 + air, 0], rot:[0.06, 0, bank], scale: 1.5,
+      r.draw('ship', { pos:[x, 1.1 + air, 0], rot:[0.06, 0, bank], scale: 1.5 * PLAYER_SHIP_SCALE,
                        color:'#a9b1bf', metallic: 0.62, roughness: 0.3, rim: 0.8,
                        emissive: colour, emissiveStrength: 0.004, accent: 0 });
-      r.draw('thintorus', { pos:[x, 0.35 + air * 0.4, 0], rot:[0, w.t * 2, 0], scale: [3.0, 1, 3.0],
+      r.draw('thintorus', { pos:[x, 0.35 + air * 0.4, 0], rot:[0, w.t * 2, 0], scale: [3.0 * PLAYER_SHIP_SCALE, 1, 3.0 * PLAYER_SHIP_SCALE],
                             color: colour, emissive: colour, emissiveStrength: 1.6, alpha: 0.45 });
       // ✨ v59 · flames out of the nozzles (the model's anchors at z +0.86),
       // trailing back toward the camera.
+      // The anchors are the model's (±0.36, −0.02, 0.86) at the drawn scale.
+      const HS = 1.5 * PLAYER_SHIP_SCALE;
       for(const s of [-1, 1]){
-        const ex = x + s * 0.54, ey = 1.07 + air, len = 1.5 + Math.sin(run * 40 + s) * 0.1;
-        r.streak([ex, ey, 1.29], [ex, ey, 1.29 + len], 0.36, colour, 1.7, s > 0 ? 2.37 : 2.79);
+        const ex = x + s * 0.36 * HS, ey = 1.1 - 0.02 * HS + air, ez = 0.86 * HS;
+        const len = (1.5 + Math.sin(run * 40 + s) * 0.1) * PLAYER_SHIP_SCALE;
+        r.streak([ex, ey, ez], [ex, ey, ez + len], 0.36 * PLAYER_SHIP_SCALE, colour, 1.7, s > 0 ? 2.37 : 2.79);
       }
     }
     r.light({ pos:[x, 3.2 + air, 3.2], color: colour, intensity: 34, range: 20 });
@@ -39144,17 +39202,18 @@ P.games.arena = function(){
     const flick = invT > 0 && ((w.t * 22) | 0) % 2 === 0;
     const pcol = overT > 0 ? '#ff6600' : colour;
     if(!flick){
-      r.draw('ship', { pos:[player.x, 1.0, player.z], rot:[0, player.ang + Math.PI, 0], scale: 1.15,
+      r.draw('ship', { pos:[player.x, 1.0, player.z], rot:[0, player.ang + Math.PI, 0], scale: 1.15 * PLAYER_SHIP_SCALE,
                        color:'#8f9ec4', metallic: 0.55, roughness: 0.42, rim: 1.2,
                        emissive: pcol, emissiveStrength: 0.18 });
       // ✨ v59 · Flames out of the nozzles, longer under thrust (no glow blob).
       const sp = Math.hypot(player.vx, player.vz) / 20;
       {
-        const ya = player.ang + Math.PI, yc = Math.cos(ya), ys = Math.sin(ya), len = 0.5 + sp * 1.4;
+        const ya = player.ang + Math.PI, yc = Math.cos(ya), ys = Math.sin(ya), len = (0.5 + sp * 1.4) * PLAYER_SHIP_SCALE;
+        const HS = 1.15 * PLAYER_SHIP_SCALE;
         for(const sx of [-1, 1]){
           const q = [sx * 0.36, -0.02, 0.86];
-          const ep = [player.x + (q[0] * yc + q[2] * ys) * 1.15, 1.0 + q[1] * 1.15, player.z + (-q[0] * ys + q[2] * yc) * 1.15];
-          r.streak(ep, [ep[0] - Math.sin(player.ang) * len, ep[1], ep[2] - Math.cos(player.ang) * len], 0.22, pcol, 1.2 + sp, sx > 0 ? 2.41 : 2.83);
+          const ep = [player.x + (q[0] * yc + q[2] * ys) * HS, 1.0 + q[1] * HS, player.z + (-q[0] * ys + q[2] * yc) * HS];
+          r.streak(ep, [ep[0] - Math.sin(player.ang) * len, ep[1], ep[2] - Math.cos(player.ang) * len], 0.22 * PLAYER_SHIP_SCALE, pcol, 1.2 + sp, sx > 0 ? 2.41 : 2.83);
         }
       }
     }
@@ -58158,7 +58217,8 @@ P.ow.nebula = function(){
   inp.altLabel = 'MSL';
 
   // ── STATE ──
-  const SC = 1.6;                                   // ship scale
+  const SC = 1.6 * PLAYER_SHIP_SCALE;               // ship scale (drawn)
+  const SC_BODY = 1.6;                              // …and the scale its rock collisions were tuned at
   // `q` is the flight attitude (see ✈️ ATTITUDE in the kit); yaw and pitch are
   // read back off it each frame for anything that wants a heading.
   const ship = { p: [0, 0, 0], q: attFrom(0, 0), yaw: 0, pitch: 0, bank: 0, roll: 0, speed: 44, hull: 100, energy: 100,
@@ -58439,7 +58499,7 @@ P.ow.nebula = function(){
   // guns are at full power, as the 2D game's fourth orb does.
   const SP = makeSpecials(G, {
     kinds: ['smart', 'shield', 'warp', 'nova', 'emp', 'overdrive'],
-    every: 200, novaR: 160, bubbleR: 2.6, missileSpeed: 220,
+    every: 200, novaR: 160, bubbleR: 2.6 * PLAYER_SHIP_SCALE, missileSpeed: 220,   // the bubble rings the drawn hull
     player: () => ship.p,
     targets: () => {
       const T = foes.map(f => ({ p: f.p, r: RAIDER_R, obj: f }));
@@ -58703,7 +58763,7 @@ P.ow.nebula = function(){
     if(dt > 0 && !ship.dead){
       belt.near(ship.p, it => {
         if(it.t === 'rock'){
-          const rad = it.s * 0.46 + 1.1 * SC * 0.6;
+          const rad = it.s * 0.46 + 1.1 * SC_BODY * 0.6;
           const d2 = V.d2(ship.p, it.p);
           if(d2 < rad * rad){
             const n = V.norm(V.sub(ship.p, it.p));
@@ -60865,7 +60925,7 @@ function makeFlyer(o){
   const yaw = o.yaw || 0, q = attFrom(yaw, 0);
   return { p: o.p ? V.copy(o.p) : [0, 0, 0], q, yaw, pitch: 0, bank: 0, roll: 0,
            cruise: o.speed || 40, speed: o.speed || 40, energy: 100, boostK: 0,
-           inv: 0, hit: 0, B: basisQ(q, 0), cam: null, scale: o.scale || 1.5 };
+           inv: 0, hit: 0, B: basisQ(q, 0), cam: null, scale: (o.scale || 1.5) * PLAYER_SHIP_SCALE };   // drawn only
 }
 // Sets the nose's elevation outright (a bounce, a deck), keeping its heading.
 function setPitch(f, el){
