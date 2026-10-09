@@ -1,7 +1,7 @@
 // Bump this string on every deploy. activate() deletes every cache that isn't
 // the current one, so changing it is what evicts the previous version's files
 // from returning players' devices.
-const CACHE = 'point-invaders-v64';
+const CACHE = 'point-invaders-v65';
 
 // Relative so this works both at the domain root and under /Point-invaders/.
 // Just the three real files — the icon and the manifest are built inside
@@ -13,8 +13,9 @@ const CACHE = 'point-invaders-v64';
 const SHELL = [
   './',
   './index.html',
-  './app.js?v=64',
-  './style.css?v=64'
+  './app.js?v=65',
+  './style.css?v=65',
+  './assets/ship62.js?v=65'   // v62: the ship's texture set (loaded on first draw)
 ];
 
 // The Firebase SDK. These are immutable, version-pinned library files, NOT live
