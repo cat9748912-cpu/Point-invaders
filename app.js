@@ -10,6 +10,7 @@
 // Public surface (all no-ops, never throwing, if Web Audio is missing):
 //   SFX.play(name, opts)   — one-shot effect; opts {vol, semi, rate}
 //   SFX.music(track)       — 'hub' | 'game' | null
+//   SFX.setDrive(cfg)      — the equipped Music Drive: {style, bpm?} (see STYLES)
 //   SFX.mode / cycleMode() — 'full' → 'sfx' → 'mute' → 'full'
 //   SFX.bindToggle(el)     — wires a button to cycleMode() and keeps it labelled
 //
@@ -62,7 +63,8 @@ function setVolume(v){
 // The compressor is the thing that keeps a Nova Bomb — thirty explosions in
 // four frames — from clipping into a crackle. Buses are separate so muting the
 // music can't cut an effect that's mid-decay.
-let ctx=null, master=null, comp=null, sfxBus=null, musicBus=null, musicDelay=null;
+let ctx=null, master=null, comp=null, sfxBus=null, musicBus=null;
+let musicDelay=null, delayFb=null, delayWet=null, delayDamp=null, musicTone=null;
 let noiseBuf=null, unlocked=false;
 
 const SUPPORTED = !!(window.AudioContext || window.webkitAudioContext);
@@ -85,16 +87,21 @@ function ensureCtx(){
     // into something that sounds like a soundtrack. Effects stay dry so a hit
     // still reads as instant feedback.
     musicDelay = ctx.createDelay(1.0);
-    // Placeholder only — music() retunes this to the track's tempo on every
-    // start. A delay is a rhythmic instrument here, not an ambience knob.
+    // Placeholders only — applyStyleFx() retunes all four to the equipped
+    // Music Drive on every start: the time to its tempo (a delay is a rhythmic
+    // instrument here, not an ambience knob), the feedback, the wet level and
+    // the damping to its genre. A chiptune runs this at zero.
     musicDelay.delayTime.value = 0.30;
-    const fb = ctx.createGain(); fb.gain.value = 0.34;
-    const wet = ctx.createGain(); wet.gain.value = 0.30;
-    const damp = ctx.createBiquadFilter(); damp.type='lowpass'; damp.frequency.value = 2600;
-    musicDelay.connect(damp); damp.connect(fb); fb.connect(musicDelay);
-    musicDelay.connect(wet); wet.connect(comp);
+    delayFb = ctx.createGain(); delayFb.gain.value = 0.34;
+    delayWet = ctx.createGain(); delayWet.gain.value = 0.30;
+    delayDamp = ctx.createBiquadFilter(); delayDamp.type='lowpass'; delayDamp.frequency.value = 2600;
+    // The music bus's tone: a low-pass over everything the sequencer plays,
+    // echoes included. Wide open for most drives; lo-fi closes it to 4 kHz.
+    musicTone = ctx.createBiquadFilter(); musicTone.type='lowpass'; musicTone.frequency.value = 18000;
+    musicDelay.connect(delayDamp); delayDamp.connect(delayFb); delayFb.connect(musicDelay);
+    musicDelay.connect(delayWet); delayWet.connect(musicTone);
 
-    sfxBus.connect(comp); musicBus.connect(comp);
+    sfxBus.connect(comp); musicBus.connect(musicTone); musicTone.connect(comp);
     comp.connect(master); master.connect(ctx.destination);
   }catch(e){ ctx = null; }
   return ctx;
@@ -141,11 +148,19 @@ const clampF = f => Math.max(20, Math.min(18000, f || 20));
 
 // A single pitched voice. f1 makes it a sweep, which is the whole vocabulary of
 // retro sound design: up = good, down = bad, down-fast = laser.
+// Every voice pins its gain to ~zero THE MOMENT it is made, before the
+// envelope is scheduled. A GainNode is born at 1.0, and a buffer source
+// started at t0 can render its first sample a hair before the envelope's
+// setValueAtTime(…, t0) lands — so a highpassed noise burst used to pass that
+// one sample at full level: a single-sample spike, up to 0.5, on every short
+// hat or tick, independent of the voice's volume.
 function tone(t0, o){
   const g = ctx.createGain();
+  g.gain.value = 0.0001;
   const osc = ctx.createOscillator();
   const dur = o.dur, vol = o.vol == null ? 0.2 : o.vol;
-  osc.type = o.type || 'square';
+  if(o.wave) osc.setPeriodicWave(o.wave);     // a pulse at some duty — see pulseWave()
+  else osc.type = o.type || 'square';
   osc.frequency.setValueAtTime(clampF(o.f0), t0);
   if(o.f1 && o.f1 !== o.f0){
     if(o.linear) osc.frequency.linearRampToValueAtTime(clampF(o.f1), t0 + dur);
@@ -191,10 +206,12 @@ function noise(t0, o){
   f.Q.value = o.q == null ? 1 : o.q;
 
   const g = ctx.createGain();
+  g.gain.value = 0.0001;                          // see tone(): never born at 1.0
   const vol = o.vol == null ? 0.2 : o.vol;
   const atk = o.attack == null ? 0.003 : o.attack;
   g.gain.setValueAtTime(0.0001, t0);
   g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + atk);
+  if(o.hold) g.gain.setValueAtTime(Math.max(0.0002, vol), t0 + Math.min(o.dur, atk + o.hold));
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + o.dur);
 
   src.connect(f); f.connect(g); g.connect(o.bus || sfxBus);
@@ -217,6 +234,82 @@ function seq(t0, notes, o){
       attack: o.attack
     });
   });
+}
+
+// ── SEQUENCER PRIMITIVES ──────────────────────────────────────────────
+// Everything above is one oscillator and one envelope — enough for a laser,
+// not for six genres. These are the few extra voices the Music Drives need.
+
+// A pulse wave at any duty cycle. Web Audio's 'square' is pinned at 50%; the
+// NES's pulse channels had 12.5/25/50/75, and the thin ones ARE the sound of
+// a cartridge. Built from its Fourier series once per duty and cached.
+const pulseWaves = Object.create(null);
+function pulseWave(duty){
+  const key = String(duty);
+  if(pulseWaves[key]) return pulseWaves[key];
+  const N = 48;
+  const real = new Float32Array(N + 1), imag = new Float32Array(N + 1);
+  for(let n = 1; n <= N; n++) real[n] = (4 / (n * Math.PI)) * Math.sin(n * Math.PI * duty);
+  return pulseWaves[key] = ctx.createPeriodicWave(real, imag);
+}
+
+// Two-operator FM. The modulator's depth decays with the note, which is what
+// makes a struck bar or a tine brighten on the hit and soften as it rings —
+// the one thing a plain oscillator under a filter cannot fake.
+function fm(t0, o){
+  const car = ctx.createOscillator(), mod = ctx.createOscillator();
+  const depth = ctx.createGain(), g = ctx.createGain();
+  g.gain.value = 0.0001;                          // see tone(): never born at 1.0
+  const dur = o.dur, vol = o.vol == null ? 0.2 : o.vol;
+  const f0 = clampF(o.f0);
+  car.type = o.type || 'sine'; mod.type = 'sine';
+  car.frequency.setValueAtTime(f0, t0);
+  mod.frequency.setValueAtTime(clampF(f0 * (o.ratio || 1)), t0);
+  const idx = Math.max(0.01, (o.index == null ? 2 : o.index) * f0);      // peak deviation, Hz
+  depth.gain.setValueAtTime(idx, t0);
+  depth.gain.exponentialRampToValueAtTime(Math.max(0.01, idx * (o.indexEnd == null ? 0.05 : o.indexEnd)),
+                                          t0 + (o.indexDur || dur));
+  mod.connect(depth); depth.connect(car.frequency);
+  const atk = o.attack == null ? 0.003 : o.attack;
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + atk);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  // AC-coupled: at ratio 1 (the Rhodes) the lower sideband sits at 0 Hz, and
+  // without this every chord arrived with a sub-sonic DC thump under it that
+  // recirculated through the delay.
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 30;
+  car.connect(g); g.connect(hp); hp.connect(o.bus || sfxBus);
+  if(o.send) hp.connect(o.send);
+  car.start(t0); mod.start(t0);
+  car.stop(t0 + dur + 0.03); mod.stop(t0 + dur + 0.03);
+  return car;
+}
+
+// A voice that slides from one pitch to another under a vibrato LFO — the
+// theremin. The vibrato rides the detune param, so it is in cents and the
+// same width at any pitch, and it fades in so the note starts clean.
+function glide(t0, o){
+  const osc = ctx.createOscillator(), g = ctx.createGain();
+  g.gain.value = 0.0001;                          // see tone(): never born at 1.0
+  const lfo = ctx.createOscillator(), lg = ctx.createGain();
+  const dur = o.dur, vol = o.vol == null ? 0.1 : o.vol;
+  if(o.wave) osc.setPeriodicWave(o.wave); else osc.type = o.type || 'sine';
+  osc.frequency.setValueAtTime(clampF(o.f0), t0);
+  if(o.f1) osc.frequency.exponentialRampToValueAtTime(clampF(o.f1), t0 + dur * (o.glide == null ? 0.6 : o.glide));
+  lfo.type = 'sine'; lfo.frequency.setValueAtTime(o.vib || 5.5, t0);
+  lg.gain.setValueAtTime(0, t0);
+  lg.gain.linearRampToValueAtTime(o.depth == null ? 30 : o.depth, t0 + Math.min(dur, 0.4));
+  lfo.connect(lg); lg.connect(osc.detune);
+  const atk = o.attack == null ? 0.08 : o.attack;
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + atk);
+  if(o.hold) g.gain.setValueAtTime(Math.max(0.0002, vol), t0 + Math.min(dur, atk + o.hold));
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g); g.connect(o.bus || sfxBus);
+  if(o.send) g.connect(o.send);
+  osc.start(t0); lfo.start(t0);
+  osc.stop(t0 + dur + 0.03); lfo.stop(t0 + dur + 0.03);
+  return osc;
 }
 
 // ── EFFECT BANK ───────────────────────────────────────────────────────
@@ -379,15 +472,22 @@ function play(name, opts){
 // ══════════════════════════════════════════════════════════════════════
 //  🎵 MUSIC — a step sequencer, not a file
 // ══════════════════════════════════════════════════════════════════════
-// Same four-chord synthwave loop underneath both tracks (Am–F–C–G); the hub
-// plays it as a slow pad-and-arp, a round plays it at nearly 1.5× with a kick,
-// a hat and a driving sixteenth arpeggio. Notes are scheduled ahead of the
-// clock in a lookahead window, because setInterval is far too jittery to place
-// a downbeat on its own.
+// Notes are scheduled ahead of the clock in a lookahead window, because
+// setInterval is far too jittery to place a downbeat on its own. The scheduler
+// is the one part every drive shares: it walks a 64-step loop (four bars of
+// sixteenths) and asks the equipped drive's STYLE what to play on each step.
+//
+// A Music Drive used to be a re-voicing of one synthwave loop — the same kick,
+// the same snare, the same sixteenth arpeggio, with a different oscillator and
+// a different four chords underneath. Six drives that are all one arrangement
+// are one drive. So each is now its own ARRANGEMENT (see STYLES below): its
+// own drum kit, its own bass figure, its own chord voicing, its own lead line,
+// its own swing, its own delay and its own tone. A chiptune has no reverb and a
+// music box has no drums, and that is the difference the credits buy.
+//
 // ── PROGRESSIONS ──
-// One set per Music Drive. The sequencer never learns which drive is playing;
-// it reads whatever `CHORDS` currently points at, so a new drive is a new entry
-// here and a row in SHOP_ITEMS.drives — never a change to musicStep().
+// MIDI notes. `root` is what the bass plays; `notes` is the voicing a pad or a
+// stab draws from, low to high, and a style takes whichever slice it wants.
 const CHORD_SETS = {
   classic: [                                        // Am–F–C–G · the house sound
     { root: 45, notes: [45, 48, 52, 57, 60, 64] },  // Am
@@ -395,17 +495,28 @@ const CHORD_SETS = {
     { root: 48, notes: [48, 52, 55, 60, 64, 67] },  // C
     { root: 43, notes: [43, 47, 50, 55, 59, 62] }   // G
   ],
-  dark: [                                           // Dm–Bb–Gm–A · minor, heavier
-    { root: 38, notes: [38, 41, 45, 50, 53, 57] },  // Dm
-    { root: 34, notes: [34, 38, 41, 46, 50, 53] },  // Bb
-    { root: 43, notes: [43, 46, 50, 55, 58, 62] },  // Gm
-    { root: 45, notes: [45, 49, 52, 57, 61, 64] }   // A (major third — the sting)
-  ],
-  bright: [                                         // C–G–Am–F · the lift
+  // 👾 C–Am–F–G: the doo-wop turnaround, which is also every overworld theme.
+  chip: [
     { root: 48, notes: [48, 52, 55, 60, 64, 67] },  // C
-    { root: 43, notes: [43, 47, 50, 55, 59, 62] },  // G
     { root: 45, notes: [45, 48, 52, 57, 60, 64] },  // Am
-    { root: 41, notes: [41, 45, 48, 53, 57, 60] }   // F
+    { root: 41, notes: [41, 45, 48, 53, 57, 60] },  // F
+    { root: 43, notes: [43, 47, 50, 55, 59, 62] }   // G
+  ],
+  // 🥁 Dm9–B♭maj7–Gm9–A7♭9: minor ninths are the cold, wide sound of a liquid
+  // roller, and the ♭9 on the A is the one sour note that makes the loop turn.
+  dnb: [
+    { root: 38, notes: [38, 41, 45, 48, 52] },      // D  F  A  C  E
+    { root: 34, notes: [34, 38, 41, 45, 48] },      // B♭ D  F  A  C
+    { root: 43, notes: [43, 46, 50, 53, 57] },      // G  B♭ D  F  A
+    { root: 45, notes: [45, 49, 52, 55, 58] }       // A  C♯ E  G  B♭
+  ],
+  // 📻 Fmaj9–Em9–Dm9–Cmaj9, descending a step at a time: the voicing a lo-fi
+  // Rhodes plays is notes[1..] — third, fifth, seventh, ninth, never the root.
+  jazz: [
+    { root: 41, notes: [41, 45, 48, 52, 55] },      // F  A  C  E  G
+    { root: 40, notes: [40, 43, 47, 50, 54] },      // E  G  B  D  F♯
+    { root: 38, notes: [38, 41, 45, 48, 52] },      // D  F  A  C  E
+    { root: 36, notes: [36, 40, 43, 47, 50] }       // C  E  G  B  D
   ],
   // 🎃 NEON HAUNT (v42): Am–Bb–Dm–E7. The half-step up to Bb is the Phrygian
   // shudder, and E7 is a dominant that pulls home and is never allowed to
@@ -424,20 +535,8 @@ const CHORD_SETS = {
     { root: 35, notes: [35, 38, 42, 45, 50, 54] },  // Bm7
     { root: 43, notes: [43, 47, 50, 54, 59, 62] },  // Gmaj7
     { root: 45, notes: [45, 49, 52, 55, 57, 61] }   // A7
-  ],
-  vapor: [                                          // Fmaj7–Em7–Dm7–Cmaj7 · drift
-    { root: 41, notes: [41, 45, 48, 52, 57, 60] },
-    { root: 40, notes: [40, 43, 47, 50, 55, 59] },
-    { root: 38, notes: [38, 41, 45, 48, 53, 57] },
-    { root: 36, notes: [36, 40, 43, 47, 52, 55] }
   ]
 };
-
-// The live progression and voicing. Swapped by setDrive(); the defaults ARE the
-// Synthwave Retro drive, so an account that never opens the market sounds
-// exactly as it always has.
-let CHORDS = CHORD_SETS.classic;
-let VOICE  = { pad:'sawtooth', lead:'square', bass:'sawtooth' };
 
 const TRACKS = {
   hub:  { bpm: 92,  gain: 0.30, baseBpm: 92  },
@@ -458,6 +557,19 @@ let curTrack = null, pendingTrack = null, schedTimer = null;
 let nextStepTime = 0, stepIdx = 0;
 const LOOKAHEAD = 0.15, TICK_MS = 25;
 
+// Loop-stable "randomness": the same step of the same bar always rolls the same
+// number, so a variation is a part of the tune rather than a surprise every
+// time round. Math.random() is kept for texture (crackle, hiss) only.
+function hash(i, salt){
+  let x = Math.imul(i + 1, 374761393) ^ Math.imul(salt + 1, 668265263);
+  x = Math.imul(x ^ (x >>> 13), 1274126177);
+  return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
+}
+
+// ── 🥁 DRUM KITS ──
+// Every kit is noise and a pitched drop, but the drops, the lengths and the
+// filters are what tell an 808 from a NES noise channel from a dusty break, so
+// each genre gets its own set rather than borrowing the synthwave one.
 function kick(t, vol){
   tone(t, { type:'sine', f0:170, f1:44, dur:0.20, vol:vol, attack:0.002, bus:musicBus });
   noise(t, { dur:0.045, vol:vol*0.5, filter:'lowpass', fc:1600, fc1:300, bus:musicBus });
@@ -469,56 +581,462 @@ function snare(t, vol){
   noise(t, { dur:0.16, vol:vol, filter:'bandpass', fc:1900, q:0.8, bus:musicBus });
   tone(t, { type:'triangle', f0:330, f1:180, dur:0.12, vol:vol*0.5, bus:musicBus });
 }
+// Drum & bass: tight and hard — a kick that is over in 130ms, a snare with a
+// crack of highs on top, a ride for the top end.
+function breakKick(t, vol){
+  tone(t, { type:'sine', f0:200, f1:52, dur:0.13, vol:vol, attack:0.001, bus:musicBus });
+  noise(t, { dur:0.02, vol:vol*0.6, filter:'lowpass', fc:2600, fc1:400, bus:musicBus });
+}
+function breakSnare(t, vol){
+  noise(t, { dur:0.11, vol:vol, filter:'bandpass', fc:1700, q:0.7, bus:musicBus });
+  noise(t, { dur:0.07, vol:vol*0.6, filter:'highpass', fc:4500, bus:musicBus });
+  tone(t, { type:'triangle', f0:240, f1:170, dur:0.07, vol:vol*0.6, bus:musicBus });
+}
+function ride(t, vol){ noise(t, { dur:0.09, vol:vol, filter:'bandpass', fc:8500, q:2.5, bus:musicBus }); }
+function rim(t, vol){
+  tone(t, { type:'square', f0:1750, dur:0.022, vol:vol, bus:musicBus });
+  noise(t, { dur:0.018, vol:vol*0.8, filter:'bandpass', fc:3200, q:1.5, bus:musicBus });
+}
+function shaker(t, vol, long){
+  noise(t, { dur: long?0.09:0.045, vol:vol, attack:0.012, filter:'highpass', fc:6000, bus:musicBus });
+}
+// NES: the noise channel IS the kit. There was no sine kick — a triangle
+// dropping an octave in 75ms under a puff of noise is as close as the chip got.
+function nesKick(t, vol){
+  tone(t, { type:'triangle', f0:180, f1:45, dur:0.075, vol:vol*1.3, attack:0.001, bus:musicBus });
+  noise(t, { dur:0.03, vol:vol*0.5, filter:'lowpass', fc:1000, bus:musicBus });
+}
+function nesSnare(t, vol){
+  noise(t, { dur:0.075, vol:vol, filter:'bandpass', fc:2400, q:0.4, bus:musicBus });
+  tone(t, { type:'triangle', f0:260, f1:150, dur:0.04, vol:vol*0.5, bus:musicBus });
+}
+function nesHat(t, vol, open){ noise(t, { dur: open?0.07:0.022, vol:vol, filter:'highpass', fc:8500, bus:musicBus }); }
+// Lo-fi: everything dull and a little soft, the way a sampled break comes out.
+function dustKick(t, vol){
+  tone(t, { type:'sine', f0:115, f1:40, dur:0.24, vol:vol, attack:0.004, bus:musicBus });
+  noise(t, { dur:0.035, vol:vol*0.35, filter:'lowpass', fc:700, bus:musicBus });
+}
+function dustSnare(t, vol){
+  noise(t, { dur:0.15, vol:vol, filter:'bandpass', fc:1050, q:0.9, bus:musicBus });
+  noise(t, { dur:0.05, vol:vol*0.4, filter:'bandpass', fc:2600, q:1, bus:musicBus });
+  tone(t, { type:'triangle', f0:210, f1:160, dur:0.07, vol:vol*0.5, bus:musicBus });
+}
+function dustHat(t, vol, open){ noise(t, { dur: open?0.11:0.035, vol:vol, filter:'bandpass', fc:6200, q:0.9, bus:musicBus }); }
+// Horror and the music box have no kit at all: a heartbeat, a clock, a tom in
+// the dark, a wood block, sleigh bells.
+// The sweeps start in the low mids and a puff of low-passed noise rides each
+// thump: a pure 70 Hz sine is felt on headphones and simply absent on a phone.
+function heart(t, vol){
+  tone(t,        { type:'sine', f0:120, f1:42, dur:0.26, vol:vol,     attack:0.01, bus:musicBus });
+  noise(t,       { dur:0.035, vol:vol*0.5, filter:'lowpass', fc:700, fc1:150, bus:musicBus });
+  tone(t + 0.17, { type:'sine', f0:100, f1:38, dur:0.22, vol:vol*0.7, attack:0.01, bus:musicBus });
+  noise(t + 0.17,{ dur:0.03,  vol:vol*0.3, filter:'lowpass', fc:600, fc1:150, bus:musicBus });
+}
+function tick(t, vol, f){
+  tone(t, { type:'triangle', f0:f||2400, dur:0.014, vol:vol, bus:musicBus });
+  noise(t, { dur:0.01, vol:vol*0.6, filter:'highpass', fc:6500, bus:musicBus });
+}
+function tom(t, vol, f){
+  tone(t, { type:'sine', f0:f, f1:f*0.5, dur:0.32, vol:vol, attack:0.004, bus:musicBus });
+  noise(t, { dur:0.04, vol:vol*0.3, filter:'lowpass', fc:900, bus:musicBus });
+}
+function block(t, vol){
+  tone(t, { type:'square', f0:1150, f1:900, dur:0.03, vol:vol, filter:'bandpass', fc:1200, q:4, bus:musicBus });
+}
+function sleigh(t, vol){
+  noise(t, { dur:0.06, vol:vol, attack:0.006, filter:'bandpass', fc:9500, q:1.4, bus:musicBus });
+}
+
+// ── 🎹 INSTRUMENTS ──
+// Detuned chord with a slow attack: the pad every style but the chip has.
+function pad(t, notes, f, o){
+  notes.forEach((n, k) => tone(t, {
+    type:o.type||'sawtooth', f0:f(n), dur:o.dur, vol:o.vol, attack:o.attack==null?0.5:o.attack, hold:o.hold,
+    filter:'lowpass', fc:o.fc||900, fc1:o.fc1, q:o.q||1, detune:(k-1)*(o.spread==null?7:o.spread),
+    bus:musicBus, send:o.send?musicDelay:null }));
+}
+// Reese: two saws a few cents apart beating against each other inside a
+// low-pass — the growl under every drum & bass record since 1994. A sine
+// under it carries the fundamental on a phone speaker: an octave down for the
+// G and A bars, the root itself for D2 and B♭1, which are already under 80 Hz
+// and would otherwise drop to 29–37 Hz and vanish.
+function reese(t, hz, dur, vol, fc){
+  [-14, 14].forEach(d => tone(t, { type:'sawtooth', f0:hz, dur:dur, vol:vol*0.5, attack:0.01, detune:d,
+                                   filter:'lowpass', fc:fc, fc1:fc*0.35, q:3, bus:musicBus }));
+  tone(t, { type:'sine', f0:hz < 80 ? hz : hz*0.5, dur:dur, vol:vol*0.8, attack:0.01, bus:musicBus });
+}
+// Rhodes: a carrier FM'd at its own pitch with a low index that decays — the
+// bark on the hit, the mellow sustain — and a tiny octave 'tine' on top. Two
+// carriers a few cents apart are the chorus every lo-fi record runs its keys
+// through; they share one modulator, because a four-note chord is built in a
+// single scheduler tick and every node here is one more synchronous
+// allocation on the main thread of a phone that is also drawing a mission.
+// AC-coupled like fm(): ratio-1 FM has a sideband at 0 Hz.
+function rhodes(t, hz, dur, vol){
+  const f0 = clampF(hz), idx = f0 * 0.9;
+  const mod = ctx.createOscillator(), depth = ctx.createGain(), hp = ctx.createBiquadFilter();
+  mod.type = 'sine'; mod.frequency.setValueAtTime(f0, t);
+  depth.gain.setValueAtTime(idx, t);
+  depth.gain.exponentialRampToValueAtTime(idx * 0.03, t + dur * 0.45);
+  mod.connect(depth);
+  hp.type = 'highpass'; hp.frequency.value = 30;
+  [[1, 0.6, 0.004], [1.003, 0.5, 0.006]].forEach(([ratio, v, atk]) => {
+    const car = ctx.createOscillator(), g = ctx.createGain();
+    g.gain.value = 0.0001;                        // see tone(): never born at 1.0
+    car.type = 'sine'; car.frequency.setValueAtTime(f0 * ratio, t);
+    depth.connect(car.frequency);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol * v), t + atk);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    car.connect(g); g.connect(hp);
+    car.start(t); car.stop(t + dur + 0.03);
+  });
+  hp.connect(musicBus); hp.connect(musicDelay);
+  mod.start(t); mod.stop(t + dur + 0.03);
+  tone(t, { type:'sine', f0:f0*2, dur:0.12, vol:vol*0.12, bus:musicBus });
+}
+// Music box: a struck steel comb is a fundamental with two inharmonic partials
+// that die far faster than it does. Three sines, no filter, nothing else.
+function musicBox(t, hz, dur, vol, send){
+  tone(t, { type:'sine', f0:hz,      dur:dur,      vol:vol,      attack:0.002, bus:musicBus, send:send?musicDelay:null });
+  tone(t, { type:'sine', f0:hz*2.92, dur:dur*0.3,  vol:vol*0.35, attack:0.002, bus:musicBus });
+  tone(t, { type:'sine', f0:hz*5.61, dur:dur*0.12, vol:vol*0.14, attack:0.002, bus:musicBus });
+}
+// Glockenspiel: FM at a bright integer ratio with the index gone in 50ms.
+function glock(t, hz, dur, vol){
+  fm(t, { f0:hz, ratio:3.01, index:0.9, indexEnd:0.02, indexDur:0.05, dur:dur, vol:vol, attack:0.002, bus:musicBus, send:musicDelay });
+}
+// Pizzicato: a triangle under a filter that closes in the first few ms.
+function pluck(t, hz, dur, vol){
+  tone(t, { type:'triangle', f0:hz, dur:dur, vol:vol, attack:0.003, filter:'lowpass', fc:1800, fc1:260, q:1.5, bus:musicBus });
+}
+// A short saw chord with a snapping filter: the stab.
+function stab(t, notes, f, dur, vol, fc){
+  notes.forEach((n, k) => tone(t, { type:'sawtooth', f0:f(n), dur:dur, vol:vol, attack:0.004, detune:(k-1)*9,
+                                     filter:'lowpass', fc:fc, fc1:fc*0.25, q:2, bus:musicBus, send:musicDelay }));
+}
+// Horror drone: a saw an octave below a detuned saw, under a filter so low that
+// only the beating between them gets out, with a sine sub so it is felt first.
+// Held at level until the last 0.9 s (tone() otherwise decays from the moment
+// the attack ends, and a drone that is 20 dB down by mid-bar is a swell), and
+// the octave drop is skipped for roots already under 80 Hz: the Dm and E7
+// bars would otherwise sit at 37–41 Hz, below what a phone can play.
+function drone(t, hz, dur, vol, attack, fc){
+  const lo = hz < 80 ? hz : hz * 0.5, end = dur - 0.9;
+  tone(t, { type:'sawtooth', f0:lo, dur:dur, vol:vol*0.7,  attack:attack,     hold:end - attack,     filter:'lowpass', fc:fc,     q:2, bus:musicBus });
+  tone(t, { type:'sawtooth', f0:hz, dur:dur, vol:vol*0.45, attack:attack*1.2, hold:end - attack*1.2, filter:'lowpass', fc:fc*1.4, q:2, detune:7, bus:musicBus });
+  tone(t, { type:'sine',     f0:lo, dur:dur, vol:vol*0.8,  attack:attack*0.8, hold:end - attack*0.8, bus:musicBus });
+}
+// A NES pulse channel: on at full volume, then off. No filter, no attack.
+function nesPulse(t, hz, duty, dur, vol){
+  tone(t, { wave:pulseWave(duty), f0:hz, dur:dur, vol:vol, attack:0.002, hold:dur*0.6, bus:musicBus });
+}
+
+// ── 🎼 THE TUNES ──
+// Two of the drives are WRITTEN rather than generated, because a chiptune and a
+// music box are the two genres you remember by their melody. 64 steps each, one
+// per sixteenth, 0 for a rest.
+function eighths(a){ const out = []; a.forEach(n => out.push(n, 0)); return out; }
+// 👾 Over C–Am–F–G. The hub plays it in eighths; a round gets the sixteenth riff.
+const CHIP_HUB = eighths([
+  76,79,84,79, 76,79,81,79,   81,84,88,84, 81, 0,79,76,
+  77,81,84,81, 77,81,86,84,   83,86,79, 0, 83,86,89,77 ]);
+const CHIP_GAME = [
+  84, 0,79,84, 88,84,79, 0, 76,79,84, 0, 88, 0,91, 0,
+  81, 0,84,81, 88,84,81, 0, 76,81,84, 0, 88, 0,84, 0,
+  77, 0,81,77, 84,81,77, 0, 81,84,86, 0, 84, 0,81, 0,
+  79, 0,83,79, 86,83,79, 0, 83,86,89, 0, 86,88,89,91 ];
+// 🔔 A lullaby in D over Dmaj7–Bm7–Gmaj7–A7, in eighths, with the G on the end
+// of the A7 bar pulling back down to the F♯ it opens on.
+const BOX_TUNE = [
+  78, 0,81, 0, 86, 0,81, 0, 78, 0,76, 0, 74, 0, 0, 0,
+  83, 0,86, 0, 90, 0,86, 0, 83, 0,81, 0, 78, 0, 0, 0,
+  79, 0,83, 0, 86, 0,83, 0, 79, 0,78, 0, 76, 0,74, 0,
+  73, 0,76, 0, 81, 0,85, 0, 83, 0,81, 0, 79, 0, 0, 0 ];
+
+// 📻 The lo-fi bar, shared by both tracks: a round is the same record with the
+// hats doubled, the kick busier and the keys pushed harder.
+function lofiBar(K, round){
+  const { s, bar, i, t, g, f, ch, next } = K;
+  const kicks = round ? [0, 3, 7, 10] : (bar % 2 ? [0, 7, 10] : [0, 10]);
+  if(kicks.includes(s)) dustKick(t, g*0.55);
+  if(s === 4 || s === 12) dustSnare(t, g*0.3);
+  if(round && s === 15 && bar % 2) dustSnare(t, g*0.08);
+  if(round || s % 2 === 0) dustHat(t, g*(s % 4 === 2 ? 0.06 : s % 2 ? 0.02 : 0.035), s === 14);
+  else if(s === 9 || s === 13) dustHat(t, g*0.02);
+  // Keys: the rootless voicing — third, fifth, seventh, ninth — on the one, and
+  // pushed on the and-of-three. Each note a hair late on the last, so the
+  // chord is played rather than hit.
+  const voicing = ch.notes.slice(1).map(n => n + 12);
+  if(s === 0 || s === 10 || (round && s === 6)){
+    // In a round the chord on the one ends as the s=6 push begins, so two
+    // four-note chords never ring at once (the hub has no push to meet).
+    const dur = s === 0 ? (round ? 1.0 : 1.5) : 0.7;
+    voicing.forEach((n, k) => rhodes(t + k * 0.012, f(n), dur, g*(s === 0 ? 0.11 : 0.08)));
+  }
+  // Bass: root, fifth, root, then a semitone under the next root to lead in.
+  const bass = { 0:[ch.root, 0.55], 8:[ch.root + 7, 0.3], 11:[ch.root, 0.3], 14:[next.root - 1, 0.22] }[s];
+  if(bass) tone(t, { type:'sine', f0:f(bass[0]), dur:bass[1], vol:g*0.5, attack:0.012, bus:musicBus });
+  // A noodle: pentatonic, sparse, only ever on the odd bars.
+  if(bar % 2 && [2, 6, 9, 12].includes(s) && hash(i, 11) < (round ? 0.6 : 0.45)){
+    const n = [ch.notes[1], ch.notes[2], ch.notes[4], ch.notes[1] + 12][Math.floor(hash(i, 13) * 4)] + 24;
+    tone(t, { type:'sine', f0:f(n), dur:0.45, vol:g*0.09, attack:0.02, bus:musicBus, send:musicDelay });
+  }
+  if(round && bar % 2 && s === 6) stab(t, voicing.slice(0, 3), f, 0.1, g*0.035, 1500);
+  // Tape: hiss for the whole bar, crackle wherever it lands.
+  if(s === 0) noise(t, { dur:K.barLen + 0.1, vol:g*0.012, attack:0.2, hold:K.barLen - 0.3, filter:'bandpass', fc:5000, q:0.5, bus:musicBus });
+  if(Math.random() < 0.3) noise(t + Math.random() * 0.1, { dur:0.008, vol:g*0.05, filter:'highpass', fc:3000, bus:musicBus });
+}
+
+// ── 🎛️ THE DRIVES ──
+// One entry per Music Drive. `bpm` per track; `chords` the progression;
+// `swing` how late the off-sixteenths land, as a fraction of a step (0 is
+// straight, 0.33 a triplet shuffle); `delay` the echo — time in beats, feedback,
+// wet level, damping — and `tone` the low-pass over the whole music bus. Then a
+// pattern per track. `gain` trims a track's level so every drive sits at the
+// house sound's loudness (a pulse wave is loud; a music box is not). A pattern
+// gets K = { s: step in bar 0–15, bar: 0–3, i:
+// step in loop 0–63, t: when, g: track gain, f: midi → Hz with the tension
+// lift applied, ch: this bar's chord, next: the next bar's, barLen: seconds }.
+// `pulse` is what the drive publishes as its tempo for a rhythm chart: drum &
+// bass is felt at half its clock, so Pulse Sync lands on its kick and snare
+// rather than on every sixteenth.
+const STYLES = {
+  // 🌆 SYNTHWAVE RETRO — the house sound, exactly as it has always been: a
+  // saw pad, a sixteenth arpeggio into a dotted-eighth delay, four on the
+  // floor. An account that never opens the market sounds the way it always did.
+  synthwave: {
+    bpm: { hub:92, game:136 }, chords: CHORD_SETS.classic, swing: 0, tone: 18000,
+    delay: { beats:0.75, fb:0.34, wet:0.30, damp:2600 },
+    hub(K){
+      const { s, i, t, g, f, ch } = K;
+      // Pad: a slow-attack triad held across the whole bar, plus a bass root.
+      if(s === 0){
+        ch.notes.slice(0,3).forEach((n,k)=>{
+          tone(t, { type:'sawtooth', f0:f(n+12), dur:2.4, vol:g*0.07, attack:0.5,
+                    filter:'lowpass', fc:700, fc1:1400, q:1, detune:(k-1)*7, bus:musicBus });
+        });
+        tone(t, { type:'triangle', f0:f(ch.root-12), dur:0.9, vol:g*0.30, bus:musicBus });
+      }
+      if(s === 8) tone(t, { type:'triangle', f0:f(ch.root-12), dur:0.7, vol:g*0.22, bus:musicBus });
+      // Sparse arpeggio into the delay — this is the line you actually hum.
+      if(s % 4 === 2){
+        const n = ch.notes[(Math.floor(i/4) * 2) % ch.notes.length] + 12;
+        tone(t, { type:'square', f0:f(n), dur:0.34, vol:g*0.10,
+                  filter:'lowpass', fc:2600, bus:musicBus, send:musicDelay });
+      }
+      if(s % 8 === 4) hat(t, g*0.06);
+    },
+    game(K){
+      const { s, t, g, f, ch } = K;
+      // Constant sixteenth arp, four-on-the-floor, offbeat bass.
+      if(s % 4 === 0) kick(t, g*0.55);
+      if(s === 4 || s === 12) snare(t, g*0.20);
+      if(s % 2 === 1) hat(t, g*0.055, s % 8 === 7);
+      const bassPat = [1,0,0,1,0,0,1,0,1,0,0,1,0,1,0,0];
+      if(bassPat[s]){
+        tone(t, { type:'sawtooth', f0:f(ch.root-12), dur:0.13, vol:g*0.34,
+                  filter:'lowpass', fc:420, fc1:180, q:4, bus:musicBus });
+      }
+      const arpSeq = [0,2,4,5,4,2,3,1];
+      const n = ch.notes[arpSeq[s % 8] % ch.notes.length] + 12;
+      tone(t, { type:'square', f0:f(n), dur:0.11, vol:g*0.075,
+                filter:'lowpass', fc:3200, bus:musicBus, send:musicDelay });
+      if(s === 0){
+        tone(t, { type:'sawtooth', f0:f(ch.notes[0]+12), dur:1.6, vol:g*0.05, attack:0.3,
+                  filter:'lowpass', fc:900, detune:6, bus:musicBus });
+      }
+    }
+  },
+
+  // 👾 8-BIT CARTRIDGE — chiptune. Two pulse channels (a 25% lead, a 12.5%
+  // arpeggio standing in for a chord the chip could not play), a triangle bass
+  // bouncing octaves, and the noise channel for a kit. Bone dry: there was no
+  // reverb on a cartridge. The tune is written out, not generated.
+  chip: {
+    bpm: { hub:118, game:160 }, chords: CHORD_SETS.chip, swing: 0, tone: 18000, gain: { hub:0.37, game:0.6 },
+    delay: { beats:0.5, fb:0, wet:0, damp:8000 },
+    hub(K){
+      const { s, bar, i, t, g, f, ch } = K;
+      const m = CHIP_HUB[i];
+      if(m) nesPulse(t, f(m), 0.25, 0.21, g*0.2);
+      nesPulse(t, f(ch.notes[(s + bar) % 3] + 24), 0.125, 0.09, g*0.045);
+      if(s % 4 === 0) tone(t, { type:'triangle', f0:f(ch.root),    dur:0.14, vol:g*0.34, hold:0.09, bus:musicBus });
+      if(s % 4 === 2) tone(t, { type:'triangle', f0:f(ch.root+12), dur:0.11, vol:g*0.28, hold:0.06, bus:musicBus });
+      if(s === 0 || s === 8 || (s === 10 && bar % 2)) nesKick(t, g*0.3);
+      if(s === 4 || s === 12) nesSnare(t, g*0.16);
+      if(s % 4 === 2) nesHat(t, g*0.05, false);
+    },
+    game(K){
+      const { s, bar, i, t, g, f, ch } = K;
+      const m = CHIP_GAME[i];
+      if(m) nesPulse(t, f(m), 0.25, 0.085, g*0.2);
+      nesPulse(t, f(ch.notes[(s + bar) % 3] + 24), 0.125, 0.07, g*0.04);
+      // Bass: root and octave on alternate eighths, the fifth to turn the bar.
+      if(s % 2 === 0){
+        const n = s === 14 ? ch.root + 7 : (s % 4 ? ch.root + 12 : ch.root);
+        tone(t, { type:'triangle', f0:f(n), dur:0.1, vol:g*0.32, hold:0.06, bus:musicBus });
+      }
+      if(s === 0 || s === 6 || s === 8 || (s === 11 && bar % 2 === 0)) nesKick(t, g*0.32);
+      if(s === 4 || s === 12) nesSnare(t, g*0.17);
+      if(bar === 3 && s >= 12) nesSnare(t, g*(0.08 + (s - 12) * 0.03));      // the fill
+      if(s % 2 === 0) nesHat(t, g*(s % 4 === 2 ? 0.055 : 0.03), s === 14);
+    }
+  },
+
+  // 🥁 BREAKBEAT TERMINAL — drum & bass at 174. A two-step break (kick on the
+  // one and the and-of-three, snares on two and four, ghosts between), a reese
+  // bass under a closing filter, minor-ninth pads, offbeat stabs. The hub is
+  // the same record's intro — half-time, pads and sub, a rim on the backbeat —
+  // and the drop is the round starting.
+  dnb: {
+    bpm: { hub:87, game:174 }, chords: CHORD_SETS.dnb, swing: 0, tone: 18000, pulse: 0.5, gain: { hub:0.57, game:0.8 },
+    delay: { beats:0.5, fb:0.3, wet:0.2, damp:3200 },
+    hub(K){
+      const { s, bar, i, t, g, f, ch } = K;
+      if(s === 0){
+        pad(t, ch.notes.slice(1).map(n => n + 12), f, { dur:2.9, vol:g*0.055, attack:0.9, hold:1.5, fc:900, fc1:600, spread:6, send:true });
+        tone(t, { type:'sine', f0:f(ch.root), dur:1.3, vol:g*0.42, attack:0.02, bus:musicBus });
+      }
+      if(s === 10) tone(t, { type:'sine', f0:f(ch.root), dur:0.8, vol:g*0.34, attack:0.02, bus:musicBus });
+      if(s === 4 || s === 12) rim(t, g*0.12);
+      shaker(t, g*(s % 4 === 0 ? 0.035 : 0.018), s % 8 === 6);
+      if(bar % 2 && (s === 6 || s === 13)){
+        const n = ch.notes[1 + Math.floor(hash(i, 3) * 3)] + 24;
+        tone(t, { type:'triangle', f0:f(n), dur:0.5, vol:g*0.07, attack:0.03, bus:musicBus, send:musicDelay });
+      }
+      if(bar === 2 && s === 0) noise(t, { dur:2.6, vol:g*0.03, attack:2.0, filter:'bandpass', fc:900, fc1:3200, q:1.2, bus:musicBus });
+    },
+    game(K){
+      const { s, bar, i, t, g, f, ch } = K;
+      if(s === 0 || s === 10 || (s === 7 && bar % 2)) breakKick(t, g*0.6);
+      if(s === 4 || s === 12) breakSnare(t, g*0.3);
+      if(s === 9 || s === 15 || (s === 14 && bar === 3)) breakSnare(t, g*0.08);   // ghosts
+      if(s % 2 === 0) hat(t, g*0.05, s === 14);
+      if(s % 4 === 2) ride(t, g*0.02);
+      const bass = { 0:[0, 0.45], 6:[0, 0.16], 10:[0, 0.4], 14:[bar % 2 ? 10 : 7, 0.16] }[s];
+      if(bass) reese(t, f(ch.root + bass[0]), bass[1], g*0.3, 760);
+      if(s === 0) pad(t, ch.notes.slice(1).map(n => n + 12), f, { dur:1.5, vol:g*0.04, attack:0.35, hold:0.75, fc:1200, spread:5 });
+      if(s === 14 || (s === 6 && bar % 2)) stab(t, ch.notes.slice(1, 4).map(n => n + 12), f, 0.12, g*0.05, 2600);
+      if(bar >= 2 && (s === 2 || s === 5 || s === 8)){
+        const n = ch.notes[1 + Math.floor(hash(i, 7) * 4)] + 24;
+        tone(t, { type:'sine', f0:f(n), dur:0.3, vol:g*0.07, attack:0.01, bus:musicBus, send:musicDelay });
+      }
+    }
+  },
+
+  // 📻 LO-FI DOWNLINK — lo-fi hip-hop. Swung boom-bap under a Rhodes playing
+  // rootless ninths, a round sine bass that walks into the next chord, tape
+  // hiss, vinyl crackle, and the whole bus low-passed at 4 kHz so it sounds
+  // like it came off a cassette. Nothing here is in a hurry.
+  lofi: {
+    bpm: { hub:74, game:90 }, chords: CHORD_SETS.jazz, swing: 0.2, tone: 4200, gain: { hub:0.54, game:0.74 },
+    delay: { beats:1, fb:0.25, wet:0.12, damp:1600 },
+    hub(K){ lofiBar(K, false); },
+    game(K){ lofiBar(K, true); }
+  },
+
+  // 🕸️ THEREMIN TERROR — a horror score, not a song. The hub has no beat at
+  // all: a cellar drone, a clock, a theremin that slides between the chord
+  // tones and never settles, a cluster or a swell of breath where the loop
+  // wants a downbeat. A round adds the heartbeat — one pulse per beat at 104,
+  // which is a frightened one — ticking, and tremolo strings in the back half.
+  horror: {
+    bpm: { hub:60, game:104 }, chords: CHORD_SETS.haunt, swing: 0, tone: 18000, gain: { hub:0.18, game:0.31 },
+    delay: { beats:0.75, fb:0.45, wet:0.3, damp:1800 },
+    hub(K){
+      const { s, bar, i, t, g, f, ch } = K;
+      if(s === 0) drone(t, f(ch.root), K.barLen + 0.8, g*0.3, 1.4, 240);
+      if(s % 4 === 0) tick(t, g*0.1, s % 8 ? 1300 : 1500);
+      // The theremin: starts somewhere in the bar, slides a chord tone to
+      // another — and on the last bar, up to the tritone and stays there.
+      const start = [2, 5, 9][Math.floor(hash(bar, 17) * 3)];
+      if(s === start){
+        const a = ch.notes[2 + Math.floor(hash(i, 19) * 3)] + 24;
+        const b = bar === 3 ? ch.root + 30 : ch.notes[1 + Math.floor(hash(i, 23) * 4)] + 24;
+        glide(t, { f0:f(a), f1:f(b), dur:2.4, vol:g*0.11, vib:5.2, depth:35, attack:0.3, hold:1.2, bus:musicBus, send:musicDelay });
+      }
+      if(bar === 1 && s === 12) stab(t, [ch.notes[1] + 24, ch.notes[1] + 25], f, 1.0, g*0.05, 1500);
+      if(bar === 3 && s === 8) noise(t, { dur:1.9, vol:g*0.1, attack:1.6, filter:'bandpass', fc:300, fc1:2200, q:1.5, bus:musicBus });
+      if(bar === 3 && s === 15) tom(t, g*0.35, 90);
+      if(bar % 2 && s === 13 && hash(i, 29) < 0.6) noise(t, { dur:0.35, vol:g*0.03, filter:'bandpass', fc:900, fc1:1400, q:9, bus:musicBus });
+    },
+    game(K){
+      const { s, bar, t, g, f, ch } = K;
+      if(s % 4 === 0) heart(t, g*(s % 8 ? 0.45 : 0.6));
+      if(s % 2 === 0) tick(t, g*0.07, s % 4 ? 1800 : 2300);
+      if(s === 0) drone(t, f(ch.root), K.barLen + 0.3, g*0.26, 0.4, 320);
+      // Tremolo strings: the chord's third and fifth re-struck every sixteenth,
+      // in the back half of each of the first two bars, then without a break.
+      if(bar >= 2 || s >= 8){
+        [ch.notes[1] + 12, ch.notes[2] + 12].forEach((n, k) => tone(t, {
+          type:'sawtooth', f0:f(n), dur:0.07, vol:g*0.04, attack:0.004, detune:k ? 8 : -8,
+          filter:'lowpass', fc:2200, q:1, bus:musicBus }));
+      }
+      if(s === 2 && bar % 2){
+        const up = bar === 3;
+        glide(t, { f0:f(up ? ch.root + 24 : ch.notes[0] + 36), f1:f(up ? ch.root + 30 : ch.notes[2] + 24),
+                   dur:1.3, vol:g*0.12, vib:6, depth:45, attack:0.1, hold:0.5, bus:musicBus, send:musicDelay });
+      }
+      if(bar === 3 && s === 12){
+        stab(t, [ch.notes[1] + 24, ch.notes[1] + 25, ch.notes[3] + 12], f, 0.8, g*0.06, 2000);
+        noise(t, { dur:0.4, vol:g*0.1, filter:'lowpass', fc:3000, fc1:200, bus:musicBus });
+      }
+      if(bar === 1 && s === 14) tom(t, g*0.35, 80);
+    }
+  },
+
+  // 🔔 SILENT SERVER — a music box. A clockwork lullaby in D, written out over
+  // Dmaj7–Bm7–Gmaj7–A7 on a struck steel comb (three inharmonic sines), an
+  // arpeggio of softer notes filling the off-sixteenths, a tick for the
+  // mechanism and a long glassy delay for the snow. No drums. A round winds it
+  // faster and adds sleigh bells on the eighths, a pizzicato bass and a
+  // glockenspiel doubling the tune an octave up.
+  musicbox: {
+    bpm: { hub:84, game:126 }, chords: CHORD_SETS.frost, swing: 0, tone: 18000, gain: { hub:0.6, game:0.9 },
+    delay: { beats:0.75, fb:0.3, wet:0.25, damp:6000 },      // dotted eighth: between the tune's notes, never under the next one
+    hub(K){
+      const { s, bar, i, t, g, f, ch } = K;
+      const m = BOX_TUNE[i];
+      if(m) musicBox(t, f(m), 1.4, g*0.16, true);
+      if(s % 4 === 3) musicBox(t, f(ch.notes[(s >> 2) % 4] + 12), 0.5, g*0.05, false);
+      if(s === 0) musicBox(t, f(ch.root + 12), 2.0, g*0.1, true);
+      if(s % 4 === 0) tick(t, g*(s ? 0.05 : 0.08), s ? 2600 : 1500);
+      if(bar % 2 === 0 && s === 0) noise(t, { dur:2.6, vol:g*0.022, attack:1.3, filter:'bandpass', fc:7000, q:0.6, bus:musicBus });
+    },
+    game(K){
+      const { s, bar, i, t, g, f, ch } = K;
+      const m = BOX_TUNE[i];
+      if(m){
+        musicBox(t, f(m), 1.0, g*0.16, true);
+        if(bar >= 2) glock(t, f(m + 12), 0.5, g*0.05);
+      }
+      if(s % 2) musicBox(t, f(ch.notes[(s >> 1) % 4] + 12), 0.4, g*0.05, false);
+      if(s % 4 === 0) pluck(t, f(s % 8 ? ch.root + 19 : ch.root + 12), 0.3, g*0.3);   // cello register: a contrabass has no place under a music box
+      if(s % 2 === 0) sleigh(t, g*(s % 8 ? 0.03 : 0.05));
+      if(s === 4 || s === 12) block(t, g*0.12);
+    }
+  }
+};
+
+// The live drive. The default IS the Synthwave Retro drive, so an account that
+// never opens the market sounds exactly as it always has.
+let STYLE = STYLES.synthwave;
 
 function musicStep(i, t){
   const track = TRACKS[curTrack];
-  const g = track.gain;
-  const bar = Math.floor(i / 16) % 4;
-  const s = i % 16;
-  const ch = CHORDS[bar];
-  // Every frequency in the loop goes through here, so the tension lift is a
+  const bar = Math.floor(i / 16) % 4, s = i % 16;
+  // Every frequency in the loop goes through `f`, so the tension lift is a
   // genuine pitch shift of the whole arrangement rather than a filter tweak on
   // one voice. `p` is 1 in the ordinary case and costs a multiply.
   const p = tensionNow;
   const f = n => mtof(n) * p;
-
-  if(curTrack === 'hub'){
-    // Pad: a slow-attack triad held across the whole bar, plus a bass root.
-    if(s === 0){
-      ch.notes.slice(0,3).forEach((n,k)=>{
-        tone(t, { type:VOICE.pad, f0:f(n+12), dur:2.4, vol:g*0.07, attack:0.5,
-                  filter:'lowpass', fc:700, fc1:1400, q:1, detune:(k-1)*7, bus:musicBus });
-      });
-      tone(t, { type:'triangle', f0:f(ch.root-12), dur:0.9, vol:g*0.30, bus:musicBus });
-    }
-    if(s === 8) tone(t, { type:'triangle', f0:f(ch.root-12), dur:0.7, vol:g*0.22, bus:musicBus });
-    // Sparse arpeggio into the delay — this is the line you actually hum.
-    if(s % 4 === 2){
-      const n = ch.notes[(Math.floor(i/4) * 2) % ch.notes.length] + 12;
-      tone(t, { type:VOICE.lead, f0:f(n), dur:0.34, vol:g*0.10,
-                filter:'lowpass', fc:2600, bus:musicBus, send:musicDelay });
-    }
-    if(s % 8 === 4) hat(t, g*0.06);
-  } else {
-    // Round music: constant sixteenth arp, four-on-the-floor, offbeat bass.
-    if(s % 4 === 0) kick(t, g*0.55);
-    if(s === 4 || s === 12) snare(t, g*0.20);
-    if(s % 2 === 1) hat(t, g*0.055, s % 8 === 7);
-
-    const bassPat = [1,0,0,1,0,0,1,0,1,0,0,1,0,1,0,0];
-    if(bassPat[s]){
-      tone(t, { type:VOICE.bass, f0:f(ch.root-12), dur:0.13, vol:g*0.34,
-                filter:'lowpass', fc:420, fc1:180, q:4, bus:musicBus });
-    }
-    const arpSeq = [0,2,4,5,4,2,3,1];
-    const n = ch.notes[arpSeq[s % 8] % ch.notes.length] + 12;
-    tone(t, { type:VOICE.lead, f0:f(n), dur:0.11, vol:g*0.075,
-              filter:'lowpass', fc:3200, bus:musicBus, send:musicDelay });
-    if(s === 0){
-      tone(t, { type:VOICE.pad, f0:f(ch.notes[0]+12), dur:1.6, vol:g*0.05, attack:0.3,
-                filter:'lowpass', fc:900, detune:6, bus:musicBus });
-    }
-  }
+  STYLE[curTrack]({
+    s, bar, i, t, f,
+    g: track.gain * ((STYLE.gain && STYLE.gain[curTrack]) || 1),
+    ch: STYLE.chords[bar], next: STYLE.chords[(bar + 1) % 4],
+    barLen: 240 / track.bpm
+  });
 }
 
 function scheduler(){
@@ -533,10 +1051,43 @@ function scheduler(){
   // alone the catch-up loop would then dump forty steps into the same instant.
   if(nextStepTime < ctx.currentTime) nextStepTime = ctx.currentTime + 0.05;
   while(nextStepTime < ctx.currentTime + LOOKAHEAD){
-    try{ musicStep(stepIdx, nextStepTime); }catch(e){}
+    // Swing: the off-sixteenths land late by the drive's fraction of a step.
+    const late = (stepIdx & 1) ? STYLE.swing * stepDur : 0;
+    try{ musicStep(stepIdx, nextStepTime + late); }catch(e){}
     nextStepTime += stepDur;
     stepIdx = (stepIdx + 1) % 64;                  // four bars, then round again
   }
+}
+
+// ── 🎚️ THE DRIVE'S EFFECTS ──
+// The delay line and the music bus's tone are the drive's as much as its notes
+// are: a cassette has no top end and a cartridge has no echo. Retuned on every
+// start, because the echo is timed in beats and the two tracks run at
+// different tempos. Everything is ramped — a hard jump on a running delay line
+// is a click.
+function applyStyleFx(track){
+  if(!ctx) return;
+  const d = STYLE.delay, t = ctx.currentTime;
+  const beat = 60 / TRACKS[track].bpm;
+  const want = Math.min(0.98, d.beats * beat);
+  if(Math.abs(musicDelay.delayTime.value - want) > 0.004){
+    // A delay line whose time is RAMPED while it holds echoes replays them at
+    // the ramp's rate — the old arrangement's tail zipping up an octave or
+    // three on every equip. So the line is muted, the time jumped, and the
+    // echo faded back in: the first new notes land in the muted window, and
+    // their echoes are what fades up.
+    delayWet.gain.cancelScheduledValues(t); delayFb.gain.cancelScheduledValues(t);
+    delayWet.gain.setTargetAtTime(0, t, 0.01);
+    delayFb.gain.setTargetAtTime(0, t, 0.01);
+    musicDelay.delayTime.setValueAtTime(want, t + 0.08);
+    delayWet.gain.setTargetAtTime(d.wet, t + 0.09, 0.05);
+    delayFb.gain.setTargetAtTime(d.fb, t + 0.09, 0.05);
+  } else {
+    delayFb.gain.setTargetAtTime(d.fb, t, 0.05);
+    delayWet.gain.setTargetAtTime(d.wet, t, 0.05);
+  }
+  delayDamp.frequency.setTargetAtTime(d.damp, t, 0.05);
+  musicTone.frequency.setTargetAtTime(STYLE.tone || 18000, t, 0.05);
 }
 
 function music(track){
@@ -552,19 +1103,7 @@ function music(track){
   const c = ensureCtx();
   if(!c || c.state !== 'running') return;          // retried from unlock()
   curTrack = track;
-
-  // ── TEMPO-SYNC THE DELAY ──
-  // Everything else in the sequencer derives its timing from bpm; the delay was
-  // the one exception, pinned at a flat 300ms. Against the hub's 326ms eighth
-  // that lands every echo 26ms early, and against the round's 220ms eighth it
-  // lines up with nothing at all — so each repeat fell between the sixteenths
-  // of the arp it was echoing, and 0.34 feedback stacked that error up until
-  // the groove smeared. A dotted eighth (45/bpm) is the synthwave staple: the
-  // echo syncopates ACROSS the sixteenths and lands back on the beat every
-  // three, which is what makes an arpeggio cascade instead of blur.
-  const dotted8 = 45 / TRACKS[track].bpm;            // 0.489s @ 92 · 0.331s @ 136
-  musicDelay.delayTime.setTargetAtTime(dotted8, c.currentTime, 0.02);
-
+  applyStyleFx(track);
   stepIdx = 0;
   nextStepTime = c.currentTime + 0.08;
   schedTimer = setInterval(scheduler, TICK_MS);
@@ -576,32 +1115,28 @@ function stopScheduler(){
 function resumeMusic(){ if(pendingTrack && !schedTimer) music(pendingTrack); }
 
 // ── 🎵 DRIVE CONTROL ──
-// Re-voices the sequencer in place. The loop is restarted only when something
-// that affects TIMING changed, because the delay line is tuned per-bpm at the
-// top of music() — a chord swap alone can take effect on the next bar with no
-// audible seam at all.
+// Hands the sequencer a different arrangement. `style` names an entry in
+// STYLES; `bpm` may override the style's tempos. A running loop is restarted
+// from its first bar, because a new arrangement mid-bar is a different song
+// starting on its third beat — the old one's pads ring out under it, which is
+// as close to a crossfade as a step sequencer gets.
 function setDrive(cfg){
   cfg = cfg || {};
-  const set = CHORD_SETS[cfg.chords] || CHORD_SETS.classic;
-  const voice = cfg.voice === 'square'   ? { pad:'square',   lead:'square',   bass:'square'   }
-              : cfg.voice === 'triangle' ? { pad:'triangle', lead:'triangle', bass:'sine'     }
-              // 🔔 COLD BOOT's bells: pure sines under a triangle lead, so the
-              // arpeggio rings through the delay like struck glass.
-              : cfg.voice === 'bell'     ? { pad:'sine',     lead:'triangle', bass:'triangle' }
-              :                            { pad:'sawtooth', lead:'square',   bass:'sawtooth' };
+  const style = STYLES[cfg.style] || STYLES.synthwave;
   const bpm = cfg.bpm || {};
-  const retimed = (bpm.hub  && bpm.hub  !== TRACKS.hub.bpm) ||
-                  (bpm.game && bpm.game !== TRACKS.game.bpm);
+  const hubBpm = bpm.hub || style.bpm.hub, gameBpm = bpm.game || style.bpm.game;
+  const changed = style !== STYLE || hubBpm !== TRACKS.hub.bpm || gameBpm !== TRACKS.game.bpm;
 
-  CHORDS = set;
-  VOICE  = voice;
-  TRACKS.hub.bpm  = TRACKS.hub.baseBpm  = bpm.hub  || 92;
-  TRACKS.game.bpm = TRACKS.game.baseBpm = bpm.game || 136;
+  STYLE = style;
+  TRACKS.hub.bpm  = TRACKS.hub.baseBpm  = hubBpm;
+  TRACKS.game.bpm = TRACKS.game.baseBpm = gameBpm;
 
-  if(retimed && curTrack){
+  if(changed && curTrack){
     const want = curTrack;
     curTrack = null;          // force music() past its "already running" guard
     music(want);
+  } else if(ctx){
+    applyStyleFx(curTrack || pendingTrack || 'hub');
   }
 }
 
@@ -682,11 +1217,13 @@ return {
   play, music, unlock, bindToggle, bindIndicator, repaintAll, cycleMode, setMode, setVolume,
   setDrive, setTension,
   get tense(){ return tension > 1; },
-  // 🎵 The round track's tempo, which a Music Drive retunes. Published because
+  // 🎵 The round track's tempo, which a Music Drive sets. Published because
   // PULSE SYNC charts its beats against it: the mission's notes land on the
   // music the player chose rather than on a number of its own, and a drive
   // bought in the market genuinely changes how that mission feels to play.
-  get bpm(){ return TRACKS.game.bpm; },
+  // It is the FELT tempo: drum & bass runs its clock at 174 and publishes 87,
+  // so the chart lands on the kick and the snare, not on every sixteenth.
+  get bpm(){ return Math.round(TRACKS.game.bpm * (STYLE.pulse || 1)); },
   get mode(){ return mode; },
   get volume(){ return volume; },
   modeToast(){ return MODE_UI[mode].toast; },
@@ -5141,28 +5678,24 @@ const SHOP_ITEMS = {
   ],
 
   // ── 🎵 MUSIC DRIVES ──
-  // Each drive re-voices the sequencer at the top of this file rather than
-  // loading a file: `bpm` retimes it, `chords` swaps the progression, `voice`
-  // picks the oscillator flavours. See applyMusicDrive().
+  // Each drive is a whole arrangement in the sequencer at the top of this
+  // file — its own genre, not a re-voicing of the house loop: `style` names
+  // the entry in the engine's STYLES table that owns its kit, bass, chords,
+  // lead, swing, delay and tone. See applyMusicDrive(). The ids are stable
+  // because they are what a profile's `owned` and `equipped` lists hold.
   drives: [
-    { id:'drv-synthwave', name:'Synthwave Retro',   price:0,  emoji:'🌆', default:true,
-      desc:'The house sound. Am–F–C–G, warm saw pad, dotted-eighth delay.',
-      bpm:{hub:92,game:136}, chords:'classic', voice:'saw' },
-    { id:'drv-darksynth', name:'Darksynth Terminal',price:8,  emoji:'🕯️',
-      desc:'Slower, minor and mean. Detuned square bass under a narrow filter.',
-      bpm:{hub:80,game:124}, chords:'dark',    voice:'square' },
-    { id:'drv-outrun',    name:'Outrun Overdrive',  price:12, emoji:'🏎️',
-      desc:'Pushed tempo, bright major lift — built for a clock you are losing.',
-      bpm:{hub:104,game:152}, chords:'bright', voice:'saw' },
-    { id:'drv-vapor',     name:'Vapor Cathedral',   price:16, emoji:'🌫️',
-      desc:'Half-speed drift, wide triangles, long tails. Calm before a Meltdown.',
-      bpm:{hub:68,game:108}, chords:'vapor',   voice:'triangle' },
-    { id:'drv-haunt',     name:'Theremin Terror',   price:14, emoji:'🕸️', event:'haunt',
-      desc:'Minor and wrong-footed — a Phrygian shudder and a dominant that never resolves. Best after dark.',
-      bpm:{hub:76,game:128}, chords:'haunt',   voice:'triangle' },
-    { id:'drv-frost',     name:'Silent Server',     price:14, emoji:'🔔', event:'coldboot',
-      desc:'Bell tones over a slow D-major turnaround — the one warm thing left running on a frozen grid.',
-      bpm:{hub:84,game:132}, chords:'frost',   voice:'bell' }
+    { id:'drv-synthwave', name:'Synthwave Retro',    price:0,  emoji:'🌆', default:true, style:'synthwave',
+      desc:'The house sound. Am–F–C–G on a warm saw pad, four on the floor, a sixteenth arpeggio into a dotted-eighth delay.' },
+    { id:'drv-darksynth', name:'Breakbeat Terminal', price:8,  emoji:'🥁', style:'dnb',
+      desc:'Drum & bass. Two-step breaks at 174, a reese bass growling under the filter, cold minor-ninth pads. The hub is the intro; the round is the drop.' },
+    { id:'drv-outrun',    name:'8-Bit Cartridge',    price:12, emoji:'👾', style:'chip',
+      desc:'Chiptune. Two pulse channels, a triangle bass and a noise channel — nothing a 1985 cartridge could not do, and a tune you will be humming.' },
+    { id:'drv-vapor',     name:'Lo-Fi Downlink',     price:16, emoji:'📻', style:'lofi',
+      desc:'Lo-fi hip-hop. Swung boom-bap, dusty Rhodes ninths, tape hiss and vinyl crackle through a cassette-dull filter. Beats to decrypt to.' },
+    { id:'drv-haunt',     name:'Theremin Terror',    price:14, emoji:'🕸️', event:'haunt', style:'horror',
+      desc:'A horror score. No beat in the hub — a cellar drone, a clock, and a theremin that will not hold still. The round has a heartbeat. Best after dark.' },
+    { id:'drv-frost',     name:'Silent Server',      price:14, emoji:'🔔', event:'coldboot', style:'musicbox',
+      desc:'A music box. A clockwork lullaby in D on struck glass, a snowfall of echoes, sleigh bells in the round — and no drums at all.' }
   ],
 
   // ── 💀 EXIT STATES ──
@@ -12621,10 +13154,12 @@ function startFrequencyModulator(){
 // which is why it earns a slot rather than being a reskin of Node Hacker.
 //
 // It is charted against the round soundtrack's actual tempo — SFX.bpm, which a
-// Music Drive retunes. That is the point of building it: the drives were four
+// Music Drive sets. That is the point of building it: the drives were four
 // cosmetics that changed what you heard and nothing else, and here a drive
-// bought in the market changes how a mission plays. Synthwave at 136 and a
-// slower dark-synth chart are genuinely different rounds.
+// bought in the market changes how a mission plays. Synthwave at 136, lo-fi at
+// 90 and a chiptune at 160 are genuinely different rounds — and drum & bass
+// publishes its felt half-time pulse (87), so its chart lands on the kick and
+// the snare rather than on every sixteenth of a 174 clock.
 //
 // Three lanes, not four, because the shared control pad has exactly three
 // direction keys (◀ ACTION ▶) and a fourth lane would have needed a pad of its
@@ -12657,8 +13192,11 @@ function startPulseSync(){
 
   // Windows, in seconds. Generous on purpose: this is an arcade mission on a
   // phone, not a rhythm sim, and the interesting failure is missing the note
-  // rather than being eleven milliseconds late on it.
-  const PERFECT = 0.075, GOOD = 0.145, LATE = 0.215;
+  // rather than being eleven milliseconds late on it. The widest window stops
+  // short of half a beat, so at the fastest drive a legally late tap can never
+  // be nearer the NEXT note in the lane than the one it was meant for.
+  const PERFECT = 0.075, GOOD = 0.145, LATE = Math.min(0.215, beat / 2 - 0.005);
+  const tempoNorm = Math.min(1.6, Math.max(1, 136 / bpm));
 
   let time = Math.round(50 * getTimeModifier());
   let score = 0, combo = 0, bestCombo = 0, hits = 0, perfects = 0, misses = 0;
@@ -12747,7 +13285,10 @@ function startPulseSync(){
     // Combo multiplies but saturates: an uninterrupted round should pay for
     // being uninterrupted without making the first thirty seconds irrelevant.
     const mult = 1 + Math.min(1, Math.floor(combo / 8) * 0.25);
-    const gain = Math.round(base * mult);
+    // A slow drive charts fewer notes in the same fifty seconds, so each pays
+    // more: a flawless lo-fi round and a flawless chiptune round both reach
+    // the cap. The cosmetic changes how the round FEELS, never what it pays.
+    const gain = Math.round(base * mult * tempoNorm);
     score += gain;
     setLive(capRaw(1400, score));
     snd(grade === 'PERFECT' ? 'match' : 'correct', { semi: Math.min(combo, 14) });
@@ -17373,10 +17914,12 @@ function loadReplay(){
 // A drive is a cosmetic, so it is applied on the same pass as the colour and
 // the pointer (applyEquippedCosmetics). The engine owns everything about what a
 // drive SOUNDS like; this only decides which row of the table it is handed.
+// An unknown id (a profile from a build that had a drive this one does not)
+// falls back to the house sound rather than to silence.
 function applyMusicDrive(){
   if(!window.SFX || !SFX.setDrive) return;
   const item = (user && findItem('drives', user.equipped && user.equipped.drives)) || SHOP_ITEMS.drives[0];
-  SFX.setDrive({ bpm: item.bpm, chords: item.chords, voice: item.voice });
+  SFX.setDrive({ style: item.style, bpm: item.bpm });
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -23482,7 +24025,7 @@ const PIA_MODELS = {
 // pictures. The renderer uploads them (TEXTURE SETS) and builds the mip chains.
 //   PI_ASSETS[name] = { v: 1, size: 2048, paintRef: 0.35, kappa: 1,
 //                       maps: { base: [mime, b64], nrm: [...], orm: [...], mask: [...], emis?: [...] } }
-const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=66' };                          // set name → chunk file (filled by the v62 splice)
+const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=67' };                          // set name → chunk file (filled by the v62 splice)
 const piAssetState = Object.create(null);           // set name → { blobs, meta, loading }
 function piAssetChunk(file){
   return new Promise((resolve, reject) => {
@@ -40627,7 +41170,8 @@ P.games.rhythm = function(){
   const FAR = 150;                       // world units a pulse travels in FALL
   const SPEED = FAR / FALL;
 
-  const PERFECT = 0.075, GOOD = 0.145, LATE = 0.215;
+  const PERFECT = 0.075, GOOD = 0.145, LATE = Math.min(0.215, beat / 2 - 0.005);
+  const tempoNorm = Math.min(1.6, Math.max(1, 136 / bpm));
 
   let time = Math.round(50 * getTimeModifier());
   let score = 0, combo = 0, bestCombo = 0, hits = 0, perfects = 0, misses = 0;
@@ -40705,7 +41249,7 @@ P.games.rhythm = function(){
     combo++;
     bestCombo = Math.max(bestCombo, combo);
     const mult = 1 + Math.min(1, Math.floor(combo / 8) * 0.25);
-    const gain = Math.round(base * mult);
+    const gain = Math.round(base * mult * tempoNorm);   // see the 2D build: a slow drive charts fewer notes
     score += gain;
     setLive(capRaw(1400, score));
     snd(grade === 'PERFECT' ? 'match' : 'correct', { semi: Math.min(combo, 14) });
