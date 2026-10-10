@@ -211,6 +211,7 @@ function noise(t0, o){
   const atk = o.attack == null ? 0.003 : o.attack;
   g.gain.setValueAtTime(0.0001, t0);
   g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + atk);
+  if(o.hold) g.gain.setValueAtTime(Math.max(0.0002, vol), t0 + Math.min(o.dur, atk + o.hold));
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + o.dur);
 
   src.connect(f); f.connect(g); g.connect(o.bus || sfxBus);
@@ -273,8 +274,12 @@ function fm(t0, o){
   g.gain.setValueAtTime(0.0001, t0);
   g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + atk);
   g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  car.connect(g); g.connect(o.bus || sfxBus);
-  if(o.send) g.connect(o.send);
+  // AC-coupled: at ratio 1 (the Rhodes) the lower sideband sits at 0 Hz, and
+  // without this every chord arrived with a sub-sonic DC thump under it that
+  // recirculated through the delay.
+  const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 30;
+  car.connect(g); g.connect(hp); hp.connect(o.bus || sfxBus);
+  if(o.send) hp.connect(o.send);
   car.start(t0); mod.start(t0);
   car.stop(t0 + dur + 0.03); mod.stop(t0 + dur + 0.03);
   return car;
@@ -619,9 +624,13 @@ function dustSnare(t, vol){
 function dustHat(t, vol, open){ noise(t, { dur: open?0.11:0.035, vol:vol, filter:'bandpass', fc:6200, q:0.9, bus:musicBus }); }
 // Horror and the music box have no kit at all: a heartbeat, a clock, a tom in
 // the dark, a wood block, sleigh bells.
+// The sweeps start in the low mids and a puff of low-passed noise rides each
+// thump: a pure 70 Hz sine is felt on headphones and simply absent on a phone.
 function heart(t, vol){
-  tone(t,        { type:'sine', f0:72, f1:38, dur:0.26, vol:vol,     attack:0.01, bus:musicBus });
-  tone(t + 0.17, { type:'sine', f0:62, f1:34, dur:0.22, vol:vol*0.7, attack:0.01, bus:musicBus });
+  tone(t,        { type:'sine', f0:120, f1:42, dur:0.26, vol:vol,     attack:0.01, bus:musicBus });
+  noise(t,       { dur:0.035, vol:vol*0.5, filter:'lowpass', fc:700, fc1:150, bus:musicBus });
+  tone(t + 0.17, { type:'sine', f0:100, f1:38, dur:0.22, vol:vol*0.7, attack:0.01, bus:musicBus });
+  noise(t + 0.17,{ dur:0.03,  vol:vol*0.3, filter:'lowpass', fc:600, fc1:150, bus:musicBus });
 }
 function tick(t, vol, f){
   tone(t, { type:'triangle', f0:f||2400, dur:0.014, vol:vol, bus:musicBus });
@@ -642,26 +651,49 @@ function sleigh(t, vol){
 // Detuned chord with a slow attack: the pad every style but the chip has.
 function pad(t, notes, f, o){
   notes.forEach((n, k) => tone(t, {
-    type:o.type||'sawtooth', f0:f(n), dur:o.dur, vol:o.vol, attack:o.attack==null?0.5:o.attack,
+    type:o.type||'sawtooth', f0:f(n), dur:o.dur, vol:o.vol, attack:o.attack==null?0.5:o.attack, hold:o.hold,
     filter:'lowpass', fc:o.fc||900, fc1:o.fc1, q:o.q||1, detune:(k-1)*(o.spread==null?7:o.spread),
     bus:musicBus, send:o.send?musicDelay:null }));
 }
 // Reese: two saws a few cents apart beating against each other inside a
-// low-pass — the growl under every drum & bass record since 1994. A sine an
-// octave down keeps it a bass on a phone speaker.
+// low-pass — the growl under every drum & bass record since 1994. A sine
+// under it carries the fundamental on a phone speaker: an octave down for the
+// G and A bars, the root itself for D2 and B♭1, which are already under 80 Hz
+// and would otherwise drop to 29–37 Hz and vanish.
 function reese(t, hz, dur, vol, fc){
   [-14, 14].forEach(d => tone(t, { type:'sawtooth', f0:hz, dur:dur, vol:vol*0.5, attack:0.01, detune:d,
                                    filter:'lowpass', fc:fc, fc1:fc*0.35, q:3, bus:musicBus }));
-  tone(t, { type:'sine', f0:hz*0.5, dur:dur, vol:vol*0.8, attack:0.01, bus:musicBus });
+  tone(t, { type:'sine', f0:hz < 80 ? hz : hz*0.5, dur:dur, vol:vol*0.8, attack:0.01, bus:musicBus });
 }
 // Rhodes: a carrier FM'd at its own pitch with a low index that decays — the
 // bark on the hit, the mellow sustain — and a tiny octave 'tine' on top. Two
-// of them a few cents apart is the chorus every lo-fi record runs its keys
-// through.
+// carriers a few cents apart are the chorus every lo-fi record runs its keys
+// through; they share one modulator, because a four-note chord is built in a
+// single scheduler tick and every node here is one more synchronous
+// allocation on the main thread of a phone that is also drawing a mission.
+// AC-coupled like fm(): ratio-1 FM has a sideband at 0 Hz.
 function rhodes(t, hz, dur, vol){
-  fm(t, { f0:hz,       ratio:1, index:0.9, indexEnd:0.03, indexDur:dur*0.45, dur:dur, vol:vol*0.6, attack:0.004, bus:musicBus, send:musicDelay });
-  fm(t, { f0:hz*1.003, ratio:1, index:0.7, indexEnd:0.03, indexDur:dur*0.45, dur:dur, vol:vol*0.5, attack:0.006, bus:musicBus });
-  tone(t, { type:'sine', f0:hz*2, dur:0.12, vol:vol*0.12, bus:musicBus });
+  const f0 = clampF(hz), idx = f0 * 0.9;
+  const mod = ctx.createOscillator(), depth = ctx.createGain(), hp = ctx.createBiquadFilter();
+  mod.type = 'sine'; mod.frequency.setValueAtTime(f0, t);
+  depth.gain.setValueAtTime(idx, t);
+  depth.gain.exponentialRampToValueAtTime(idx * 0.03, t + dur * 0.45);
+  mod.connect(depth);
+  hp.type = 'highpass'; hp.frequency.value = 30;
+  [[1, 0.6, 0.004], [1.003, 0.5, 0.006]].forEach(([ratio, v, atk]) => {
+    const car = ctx.createOscillator(), g = ctx.createGain();
+    g.gain.value = 0.0001;                        // see tone(): never born at 1.0
+    car.type = 'sine'; car.frequency.setValueAtTime(f0 * ratio, t);
+    depth.connect(car.frequency);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol * v), t + atk);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    car.connect(g); g.connect(hp);
+    car.start(t); car.stop(t + dur + 0.03);
+  });
+  hp.connect(musicBus); hp.connect(musicDelay);
+  mod.start(t); mod.stop(t + dur + 0.03);
+  tone(t, { type:'sine', f0:f0*2, dur:0.12, vol:vol*0.12, bus:musicBus });
 }
 // Music box: a struck steel comb is a fundamental with two inharmonic partials
 // that die far faster than it does. Three sines, no filter, nothing else.
@@ -685,10 +717,15 @@ function stab(t, notes, f, dur, vol, fc){
 }
 // Horror drone: a saw an octave below a detuned saw, under a filter so low that
 // only the beating between them gets out, with a sine sub so it is felt first.
+// Held at level until the last 0.9 s (tone() otherwise decays from the moment
+// the attack ends, and a drone that is 20 dB down by mid-bar is a swell), and
+// the octave drop is skipped for roots already under 80 Hz: the Dm and E7
+// bars would otherwise sit at 37–41 Hz, below what a phone can play.
 function drone(t, hz, dur, vol, attack, fc){
-  tone(t, { type:'sawtooth', f0:hz*0.5, dur:dur, vol:vol*0.7,  attack:attack,     filter:'lowpass', fc:fc,     q:2, bus:musicBus });
-  tone(t, { type:'sawtooth', f0:hz,     dur:dur, vol:vol*0.45, attack:attack*1.2, filter:'lowpass', fc:fc*1.4, q:2, detune:7, bus:musicBus });
-  tone(t, { type:'sine',     f0:hz*0.5, dur:dur, vol:vol*0.8,  attack:attack*0.8, bus:musicBus });
+  const lo = hz < 80 ? hz : hz * 0.5, end = dur - 0.9;
+  tone(t, { type:'sawtooth', f0:lo, dur:dur, vol:vol*0.7,  attack:attack,     hold:end - attack,     filter:'lowpass', fc:fc,     q:2, bus:musicBus });
+  tone(t, { type:'sawtooth', f0:hz, dur:dur, vol:vol*0.45, attack:attack*1.2, hold:end - attack*1.2, filter:'lowpass', fc:fc*1.4, q:2, detune:7, bus:musicBus });
+  tone(t, { type:'sine',     f0:lo, dur:dur, vol:vol*0.8,  attack:attack*0.8, hold:end - attack*0.8, bus:musicBus });
 }
 // A NES pulse channel: on at full volume, then off. No filter, no attack.
 function nesPulse(t, hz, duty, dur, vol){
@@ -703,7 +740,7 @@ function eighths(a){ const out = []; a.forEach(n => out.push(n, 0)); return out;
 // 👾 Over C–Am–F–G. The hub plays it in eighths; a round gets the sixteenth riff.
 const CHIP_HUB = eighths([
   76,79,84,79, 76,79,81,79,   81,84,88,84, 81, 0,79,76,
-  77,81,84,81, 77,81,86,84,   83,86,79, 0, 83,86,89,86 ]);
+  77,81,84,81, 77,81,86,84,   83,86,79, 0, 83,86,89,77 ]);
 const CHIP_GAME = [
   84, 0,79,84, 88,84,79, 0, 76,79,84, 0, 88, 0,91, 0,
   81, 0,84,81, 88,84,81, 0, 76,81,84, 0, 88, 0,84, 0,
@@ -715,7 +752,7 @@ const BOX_TUNE = [
   78, 0,81, 0, 86, 0,81, 0, 78, 0,76, 0, 74, 0, 0, 0,
   83, 0,86, 0, 90, 0,86, 0, 83, 0,81, 0, 78, 0, 0, 0,
   79, 0,83, 0, 86, 0,83, 0, 79, 0,78, 0, 76, 0,74, 0,
-  73, 0,76, 0, 81, 0,76, 0, 85, 0,83, 0, 81, 0,79, 0 ];
+  73, 0,76, 0, 81, 0,85, 0, 83, 0,81, 0, 79, 0, 0, 0 ];
 
 // 📻 The lo-fi bar, shared by both tracks: a round is the same record with the
 // hats doubled, the kick busier and the keys pushed harder.
@@ -732,7 +769,9 @@ function lofiBar(K, round){
   // chord is played rather than hit.
   const voicing = ch.notes.slice(1).map(n => n + 12);
   if(s === 0 || s === 10 || (round && s === 6)){
-    const dur = s === 0 ? 1.5 : 0.7;
+    // In a round the chord on the one ends as the s=6 push begins, so two
+    // four-note chords never ring at once (the hub has no push to meet).
+    const dur = s === 0 ? (round ? 1.0 : 1.5) : 0.7;
     voicing.forEach((n, k) => rhodes(t + k * 0.012, f(n), dur, g*(s === 0 ? 0.11 : 0.08)));
   }
   // Bass: root, fifth, root, then a semitone under the next root to lead in.
@@ -745,7 +784,7 @@ function lofiBar(K, round){
   }
   if(round && bar % 2 && s === 6) stab(t, voicing.slice(0, 3), f, 0.1, g*0.035, 1500);
   // Tape: hiss for the whole bar, crackle wherever it lands.
-  if(s === 0) noise(t, { dur:K.barLen + 0.1, vol:g*0.012, attack:0.2, filter:'bandpass', fc:5000, q:0.5, bus:musicBus });
+  if(s === 0) noise(t, { dur:K.barLen + 0.1, vol:g*0.012, attack:0.2, hold:K.barLen - 0.3, filter:'bandpass', fc:5000, q:0.5, bus:musicBus });
   if(Math.random() < 0.3) noise(t + Math.random() * 0.1, { dur:0.008, vol:g*0.05, filter:'highpass', fc:3000, bus:musicBus });
 }
 
@@ -815,15 +854,15 @@ const STYLES = {
   // bouncing octaves, and the noise channel for a kit. Bone dry: there was no
   // reverb on a cartridge. The tune is written out, not generated.
   chip: {
-    bpm: { hub:118, game:160 }, chords: CHORD_SETS.chip, swing: 0, tone: 18000, gain: { hub:0.33, game:0.55 },
+    bpm: { hub:118, game:160 }, chords: CHORD_SETS.chip, swing: 0, tone: 18000, gain: { hub:0.37, game:0.6 },
     delay: { beats:0.5, fb:0, wet:0, damp:8000 },
     hub(K){
       const { s, bar, i, t, g, f, ch } = K;
       const m = CHIP_HUB[i];
-      if(m) nesPulse(t, f(m), 0.25, 0.21, g*0.13);
-      nesPulse(t, f(ch.notes[s % 3] + 24), 0.125, 0.09, g*0.045);
-      if(s % 4 === 0) tone(t, { type:'triangle', f0:f(ch.root),    dur:0.14, vol:g*0.42, hold:0.09, bus:musicBus });
-      if(s % 4 === 2) tone(t, { type:'triangle', f0:f(ch.root+12), dur:0.11, vol:g*0.34, hold:0.06, bus:musicBus });
+      if(m) nesPulse(t, f(m), 0.25, 0.21, g*0.2);
+      nesPulse(t, f(ch.notes[(s + bar) % 3] + 24), 0.125, 0.09, g*0.045);
+      if(s % 4 === 0) tone(t, { type:'triangle', f0:f(ch.root),    dur:0.14, vol:g*0.34, hold:0.09, bus:musicBus });
+      if(s % 4 === 2) tone(t, { type:'triangle', f0:f(ch.root+12), dur:0.11, vol:g*0.28, hold:0.06, bus:musicBus });
       if(s === 0 || s === 8 || (s === 10 && bar % 2)) nesKick(t, g*0.3);
       if(s === 4 || s === 12) nesSnare(t, g*0.16);
       if(s % 4 === 2) nesHat(t, g*0.05, false);
@@ -831,12 +870,12 @@ const STYLES = {
     game(K){
       const { s, bar, i, t, g, f, ch } = K;
       const m = CHIP_GAME[i];
-      if(m) nesPulse(t, f(m), 0.25, 0.085, g*0.13);
+      if(m) nesPulse(t, f(m), 0.25, 0.085, g*0.2);
       nesPulse(t, f(ch.notes[(s + bar) % 3] + 24), 0.125, 0.07, g*0.04);
       // Bass: root and octave on alternate eighths, the fifth to turn the bar.
       if(s % 2 === 0){
         const n = s === 14 ? ch.root + 7 : (s % 4 ? ch.root + 12 : ch.root);
-        tone(t, { type:'triangle', f0:f(n), dur:0.1, vol:g*0.4, hold:0.06, bus:musicBus });
+        tone(t, { type:'triangle', f0:f(n), dur:0.1, vol:g*0.32, hold:0.06, bus:musicBus });
       }
       if(s === 0 || s === 6 || s === 8 || (s === 11 && bar % 2 === 0)) nesKick(t, g*0.32);
       if(s === 4 || s === 12) nesSnare(t, g*0.17);
@@ -851,12 +890,12 @@ const STYLES = {
   // the same record's intro — half-time, pads and sub, a rim on the backbeat —
   // and the drop is the round starting.
   dnb: {
-    bpm: { hub:87, game:174 }, chords: CHORD_SETS.dnb, swing: 0, tone: 18000, pulse: 0.5, gain: { hub:0.68, game:0.95 },
+    bpm: { hub:87, game:174 }, chords: CHORD_SETS.dnb, swing: 0, tone: 18000, pulse: 0.5, gain: { hub:0.57, game:0.8 },
     delay: { beats:0.5, fb:0.3, wet:0.2, damp:3200 },
     hub(K){
       const { s, bar, i, t, g, f, ch } = K;
       if(s === 0){
-        pad(t, ch.notes.slice(1).map(n => n + 12), f, { dur:2.9, vol:g*0.055, attack:0.9, fc:900, fc1:600, spread:6, send:true });
+        pad(t, ch.notes.slice(1).map(n => n + 12), f, { dur:2.9, vol:g*0.055, attack:0.9, hold:1.5, fc:900, fc1:600, spread:6, send:true });
         tone(t, { type:'sine', f0:f(ch.root), dur:1.3, vol:g*0.42, attack:0.02, bus:musicBus });
       }
       if(s === 10) tone(t, { type:'sine', f0:f(ch.root), dur:0.8, vol:g*0.34, attack:0.02, bus:musicBus });
@@ -877,7 +916,7 @@ const STYLES = {
       if(s % 4 === 2) ride(t, g*0.02);
       const bass = { 0:[0, 0.45], 6:[0, 0.16], 10:[0, 0.4], 14:[bar % 2 ? 10 : 7, 0.16] }[s];
       if(bass) reese(t, f(ch.root + bass[0]), bass[1], g*0.3, 760);
-      if(s === 0) pad(t, ch.notes.slice(1).map(n => n + 12), f, { dur:1.5, vol:g*0.04, attack:0.35, fc:1200, spread:5 });
+      if(s === 0) pad(t, ch.notes.slice(1).map(n => n + 12), f, { dur:1.5, vol:g*0.04, attack:0.35, hold:0.75, fc:1200, spread:5 });
       if(s === 14 || (s === 6 && bar % 2)) stab(t, ch.notes.slice(1, 4).map(n => n + 12), f, 0.12, g*0.05, 2600);
       if(bar >= 2 && (s === 2 || s === 5 || s === 8)){
         const n = ch.notes[1 + Math.floor(hash(i, 7) * 4)] + 24;
@@ -903,12 +942,12 @@ const STYLES = {
   // wants a downbeat. A round adds the heartbeat — one pulse per beat at 104,
   // which is a frightened one — ticking, and tremolo strings in the back half.
   horror: {
-    bpm: { hub:60, game:104 }, chords: CHORD_SETS.haunt, swing: 0, tone: 18000, gain: { hub:0.45, game:0.59 },
+    bpm: { hub:60, game:104 }, chords: CHORD_SETS.haunt, swing: 0, tone: 18000, gain: { hub:0.18, game:0.31 },
     delay: { beats:0.75, fb:0.45, wet:0.3, damp:1800 },
     hub(K){
       const { s, bar, i, t, g, f, ch } = K;
       if(s === 0) drone(t, f(ch.root), K.barLen + 0.8, g*0.3, 1.4, 240);
-      if(s === 0 || s === 8) tick(t, g*0.1, 1500);
+      if(s % 4 === 0) tick(t, g*0.1, s % 8 ? 1300 : 1500);
       // The theremin: starts somewhere in the bar, slides a chord tone to
       // another — and on the last bar, up to the tritone and stays there.
       const start = [2, 5, 9][Math.floor(hash(bar, 17) * 3)];
@@ -955,12 +994,12 @@ const STYLES = {
   // glockenspiel doubling the tune an octave up.
   musicbox: {
     bpm: { hub:84, game:126 }, chords: CHORD_SETS.frost, swing: 0, tone: 18000, gain: { hub:0.6, game:0.9 },
-    delay: { beats:0.5, fb:0.42, wet:0.32, damp:6000 },
+    delay: { beats:0.75, fb:0.3, wet:0.25, damp:6000 },      // dotted eighth: between the tune's notes, never under the next one
     hub(K){
       const { s, bar, i, t, g, f, ch } = K;
       const m = BOX_TUNE[i];
       if(m) musicBox(t, f(m), 1.4, g*0.16, true);
-      if(s % 2) musicBox(t, f(ch.notes[(s >> 1) % 4] + 12), 0.5, g*0.05, false);
+      if(s % 4 === 3) musicBox(t, f(ch.notes[(s >> 2) % 4] + 12), 0.5, g*0.05, false);
       if(s === 0) musicBox(t, f(ch.root + 12), 2.0, g*0.1, true);
       if(s % 4 === 0) tick(t, g*(s ? 0.05 : 0.08), s ? 2600 : 1500);
       if(bar % 2 === 0 && s === 0) noise(t, { dur:2.6, vol:g*0.022, attack:1.3, filter:'bandpass', fc:7000, q:0.6, bus:musicBus });
@@ -973,7 +1012,7 @@ const STYLES = {
         if(bar >= 2) glock(t, f(m + 12), 0.5, g*0.05);
       }
       if(s % 2) musicBox(t, f(ch.notes[(s >> 1) % 4] + 12), 0.4, g*0.05, false);
-      if(s % 4 === 0) pluck(t, f(s % 8 ? ch.root + 7 : ch.root), 0.3, g*0.3);
+      if(s % 4 === 0) pluck(t, f(s % 8 ? ch.root + 19 : ch.root + 12), 0.3, g*0.3);   // cello register: a contrabass has no place under a music box
       if(s % 2 === 0) sleigh(t, g*(s % 8 ? 0.03 : 0.05));
       if(s === 4 || s === 12) block(t, g*0.12);
     }
@@ -1030,9 +1069,23 @@ function applyStyleFx(track){
   if(!ctx) return;
   const d = STYLE.delay, t = ctx.currentTime;
   const beat = 60 / TRACKS[track].bpm;
-  musicDelay.delayTime.setTargetAtTime(Math.min(0.98, d.beats * beat), t, 0.02);
-  delayFb.gain.setTargetAtTime(d.fb, t, 0.05);
-  delayWet.gain.setTargetAtTime(d.wet, t, 0.05);
+  const want = Math.min(0.98, d.beats * beat);
+  if(Math.abs(musicDelay.delayTime.value - want) > 0.004){
+    // A delay line whose time is RAMPED while it holds echoes replays them at
+    // the ramp's rate — the old arrangement's tail zipping up an octave or
+    // three on every equip. So the line is muted, the time jumped, and the
+    // echo faded back in: the first new notes land in the muted window, and
+    // their echoes are what fades up.
+    delayWet.gain.cancelScheduledValues(t); delayFb.gain.cancelScheduledValues(t);
+    delayWet.gain.setTargetAtTime(0, t, 0.01);
+    delayFb.gain.setTargetAtTime(0, t, 0.01);
+    musicDelay.delayTime.setValueAtTime(want, t + 0.08);
+    delayWet.gain.setTargetAtTime(d.wet, t + 0.09, 0.05);
+    delayFb.gain.setTargetAtTime(d.fb, t + 0.09, 0.05);
+  } else {
+    delayFb.gain.setTargetAtTime(d.fb, t, 0.05);
+    delayWet.gain.setTargetAtTime(d.wet, t, 0.05);
+  }
   delayDamp.frequency.setTargetAtTime(d.damp, t, 0.05);
   musicTone.frequency.setTargetAtTime(STYLE.tone || 18000, t, 0.05);
 }
@@ -13139,8 +13192,11 @@ function startPulseSync(){
 
   // Windows, in seconds. Generous on purpose: this is an arcade mission on a
   // phone, not a rhythm sim, and the interesting failure is missing the note
-  // rather than being eleven milliseconds late on it.
-  const PERFECT = 0.075, GOOD = 0.145, LATE = 0.215;
+  // rather than being eleven milliseconds late on it. The widest window stops
+  // short of half a beat, so at the fastest drive a legally late tap can never
+  // be nearer the NEXT note in the lane than the one it was meant for.
+  const PERFECT = 0.075, GOOD = 0.145, LATE = Math.min(0.215, beat / 2 - 0.005);
+  const tempoNorm = Math.min(1.6, Math.max(1, 136 / bpm));
 
   let time = Math.round(50 * getTimeModifier());
   let score = 0, combo = 0, bestCombo = 0, hits = 0, perfects = 0, misses = 0;
@@ -13229,7 +13285,10 @@ function startPulseSync(){
     // Combo multiplies but saturates: an uninterrupted round should pay for
     // being uninterrupted without making the first thirty seconds irrelevant.
     const mult = 1 + Math.min(1, Math.floor(combo / 8) * 0.25);
-    const gain = Math.round(base * mult);
+    // A slow drive charts fewer notes in the same fifty seconds, so each pays
+    // more: a flawless lo-fi round and a flawless chiptune round both reach
+    // the cap. The cosmetic changes how the round FEELS, never what it pays.
+    const gain = Math.round(base * mult * tempoNorm);
     score += gain;
     setLive(capRaw(1400, score));
     snd(grade === 'PERFECT' ? 'match' : 'correct', { semi: Math.min(combo, 14) });
@@ -41111,7 +41170,8 @@ P.games.rhythm = function(){
   const FAR = 150;                       // world units a pulse travels in FALL
   const SPEED = FAR / FALL;
 
-  const PERFECT = 0.075, GOOD = 0.145, LATE = 0.215;
+  const PERFECT = 0.075, GOOD = 0.145, LATE = Math.min(0.215, beat / 2 - 0.005);
+  const tempoNorm = Math.min(1.6, Math.max(1, 136 / bpm));
 
   let time = Math.round(50 * getTimeModifier());
   let score = 0, combo = 0, bestCombo = 0, hits = 0, perfects = 0, misses = 0;
@@ -41189,7 +41249,7 @@ P.games.rhythm = function(){
     combo++;
     bestCombo = Math.max(bestCombo, combo);
     const mult = 1 + Math.min(1, Math.floor(combo / 8) * 0.25);
-    const gain = Math.round(base * mult);
+    const gain = Math.round(base * mult * tempoNorm);   // see the 2D build: a slow drive charts fewer notes
     score += gain;
     setLive(capRaw(1400, score));
     snd(grade === 'PERFECT' ? 'match' : 'correct', { semi: Math.min(combo, 14) });
