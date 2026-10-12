@@ -157,3 +157,62 @@ test('parity: today\'s app.js has no client catalogue yet (Phase 2 adds it)', ()
   const quiet = { log(){}, error(){} };
   assert.equal(parity.main([], quiet), 2);
 });
+
+// ── webhook endpoint ──────────────────────────────────────────────────────
+const hook = require('../../../scripts/create-webhook-endpoint');
+const { HANDLED } = require('../../src/webhook');
+const { STRIPE_API_VERSION } = require('../../src/config');
+
+function fakeHooks(existing = []){
+  const eps = [...existing], calls = [];
+  return {
+    eps, calls,
+    webhookEndpoints: {
+      list(q){ calls.push(['list', q]); const snap = [...eps]; return { async *[Symbol.asyncIterator](){ for(const e of snap) yield e; } }; },
+      async create(p){ calls.push(['create', p]); const ep = { id: 'we_new', livemode: false, secret: 'test-signing-secret-from-fake', ...p }; eps.push(ep); return ep; },
+      async del(id){ calls.push(['del', id]); eps.splice(eps.findIndex(e => e.id === id), 1); return { id, deleted: true }; }
+    }
+  };
+}
+const URL_ = 'https://asia-southeast1-neal-with-roblox.cloudfunctions.net/shop/webhook';
+const io = () => { const o = { stdout: '', stderr: [] }; o.out = s => { o.stdout += s; }; o.err = s => { o.stderr.push(s); }; return o; };
+
+test('webhook endpoint: a dry run creates nothing and lists the seven handled events', async () => {
+  const st = fakeHooks(), o = io();
+  assert.equal(await hook.main([URL_], { STRIPE_SECRET_KEY: 'sk_test_abc' }, o, st), 0);
+  assert.equal(st.calls.filter(c => c[0] === 'create').length, 0);
+  assert.equal(o.stdout, '', 'nothing on stdout without --apply');
+  assert.deepEqual([...hook.EVENTS].sort(), [...HANDLED].sort());
+  assert.equal(hook.EVENTS.length, 7);
+});
+
+test('webhook endpoint: --apply creates it on the pinned API version and prints ONLY the secret, no newline', async () => {
+  const st = fakeHooks(), o = io();
+  assert.equal(await hook.main([URL_, '--apply'], { STRIPE_SECRET_KEY: 'sk_test_abc' }, o, st), 0);
+  const [, params] = st.calls.find(c => c[0] === 'create');
+  assert.equal(params.url, URL_);
+  assert.equal(params.api_version, STRIPE_API_VERSION);
+  assert.deepEqual([...params.enabled_events].sort(), [...HANDLED].sort());
+  assert.equal(o.stdout, 'test-signing-secret-from-fake');
+});
+
+test('webhook endpoint: an existing endpoint for the URL is refused, or replaced with --replace', async () => {
+  const old = { id: 'we_old', url: URL_ };
+  let st = fakeHooks([old]), o = io();
+  assert.equal(await hook.main([URL_, '--apply'], { STRIPE_SECRET_KEY: 'sk_test_abc' }, o, st), 2);
+  assert.equal(st.calls.filter(c => c[0] === 'create').length, 0);
+  st = fakeHooks([old]); o = io();
+  assert.equal(await hook.main([URL_, '--apply', '--replace'], { STRIPE_SECRET_KEY: 'sk_test_abc' }, o, st), 0);
+  assert.deepEqual(st.calls.filter(c => c[0] === 'del'), [['del', 'we_old']]);
+  assert.equal(st.eps.length, 1);
+  assert.equal(st.eps[0].id, 'we_new');
+});
+
+test('webhook endpoint: bad URL, missing key, and the live guard', async () => {
+  const st = fakeHooks(), o = io();
+  assert.equal(await hook.main(['http://example.com/webhook'], { STRIPE_SECRET_KEY: 'sk_test_abc' }, o, st), 2);
+  assert.equal(await hook.main(['https://example.com/checkout'], { STRIPE_SECRET_KEY: 'sk_test_abc' }, o, st), 2);
+  assert.equal(await hook.main([URL_], { STRIPE_SECRET_KEY: '' }, o, st), 2);
+  assert.equal(await hook.main([URL_, '--apply'], { STRIPE_SECRET_KEY: 'sk_live_abc' }, o, st), 2);
+  assert.equal(st.calls.length, 0);
+});
