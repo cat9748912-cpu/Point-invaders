@@ -99,7 +99,8 @@ footer{margin-top:44px;color:var(--dim);font-size:.92rem;border-top:1px solid va
 
   <h2>Who else is involved</h2>
   <ul>
-    <li><strong>Google Firebase:</strong> sign-in (Authentication), the game database (Realtime Database, hosted in Singapore) and the purchase server (Cloud Functions, Singapore). Firebase also processes technical data such as IP addresses to run and secure the service.</li>
+    <li><strong>Google Firebase:</strong> sign-in (Authentication) and the game database (Realtime Database, hosted in Singapore). Firebase also processes technical data such as IP addresses to run and secure the service.</li>
+    <li><strong>Cloudflare:</strong> runs our purchase server (Cloudflare Workers), which receives your purchase requests and the payment provider’s notifications. Cloudflare processes technical data such as IP addresses to run and secure it, and keeps the server’s logs (player ID, item and order references, never card details) for a few days.</li>
     <li><strong>Stripe and Link:</strong> checkout and payment, as merchant of record.</li>
     <li><strong>Formspree:</strong> delivers feedback to our inbox.</li>
     <li><strong>GitHub Pages:</strong> hosts the website and keeps ordinary server logs.</li>
