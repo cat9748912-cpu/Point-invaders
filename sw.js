@@ -1,7 +1,7 @@
 // Bump this string on every deploy. activate() deletes every cache that isn't
 // the current one, so changing it is what evicts the previous version's files
 // from returning players' devices.
-const CACHE = 'point-invaders-v83';
+const CACHE = 'point-invaders-v84';
 
 // Relative so this works both at the domain root and under /Point-invaders/.
 // Just the three real files — the icon and the manifest are built inside
@@ -13,9 +13,9 @@ const CACHE = 'point-invaders-v83';
 const SHELL = [
   './',
   './index.html',
-  './app.js?v=83',
-  './style.css?v=83',
-  './assets/ship62.js?v=83'   // v62: the ship's texture set (loaded on first draw)
+  './app.js?v=84',
+  './style.css?v=84',
+  './assets/ship62.js?v=84'   // v62: the ship's texture set (loaded on first draw)
 ];
 
 // The Firebase SDK. These are immutable, version-pinned library files, NOT live
@@ -67,12 +67,24 @@ self.addEventListener('fetch', e => {
 
   // Navigations: network first so a deploy is picked up, cache as the fallback
   // that makes the game reachable on a dead connection.
+  // v84 — 🔐 Only the arcade ITSELF is stored as the offline shell: the scope
+  // root or index.html (any ?query — a challenge link, a checkout's return —
+  // is still the arcade), and only a successful answer. Every navigation used to
+  // be stored as './index.html', so a visit to the Terms page (legal/*.html, § 46)
+  // or a mistyped address and its 404 replaced the game, and the next offline
+  // launch opened the Terms or the 404. Other pages are still fetched and shown;
+  // they are just never kept as the game.
   if (req.mode === 'navigate') {
+    const scope = new URL(self.registration.scope).pathname;
+    const path = new URL(req.url).pathname;
+    const isShellNav = path === scope || path === scope + 'index.html';
     e.respondWith(
       fetch(req)
         .then(res => {
-          const copy = res.clone();
-          caches.open(CACHE).then(c => c.put('./index.html', copy));
+          if (isShellNav && res && res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE).then(c => c.put('./index.html', copy));
+          }
           return res;
         })
         .catch(() => caches.match('./index.html').then(r => r || caches.match('./')))

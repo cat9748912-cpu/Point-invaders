@@ -24405,7 +24405,7 @@ const PIA_MODELS = {
 // pictures. The renderer uploads them (TEXTURE SETS) and builds the mip chains.
 //   PI_ASSETS[name] = { v: 1, size: 2048, paintRef: 0.35, kappa: 1,
 //                       maps: { base: [mime, b64], nrm: [...], orm: [...], mask: [...], emis?: [...] } }
-const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=83' };                          // set name → chunk file (filled by the v62 splice)
+const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=84' };                          // set name → chunk file (filled by the v62 splice)
 const piAssetState = Object.create(null);           // set name → { blobs, meta, loading }
 function piAssetChunk(file){
   return new Promise((resolve, reject) => {
