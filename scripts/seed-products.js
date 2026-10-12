@@ -3,7 +3,7 @@
 // ══════════════════════════════════════════════════════════════════════
 //  🌱 SEED PRODUCTS — the provider's catalogue, made to match ours
 // ══════════════════════════════════════════════════════════════════════
-// For every SKU in functions/src/catalog.js, makes sure the provider has:
+// For every SKU in worker/src/catalog.js, makes sure the provider has:
 //   · a PRODUCT  (metadata.pi_sku = sku) with the name, description and tax code;
 //   · an active PRICE with lookup_key = sku, the amount in USD, tax INCLUSIVE.
 //
@@ -17,18 +17,19 @@
 // (transfer_lookup_key), and the old one is archived. Buyers with a checkout
 // page already open finish at the old price; everyone after sees the new one.
 //
-// Usage (from the repository root, after `npm ci` in functions/):
-//   read -rs STRIPE_SECRET_KEY && export STRIPE_SECRET_KEY        # paste the key; not echoed, not in history
+// Usage (from the repository root, or from worker/ as ../scripts/…, after `npm ci` in worker/):
+//   read -rs STRIPE_SECRET_KEY && export STRIPE_SECRET_KEY        # macOS/Linux: paste the key; not echoed, not in history
+//   set /p STRIPE_SECRET_KEY=Paste the key:                       # Windows Command Prompt (shown while pasted, not saved)
 //   node scripts/seed-products.js                  # DRY RUN: prints what it would do, changes nothing
 //   node scripts/seed-products.js --apply          # does it (test key)
 //   node scripts/seed-products.js --apply --live   # does it (live key; refused without --live)
 //
-// The key needs write access to Products and Prices. The function's own
+// The key needs write access to Products and Prices. The Worker's own
 // restricted key does not have it, by design: use a separate key for this.
 const path = require('node:path');
 
-const FUNCTIONS = path.join(__dirname, '..', 'functions');
-const catalog = require(path.join(FUNCTIONS, 'src', 'catalog.js'));
+const WORKER = path.join(__dirname, '..', 'worker');
+const catalog = require(path.join(WORKER, 'src', 'catalog.js'));
 
 /** What the product should look like. */
 function wantProduct(s){
@@ -128,8 +129,8 @@ async function main(argv = process.argv.slice(2), env = process.env, out = conso
   if(mode === 'live' && !wantLive){ out.error('Refusing: that is a LIVE key. Add --live if you mean it.'); return 2; }
   if(mode === 'test' && wantLive){ out.error('Refusing: --live given with a TEST key.'); return 2; }
 
-  const Stripe = require(require.resolve('stripe', { paths: [FUNCTIONS] }));
-  const { STRIPE_API_VERSION } = require(path.join(FUNCTIONS, 'src', 'config.js'));
+  const Stripe = require(require.resolve('stripe', { paths: [WORKER] }));
+  const { STRIPE_API_VERSION } = require(path.join(WORKER, 'src', 'config.js'));
   const stripe = new Stripe(key, { apiVersion: STRIPE_API_VERSION, maxNetworkRetries: 2 });
 
   const steps = await plan(stripe);

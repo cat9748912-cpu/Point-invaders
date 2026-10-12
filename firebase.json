@@ -1,18 +1,9 @@
 {
-  "functions": [
-    {
-      "source": "functions",
-      "codebase": "shop",
-      "runtime": "nodejs24",
-      "ignore": ["node_modules", ".git", "test", "firebase-debug.log*", "*.local"]
-    }
-  ],
   "emulators": {
     "hub": { "host": "127.0.0.1", "port": 4400 },
     "logging": { "host": "127.0.0.1", "port": 4500 },
     "auth": { "host": "127.0.0.1", "port": 9099 },
     "database": { "host": "127.0.0.1", "port": 9000 },
-    "functions": { "host": "127.0.0.1", "port": 5001 },
     "ui": { "enabled": false },
     "singleProjectMode": true
   }

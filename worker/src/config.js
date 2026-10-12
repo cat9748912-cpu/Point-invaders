@@ -2,8 +2,8 @@
 // ══════════════════════════════════════════════════════════════════════
 //  ⚙️ CONSTANTS — where the shop lives and how hard it pushes back
 // ══════════════════════════════════════════════════════════════════════
-// Nothing here is a secret. The provider keys are Functions secrets, read at
-// runtime in index.js and never written down anywhere in this repository.
+// Nothing here is a secret. The keys are the Worker's secrets, read at run time
+// in worker.mjs and never written down anywhere in this repository.
 
 /** The address the arcade is served from, and the default return address. */
 const SITE = 'https://pointinvaders.com';
@@ -17,15 +17,16 @@ const PROD_ORIGINS = Object.freeze([SITE, 'https://cat9748912-cpu.github.io']);
  *  checkout return there instead of to SITE. */
 const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?$/;
 
+/** The Firebase project: its ID tokens name it as their audience. */
+const PROJECT_ID = 'neal-with-roblox';
+
 /** The project's Realtime Database. Given explicitly: the instance is regional
- *  (asia-southeast1), and the Admin SDK must not guess a us-central1 URL. */
+ *  (asia-southeast1), so its address can't be derived from the project id. */
 const DATABASE_URL = 'https://neal-with-roblox-default-rtdb.asia-southeast1.firebasedatabase.app';
 
-/** Beside the database. */
-const REGION = 'asia-southeast1';
-
-/** The provider API version: the one stripe@23.0.0 pins. The webhook endpoint
- *  must be created on the same version so its payloads match this code. */
+/** The provider API version: the one stripe@23.0.0 pins (the setup scripts use
+ *  that library; the Worker sends this version with every request it makes). The
+ *  webhook endpoint must be created on the same version so its payloads match. */
 const STRIPE_API_VERSION = '2026-09-30.endive';
 
 /** One NEW checkout session per player per this many ms. */
@@ -54,7 +55,7 @@ function returnSite(origin, live, site = SITE){
 }
 
 module.exports = {
-  SITE, PROD_ORIGINS, LOCAL_ORIGIN, DATABASE_URL, REGION, STRIPE_API_VERSION,
+  SITE, PROD_ORIGINS, LOCAL_ORIGIN, PROJECT_ID, DATABASE_URL, STRIPE_API_VERSION,
   RATE_MS, REUSE_MIN_MS, SESSION_TTL_S, CLAIM_STALE_MS,
   isLiveKey, originAllowed, returnSite
 };

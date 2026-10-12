@@ -2,11 +2,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const C = require('../../src/config');
-const { applyCors, routeOf } = require('../../src/http');
+const { cors, routeOf, json, empty } = require('../../src/http');
 const catalog = require('../../src/catalog');
 const { ours } = require('../../src/webhook');
-const { keep } = require('../../src/ledger');
-const { mockReq, mockRes } = require('../helpers/http');
+const { request } = require('../helpers/http');
 
 test('live mode comes from the key prefix', () => {
   assert.equal(C.isLiveKey('sk_live_x'), true);
@@ -37,22 +36,39 @@ test('return site: never anything the caller made up', () => {
 });
 
 test('CORS headers for an allowed origin, refusal for another, nothing needed without one', () => {
-  let res = mockRes();
-  assert.deepEqual(applyCors(mockReq({ headers: { Origin: 'https://pointinvaders.com' } }), res, true), { ok: true, origin: 'https://pointinvaders.com' });
-  assert.equal(res.headers['access-control-allow-origin'], 'https://pointinvaders.com');
-  assert.equal(res.headers['access-control-allow-headers'], 'Authorization, Content-Type');
-  assert.equal(res.headers['vary'], 'Origin');
-  res = mockRes();
-  assert.equal(applyCors(mockReq({ headers: { Origin: 'https://evil.example' } }), res, false).ok, false);
-  assert.equal(res.headers['access-control-allow-origin'], undefined);
-  assert.equal(applyCors(mockReq({}), mockRes(), true).ok, true);
+  let c = cors(request({ headers: { Origin: 'https://pointinvaders.com' } }), true);
+  assert.equal(c.ok, true);
+  assert.equal(c.origin, 'https://pointinvaders.com');
+  assert.equal(c.headers['access-control-allow-origin'], 'https://pointinvaders.com');
+  assert.equal(c.headers['access-control-allow-methods'], 'POST, OPTIONS');
+  assert.equal(c.headers['access-control-allow-headers'], 'Authorization, Content-Type');
+  assert.equal(c.headers['vary'], 'Origin');
+  c = cors(request({ headers: { Origin: 'https://evil.example' } }), false);
+  assert.equal(c.ok, false);
+  assert.equal(c.headers['access-control-allow-origin'], undefined);
+  c = cors(request({}), true);
+  assert.equal(c.ok, true);
+  assert.equal(c.origin, null);
 });
 
-test('route: the last path segment, whichever URL form', () => {
-  assert.equal(routeOf({ path: '/checkout' }), 'checkout');
-  assert.equal(routeOf({ path: '/shop/checkout' }), 'checkout');
-  assert.equal(routeOf({ path: '/shop/webhook/' }), 'webhook');
-  assert.equal(routeOf({ path: '/' }), '');
+test('answers: JSON, never cached; the preflight has no body', async () => {
+  const r = json(418, { a: 1 }, { 'x-extra': 'y' });
+  assert.equal(r.status, 418);
+  assert.equal(r.headers.get('cache-control'), 'no-store');
+  assert.match(r.headers.get('content-type'), /^application\/json/);
+  assert.equal(r.headers.get('x-extra'), 'y');
+  assert.deepEqual(await r.json(), { a: 1 });
+  const e = empty(204, { vary: 'Origin' });
+  assert.equal(e.status, 204);
+  assert.equal(await e.text(), '');
+});
+
+test('route: the last path segment', () => {
+  assert.equal(routeOf(request({ path: '/checkout' })), 'checkout');
+  assert.equal(routeOf(request({ path: '/shop/checkout' })), 'checkout');
+  assert.equal(routeOf(request({ path: '/webhook/' })), 'webhook');
+  assert.equal(routeOf(request({ path: '/health?x=1', method: 'GET' })), 'health');
+  assert.equal(routeOf(request({ path: '/' })), '');
 });
 
 test('catalogue: valid, nine SKUs, labels, and its validator catches mistakes', () => {
@@ -80,9 +96,4 @@ test('a session is ours only with our metadata version, a matching uid and a kno
   assert.equal(ours({ ...s, metadata: { ...s.metadata, sku: 'gold_bars' } }), null);
   assert.equal(ours({ ...s, mode: 'subscription' }), null);
   assert.equal(ours(null), null);
-});
-
-test('keep(): "no change" is null against a null, undefined against real data', () => {
-  assert.equal(keep(null), null);
-  assert.equal(keep({ a: 1 }), undefined);
 });

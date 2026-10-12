@@ -174,7 +174,7 @@ function fakeHooks(existing = []){
     }
   };
 }
-const URL_ = 'https://asia-southeast1-neal-with-roblox.cloudfunctions.net/shop/webhook';
+const URL_ = 'https://point-invaders-shop.example.workers.dev/webhook';
 const io = () => { const o = { stdout: '', stderr: [] }; o.out = s => { o.stdout += s; }; o.err = s => { o.stderr.push(s); }; return o; };
 
 test('webhook endpoint: a dry run creates nothing and lists the seven handled events', async () => {

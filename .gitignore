@@ -1,15 +1,17 @@
-# 🔐 The payments server (functions/, docs/monetisation). Secrets live in the Functions secret manager and
+# 🔐 The payments server (worker/, docs/monetisation). Its secrets live in Cloudflare's secret store and
 # never in this repository: anything that could hold one is ignored here, before it can be committed.
-functions/.env*
-functions/.secret.local
+.dev.vars*
+.env*
 *.local
 .runtimeconfig.json
 service-account*.json
 *-firebase-adminsdk-*.json
+neal-with-roblox-*.json
 *.pem
 
-# Dependencies and emulator / CLI output.
+# Dependencies, build output, emulator and CLI files.
 node_modules/
+.wrangler/
 .firebase/
 firebase-debug.log*
 database-debug.log*

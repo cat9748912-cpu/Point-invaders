@@ -3,7 +3,7 @@
 // ══════════════════════════════════════════════════════════════════════
 //  ⚖️ CATALOGUE PARITY — the shelf and the till must agree
 // ══════════════════════════════════════════════════════════════════════
-// The server's catalogue (functions/src/catalog.js) decides what can be sold
+// The server's catalogue (worker/src/catalog.js) decides what can be sold
 // and what a payment unlocks. The game keeps its own copy (SHOP_SKUS in
 // app.js § 46) to draw the shelf. If the two drift, a card could show a price
 // the checkout will not charge, or promise an item the payment does not unlock.
@@ -25,7 +25,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const ROOT = path.join(__dirname, '..');
-const catalog = require(path.join(ROOT, 'functions', 'src', 'catalog.js'));
+const catalog = require(path.join(ROOT, 'worker', 'src', 'catalog.js'));
 
 const BEGIN = '// @shop-catalogue:begin', END = '// @shop-catalogue:end';
 

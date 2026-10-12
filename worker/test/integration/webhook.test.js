@@ -1,12 +1,13 @@
 'use strict';
-// POST /webhook against the Database emulator, with payloads signed by the real
-// provider library: grants, replays, refunds, disputes, ordering, duplicates and
-// failures half way through.
+// POST /webhook against the Database emulator, with payloads signed exactly as the
+// provider signs them: grants, replays, refunds, disputes, ordering, duplicates,
+// failures half way through, and the compare-and-swap that keeps concurrent
+// deliveries from losing each other's writes.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { SKIP, adminApp, quietLog } = require('../helpers/emu');
+const { SKIP, dbFor, quietLog } = require('../helpers/emu');
 const { fakeStripe, signedBody } = require('../helpers/fake-stripe');
-const { mockReq, mockRes } = require('../helpers/http');
+const { request, read } = require('../helpers/http');
 const E = require('../helpers/events');
 const { createApp } = require('../../src/app');
 const { makeLedger } = require('../../src/ledger');
@@ -30,28 +31,25 @@ function rig({ live = false, autoRefundDupes = true, app = A } = {}){
       return real[k](...a);
     };
   }
-  const handler = createApp({ db: app.db, auth: null, stripe, log, ledger,
+  const handler = createApp({ db: app.db, verifier: null, stripe, log, ledger,
                               cfg: { live, webhookSecret: SECRET, managed: true, autoRefundDupes, site: 'https://pointinvaders.com' } });
   async function deliver(evt, { secret = SECRET, raw, sig, method = 'POST' } = {}){
     const payload = raw !== undefined ? raw : JSON.stringify(evt);
     const headers = {};
     if(sig !== null) headers['Stripe-Signature'] = sig || signedBody(payload, secret);
-    const res = mockRes();
-    await handler(mockReq({ method, path: '/webhook', headers, rawBody: Buffer.from(payload) }), res);
-    return res;
+    return read(await handler(request({ method, path: '/webhook', headers, raw: method === 'GET' ? undefined : payload })));
   }
   return { stripe, log, count, failOnce, deliver };
 }
 
-const get = async (p, app = A) => (await app.db.ref(p).once('value')).val();
+const get = async (p, app = A) => app.db.get(p);
 const ent = (uid, sku) => get(`shop/ent/${uid}/${sku}`);
 let seq = 0;
 const newUid = () => `uid_${Date.now()}_${++seq}`;
 
 test('webhook', { skip: SKIP, concurrency: false }, async t => {
-  A = adminApp(NS);
-  t.beforeEach(async () => { await A.db.ref().remove(); });
-  t.after(async () => { await A.app.delete(); });
+  A = dbFor(NS);
+  t.beforeEach(async () => { await A.clear(); });
 
   // ── Signature ─────────────────────────────────────────────────────────
   await t.test('a bad signature → 400 and nothing is written (wrong secret, tampered body, none)', async () => {
@@ -84,7 +82,7 @@ test('webhook', { skip: SKIP, concurrency: false }, async t => {
     const { deliver } = rig();
     const uid = newUid();
     const s = E.session({ uid, sku: 'col_aurora', amount: 199 });
-    await A.db.ref(`shop/rl/${uid}/o/col_aurora`).set({ id: s.id, exp: 9e9 });
+    await A.db.set(`shop/rl/${uid}/o/col_aurora`, { id: s.id, exp: 9e9 });
     const r = await deliver(E.completed(s));
     assert.equal(r.statusCode, 200);
     assert.equal(r.body.ok, true);
@@ -253,8 +251,8 @@ test('webhook', { skip: SKIP, concurrency: false }, async t => {
     const { deliver } = rig();
     const uid = newUid();
     const s = E.session({ uid, sku: 'col_aurora', paid: false });
-    await A.db.ref(`shop/rl/${uid}/o/col_aurora`).set({ id: s.id, exp: 9e9 });
-    await A.db.ref(`shop/rl/${uid}/o/cur_comet`).set({ id: 'cs_other', exp: 9e9 });
+    await A.db.set(`shop/rl/${uid}/o/col_aurora`, { id: s.id, exp: 9e9 });
+    await A.db.set(`shop/rl/${uid}/o/cur_comet`, { id: 'cs_other', exp: 9e9 });
     assert.equal((await deliver(E.expired(s))).body.expired, true);
     assert.equal(await get(`shop/rl/${uid}/o/col_aurora`), null);
     assert.deepEqual(await get(`shop/rl/${uid}/o/cur_comet`), { id: 'cs_other', exp: 9e9 });
@@ -336,9 +334,9 @@ test('webhook', { skip: SKIP, concurrency: false }, async t => {
     const { deliver } = rig();
     const uid = newUid();
     const evt = E.completed(E.session({ uid, sku: 'col_aurora' }));
-    await A.db.ref(`shop/events/${evt.id}`).set({ t: evt.type, st: 'claimed', at: Date.now(), lm: false });
+    await A.db.set(`shop/events/${evt.id}`, { t: evt.type, st: 'claimed', at: Date.now(), lm: false });
     assert.equal((await deliver(evt)).statusCode, 409);
-    await A.db.ref(`shop/events/${evt.id}/at`).set(Date.now() - 10 * 60 * 1000);
+    await A.db.set(`shop/events/${evt.id}/at`, Date.now() - 10 * 60 * 1000);
     assert.equal((await deliver(evt)).statusCode, 200);
     assert.equal((await ent(uid, 'col_aurora')).s, 'active');
   });
@@ -377,30 +375,34 @@ test('webhook', { skip: SKIP, concurrency: false }, async t => {
     assert.equal(await get(`shop/ent/${uid}`), null);
   });
 
-  // ── The transaction trap (see ledger.js) ──────────────────────────────
-  await t.test('evidence: a naive transaction that answers "no change" to the first null aborts without asking the server', async () => {
-    const path = `shop/ent/naive/x`;
-    await A.db.ref(path).set({ ord: { cs_1: 'disputed' }, s: 'revoked' });
-    const fresh = adminApp(NS);                         // a new process: nothing cached
-    try{
-      const seen = [];
-      const r = await fresh.db.ref(path).transaction(cur => { seen.push(cur); return cur === null ? undefined : { ...cur, s: 'active' }; });
-      assert.equal(r.committed, false);
-      assert.deepEqual(seen, [null], 'called once, with null, and never with the real value');
-      assert.equal((await get(path)).s, 'revoked', 'the change was silently dropped');
-    }finally{ await fresh.app.delete(); }
+  // ── Compare-and-swap (see rtdb.js) ───────────────────────────────────
+  await t.test('compare-and-swap: a write that lands between the read and the write is not lost', async () => {
+    const path = 'shop/ent/cas/col_aurora';
+    await A.db.set(path, { ord: { cs_a: 'paid' }, s: 'active' });
+    // A client whose FIRST conditional write is preceded by someone else's write.
+    let interfered = false;
+    const sneaky = dbFor(NS, async (url, init) => {
+      if(!interfered && init && init.method === 'PUT' && init.headers && init.headers['if-match']){
+        interfered = true;
+        await A.db.update(path + '/ord', { cs_b: 'paid' });
+      }
+      return fetch(url, init);
+    });
+    const seen = [];
+    const r = await sneaky.db.transaction(path, cur => { seen.push(Object.keys(cur.ord).sort().join()); cur.ord.cs_c = 'paid'; return cur; });
+    assert.equal(r.committed, true);
+    assert.deepEqual(seen, ['cs_a', 'cs_a,cs_b'], 'refused once (412), then re-run on what the server held');
+    assert.deepEqual(Object.keys((await get(path)).ord).sort(), ['cs_a', 'cs_b', 'cs_c'], 'both writes are there');
   });
 
-  await t.test('…and the ledger does not fall into it: a won dispute applied from a fresh process restores the item', async () => {
+  await t.test('concurrent deliveries for one player and item: every order lands, the item stays active', async () => {
     const uid = newUid();
-    const s = E.session({ uid, sku: 'col_aurora' });
-    await rig().deliver(E.completed(s));
-    await rig().deliver(E.disputeCreated({ pi: s.payment_intent }));
-    const fresh = adminApp(NS);
-    try{
-      const r = await rig({ app: fresh }).deliver(E.disputeClosed({ pi: s.payment_intent, status: 'won' }));
-      assert.equal(r.body.state, 'paid');
-      assert.equal((await ent(uid, 'col_aurora')).s, 'active');
-    }finally{ await fresh.app.delete(); }
+    const sessions = [1, 2, 3, 4].map(() => E.session({ uid, sku: 'col_aurora' }));
+    const results = await Promise.all(sessions.map(s => rig({ autoRefundDupes: false }).deliver(E.completed(s))));
+    assert.deepEqual(results.map(r => r.statusCode), [200, 200, 200, 200]);
+    const node = await ent(uid, 'col_aurora');
+    assert.deepEqual(Object.keys(node.ord).sort(), sessions.map(s => s.id).sort());
+    assert.equal(node.s, 'active');
+    assert.equal(Object.keys(node.dups || {}).length, 3, 'one first purchase, three duplicates flagged');
   });
 });

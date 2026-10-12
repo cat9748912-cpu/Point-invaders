@@ -1,10 +1,10 @@
 'use strict';
 // A stand-in for the Stripe client: the same method surface the server uses,
-// every call recorded, any call made to fail on demand. Webhook signing and
-// verification are the REAL library's (no network involved in either).
-const Stripe = require('stripe');
-
-const real = new Stripe('sk_test_signing_only');
+// every call recorded, any call made to fail on demand. Webhook verification is
+// the Worker's own (src/stripe.js); deliveries are signed below exactly as the
+// provider signs them, with Node's crypto, independently of the code under test.
+const crypto = require('node:crypto');
+const { verifySignature } = require('../../src/stripe');
 
 /**
  * @param {object} [o]
@@ -27,7 +27,7 @@ function fakeStripe(o = {}){
 
   const api = {
     calls, sessions, intents, chargeStore,
-    webhooks: real.webhooks,
+    webhooks: { verify: verifySignature },
     /** Make the next call(s) of `name` throw. */
     failNext(name, err = Object.assign(new Error(`fake ${name} failure`), { code: 'fake_failure' })){
       if(!failures.has(name)) failures.set(name, []);
@@ -92,9 +92,10 @@ function fakeStripe(o = {}){
   return api;
 }
 
-/** A webhook request exactly as the provider would send it: these bytes, signed. */
-function signedBody(payload, secret){
-  return real.webhooks.generateTestHeaderString({ payload, secret });
+/** The Stripe-Signature header the provider would send with these exact bytes. */
+function signedBody(payload, secret, t = Math.floor(Date.now() / 1000)){
+  const mac = crypto.createHmac('sha256', secret).update(`${t}.`).update(payload).digest('hex');
+  return `t=${t},v1=${mac}`;
 }
 
-module.exports = { fakeStripe, signedBody, real };
+module.exports = { fakeStripe, signedBody };

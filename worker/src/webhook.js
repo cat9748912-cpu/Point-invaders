@@ -20,7 +20,7 @@
 // Events this endpoint is subscribed to (RUNBOOK.md lists the same seven):
 const catalog = require('./catalog');
 const { EV } = require('./orders');
-const { send } = require('./http');
+const { json } = require('./http');
 
 const HANDLED = Object.freeze(new Set([
   'checkout.session.completed',
@@ -32,19 +32,25 @@ const HANDLED = Object.freeze(new Set([
   'charge.dispute.closed'
 ]));
 
-/** @param {object} deps  { stripe, ledger, cfg:{live, webhookSecret, autoRefundDupes}, log, now } */
-async function handleWebhook(req, res, deps){
-  const { stripe, ledger, cfg, log } = deps;
-  if(req.method !== 'POST') return send(res, 405, { error: 'method' });
+/**
+ * @param {Request} request
+ * @param {object} deps  { stripe, ledger, cfg:{live, webhookSecret, autoRefundDupes}, log, now }
+ * @returns {Promise<Response>}
+ */
+async function handleWebhook(request, deps){
+  const { stripe, ledger, cfg, log, now } = deps;
+  if(request.method !== 'POST') return json(405, { error: 'method' });
 
-  const sig = req.get('stripe-signature');
-  if(!sig || !req.rawBody) return send(res, 400, { error: 'signature' });
+  const sig = request.headers.get('stripe-signature');
+  // The bytes exactly as they arrived: the signature covers them, not a re-serialised copy.
+  const raw = new Uint8Array(await request.arrayBuffer());
+  if(!sig || !raw.length) return json(400, { error: 'signature' });
   let event;
   try{
-    event = stripe.webhooks.constructEvent(req.rawBody, sig, cfg.webhookSecret);
+    event = await stripe.webhooks.verify(raw, sig, cfg.webhookSecret, { now });
   }catch(e){
     log.warn('webhook: signature rejected', { reason: e && e.message });
-    return send(res, 400, { error: 'signature' });
+    return json(400, { error: 'signature' });
   }
 
   const ctx = { id: event.id, type: event.type };
@@ -53,28 +59,28 @@ async function handleWebhook(req, res, deps){
   // the reverse.
   if(!!event.livemode !== !!cfg.live){
     log.error('webhook: livemode does not match the key', { ...ctx, livemode: !!event.livemode });
-    return send(res, 200, { ignored: 'mode' });
+    return json(200, { ignored: 'mode' });
   }
-  if(!HANDLED.has(event.type)) return send(res, 200, { ignored: 'type' });
+  if(!HANDLED.has(event.type)) return json(200, { ignored: 'type' });
 
   let claim;
   try{ claim = await ledger.claimEvent(event.id, event.type, event.livemode); }
   catch(e){
     log.error('webhook: could not claim the event', { ...ctx, error: e && e.message });
-    return send(res, 500, { error: 'retry' });
+    return json(500, { error: 'retry' });
   }
-  if(claim === 'done') return send(res, 200, { duplicate: true });
-  if(claim === 'busy') return send(res, 409, { error: 'busy' });
+  if(claim === 'done') return json(200, { duplicate: true });
+  if(claim === 'busy') return json(409, { error: 'busy' });
 
   try{
     const out = await dispatch(event, deps);
     await ledger.finishEvent(event.id);
     log.info('webhook: handled', { ...ctx, ...out });
-    return send(res, 200, { ok: true, ...out });
+    return json(200, { ok: true, ...out });
   }catch(e){
     log.error('webhook: failed, provider will retry', { ...ctx, error: e && e.message, code: e && e.code });
     try{ await ledger.releaseEvent(event.id); }catch(x){ /* a stale claim is taken over by the retry anyway */ }
-    return send(res, 500, { error: 'retry' });
+    return json(500, { error: 'retry' });
   }
 }
 
