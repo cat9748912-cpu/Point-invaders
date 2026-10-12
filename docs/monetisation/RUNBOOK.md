@@ -1,118 +1,97 @@
-# Runbook: deploying the Restricted shelf's server
+# Runbook: putting the Restricted shelf's server online
 
 **Gate 1. Everything here is Stripe TEST mode.** Live mode is Phase 3 and has its own checklist.
-You run these steps on your own machine; nothing in this repository can deploy by itself.
+The server is a **Cloudflare Worker on the free plan**: no card and no Firebase Blaze plan. You run these steps
+on your own computer; nothing in this repository can deploy by itself.
 
-Allow about 45 minutes. The steps are in order, and each says what you should see. Where you paste a
-key, paste it only where the step says: never in a chat, an issue or a commit.
+Allow about 45 minutes. Each step says what you should see. The commands are for **Windows Command Prompt**; where
+a Mac or Linux terminal needs something different, that is given too.
+
+**Keys are passwords.** Paste one only where a step says: into a command's prompt. Never paste one into a chat
+(this one included), an email, a file or a screenshot.
 
 ---
 
 ## 0. What you need
 
-- **Node.js 22 or 24** with npm, and git.
-- **The Firebase CLI 15**: `npm install -g firebase-tools@15`.
-- **Owner access** to the Firebase project `neal-with-roblox`.
-- **A Stripe account** for your Singapore business (`dashboard.stripe.com`).
-- *Optional, only to run the emulator tests yourself:* Java 21.
-- *Optional, for step 7 if your Dashboard has no "Send test event" button:* the
-  [Stripe CLI](https://docs.stripe.com/stripe-cli).
+- **Node.js 22 or 24**: the LTS version from [nodejs.org](https://nodejs.org).
+- **A free Cloudflare account**: [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up). No card.
+- **A Stripe account** for your Singapore business ([dashboard.stripe.com](https://dashboard.stripe.com)).
+- **Owner access** to the Firebase project `neal-with-roblox`. The free Spark plan is fine.
 
-```sh
-git clone https://github.com/cat9748912-cpu/Point-invaders.git
-cd Point-invaders
-git checkout claude/stoic-cori-irbsqk
-(cd functions && npm ci)
-firebase login
-firebase use neal-with-roblox          # .firebaserc already names it; this just confirms access
+**Get the code.** Open
+[the branch on GitHub](https://github.com/cat9748912-cpu/Point-invaders/tree/claude/stoic-cori-irbsqk), click the
+green **Code** button, then **Download ZIP**, and unzip it. If you downloaded it before the server moved to
+Cloudflare, download it again: the server is now in a folder called `worker`.
+
+**Open Command Prompt in the right place.** In File Explorer, open the unzipped folder, then the folder of the same
+name inside it (you should see `worker`, `scripts` and `docs`). Click the address bar, type `cmd`, and press
+Enter. Then:
+
+```
+cd worker
+npm ci --omit=dev
 ```
 
-*Optional* (all of these pass in the build environment; see `TESTING.md`):
+That downloads Cloudflare's tool (wrangler) and Stripe's library, which the setup scripts use, in a minute or two.
+Warnings are fine. **Every command below runs in this `worker` folder.**
 
-```sh
-cd functions
-npm test             # 42 unit tests, no emulators needed
-npm run test:emu     # 105 tests (the 42 above, plus 63 against the Auth + Database emulators, including YOUR rules file; needs Java)
-npm run test:e2e     # 7 tests: the deployable function inside the Functions emulator (needs Java)
-cd ..
-```
+*Optional: run the tests yourself.* Run `npm ci` without `--omit=dev`, then `npm test` (67 tests). The emulator
+suites `npm run test:emu` (130) and `npm run test:e2e` (9) also need Java 21 and `npm install -g firebase-tools`.
 
 ---
 
-## 1. Firebase: Blaze plan and a budget alert
+## 1. Database rules
 
-Cloud Functions and Secret Manager need the pay-as-you-go **Blaze** plan.
-
-1. Open the [Firebase console](https://console.firebase.google.com/) and select **neal-with-roblox**.
-2. Bottom left: **Spark plan → Upgrade**. Choose **Blaze** and link a billing account.
-3. Set a budget so a surprise can't happen quietly. Open the
-   [Google Cloud billing page](https://console.cloud.google.com/billing), then: your billing account →
-   **Budgets & alerts** → **Create budget**.
-   - Projects: `neal-with-roblox`.
-   - Amount: e.g. **US$10 per month**.
-   - Alerts at 50 %, 90 % and 100 %, emailed to you.
-
-What it should cost at this game's size: Cloud Functions' free tier covers 2 million calls a month.
-Secret Manager is about US$0.06 per secret per month, and there are two. Storing the function's build
-image costs a few cents.
-
-Then check what is already deployed:
-
-```sh
-firebase functions:list
-```
-
-If anything other than `shop` is listed, it is left alone (our deploy only touches the `shop`
-codebase), but tell me what is there.
-
----
-
-## 2. Database rules
-
-The repository's `database.rules.json` is **your rules exactly as you pasted them, plus one `shop` block
-at the end**. It was checked mechanically: with `shop` removed, the file equals your rules.
+*Skip this if you already published them.*
 
 1. Firebase console → **Realtime Database** → **Rules**.
-2. Select all the text in the editor, replace it with the contents of `database.rules.json`, then
-   **Publish**.
-3. Update your own copy `_firebase/database.rules.json` to match (the code's comments call that copy the
-   master).
-4. *Optional:* **Data** tab → add `shop` → `cfg` → `open` = `true`. This is the kill switch. If it is
-   missing, the shop counts as open.
+2. **If you've changed your rules there since you pasted them to me, stop and tell me first.**
+3. Open `database.rules.json` (in the unzipped folder) with **Notepad**, then press **Ctrl+A** and **Ctrl+C**.
+4. In the Rules editor press **Ctrl+A**, then **Ctrl+V**, then click **Publish**.
+5. Paste the same text into your own master copy, `_firebase/database.rules.json`, and save it.
 
-**Check it** in the Rules tab's **Rules Playground**:
+The file is your rules exactly as you pasted them, plus one `shop` section that no player's browser can write to.
 
-| Simulate | Location | Authenticated | Expected |
-|---|---|---|---|
-| read | `/shop/badge` | no | ✅ allowed |
-| write | `/shop/ent/abc/col_aurora` | yes, uid `abc` | ❌ denied |
-| read | `/shop/ent/abc` | yes, uid `abc` | ✅ allowed |
-| read | `/shop/ent/abc` | yes, uid `xyz` | ❌ denied |
+---
+
+## 2. A key that lets the Worker write to the database
+
+The Worker runs outside Google, so it needs its own key: a **service account** with exactly one role. The Firebase
+project is also a Google Cloud project, and this costs nothing.
+
+1. Open [console.cloud.google.com](https://console.cloud.google.com) and pick the project **neal-with-roblox** at
+   the top.
+2. Menu ☰ → **IAM & Admin** → **Service Accounts** → **+ Create service account**.
+   - Name: `point-invaders-shop` → **Create and continue**.
+   - Role: search for and pick **Firebase Realtime Database Admin** → **Continue** → **Done**. Give it no
+     other role.
+3. Click the new account, open the **Keys** tab → **Add key** → **Create new key** → **JSON** → **Create**.
+   A file named like `neal-with-roblox-1a2b3c4d5e6f.json` downloads.
+
+That file can read and write your whole database. **Don't put it in the project folder, upload it or send it.**
+You hand it to Cloudflare in step 5, then delete it.
 
 ---
 
 ## 3. Stripe (test mode)
 
-1. [dashboard.stripe.com](https://dashboard.stripe.com): switch **Test mode** on (top right), or use a
-   **Sandbox**.
+*Skip what you've already done.*
+
+1. In [dashboard.stripe.com](https://dashboard.stripe.com), turn on **Test mode** (top right), or use a **Sandbox**.
 2. **Settings → Business → Public details:**
    - Support email: `cat9748912@gmail.com`
    - Website: `https://pointinvaders.com`
    - **Terms of service:** `https://pointinvaders.com/legal/terms.html`
    - **Privacy policy:** `https://pointinvaders.com/legal/privacy.html`
 
-   The checkout's "I agree to the Terms" box needs the Terms URL set here.
-3. **Settings → Managed Payments** ([direct link](https://dashboard.stripe.com/settings/managed-payments)).
-   Start the eligibility review and **accept the Managed Payments terms**. Your business location must be
-   Singapore. If Stripe offers Terms and Privacy fields under **Settings → Checkout**, put the same two
-   URLs there too.
-   - *If Stripe declines Managed Payments, stop and tell me.* The choices then are to sell as the
-     merchant yourself (you would handle VAT/GST registrations) or to use another merchant-of-record
-     provider. You told me you want the provider to handle taxes, so that is a decision for you, not a
-     setting.
+   The checkout's "I agree to the Terms" box needs the Terms address set here. The two pages go live when this branch
+   is merged (see the end).
+3. **Settings → Managed Payments** ([direct link](https://dashboard.stripe.com/settings/managed-payments)): start
+   the eligibility review and accept the terms. Nothing today depends on the answer. *If Stripe declines, tell me.*
 4. **Developers → API keys:**
-   - **Create restricted key.** Name it `point-invaders-shop (test)` and give it only these permissions
-     (everything else **None**):
+   - **Create restricted key.** Name it `point-invaders-shop (test)`. Set these permissions and leave everything
+     else at **None**. It starts `rk_test_`, and you paste it once, in step 5.
 
      | Resource | Permission |
      |---|---|
@@ -123,156 +102,149 @@ at the end**. It was checked mechanically: with `shop` removed, the file equals 
      | PaymentIntents | Read |
      | Charges | Read |
 
-     Copy it (it starts `rk_test_`). You will paste it once, in step 5.
-   - The standard **Secret key** (`sk_test_…`) on the same page is for the two setup scripts below, in
-     your terminal only.
+   - The standard **Secret key** (`sk_test_…`) on the same page is only for the two setup scripts, in your
+     Command Prompt.
 
 ---
 
 ## 4. Products and prices (test)
 
-From the repository root:
-
-```sh
-read -rs STRIPE_SECRET_KEY && export STRIPE_SECRET_KEY   # paste the TEST secret key (sk_test_…), press Enter; nothing is shown or saved
-node scripts/seed-products.js            # dry run
-node scripts/seed-products.js --apply
-node scripts/seed-products.js            # again: every row should now say ok / ok
-```
-
-The dry run prints:
+*If you already ran this, run just the last line: every row should say `ok`.*
 
 ```
-Mode: TEST   DRY RUN (add --apply to make these changes)
-
-sku             price  product  price object
---------------  -----  -------  ------------
-pass_supporter  $4.99  create   create
-col_aurora      $1.99  create   create
-col_ultra       $1.99  create   create
-cur_comet       $1.99  create   create
-skin_kitsune    $2.99  create   create
-skin_unicorn    $2.99  create   create
-wld_polar       $3.99  create   create
-pu_aegis        $2.99  create   create
-pu_anchor       $2.99  create   create
+set /p STRIPE_SECRET_KEY=Paste the TEST secret key (sk_test_...) and press Enter: 
+node ../scripts/seed-products.js
+node ../scripts/seed-products.js --apply
+node ../scripts/seed-products.js
 ```
 
-**Keep `STRIPE_SECRET_KEY` set for step 6.**
+On a Mac, use `read -rs STRIPE_SECRET_KEY && export STRIPE_SECRET_KEY` for the first line instead.
 
-In the Dashboard's **Product catalog** you should now see nine products. Each has one price in USD,
-marked **tax inclusive**, whose **lookup key** is the SKU. The tax code reads "Video Games – downloaded –
-non subscription – with permanent rights".
+- The first run is a preview. It says `Mode: TEST`, with `create` on every row.
+- The second creates the nine products.
+- The third should say `ok` on every row. Copy that table for me.
+
+**Keep this window open:** step 6 uses the same key. If you close it, run the `set /p` line again.
 
 ---
 
-## 5. Secrets and the first deploy
-
-```sh
-firebase functions:secrets:set STRIPE_SECRET_KEY        # paste the RESTRICTED key (rk_test_…) when asked
-printf 'not-set-yet' | firebase functions:secrets:set STRIPE_WEBHOOK_SECRET --data-file -
-firebase deploy --only functions:shop
-```
-
-The first deploy takes a few minutes, and asks a few questions:
-
-- To enable Cloud Functions, Cloud Build, Artifact Registry, Cloud Run and Secret Manager: answer **yes**.
-- A value for each of the shop's three settings, `SHOP_MANAGED_PAYMENTS`, `SHOP_AUTO_REFUND_DUPES` and
-  `SHOP_SITE`, with the right default already filled in: press **Enter** three times. The answers are saved
-  in `functions/.env.neal-with-roblox`, which git ignores, so later deploys don't ask.
-- How many days to keep old container images: press **Enter** for the default (1). It keeps storage costs
-  near zero.
-- If it ever offers to **delete** a function, answer **no** and tell me.
-
-At the end it prints a line like:
+## 5. Put the Worker online
 
 ```
-Function URL (shop(asia-southeast1)): https://shop-xxxxxxxxxx-as.a.run.app
+npx wrangler login
 ```
 
-Check both of the function's addresses:
+Your browser opens Cloudflare: sign in and click **Allow**.
 
-```sh
-curl -s https://asia-southeast1-neal-with-roblox.cloudfunctions.net/shop/health; echo
-curl -s https://shop-xxxxxxxxxx-as.a.run.app/health; echo     # the URL the deploy printed, + /health
+```
+npx wrangler deploy
 ```
 
-Both should print `{"ok":true,"live":false}`.
+If it asks to register a **workers.dev subdomain**, say yes and pick a short name. At the end it prints the
+Worker's address, like:
+
+```
+https://point-invaders-shop.<your-subdomain>.workers.dev
+```
+
+Copy it. Now give the Worker its keys; each command asks for the value and shows nothing while you paste:
+
+```
+npx wrangler secret put STRIPE_SECRET_KEY
+```
+
+When asked, paste the **restricted** key (`rk_test_…`) and press Enter.
+
+```
+npx wrangler secret put FIREBASE_SERVICE_ACCOUNT < 
+```
+
+Type that line as shown, ending with a space, but **don't press Enter yet**. Drag the downloaded
+`neal-with-roblox-….json` file onto the Command Prompt window: its path appears. Then press Enter.
+**Then delete that file** and empty the Recycle Bin. On a Mac: `npx wrangler secret put FIREBASE_SERVICE_ACCOUNT <`,
+then a space and the file's path.
+
+**Check:** open `https://point-invaders-shop.<your-subdomain>.workers.dev/health` in your browser. It should show:
+
+```
+{"ok":false,"error":"config","missing":["STRIPE_WEBHOOK_SECRET"]}
+```
+
+That is expected until step 6. Anything else missing means a `secret put` didn't take: run it again.
 
 ---
 
-## 6. The webhook endpoint (test)
+## 6. Connect Stripe to the Worker (the webhook)
 
-The script registers exactly the seven events the code handles, on the API version the code was written
-for (`2026-09-30.endive`). It then hands the signing secret straight to Firebase, so it never appears on
-screen.
+The webhook is how Stripe tells the Worker "this was paid" or "this was refunded". The script registers exactly the
+seven events the code handles, on the API version it was written for, and hands the signing secret straight to
+Cloudflare without showing it. In the same window as step 4, put your own address in the first line:
 
-```sh
-URL=https://asia-southeast1-neal-with-roblox.cloudfunctions.net/shop/webhook
-node scripts/create-webhook-endpoint.js $URL                 # dry run: shows the URL, version and events
-node scripts/create-webhook-endpoint.js $URL --apply | firebase functions:secrets:set STRIPE_WEBHOOK_SECRET --data-file - --force
-unset STRIPE_SECRET_KEY
-firebase deploy --only functions:shop                        # picks up the new secret (harmless if --force already did)
+```
+set URL=https://point-invaders-shop.<your-subdomain>.workers.dev/webhook
+node ../scripts/create-webhook-endpoint.js %URL%
+node ../scripts/create-webhook-endpoint.js %URL% --apply | npx wrangler secret put STRIPE_WEBHOOK_SECRET
 ```
 
-<details><summary>Or, by clicking in the Dashboard</summary>
+- The first script line is a preview: the address, the API version and the seven events.
+- The second creates the endpoint, and wrangler stores its secret.
 
-1. **Developers → Webhooks → Add destination.**
-2. Events from: **Your account**.
-3. API version: **2026-09-30.endive**.
-4. Events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
+On a Mac, write `URL=…` without `set`, and `$URL` instead of `%URL%`.
+
+Then close the Command Prompt window: that forgets the Stripe key it held.
+
+<details><summary>If that last line fails: create the webhook by clicking instead</summary>
+
+1. Stripe → **Developers → Webhooks → Add destination**.
+2. Events from: **Your account**. API version: **2026-09-30.endive**.
+3. Events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
    `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`,
    `charge.dispute.created`, `charge.dispute.closed`.
-5. Destination type: **Webhook endpoint**, URL as above. Create it.
-6. **Signing secret → Reveal.** Run `firebase functions:secrets:set STRIPE_WEBHOOK_SECRET`, paste it,
-   then run `firebase deploy --only functions:shop`.
+4. Destination type: **Webhook endpoint**, with your `…/webhook` address. Create it.
+5. **Signing secret → Reveal**, and copy it.
+6. In Command Prompt, in the `worker` folder: `npx wrangler secret put STRIPE_WEBHOOK_SECRET`, paste it, and press
+   Enter.
 
 </details>
 
 ---
 
-## 7. Smoke tests
+## 7. Check that it works
 
-```sh
-BASE=https://asia-southeast1-neal-with-roblox.cloudfunctions.net/shop
-curl -s $BASE/health; echo
-curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS $BASE/checkout -H 'Origin: https://pointinvaders.com' -H 'Access-Control-Request-Method: POST'
-curl -s -X POST $BASE/checkout -H 'Content-Type: application/json' -d '{"sku":"col_aurora"}'; echo
-curl -s -X POST $BASE/webhook -d '{}'; echo
-```
+1. Open `https://point-invaders-shop.<your-subdomain>.workers.dev/health`. It should now show:
 
-| Command | Expected |
-|---|---|
-| health | `{"ok":true,"live":false}` |
-| preflight from the site | `204` |
-| checkout without a sign-in | `{"error":"auth"}` |
-| webhook without a signature | `{"error":"signature"}` |
+   ```
+   {"ok":true,"live":false,"db":"ok"}
+   ```
 
-Then check that the signature works. In **Developers → Webhooks → your endpoint**, send a test event
-(`checkout.session.completed`). If there is no such button, use the Stripe CLI instead: `stripe login` (test
-mode), then `stripe trigger checkout.session.completed`.
-The delivery should show **200**, with a body like `{"ok":true,"skipped":"not_ours",…}`. Test events do
-not carry the game's metadata, so nothing is unlocked; the 200 proves the secret matches.
+   `"live":false` means test mode, which is right. `"db":"ok"` means the Worker can reach your database with its key.
+2. In Stripe → **Developers → Webhooks** → your endpoint → **Send test event** → `checkout.session.completed`.
+   The delivery should show **200**, with a response containing `"skipped":"not_ours"`. That proves the secret
+   matches, and that the Worker can write to the database: test events don't carry the game's details, so nothing is
+   unlocked. If there's no such button, install the [Stripe CLI](https://docs.stripe.com/stripe-cli), run
+   `stripe login`, then `stripe trigger checkout.session.completed`.
+3. *Optional, in Command Prompt:*
 
-Logs:
+   ```
+   curl -s -X POST %URL% -d "{}"
+   ```
 
-```sh
-firebase functions:log --only shop -n 30
-```
+   This should print `{"error":"signature"}`.
 
-Look for `webhook: handled` lines. You should never see a key, a token or an email in them.
+**Logs:** Cloudflare dashboard → **Workers & Pages** → `point-invaders-shop` → **Logs**, or run `npx wrangler tail`
+in the `worker` folder. You should never see a key, a token or an email address in them.
 
 ---
 
 ## 8. What to send me (this starts Phase 2)
 
-1. The **Function URL** the deploy printed, and the output of both `/health` calls.
-2. That the **rules are published**, and whether you added `shop/cfg`.
-3. **Managed Payments**: approved, under review, or declined.
+1. The Worker's address, and what `/health` showed.
+2. That the **rules are published**.
+3. **Managed Payments**: approved, under review or declined.
 4. The seed script's **final table**. It contains no secrets.
-5. The **delivery status** of the test event (it should be 200).
+5. The test event's **delivery status** (it should be 200).
 
-Never send a key, the signing secret, or a screenshot that shows one.
+Never send a key, the signing secret, the JSON key file, or a screenshot that shows one.
 
 ---
 
@@ -280,30 +252,41 @@ Never send a key, the signing secret, or a screenshot that shows one.
 
 | What you see | Why | Fix |
 |---|---|---|
-| deploy: "must be on the Blaze plan" | the project is on Spark | step 1 |
-| deploy: an API is not enabled, or a permission error on first deploy | the APIs are still switching on | wait a minute and run the deploy again |
-| `/health` returns an HTML **403 Forbidden** | an organisation policy blocks public functions | Cloud console → **Cloud Run** → `shop` → **Security** → allow unauthenticated invocations |
-| checkout → `{"error":"unpriced"}` | products not seeded in this mode | step 4 |
-| checkout → `{"error":"provider"}`, and the log says `session refused by provider` with a `param` | usually Managed Payments not enabled yet, or the Terms URL missing | step 3.2–3.3 |
-| webhook deliveries → **400** | the signing secret does not match the endpoint | step 6, then deploy again |
+| `/health` → `"missing":[…]` | a secret isn't set | run `npx wrangler secret put <that name>` again (step 5 or 6) |
+| `/health` → `"db":"key"` | Google refused the service account key | redo step 2.3 to make a new key, then the `FIREBASE_SERVICE_ACCOUNT` line in step 5 |
+| `/health` → `"db":"denied"` | the service account lacks its role | Google Cloud → IAM: give `point-invaders-shop` the role **Firebase Realtime Database Admin** |
+| step 2: "Service account key creation is disabled" | an organisation policy | tell me |
+| `npx wrangler deploy` → "You need to register a workers.dev subdomain" | a new Cloudflare account | Cloudflare dashboard → **Workers & Pages**, which sets one up, then run the deploy again |
+| `'npx' is not recognized` | Node.js isn't installed, or the window was opened before it was | install Node.js, then open a new Command Prompt |
+| webhook deliveries → **400** | the signing secret doesn't match the endpoint | step 6 again (or roll the secret in Stripe and `secret put` it) |
 | webhook → `{"ignored":"mode"}` | a live key with a test endpoint, or the reverse | use the same mode for both |
+| a checkout later says `unpriced` | products not seeded in this mode | step 4 |
 
 ## Undo
 
-- **Close the shop now:** Realtime Database → **Data** → `shop/cfg/open` = `false`. New checkouts are
-  refused; owned items keep working.
-- **Remove the function:** `firebase functions:delete shop --region asia-southeast1`.
-- **Rules:** paste your previous copy back, but only after removing the function.
+- **Close the shop now:** Firebase → Realtime Database → **Data** → add `shop` → `cfg` → `open` = `false`. New
+  checkouts are refused; owned items keep working.
+- **Remove the Worker:** `npx wrangler delete` in the `worker` folder.
+- **Withdraw the database key:** Google Cloud → IAM & Admin → Service Accounts → `point-invaders-shop` → **Keys** →
+  delete the key. Do this if the key file was ever seen by anyone.
+- **Stripe:** delete the webhook endpoint under Developers → Webhooks.
+- **Rules:** paste your previous copy back, but only after removing the Worker.
+
+## What it costs
+
+Nothing a month. Cloudflare's free plan allows 100,000 requests a day, far more than the shop needs. Firebase stays on
+the free Spark plan. Stripe charges per sale, nothing else. If the daily limit were ever reached, the shop would
+stop answering until the next day and the game would carry on without it; Stripe retries its webhooks for three
+days.
 
 ## About merging this branch to `main`
 
-Merging now is **safe for players**. The arcade is unchanged apart from the service-worker fix (v84) that
-keeps the new `legal/` pages and any 404 out of the offline copy of the game. Merging would also:
+Merging now is **safe for players**. The arcade is unchanged apart from the service-worker fix (v84), which keeps
+the new `legal/` pages and any 404 out of the offline copy of the game. Merging would also:
 
-- publish the three **draft** legal pages, each with a DRAFT banner. Do this if Stripe's review asks to
-  see your terms, refund policy and privacy policy.
-- make `functions/`, `scripts/`, `docs/` and the rules file readable at `pointinvaders.com/…`, as agreed
-  at Gate 0. None of them contains a secret.
+- publish the three **draft** legal pages, each with a DRAFT banner. Do this if Stripe's review asks to see your
+  terms, refund policy and privacy policy.
+- make `worker/`, `scripts/`, `docs/` and the rules file readable at `pointinvaders.com/…`, as agreed at Gate 0.
+  None of them contains a secret.
 
-If nothing needs the pages live yet, waiting for Gate 2 is just as good. If you do merge now, Phase 2
-moves to v85.
+If nothing needs the pages live yet, waiting for Gate 2 is just as good. If you do merge now, Phase 2 moves to v85.
