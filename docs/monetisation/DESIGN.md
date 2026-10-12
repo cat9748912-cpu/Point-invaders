@@ -1,11 +1,14 @@
 # 🔐 The Restricted shelf: direct payments for Point Invaders
 
-**Design: Phase 0 (audit and design) · for Gate 0 approval**
-Proposed version tag `v84`, new section `§ 46` (the next free numbers: `§ 45 · v80` is the last section,
+**Design: approved at Gate 0 (2026-10-12). Phase 1 (server, rules, legal drafts) built, awaiting Gate 1.**
+Version tag `v84`, new section `§ 46` (the next free numbers: `§ 45 · v80` is the last section,
 v81–v83 were fixes without sections, and § 41 was retired in v81).
 Audited against commit `94571c2` on branch `claude/stoic-cori-irbsqk`.
 
-Companion file: [`TESTING.md`](TESTING.md) records, for every fact in the brief, how it was checked and what was found.
+Companion files:
+- [`TESTING.md`](TESTING.md): for every fact in the brief and every test run, how it was checked and what
+  was found.
+- [`RUNBOOK.md`](RUNBOOK.md): the deploy steps.
 
 ---
 
@@ -31,21 +34,24 @@ Credits-bought ones. Paid items never touch `credits`, `totalPoints`, `owned.*` 
  owns(sku) → shelf, equip, cosmetics; mirror pi_ent_v1 for offline
 ```
 
-What I need from you at Gate 0 is in **§ 14** (decisions and open questions) and the **rules file** (§ 6).
+At Gate 0 you approved every recommendation below, answered the open questions (§ 14), and pasted the rules
+file (§ 6).
 
 ---
 
-## 1. Your decisions (D1–D10)
+## 1. Decisions (D1–D10), as agreed at Gate 0
 
-Your brief arrived with the `<<…>>` placeholders still in it for D1, D2, D4–D9 and for the rules file. Below
-is what I recommend for each. Nothing past this document gets built until you confirm or change these.
+The brief arrived with its `<<…>>` placeholders unfilled. I recommended an answer for each, and you approved
+all of them on 2026-10-12: "i approve". Your business is in **Singapore**, and you want the payment provider
+to handle taxes. Singapore is on Stripe's Managed Payments list, so D1 is settled as Stripe Checkout with
+Managed Payments.
 
-| # | Decision | Brief | Recommendation | Why |
+| # | Decision | Brief | Agreed | Why |
 |---|----------|-------|----------------|-----|
-| D1 | Payment provider | *unfilled* | **Stripe Checkout**. If your business country is eligible, turn on **Stripe Managed Payments** (Stripe/Link as merchant of record). Otherwise plain Stripe with Stripe Tax, or Paddle if Stripe isn't available where you are. | The whole architecture in the brief is Stripe-shaped (lookup keys, sessions, test card). Managed Payments keeps that exact integration and moves VAT/GST in 80+ countries, fraud and disputes to Stripe. It lists **video games** as an eligible category. See § 8.2. |
+| D1 | Payment provider | *unfilled* | **Stripe Checkout with Managed Payments** (Link as merchant of record), business in Singapore. If Stripe's review declines Managed Payments, we stop and decide (RUNBOOK § 3). | The whole architecture in the brief is Stripe-shaped (lookup keys, sessions, test card). Managed Payments keeps that exact integration and moves VAT/GST in 80+ countries, fraud and disputes to Stripe. It lists **video games** as an eligible category. See § 8.2. |
 | D2 | Server runtime | *unfilled* | **Firebase Cloud Functions 2nd gen**, project `neal-with-roblox`, region `asia-southeast1`, **Node 24**. | Same project and region as the database; the Admin SDK gives real transactions; the emulator suite lets me test rules and handlers here. A Worker would need hand-rolled token verification and REST writes. Node 20 is decommissioned on 2026-10-30; see § 2, item 1. |
 | D3 | Product model | One-time non-consumables only | **As written.** | |
-| D4 | v1 catalogue | *unfilled* | Supporter Pass, 6 Restricted cosmetics and 2 exhibition power-ups (**9 SKUs**, § 3). | Mostly data-only items that reuse existing renderers; the only new art is the pass's companion (optional). |
+| D4 | v1 catalogue | *unfilled* | Supporter Pass, 6 Restricted cosmetics and 2 exhibition power-ups (**9 SKUs**, § 3). The pass ships **without** the Beacon companion (Q8); Beacon can follow later. | All data-only items that reuse existing renderers. |
 | D5 | Paid power-up rule | *A or B unfilled* | **Either A or B: the design satisfies both.** Paid power-ups only work in **Exhibition rounds**, which are off every board and pay nothing, from their first frame (§ 3.3). | Under B, any run whose points still reached `totalPoints` would turn money into Points. Excluding the whole run is the only reading of B that keeps non-negotiable 2. That is also exactly what A needs. |
 | D6 | Prices / currency | *unfilled* | USD base: pass $4.99, colours and cursor $1.99, skins $2.99, world $3.99, power-ups $2.99. **Tax-inclusive** prices; Adaptive Pricing on (always on under Managed Payments). | Tax-inclusive means a $4.99 tag is what a player in the EU, UK or AU pays, which their consumer law expects. |
 | D7 | Refund policy | *unfilled* | **14 days, no questions asked, on request**. A refund or chargeback removes the item; a dispute you win restores it. | Simple to explain and to operate. Under Managed Payments Stripe may refund within 60 days on its own, so revocation must be automatic either way. |
@@ -58,12 +64,13 @@ is what I recommend for each. Nothing past this document gets built until you co
 ## 2. Where the code changed the brief
 
 The brief's facts held on almost every point (see `TESTING.md`). These are the places where the code, or
-the outside world, forced a different design. Each one is a proposal for you to accept or reject at Gate 0.
+the outside world, forced a different design. You accepted items 1–15 at Gate 0. Items 16 and 17 came up
+while building Phase 1.
 
 1. **Node 20 → Node 24.** Google decommissions the `nodejs20` runtime on **2026-10-30**, 18 days from now.
    After that date a function on it can no longer be deployed or updated. `firebase-tools` 15.33 lists
-   `nodejs24` as GA (deprecation 2028-04-30). `firebase-admin` 14 needs Node ≥ 22. The code will also run on
-   Node 22, so the tests run here.
+   `nodejs24` as GA (deprecation 2028-04-30). `firebase-admin` 14 needs Node ≥ 22. The code also runs on
+   Node 22, which is how the tests run here.
 2. **Premium items do not go inside `SHOP_ITEMS`.** They live in their own table (`SKU_ITEMS`, next to the
    client catalogue `SHOP_SKUS`). Two hooks join them in: `findItem()` (lookups) and `renderShop()` (shelves).
    Inside `SHOP_ITEMS` they would leak into four Credits-economy loops that iterate the table:
@@ -108,23 +115,32 @@ the outside world, forced a different design. Each one is a proposal for you to 
 11. **The service worker caches every navigation response as `./index.html`** (`sw.js:70–80`). That includes
     GitHub's 404 page and, once they exist, `legal/*.html`. Opening the Terms page inside the installed app
     would replace the cached game shell with the Terms page, and the next offline launch would show it.
-    Before any `legal/*.html` ships, the navigation handler will cache only successful navigations to the
-    shell itself (part of the v84 bump).
+    The navigation handler now caches only successful navigations to the shell itself (the v84 bump).
+    **Done in Phase 1, moved forward from Phase 2,** so that the branch is safe to merge as soon as the legal
+    pages exist. The bug was reproduced and the fix verified in
+    Chromium (TESTING.md, Phase 1).
 12. **A refused `stats` write switches off all play counters for the session** (`stSend` sets
     `ST_ON = false`, `app.js:51270`). The funnel keys `_buy_open`, `_buy_start`, `_buy_ok` and `_buy_cancel`
-    pass the client's pattern (`^_[a-z_]{1,14}$`, `app.js:51343`). They will only be added once your `stats`
-    rule is confirmed to accept them.
+    pass the client's pattern (`^_[a-z_]{1,14}$`, `app.js:51343`). Your `stats` rule accepts them too
+    (proven in the emulator, § 6), so Phase 2 adds them.
 13. **Rules tests use `@firebase/rules-unit-testing` 5.0.x with `firebase` 12.x.** Version 6 needs
     Node ≥ 24.12, and this environment has Node 22.22.
 14. **Duplicate-payment protection** beyond the brief's 409. The server reuses an open checkout session for
     the same item and refuses while a paid session's webhook is in flight. In the rare race that still pays
-    twice, the duplicate is refunded automatically if you approve (§ 14, Q6).
+    twice, the duplicate is refunded automatically, as you approved (§ 14, Q6).
 15. **Return URL follows the caller's allow-listed origin**, and only in test mode, so a test from
     `http://localhost:8080` comes back to localhost. In live mode it is always `https://pointinvaders.com/`.
+16. **The third `?v=` stamp lives in `app.js`, not `index.html`.** `assets/ship62.js` is loaded by a script
+    tag whose URL comes from `PI_ASSET_FILES` (`app.js:24408`). A bump touches `sw.js` (CACHE + 3 stamps),
+    `index.html` (2 stamps) **and** that one line of `app.js`. With the line missed, the precached chunk
+    is never read.
+17. **`maxInstances: 10`, not 5.** A 256 MiB gen-2 function gets a fraction of a CPU and therefore handles
+    one request at a time. Ten instances keep a burst of checkouts and webhook retries from queueing, at no
+    cost while idle.
 
 ---
 
-## 3. Product: the proposed v1 catalogue (D4)
+## 3. Product: the v1 catalogue (D4, agreed)
 
 ### 3.1 SKUs
 
@@ -134,12 +150,12 @@ collide with a future Credits item. Names, hex values and emoji are **placeholde
 
 | SKU | Name | Aisle | Proposed price | What it unlocks | Build cost |
 |-----|------|-------|----------------|-----------------|------------|
-| `pass_supporter` | Supporter Pass | 🔐 Restricted (top card) | $4.99 | ◆ **SUPPORTER** chip on every board and player card; **Patron** colour `col-x-patron` (`#ffe9a8`); **Beacon** companion `cmp-x-beacon`; "Supporter since …" Dossier line | Chip and colour are data. **Beacon needs a new companion look** (`look:6` in the 2D/3D/card draw code). The one real art job; can be dropped, see Q8. |
+| `pass_supporter` | Supporter Pass | 🔐 Restricted (top card) | $4.99 | ◆ **SUPPORTER** chip on every board and player card; **Patron** colour `col-x-patron` (`#ffe9a8`); "Supporter since …" Dossier line. *(The Beacon companion was deferred at Gate 0, Q8.)* | data |
 | `col_aurora` | Aurora | 🎨 Colours | $1.99 | colour `col-x-aurora` (`#7dffc8`) | data |
 | `col_ultra` | Ultraviolet | 🎨 Colours | $1.99 | colour `col-x-ultra` (`#6e5bff`) | data |
 | `cur_comet` | Comet | 🖱️ Cursors | $1.99 | cursor `cur-x-comet` ☄️, drawn with the animated **epic** cursor | data + one token (`fx:'epic'`) |
 | `skin_kitsune` | Neon Kitsune | 🤖 Skins | $2.99 | skin `skin-x-kitsune` 🦊 | data |
-| `skin_seraph` | Glitch Unicorn | 🤖 Skins | $2.99 | skin `skin-x-seraph` 🦄 | data |
+| `skin_unicorn` | Glitch Unicorn | 🤖 Skins | $2.99 | skin `skin-x-unicorn` 🦄 *(renamed from `skin_seraph` before anything was seeded, so the permanent id matches the name)* | data |
 | `wld_polar` | Polar Night | 🌍 Worlds | $3.99 | world `wld-x-polar`, a tint-only aurora sky over every 3D mission and open world | data (a `tint`, no `look`) |
 | `pu_aegis` | Aegis Field | ⚡ Power-ups (exhibition) | $2.99 | in an Exhibition round, every fatal hit is absorbed | small hooks (§ 9.7) |
 | `pu_anchor` | Chrono Anchor | ⚡ Power-ups (exhibition) | $2.99 | in an Exhibition round, **+10 s per press**, any number of times | small hooks (§ 9.7) |
@@ -190,8 +206,8 @@ A mid-round "flip to exhibition" variant of B is possible but costly: it would h
 heat, bounty, daily, campaign and challenge state halfway through. I don't recommend it.
 
 **Daily charge:** the brief suggested a `perkDay`-style daily recharge. Since an Exhibition round pays nothing,
-I recommend **unlimited use** for an owned toy (§ 14, Q7). If you want scarcity, it is a two-line change using
-the `perkDay` pattern (a UTC `dayKey()`), kept in the device mirror and not on the server.
+an owned toy has **unlimited use**, as agreed at Gate 0 (§ 14, Q7). Adding scarcity later is a two-line change
+using the `perkDay` pattern (a UTC `dayKey()`), kept in the device mirror and not on the server.
 
 ---
 
@@ -281,7 +297,7 @@ grant and its badge, with a dry run first, and the checklist runs it before the 
 No card data (it never reaches us), no email addresses (Stripe has them), no names. The only personal link is
 `uid → SKU, amount, currency, Stripe ids`, plus the public `uid → supporter since`.
 
-### 5.5 Kill switch (proposed addition)
+### 5.5 Kill switch (agreed at Gate 0)
 
 `shop/cfg = { open: true }`, written by you in the Console. With `open: false`, `/checkout` answers
 `503 {error:'closed'}` and the client shows the aisle as closed. Owned items, restore and the webhook keep
@@ -292,40 +308,48 @@ breaks nothing.
 
 ## 6. Database rules
 
-**I don't have your rules yet.** The brief's code block still says `<<PASTE THE FULL CURRENT RULES FILE HERE>>`.
-Per the code comments, the copy you keep is `_firebase/database.rules.json`. Please paste it at Gate 0. I will
-**add** the block below and change nothing else, then prove it in the emulator (§ 13). The block uses the
-brief's shape plus `cfg`. I will match your file's style (`==` or `===`, explicit or omitted `.write: false`)
-once I see it.
+You pasted your Console rules at Gate 0. `database.rules.json` in the repository is **exactly those rules,
+plus this block** after `lab`, in your file's style (`===`, explicit `.read`/`.write: false`). It was checked
+mechanically: with `shop` removed, the file deep-equals what you pasted, and the only text change is the
+inserted block.
 
 ```json
 "shop": {
   "cfg":    { ".read": true,  ".write": false },
   "badge":  { ".read": true,  ".write": false },
-  "ent":    { "$uid": { ".read": "auth != null && auth.uid == $uid", ".write": false } },
-  "orders": { "$uid": { ".read": "auth != null && auth.uid == $uid", ".write": false } },
+  "ent": {
+    "$uid": { ".read": "auth != null && auth.uid === $uid", ".write": false }
+  },
+  "orders": {
+    "$uid": { ".read": "auth != null && auth.uid === $uid", ".write": false }
+  },
   "events": { ".read": false, ".write": false },
   "pi":     { ".read": false, ".write": false },
   "rl":     { ".read": false, ".write": false }
 }
 ```
 
-Two things I will check in your file before Phase 1 relies on it:
+What your file settled:
 
-- **No grant above `shop`.** Rules cascade: a `.read` or `.write` on the root would open `shop` whatever its
-  children say. The rules tests will prove that clients cannot write anywhere under `shop`.
-- **`badge` read:** `true` lets anyone, even signed-out, read who supports. If your `players` read rule is
-  `auth != null`, I'll match it. Either works for the boards, which only load signed in.
+- **No grant above `shop`.** Your root is `".read": false, ".write": false`, so nothing cascades into `shop`.
+  The rules tests run the whole file in the emulator and prove that no client can write anywhere under
+  `shop`, its own entitlements included (TESTING.md, Phase 1).
+- **`badge` is a public read**, matching `players` (`".read": true`).
+- **The funnel keys are accepted.** `stats/d/$day/$k` allows `^[a-z0-9_]+$` up to 16 characters, stepping
+  +1, so `_buy_open`, `_buy_start`, `_buy_ok` and `_buy_cancel` are in. This was proven in the emulator,
+  which resolves U2.
+- `players/$uid/$other` validates `true`. Unknown keys under a player's own record are accepted, which is
+  why `cmpPush`-style child writes work. It is also one more reason nothing paid may live there.
 
 ---
 
 ## 7. Endpoint contracts
 
 One HTTPS function, **`shop`**, `invoker: public`, region `asia-southeast1`, Node 24, 256 MiB, timeout 30 s,
-`maxInstances: 5`. Base URL (to be confirmed after your first deploy):
+`maxInstances: 10` (§ 2, item 17). Base URL (to be confirmed after your first deploy):
 `https://asia-southeast1-neal-with-roblox.cloudfunctions.net/shop`.
 
-Secrets come from `defineSecret`: `STRIPE_SECRET_KEY` (I recommend a **restricted key**, § 10) and
+Secrets come from `defineSecret`: `STRIPE_SECRET_KEY` (a **restricted key**, § 10) and
 `STRIPE_WEBHOOK_SECRET`. Params: `SHOP_SITE` (default `https://pointinvaders.com`), `SHOP_MANAGED_PAYMENTS`
 (bool), `SHOP_AUTO_REFUND_DUPES` (bool). Logs are structured (`firebase-functions/logger`) and never contain
 tokens, emails or full request bodies.
@@ -345,7 +369,7 @@ Request: `Authorization: Bearer <Firebase ID token>`, `Content-Type: application
 | 7 | `ent/<uid>/<sku>.s !== 'active'` | 409 `owned` |
 | 8 | A stored open session for this SKU (`rl/<uid>/o/<sku>`, more than 2 min to expiry) is retrieved: `open` → **return it** (no new session, no rate limit); `complete` and `paid` → the webhook is in flight | 409 `owned_pending` |
 | 9 | rate limit: a transaction on `rl/<uid>/at` allows one **new** session per 10 s | 429 `slow` + `retryAfter` |
-| 10 | price = `prices.list({ lookup_keys:[sku], active:true, limit:1 })` | 503 `unpriced` (logged) |
+| 10 | price = `prices.list({ lookup_keys:[sku], active:true, limit:1 })` | 503 `unpriced` (logged); a provider error is 502 `provider` |
 | 11 | `checkout.sessions.create(params)`, store `{id, exp}` in `rl/<uid>/o/<sku>` | 502 `provider` |
 
 Success: `200 {"url":"https://checkout.stripe.com/c/pay/cs_…","id":"cs_…"}`.
@@ -362,13 +386,13 @@ Session parameters (the brief's list, adjusted for verified Stripe API facts):
 | `success_url` | `<site>/?purchase=ok&sku=<sku>&sid={CHECKOUT_SESSION_ID}` | same |
 | `cancel_url` | `<site>/?purchase=cancel&sku=<sku>` | same |
 | `consent_collection.terms_of_service` | `required` (needs the Terms URL in Dashboard → Settings → Public details) | `required`: not on Stripe's forbidden list; to confirm in test mode |
-| `custom_text.terms_of_service_acceptance.message` | "I agree to the [Terms] and [Refund policy]. I'm 18+, or a parent or guardian has agreed." | same |
-| `custom_text.submit.message` | "Unlocks <item> on your Point Invaders account. Delivered instantly." | same |
+| `custom_text.terms_of_service_acceptance.message` | "I agree to the [Terms] and the [Refund policy]. I am 18 or older, or a parent or guardian has agreed to this purchase." (both linked to `<site>/legal/…`) | same |
+| `custom_text.submit.message` | "Unlocks <item> on your Point Invaders account straight away. A one-time purchase: it never becomes Points or Credits." | same |
 | `adaptive_pricing.enabled` | `true` (per D6) | **omitted**: always on, and passing it is refused |
 | `automatic_tax.enabled` | `true` only if Stripe Tax is set up | **omitted** (refused) |
 | `managed_payments.enabled` | — | `true` |
-| `expires_at` | now + 30 min (Stripe's minimum; keeps duplicate windows short) | same |
-| `submit_type`, `locale`, `allow_promotion_codes` | `pay`, `auto`, `false` | same |
+| `expires_at` | now + 35 min. Stripe's minimum is 30 min from its own clock; the margin covers clock skew, and a short life keeps duplicate windows short. | same |
+| `submit_type`, `locale`, `allow_promotion_codes` | **omitted**: the defaults (`auto`, `auto`, no codes) are what we want, and a parameter never sent is one Managed Payments can't refuse | same |
 
 ### 7.2 `POST /webhook`
 
@@ -423,7 +447,7 @@ event then closes it. The item stays active through the first order the whole ti
 ### 8.1 Products and prices
 
 `scripts/seed-products.js` reads `functions/src/catalog.js`. For each SKU it creates or updates a **product**
-(name, description, `tax_code`, `metadata.pi_sku`) and a **price** (`unit_amount`, `currency: 'usd'`,
+(name, description, `tax_code`, `metadata.pi_sku` and `pi_kind`) and a **price** (`unit_amount`, `currency: 'usd'`,
 `lookup_key = sku`, `transfer_lookup_key: true`, `tax_behavior: 'inclusive'`). A changed amount creates a new
 price and moves the lookup key, and the old price is archived. The mode comes from the key itself
 (`sk_test_`/`rk_test_` or `sk_live_`/`rk_live_`). It **refuses a live key without `--live`**, and dry-run is
@@ -444,7 +468,8 @@ it with whoever does your tax (§ 14, Q5).
 | Your eligibility | wherever Stripe operates | business in US, CA, most of the EU, GB, CH, NO, AU, HK, JP or SG, **after a Stripe eligibility review**; buyers anywhere except CN, CU, IR, KP, RU, SY and a few territories |
 | Code difference | — | one param, `SHOP_MANAGED_PAYMENTS`, shapes the session (§ 7.1). The webhook is identical. |
 
-Fees differ: check stripe.com/pricing for your country. **Your business country decides this row** (§ 14, Q1).
+Fees differ: check stripe.com/pricing for your country. Your business is in Singapore, which is on the list, so
+the right-hand column applies once Stripe's eligibility review passes (§ 14, Q1; RUNBOOK § 3).
 
 ### 8.3 Webhook endpoint
 
@@ -453,6 +478,12 @@ match the code. Events: `checkout.session.completed`, `checkout.session.async_pa
 `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`,
 `charge.dispute.created`, `charge.dispute.closed`. There is one endpoint per mode, each with its own signing
 secret.
+
+`scripts/create-webhook-endpoint.js` creates it with exactly that list, read from the code's own `HANDLED`
+set, on that API version. With `--apply` it prints the signing secret alone, with no newline, so it can be
+piped straight into `firebase functions:secrets:set` without appearing on screen (RUNBOOK § 6). It refuses a
+live key without `--live`, and refuses to touch an existing endpoint for the same URL unless given `--replace`,
+because an existing endpoint's secret can't be read back.
 
 ---
 
@@ -589,11 +620,16 @@ tour's `mk-tabs` step (`72823`), both flag-gated (the ARC line marked `opt:1`).
 
 ### 9.10 Service worker and stamps
 
-- `BYPASS` gains `cloudfunctions\.net|\.run\.app|stripe\.com`. POSTs already bypass, since `sw.js:64` skips
-  non-GET; this covers any GET and documents the hosts.
-- Navigation caching is fixed so only successful navigations to the app shell are stored (§ 2, item 11).
-- `CACHE = 'point-invaders-v84'`, and all three `?v=84` stamps in `sw.js` **and** `index.html` move together.
-  No new SDK scripts. Calls use plain `fetch` and the ID token, so `VENDOR` is unchanged.
+- `BYPASS` gains `cloudfunctions\.net|\.run\.app|stripe\.com` (Phase 2). POSTs already bypass, since `sw.js:64`
+  skips non-GET; this covers any GET and documents the hosts.
+- Navigation caching **was fixed in Phase 1**: only a successful navigation to the arcade itself (the scope
+  root or `index.html`, with any query) is stored as the offline shell (§ 2, item 11).
+- A version bump moves **seven strings** together: `CACHE` and the three `SHELL` stamps in `sw.js`, the two
+  stamps in `index.html` (`style.css`, `app.js`), and `PI_ASSET_FILES` in `app.js:24408` (§ 2, item 16).
+  Phase 1 used **v84** for the service-worker fix. If this branch reaches `main` before Phase 2 (for example
+  so Stripe's review can see the legal pages), the client ships as **v85** and the section is tagged
+  `§ 46 · v85`. Otherwise it stays v84, because no device has cached v84 yet.
+- No new SDK scripts. Calls use plain `fetch` and the ID token, so `VENDOR` is unchanged.
 
 ---
 
@@ -610,8 +646,8 @@ tour's `mk-tabs` step (`72823`), both flag-gated (the ARC line marked `opt:1`).
 | CSRF | bearer token in a header, not a cookie; strict CORS allow-list |
 | Guest buys, then the record is deleted | anonymous providers get 403; buying needs a saved account (same uid after upgrade) |
 | Test and live mixing | separate keys, secrets and endpoints per mode; `lm` stored; livemode-mismatched events ignored; test grants purged at go-live |
-| Leaked secret key | Secret Manager only. `.gitignore` covers `functions/.env*`, service-account JSON, `*.local` and `node_modules`. Before every commit the diff is grepped for `sk_live`, `sk_test`, `rk_live`, `rk_test`, `whsec_` and `private_key`; each hit is read by hand, because these docs name the prefixes. A stricter pattern for real key shapes (`(sk\|rk\|pk)_(live\|test)_[0-9A-Za-z]{10,}`, `whsec_[0-9A-Za-z]{10,}`, and a PEM header `-----BEGIN [A-Z ]*PRIVATE KEY-----`) must come back empty. Use a **restricted key** (`rk_…`) limited to Checkout Sessions (write), Prices and Products (read), Refunds (write), and PaymentIntents, Charges and Disputes (read). |
-| Cost blow-up | `maxInstances: 5`, a per-uid 10 s limit, small memory, a Blaze **budget alert** in the runbook |
+| Leaked secret key | Secret Manager only. `.gitignore` covers `functions/.env*`, service-account JSON, `*.local` and `node_modules`. Before every commit the diff is grepped for `sk_live`, `sk_test`, `rk_live`, `rk_test`, `whsec_` and `private_key`; each hit is read by hand, because these docs name the prefixes. A stricter pattern for real key shapes (`(sk\|rk\|pk)_(live\|test)_[0-9A-Za-z]{10,}`, `whsec_[0-9A-Za-z]{10,}`, and a PEM header `-----BEGIN [A-Z ]*PRIVATE KEY-----`) must come back empty. The function uses a **restricted key** (`rk_…`) limited to Checkout Sessions (write), Refunds (write), and Prices, Products, PaymentIntents and Charges (read). That covers the seven calls the code makes (`checkout.sessions` create/retrieve/list, `prices.list`, `refunds.create`, `paymentIntents.retrieve`, `charges.retrieve`). Products (read) isn't called directly and is kept as a margin. Disputes arrive inside the signed event, so no Disputes permission is needed. |
+| Cost blow-up | `maxInstances: 10`, a per-uid 10 s limit, small memory, a Blaze **budget alert** in the runbook |
 | Supply chain | exact dependency versions and a committed `package-lock.json` |
 | Card data | never touches our pages (hosted checkout redirect; no Stripe.js), which is the lightest PCI scope: self-assessment SAQ A |
 
@@ -619,23 +655,28 @@ tour's `mk-tabs` step (`72823`), both flag-gated (the ARC line marked `opt:1`).
 `app.js`). `legal/privacy.html` therefore has to describe the whole arcade, not just payments: Firebase Auth,
 the public boards and player cards, the grid chat, the feedback form (archived to the database and emailed
 through Formspree with uid, user agent and screen size), anonymous play counters, localStorage, Google Fonts
-and gstatic, plus Stripe (or Link) for payments and the public supporter chip. I will draft it from the code,
-with placeholders. It is not legal advice and should be reviewed.
+and gstatic, plus Stripe and Link for payments and the public supporter chip. It was drafted from the code in
+Phase 1 (§ 11). It is not legal advice and should be reviewed.
 
 ---
 
 ## 11. Legal pages
 
-`legal/terms.html`, `legal/privacy.html` and `legal/refunds.html` will be standalone static pages in the
-arcade's look: `#04040e`, Orbitron/Rajdhani, neon accents, inline CSS, no scripts. Each has a "← Back to the
-arcade" link and is opened with `target="_blank" rel="noopener"`, so an installed full-screen app (no browser
-chrome) never gets stuck on one. Placeholders are marked **⟦BUSINESS NAME⟧**, **⟦SUPPORT EMAIL⟧**,
-**⟦COUNTRY⟧** and **⟦EFFECTIVE DATE⟧**.
+**Drafted in Phase 1.** `legal/terms.html`, `legal/privacy.html` and `legal/refunds.html` are standalone
+static pages in the arcade's look: `#04040e`, Orbitron/Rajdhani, neon accents, inline CSS, no scripts. Each
+has a "← Back to the arcade" link and links to the other two. The game will open them with
+`target="_blank" rel="noopener"` (Phase 2), so an installed full-screen app (no browser chrome) never gets
+stuck on one.
 
-The refund page will state D7. If you choose Managed Payments, the terms also have to say that Link (Stripe) is
-the merchant of record. The EU/UK rule for digital content is that the 14-day withdrawal right ends at
-immediate delivery **only** if the buyer agreed to that. D7's 14-day goodwill refund makes this moot. The
-checkout consent text is worded so it stays valid if you ever tighten D7.
+Your Gate 0 answers are filled in: the support email `cat9748912@gmail.com`, Singapore (law and courts, and
+the PDPA in the privacy policy), Link as merchant of record, D7's 14-day refund, and D8's 13+ with a guardian's
+permission under 18. Two placeholders remain, **⟦BUSINESS NAME⟧** (terms and privacy) and **⟦EFFECTIVE
+DATE⟧** (all three). Each page carries a DRAFT banner until they are filled in. The privacy policy covers the
+whole arcade, not only payments (§ 10).
+
+The EU/UK rule for digital content is that the 14-day withdrawal right ends at immediate delivery **only** if
+the buyer agreed to that. D7's 14-day goodwill refund makes this moot. The checkout consent text is worded so
+it stays valid if you ever tighten D7. These drafts are not legal advice; have them reviewed.
 
 ---
 
@@ -647,7 +688,7 @@ The go-live order:
 3. Live seeding (`--live`).
 4. Managed Payments terms accepted, if chosen.
 5. Purge test grants.
-6. `SHOP_LIVE = true` and bump to `v85`.
+6. `SHOP_LIVE = true`, with the next free version number (§ 9.10).
 7. Merge.
 8. A real purchase and refund by you.
 
@@ -659,61 +700,56 @@ sessions with `shop/orders` and repairs badges).
 
 ## 13. Verification: summary
 
-Full ledger in [`TESTING.md`](TESTING.md). The brief makes **32 claims**:
+Full ledger in [`TESTING.md`](TESTING.md). The brief makes **32 claims**. After Phase 1:
 
-- **28 hold as written.** Among them, the live site is byte-identical to `main` (`94571c2`), checked by fetching it.
-- **1 holds with a difference:** the market tab row is a CSS grid now.
-- **3 are about your rules text:** consistent with the code's comments, but unseen.
+- **30 hold as written.** Among them, the live site is byte-identical to `main` (`94571c2`), checked by
+  fetching it. The three rules claims (B29–B31) were unseen at Gate 0; they are now **proven by execution**
+  against your rules file in the Database emulator.
+- **2 hold with a difference:** the market tab row is a CSS grid now (B20), and the third `?v=` stamp lives
+  in `app.js`, not `index.html` (B7; § 2, item 16).
 
-Beyond the brief, the audit records **12 code findings** and **5 external facts**. One of those facts is the
-Node 20 decommission. All of them feed § 2. **6 items only you or a live run can confirm**:
+Beyond the brief, the audit recorded **12 code findings** and **5 external facts**. One of those facts is the
+Node 20 decommission. All of them feed § 2. Of the **6 items only you or a live run could confirm**:
 
-1. your live database rules (not in the repo; `_firebase/database.rules.json`);
-2. whether the `stats` rule accepts `_buy_*` keys;
-3. whether any rule above `shop` grants access;
-4. your business country (decides Managed Payments);
-5. whether `neal-with-roblox` is on the Blaze plan, and whether it has other Cloud Functions;
-6. live Stripe behaviour: Managed Payments plus `consent_collection`, the iOS and Android installed-app returns.
+1. your live database rules: **resolved**, you pasted them;
+2. whether the `stats` rule accepts `_buy_*` keys: **resolved**, it does (emulator);
+3. whether any rule above `shop` grants access: **resolved**, none does (emulator);
+4. your business country: **Singapore**; Managed Payments eligibility still waits on Stripe's review;
+5. whether `neal-with-roblox` is on the Blaze plan, and whether it has other Cloud Functions: at your deploy
+   (RUNBOOK § 1);
+6. live Stripe behaviour: Managed Payments plus `consent_collection`, the iOS and Android installed-app
+   returns. **One part is resolved:** a guest who saves an account gets a token whose `sign_in_provider` is
+   `password`, so the server lets them buy (Auth emulator). The rest needs test keys or a device: Gate 2
+   (your manual test-mode run) and Gate 3 (live).
 
-These need test keys, a deploy or a device, so they are scheduled for Gate 1 (emulator), Gate 2 (test mode,
-by your manual test script) and Gate 3 (live).
-
-What Phase 1 can execute here: Node 22.22, Java 21 and npm are present and the registry is reachable, so the
-**Database and Auth emulators**, the handler unit tests (fake Stripe client, real signature generation) and the
-rules tests will run in this environment. Stripe's API cannot be called without keys, so session creation is
-tested against a fake that asserts the exact parameters above.
+What ran here: the **Auth, Database and Functions emulators**, the handler unit tests (a fake Stripe client
+with real signature generation), the rules tests against your file, and Chromium for the service worker and
+the legal pages. Stripe's API can't be called without keys, so session creation is tested against a fake that
+asserts the exact parameters in § 7.1.
 
 ---
 
-## 14. Open questions: your answers unlock Phase 1
+## 14. Open questions: answered at Gate 0
 
-Each has my recommendation, marked **(rec.)**.
+You approved every recommendation ("i approve"), named your country and support email, and pasted the rules.
+The answers are kept here, next to the questions they settle.
 
-1. **D1: your business country, and Managed Payments?** (rec.) Stripe Checkout with Managed Payments if you're
-   in a supported country; otherwise Stripe and Stripe Tax; Paddle only if Stripe isn't available to you.
-2. **The rules file.** Paste `_firebase/database.rules.json` (or confirm the Console copy is identical). It
-   blocks `database.rules.json` and the rules tests in Phase 1.
-3. **Server files on `main` are public** (§ 2, item 10). (rec.) Accept it. They contain no secrets, and
-   Firebase's model assumes rules are known. The alternative is to keep `functions/`, `database.rules.json`,
-   `firebase.json`, `.firebaserc`, `scripts/` and `docs/` on a `server` branch that never merges to `main`,
-   and deploy from it.
-4. **D4 catalogue** (§ 3.1): approve, rename or cut. Art direction (names, hexes, emoji) is yours.
-5. **D6 prices** and **tax-inclusive** pricing (rec. yes). And the tax code `txcd_10201000` (confirm with your
-   accountant).
-6. **Auto-refund duplicate payments?** (rec. yes, `SHOP_AUTO_REFUND_DUPES = true`).
-7. **Exhibition power-ups: unlimited, or a daily charge?** (rec. unlimited; § 3.3).
-8. **Beacon companion:** commission the new look (one art job), or ship the pass with chip + colour only?
-   (rec. ship without it, add it in v85.)
-9. **D8 audience.** If players under 13 may be present, the arcade already collects emails and persistent ids,
-   so COPPA and UK/EU children's codes apply beyond payments. (rec.) 13+ with guardian permission under 18,
-   stated in the terms and in the purchase sheet; take legal advice if your audience skews young.
-10. **D7 refunds:** 14 days, no questions asked, refund or chargeback removes the item, a won dispute restores
-    it. (rec. yes.)
-11. **`shop/cfg` kill switch** (§ 5.5): add it to the rules block? (rec. yes.)
-12. **`badge` read:** `true`, or `auth != null` to match `players`? (rec. match `players`.)
-13. **Support email** for the legal pages, Stripe's public details and Managed Payments escalations.
-14. **D9:** you deploy (rec.). The runbook will be written for your machine: `firebase login`, Blaze, secrets,
-    `firebase deploy --only functions:shop`.
+| # | Question | Answer |
+|---|---|---|
+| Q1 | D1: business country, and Managed Payments? | **Singapore; Stripe Checkout with Managed Payments**, because you want the provider to handle taxes. Stripe's eligibility review is still to come (RUNBOOK § 3). If Stripe declines, we stop and decide. |
+| Q2 | The rules file | **Pasted.** `database.rules.json` is that file plus the `shop` block (§ 6). |
+| Q3 | Server files on `main` are public (§ 2, item 10) | **Accepted.** They contain no secrets, and Firebase's model assumes rules are known. |
+| Q4 | D4 catalogue (§ 3.1) | **Approved**: nine SKUs. `skin_seraph` became `skin_unicorn` before anything was seeded, so the permanent id matches the name. Names, hexes and emoji stay yours to change at any time (the seed script updates names); a SKU id is permanent once seeded. |
+| Q5 | D6 prices, tax-inclusive pricing, tax code | **Approved.** The tax code `txcd_10201000` still needs a nod from whoever does your tax. |
+| Q6 | Auto-refund duplicate payments? | **Yes** (`SHOP_AUTO_REFUND_DUPES`, on by default). |
+| Q7 | Exhibition power-ups: unlimited, or a daily charge? | **Unlimited** (§ 3.3). |
+| Q8 | Beacon companion | **Deferred.** The pass ships with the chip and the Patron colour. |
+| Q9 | D8 audience | **13+, with a parent or guardian's permission under 18**: in the terms, the checkout consent text, and the purchase sheet's checkbox (Phase 2). If your audience skews young, take legal advice: the arcade already collects emails and persistent ids, so children's-privacy rules would apply beyond payments. |
+| Q10 | D7 refunds | **Approved:** 14 days, no questions asked. A refund or chargeback removes the item; a won dispute restores it. |
+| Q11 | `shop/cfg` kill switch (§ 5.5) | **Yes**, it is in the rules block. |
+| Q12 | `badge` read | **`true`**, which matches `players` in your file. |
+| Q13 | Support email | **`cat9748912@gmail.com`**: on the legal pages, and in RUNBOOK § 3 for Stripe's public details. |
+| Q14 | D9: who deploys | **You**, from your machine, following `RUNBOOK.md`. |
 
 ---
 
@@ -721,7 +757,7 @@ Each has my recommendation, marked **(rec.)**.
 
 | Phase | Builds | Verified by | Gate asks you for |
 |---|---|---|---|
-| **0** (this) | `DESIGN.md`, `TESTING.md` | reading the code; npm/Java/Node checks; Stripe and Google docs | the answers in § 14 and the rules file |
-| **1** | `functions/` (handlers, catalogue, tests), `database.rules.json`, `firebase.json`, `.firebaserc`, `.gitignore`, `scripts/seed-products.js`, `scripts/catalog-parity.js`, `legal/*.html` drafts, `RUNBOOK.md` | unit tests; rules tests in the Database emulator; parity script; secret grep | Blaze, a deploy, pasted rules, the function URL, test-mode seeding |
-| **2** | `app.js § 46` and hooks, `index.html`, `style.css § 46`, `sw.js` v84 | Playwright against the Auth and Database emulators (buy-flow states, offline, guest, a flag-off screenshot diff of the market against `main`); reasoning where Stripe is needed | your manual test-mode run (test card `4242 4242 4242 4242`, refund in the Dashboard → item disappears) |
+| **0** ✅ | `DESIGN.md`, `TESTING.md` | reading the code; npm/Java/Node checks; Stripe and Google docs | the answers in § 14 and the rules file: **received** |
+| **1** ✅ (this) | `functions/` (handlers, catalogue, tests), `database.rules.json`, `firebase.json`, `.firebaserc`, `.gitignore`, `scripts/seed-products.js`, `scripts/catalog-parity.js`, `scripts/create-webhook-endpoint.js`, `legal/*.html` drafts, `RUNBOOK.md`; moved forward from Phase 2: the `sw.js` navigation fix and the v84 stamps | 42 unit tests; 63 more against the Auth and Database emulators, your rules file included; 7 end-to-end tests of the deployable function in the Functions emulator; the service worker and legal pages in Chromium; secret greps | the RUNBOOK: Blaze, published rules, the deploy and its function URL, test-mode seeding, the webhook. Also the business name and effective date for the legal pages. |
+| **2** | `app.js § 46` and hooks, `index.html`, `style.css § 46`, `sw.js` `BYPASS` and the stamps (v84, or v85 if this branch has reached `main`; § 9.10) | Playwright against the Auth, Database and Functions emulators (buy-flow states, offline, guest, a flag-off screenshot diff of the market against `main`); reasoning where Stripe is needed | your manual test-mode run (test card `4242 4242 4242 4242`, refund in the Dashboard → item disappears) |
 | **3** | go-live checklist, rollback, `OPERATIONS.md`, `scripts/purge-test-grants.js`, reconcile script | dry runs against the emulator | live secrets, live seeding, the flag flip, a real purchase and refund |

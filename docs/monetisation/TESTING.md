@@ -15,7 +15,10 @@ Legend: ✅ holds · ⚠️ holds, with a difference the design accounts for · 
 section where the brief or the design touches it. The function names in the brief were located with `grep`
 and their bodies read in full. Line numbers below are for commit `94571c2`.
 
-### The brief's facts: 32 claims, 28 ✅, 1 ⚠️, 3 ❓
+### The brief's facts: 32 claims, 28 ✅, 1 ⚠️, 3 ❓ at Phase 0; 30 ✅, 2 ⚠️, 0 ❓ after Phase 1
+
+Phase 1 changed four verdicts (B7, B29–B31) and executed B32. The rows say so; the evidence is under
+[Phase 1](#phase-1-server-rules-legal-2026-10-12).
 
 #### Shape of the project
 
@@ -27,7 +30,7 @@ and their bodies read in full. Line numbers below are for commit `94571c2`.
 | B4 | Four real files plus `assets/ship62.js` | ✅ | **execution:** `wc -l` | `index.html` 1,913 · `app.js` 73,270 · `style.css` 6,451 · `sw.js` 127 · `assets/ship62.js` 2 (texture data). Also served: `og.jpg`, `robots.txt`, `sitemap.xml`, `README.md`. |
 | B5 | Numbered `§` sections, prose comments, a `vNN` tag per feature | ✅ | **execution:** `grep` for banner headers and `\bv[0-9]{2}\b` | Last section is `§ 45 · v80` (`app.js:72509`). v81 retired § 41 Mashups (`app.js:71223`); v82 and v83 are tagged fixes with no section; the `v92`/`v97` hits are base64 noise. **Next free: `§ 46`, `v84`.** |
 | B6 | `sw.js` precaches the three `?v=83` files; cache `point-invaders-v83` | ✅ | reading | `sw.js:4` (`CACHE`), `sw.js:13–19` (`SHELL`) |
-| B7 | The `?v=` stamps in `index.html` and `sw.js` and `CACHE` move together | ✅ | reading | `sw.js:1–3, 10–12`; `index.html:75–80` (`style.css?v=83`), `index.html:1827` (`app.js?v=83`) |
+| B7 | The `?v=` stamps in `index.html` and `sw.js` and `CACHE` move together | ✅ → ⚠️ (Phase 1) | reading; **Phase 1: execution** (`grep` for every stamp) | `sw.js:1–3, 10–12`; `index.html:75–80` (`style.css?v=83`), `index.html:1827` (`app.js?v=83`). **Difference found in Phase 1:** a third file's stamp lives in `app.js:24408`, `PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=…' }`, the URL the page actually loads `assets/ship62.js` from. A bump that misses it leaves the precached chunk unread. v84 moved all seven strings (DESIGN § 2, item 16; § 9.10). |
 | B8 | A `BYPASS` regex keeps Firebase traffic out of the cache | ✅ | reading | `sw.js:60`: `firebaseio\.com\|firebasedatabase\.app\|identitytoolkit\|securetoken\|google-analytics`. Also, `sw.js:64` returns early for every non-GET request, so a `POST` to the new API is never cached anyway. |
 | B9 | Firebase compat SDK 9.23.0 from gstatic, precached by `VENDOR` | ✅ | reading | `index.html:71–73`; `sw.js:26–30` |
 | B10 | Web config `const FB = {…}`, project `neal-with-roblox`, the asia-southeast1 database | ✅ | reading | `app.js:1246–1254` |
@@ -64,10 +67,10 @@ and their bodies read in full. Line numbers below are for commit `94571c2`.
 
 | # | Claim | Verdict | How checked | Evidence and notes |
 |---|---|---|---|---|
-| B29 | The rules enumerate top-level nodes; any other top-level write is refused | ❓ | reading (comments only) | Consistent with `app.js:5019–5021`, `51250–51252`, `55837–55839`, `17632`, `18900`. **The rules are not in the repo** (U1). |
-| B30 | Validated shapes (`weekly` is exactly `{season, pts}`); one refused key fails the whole `update()` | ❓ | reading (comments) + Firebase documentation | `app.js:3191–3199`. The atomicity of a multi-path `update()` is documented RTDB behaviour. The rule text itself is U1. |
-| B31 | A rate-limit rule refuses a `totalPoints` rise not stamped with `lastScoreAt` within 2.5 s | ❓ | reading (comments) | `app.js:6303–6305`, `app.js:4659`, `app.js:4735`, `app.js:68849`. Rule text is U1. |
-| B32 | Rules cascade: a parent's `.write` cannot be revoked by a child, so nothing paid may live under the owner-writable `players/<uid>` | ✅ | Firebase documentation; the code writes there as the owner (`saveProfilePatch`) | **Execution planned:** the Phase 1 rules tests include a case showing that a nested `.write:false` under an owner-writable parent does not stop the owner. |
+| B29 | The rules enumerate top-level nodes; any other top-level write is refused | ❓ → ✅ (Phase 1) | reading (comments only); **Phase 1: execution** against your pasted rules | Consistent with `app.js:5019–5021`, `51250–51252`, `55837–55839`, `17632`, `18900`. **Phase 1:** your root is `.read`/`.write: false`, and a write to an unnamed top-level node is refused in the Database emulator (rules test "B29"). |
+| B30 | Validated shapes (`weekly` is exactly `{season, pts}`); one refused key fails the whole `update()` | ❓ → ✅ (Phase 1) | reading (comments) + Firebase documentation; **Phase 1: execution** | `app.js:3191–3199`. **Phase 1:** `{season, pts}` is accepted, an extra key is refused, and an `update()` carrying one refused key writes none of its keys (rules test "B30"). |
+| B31 | A rate-limit rule refuses a `totalPoints` rise not stamped with `lastScoreAt` within 2.5 s | ❓ → ✅ (Phase 1) | reading (comments); **Phase 1: execution** | `app.js:6303–6305`, `app.js:4659`, `app.js:4735`, `app.js:68849`. **Phase 1:** a rise needs `lastScoreAt` equal to the server's `now`, and a second rise inside 2.5 s is refused (rules test "B31"). |
+| B32 | Rules cascade: a parent's `.write` cannot be revoked by a child, so nothing paid may live under the owner-writable `players/<uid>` | ✅ | Firebase documentation; the code writes there as the owner (`saveProfilePatch`); **Phase 1: execution** | **Phase 1:** the owner writes an arbitrary key under `players/<uid>` with your rules, and in a minimal rules file a child `.write: false` under a granting parent does not stop the write (rules tests "B32" and "B32 (cascade)"). |
 
 ### Found in the audit (beyond the brief)
 
@@ -105,6 +108,9 @@ and their bodies read in full. Line numbers below are for commit `94571c2`.
 
 ### Not verifiable from here (6)
 
+Status after Phase 1: U1–U3 resolved; U4 and U6 in part; U5 open. See
+[the six open items](#the-six-open-items-after-phase-1).
+
 | # | What | Who and when |
 |---|---|---|
 | U1 | The live rules text (B29–B31, X8) | you paste `_firebase/database.rules.json` at Gate 0; Phase 1 rules tests run against it |
@@ -130,7 +136,281 @@ and this description deliberately doesn't spell them out contiguously.
 
 ---
 
-## Phase 1: server, rules, legal (not started)
+## Phase 1: server, rules, legal (2026-10-12)
+
+Commits on `claude/stoic-cori-irbsqk`, in order:
+
+| Commit | What |
+|---|---|
+| `e0ec4b1` | the rules file with the `shop` block; `firebase.json`, `.firebaserc`, `.gitignore` |
+| `13745b0` | the server: catalogue, checkout, webhook, ledger |
+| `f250883` | the server tests: unit, emulator integration, rules, end to end |
+| `f76a68e` | the product seeding and catalogue parity scripts |
+| `ea8a936` | draft legal pages |
+| `c107d9d` | the service-worker fix and the v84 stamps |
+| `dd98251` | the webhook-endpoint script |
+| after `dd98251` | two more unit assertions; the legal pages' tab icon; the runbook; these documents |
+
+### Environment
+
+Node v22.22.0 · firebase-tools 15.33.0 (Auth, Database and Functions emulators) · OpenJDK 21 ·
+playwright-core 1.64.0 driving the preinstalled Chromium. The emulators run as project **`demo-pi-shop`**. A
+`demo-` project id cannot reach any real Firebase project, so no test touched `neal-with-roblox`. The function
+targets Node 24 (`engines`). Here it runs on Node 22, which every dependency accepts (E2); the Functions
+emulator notes the mismatch and carries on.
+
+### Test runs (execution)
+
+Run in `functions/` after `npm ci`. Last run: the tree committed with this section.
+
+| Suite | Command | Result | What it covers |
+|---|---|---|---|
+| Unit | `npm test` | **42 / 42 pass**, exit 0 | the catalogue and its validator, config, CORS, routing, every checkout-session parameter and the exact set of them, the order state machine, the transaction helper, and the seed, parity and webhook-endpoint scripts (against a fake Stripe client) |
+| Emulator | `npm run test:emu` | **105 / 105 pass**, exit 0 | the 42 again, plus **60 cases** against the Auth and Database emulators: checkout 22, webhook 26, rules 12. `node:test` counts each of the three groups as a test too, hence 63. |
+| End to end | `npm run test:e2e` | **7 / 7 pass**, exit 0 | the deployable `index.js` inside the Functions emulator, with its secrets and params loaded the way a deploy loads them: 6 cases, plus the group |
+| Parity | `node scripts/catalog-parity.js` | exit **2**: "No client catalogue in app.js" | expected until Phase 2 adds the client's block; with `--allow-missing` it exits 0 |
+
+Harmless output seen in the logs:
+- `MetadataLookupWarning`: there is no Google metadata server here.
+- "Firebase Authentication function was not triggered due to emulation error": there are no auth triggers.
+- The Node 24/22 note above.
+
+The Functions emulator writes `functions/.env.local` (the params' defaults), and the end-to-end setup writes
+`functions/.secret.local` (fake test values). `git check-ignore -v` shows both ignored by `.gitignore`'s
+`*.local`.
+
+The Stripe client is a fake in every test: no key exists here. It records each call and its parameters, and
+the webhook tests sign their payloads with the real `stripe` library's signing helper, so the signature check
+is the real one.
+
+### The non-negotiables: what proves each
+
+| # | Non-negotiable | By execution | By reading |
+|---|---|---|---|
+| 1 | Server-authoritative entitlements | Rules tests: no client can write its own entitlement, order or badge, anyone else's, or `cfg`, `events`, `pi` or `rl`. Webhook tests: grants come only from correctly signed events. | Every path the server touches is under `shop/` (`ledger.js:39`, `db.ref('shop/' + p)`). The client doesn't change until Phase 2. |
+| 2 | Money never becomes Credits or Points | The catalogue test feeds the validator each mistake, and it refuses all of them: a grant that isn't an `-x-` item id, one item granted by two SKUs, an exhibition SKU that grants an item, a bad SKU id, a fractional amount, a missing pass. | `grep`: the server never writes `credits`, `totalPoints`, `owned` or `powerups`; its only writes are under `shop/`. |
+| 3 | Hosted checkout only | A session test asserts the exact set of parameters, with no `ui_mode`, so Stripe's own hosted page. A mutation adding `ui_mode: 'embedded'` makes it fail. `grep -ci stripe index.html` → 0. | Against `main` (`94571c2`), the only changes to `index.html`, `app.js` and `style.css` are the three stamp lines (`git diff -U0`). |
+| 4 | Guests, local sessions and offline mode can't buy | An anonymous token → 403 `guest` (integration and end to end). A disabled account → 401. A local session has no token, and a request without one → 401. | Offline is a client check (Phase 2). |
+| 5 | Webhooks: raw body, idempotent, 2xx only after the write; refunds and disputes revoke | Signature over the raw bytes: a pretty-printed, correctly signed body is accepted; a changed byte is refused (also end to end). A replay → 200 and no write of any kind. Two simultaneous deliveries are safe. A database failure → 500, and the redelivery completes. A full refund revokes; a dispute revokes; a won dispute restores; a lost one is final. | `webhook.js:71–73`: `finishEvent`, then `send(200)`; any error releases the claim and answers 500. |
+| 6 | No secrets in the repository | The two greps before every commit (below); `git check-ignore` on what the emulators wrote. | `.gitignore` |
+| 7 | Only `shop` added; no existing rule changed | With `shop` removed, `database.rules.json` deep-equals your pasted rules (Python `json`, and a normalised `diff` with no output). The rules tests run your whole file. | |
+| 8 | No deploy, no live mode, no push to `main` | Nothing was deployed: no credentials exist here (V2). Every push went to `claude/stoic-cori-irbsqk`. | `firebase.json` has no `database` target. |
+| 9 | Offline play, the service-worker coupling, house style, v84 | The service-worker runs below. v84 moved all seven strings. | |
+| 10 | D5 | Phase 2 (client) | DESIGN § 3.3 |
+| 11 | Fail safe | Server half: the kill switch → 503, and any value other than `false` is open; an unseeded SKU → 503; a provider error → 502, with nothing remembered as open. | The client half is Phase 2. |
+
+### Test cases (execution)
+
+<details><summary><strong>Unit: 42 tests</strong> (<code>test/unit/</code>, no emulator)</summary>
+
+- live mode comes from the key prefix
+- origins: the site always; localhost only in test mode; nothing else
+- return site: never anything the caller made up
+- CORS headers for an allowed origin, refusal for another, nothing needed without one
+- route: the last path segment, whichever URL form
+- catalogue: valid, nine SKUs, labels, and its validator catches mistakes
+- a session is ours only with our metadata version, a matching uid and a known SKU
+- keep(): "no change" is null against a null, undefined against real data
+- next(): the documented transitions
+- next(): terminal states never move, whatever arrives
+- next(): a completion only ever moves an order out of nothing or pending
+- next(): a won dispute only restores a disputed order
+- isActive(): any paid order
+- applyToNode(): first grant
+- applyToNode(): no change → node null (the transaction is not written)
+- applyToNode(): refund revokes and keeps the history
+- applyToNode(): a second paid order of the same SKU is a duplicate, remembered in the node
+- applyToNode(): a won dispute is not a duplicate, and refunded-then-rebought restarts "since"
+- applyToNode(): a dispute while another order is paid keeps the item
+- seed: an empty account gets one product and one tax-inclusive USD price per SKU
+- seed: running it again changes nothing
+- seed: a changed amount makes a new price that takes the lookup key; the old one is archived
+- seed: a renamed product is updated in place
+- seed: the key decides the mode, and a live key needs --live
+- parity: no markers → null; a matching client catalogue → no problems
+- parity: every kind of drift is reported
+- parity: the CLI exits 0 / 1 / 2, and the block runs in an empty sandbox
+- parity: today's app.js has no client catalogue yet (Phase 2 adds it)
+- webhook endpoint: a dry run creates nothing and lists the seven handled events
+- webhook endpoint: --apply creates it on the pinned API version and prints ONLY the secret, no newline
+- webhook endpoint: an existing endpoint for the URL is refused, or replaced with --replace
+- webhook endpoint: bad URL, missing key, and the live guard
+- the line item is the resolved price, quantity one
+- uid and sku travel in client_reference_id, session metadata and payment-intent metadata
+- return URLs: the site, the sku, and the provider template left unencoded
+- terms are required, and the consent text links the terms and refund policy and states the age rule
+- expires 35 minutes out (the provider minimum is 30)
+- Managed Payments: on, and none of the parameters it refuses
+- hosted checkout only: exactly these parameters, and no ui_mode
+- without Managed Payments: Adaptive Pricing asked for, no managed flag
+- the email is pre-filled only when it is verified
+- a localhost site (test mode) is used as given
+
+</details>
+
+<details><summary><strong>Checkout: 22 cases</strong> (<code>test/integration/checkout.test.js</code>, real Auth emulator tokens)</summary>
+
+- CORS preflight: the site → 204 with headers; another origin → 403
+- localhost: allowed in test mode, refused in live mode
+- GET → 405
+- no token → 401; a forged token → 401
+- anonymous (guest) token → 403 guest
+- a guest who saves their account (linkWithCredential, same uid) can buy
+- a disabled account → 401 (checkRevoked)
+- unknown or missing sku → 400
+- already owned → 409
+- a revoked entitlement can be bought again
+- success: the exact session parameters, and the open session remembered
+- a verified email is pre-filled
+- without Managed Payments: Adaptive Pricing, no managed flag
+- test mode from localhost returns to localhost
+- a second request hands back the open session: same URL, no new session, no rate limit
+- the open session was paid and the webhook is in flight → 409 owned_pending
+- a new session inside 10 s → 429 with Retry-After; allowed again after
+- the rate limit is per player
+- kill switch shop/cfg/open = false → 503; anything else is open
+- no price for the lookup key (not seeded) → 503 unpriced
+- the provider refuses → 502, and nothing is remembered as open
+- unknown route → 404; health → 200
+
+</details>
+
+<details><summary><strong>Webhook: 26 cases</strong> (<code>test/integration/webhook.test.js</code>, real Database emulator)</summary>
+
+- a bad signature → 400 and nothing is written (wrong secret, tampered body, none)
+- the signature is checked over the RAW bytes: odd formatting that is correctly signed is accepted
+- GET → 405
+- checkout.session.completed (paid) → grant: entitlement, receipt line, payment-intent index, open session cleared
+- the same event replayed → 200 duplicate, and no second write of any kind
+- two deliveries of one event at the same moment: one is handled, the other is told to come back
+- the pass lights the public badge with "supporter since"
+- charge.refunded (full) → revoked; the pass badge goes with it
+- a partial refund keeps the item
+- charge.dispute.created → revoked; closed won → restored; lost → gone for good
+- an inquiry that closes without a dispute restores the item
+- a dispute without a payment intent is traced through its charge
+- a refund that arrives BEFORE the completion: recorded refunded, and the late completion grants nothing
+- a refund for a payment that is not ours (no metadata) is ignored
+- a delayed payment method: pending grants nothing; success grants; failure never does
+- checkout.session.expired forgets the open session, if it is still that one
+- paid twice for one item: the second payment is refunded automatically, the item stays
+- with auto-refund off, a duplicate is flagged but not refunded
+- the duplicate refund fails → 500, the claim is released, and the redelivery refunds
+- the database fails after the grant → 500; the redelivery completes the rest
+- a fresh claim held by another delivery → 409; a stale one is taken over
+- a live event at a test endpoint (or the reverse) is ignored
+- an event type the shop does not handle is acknowledged and not recorded
+- a session the server did not create (no metadata version, uid mismatch, unknown sku) unlocks nothing
+- evidence: a naive transaction that answers "no change" to the first null aborts without asking the server
+- …and the ledger does not fall into it: a won dispute applied from a fresh process restores the item
+
+</details>
+
+<details><summary><strong>Rules: 12 cases</strong> (<code>test/integration/rules.test.js</code>, your file in the Database emulator)</summary>
+
+- a player cannot write their OWN entitlement, order or badge
+- a player cannot write someone else's either, and a signed-out client nothing at all
+- no client can write the switch, the event log, the index or the rate limit
+- a player can read their own entitlements and orders, and no one else's
+- the badge and the switch are public reads; the server-only nodes are not readable at all
+- B29: a top-level node the rules do not name is refused
+- B30: weekly is exactly {season, pts}, and one refused key fails the whole update()
+- B31: a totalPoints rise needs lastScoreAt === now, and a second one inside 2.5 s is refused
+- B32: the owner writes anywhere under players/<uid>, which is why nothing paid lives there
+- B32 (cascade): a child .write:false cannot take back a parent's grant
+- U2: the stats rule takes the purchase funnel keys (+1 only, lower case only)
+- the players board is still a public read (and the badge matches it)
+
+</details>
+
+<details><summary><strong>End to end: 6 cases</strong> (<code>test/e2e/function.test.js</code>, the Functions emulator)</summary>
+
+- GET /health → test mode, from the secret key's prefix
+- webhook: a correctly signed, oddly formatted payload is accepted (raw body) and the grant lands
+- webhook: a body changed after signing → 400
+- checkout: CORS preflight from the site
+- checkout: a guest token → 403; another origin → 403; an unknown sku → 400
+- an unknown route → 404
+
+</details>
+
+**One finding worth knowing: the transaction trap.** A Realtime Database transaction first runs its update
+function against the *locally cached* value. In a fresh server process that value is `null`, even when the
+database holds data. An update function that answers "no change" (`undefined`) to that first `null` aborts
+the transaction without ever asking the server. The test runs such a naive function against existing data in
+the emulator: it is called **once**, with `null`, and the change is lost. The ledger's `keep()` answers `null`
+to a `null`, which makes the SDK fetch the real value and call again. The paired test applies a won dispute
+from a fresh process, and the item is restored.
+
+### Service worker (Chromium, execution)
+
+Run on the content of commit `c107d9d`. `sw.js`, `index.html`, `app.js` and `style.css` are unchanged since
+(`git diff --stat c107d9d` is empty). The site was served by a local `python3 -m http.server` started by the
+harness. "Offline" means the harness killed that server with SIGKILL, because Playwright's `setOffline` doesn't
+cover a service worker's own fetches. An earlier attempt that relied on `setOffline`, and on SIGTERM (which
+didn't stop the server), gave a misleading result and was discarded.
+
+| Check | Result |
+|---|---|
+| **The bug, reproduced** on v83 (the `main` service worker, with the legal pages added): open `/`, then Terms, a missing page (404) and Privacy; read the cache | `./index.html` in the cache had become the Privacy page. With the server killed, launching `/` showed the Privacy page instead of the arcade. |
+| **The fix** (v84), same visits | The cached `./index.html` is still the arcade. With the server killed, `/` and a checkout return address (`/?purchase=ok&sku=…&sid=…`) both open the arcade. |
+| **Upgrade** v83 → v84 | About 4 s after the reload, only `point-invaders-v84` remains, holding `/`, `/app.js?v=84`, `/assets/ship62.js?v=84`, `/index.html` and `/style.css?v=84`. |
+
+The harness was a scratch script. Phase 2 commits a re-runnable browser suite that includes these checks.
+
+### Legal pages (Chromium, execution)
+
+Re-run on the final pages, served locally, at 1280 × 900 and 375 × 812:
+- All three answer 200, have no horizontal scroll (`scrollWidth` = `clientWidth`), run no script, and log no
+  console errors.
+- Their relative links (`terms.html`, `refunds.html`, `privacy.html`, `../`) all answer 200.
+- The first run logged one 404, Chromium's automatic `/favicon.ico` request. The arcade builds its icon with a
+  script and these pages have none, so each page now inlines the same icon as a static `data:` URI (generated
+  from `index.html`'s own code). The re-run had no 404s in the server log.
+- Two screenshots were looked at, refunds at phone width and terms at desktop width: the palette, fonts,
+  draft banner and placeholders render as intended.
+
+Placeholders left: ⟦BUSINESS NAME⟧ (terms, privacy) and ⟦EFFECTIVE DATE⟧ (all three).
+
+### Verified by reading only
+
+- **The restricted key's permissions** (RUNBOOK § 3). Derived from the seven Stripe calls the code makes:
+  `checkout.sessions` create/retrieve/list, `prices.list`, `refunds.create`, `paymentIntents.retrieve` and
+  `charges.retrieve`. Stripe enforces them only against a real key, so the first proof is your smoke test.
+- **Stripe's real payloads.** The fake events follow the API reference for `2026-09-30.endive`. The first real
+  payload is the test event in RUNBOOK § 7; full purchases come in your Gate 2 run.
+- **Managed Payments accepting `consent_collection` and the `custom_text`.** Not on Stripe's list of refused
+  parameters; still U6.
+
+### The six open items after Phase 1
+
+| # | Status | Evidence |
+|---|---|---|
+| U1 | ✅ resolved | You pasted the rules at Gate 0. The rules tests run against that file plus the `shop` block. |
+| U2 | ✅ resolved | Rules test "U2": `_buy_open`, `_buy_start`, `_buy_ok` and `_buy_cancel` are accepted (+1 only, lower case only). |
+| U3 | ✅ resolved | Your root is `.read`/`.write: false`, and the rules tests show no client write lands anywhere under `shop`. |
+| U4 | in part | Singapore (Gate 0). Managed Payments eligibility is Stripe's review (RUNBOOK § 3). |
+| U5 | open | Your deploy (RUNBOOK § 1, `firebase functions:list`). |
+| U6 | in part | **The linked-account token:** after an email credential is linked to an anonymous user (same uid), the Auth emulator's fresh ID token says `sign_in_provider: 'password'`, so the server lets them buy (checkout test "a guest who saves their account…"). Linking with Google wasn't run here. The rest (Managed Payments with `consent_collection`, dispute events under Managed Payments, the installed-app return paths) is Gate 2 and Gate 3. |
+
+### Commit hygiene (Phase 1)
+
+**Execution:** before each Phase 1 commit, the same two greps as Phase 0 ran over the staged diff. Before
+this commit they also ran over the whole Phase 1 diff (`git diff 53308b4`, including the uncommitted files)
+and the whole working tree:
+
+1. **The brief's literal list.** I read every hit. Each is one of: documentation or a code comment naming
+   key prefixes (`rk_test_…`, `whsec_…`); the inputs of the key-prefix tests (`sk_live_x`,
+   `sk_test_abc` and the like); the end-to-end fake key `sk_test_e2e`; or the signing-only fake `sk_test_signing_only`.
+   None is a key. `package-lock.json` has no hits.
+2. **Real key shapes:** no matches (grep exit 1) over the Phase 1 diff and over the working tree outside
+   `node_modules`.
+
+One problem was caught and fixed before committing: a fake signing secret in the tests was the webhook-secret
+prefix followed by a long word, which is exactly a real secret's shape, so the strict pattern rightly matched
+it. Every fake signing secret was renamed `test-signing-secret-*`.
+
+---
 
 ## Phase 2: client (not started)
 
