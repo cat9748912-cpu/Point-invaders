@@ -374,8 +374,8 @@ What your file settled:
 
 ## 7. Endpoint contracts
 
-One Cloudflare Worker, **`point-invaders-shop`**, on the free plan (§ 2, item 18). Base URL, set when you first
-deploy: `https://point-invaders-shop.<your-subdomain>.workers.dev`. Routes: `POST /checkout`, `POST /webhook`,
+One Cloudflare Worker, **`point-invaders-shop`**, on the free plan (§ 2, item 18). Base URL (deployed at Gate 1,
+test mode): `https://point-invaders-shop.pointinvaders.workers.dev`. Routes: `POST /checkout`, `POST /webhook`,
 `GET /health`. `/health` answers `{ok, live, db}`, or names any missing secret.
 
 Secrets, set with `npx wrangler secret put`: `STRIPE_SECRET_KEY` (a **restricted key**, § 10),

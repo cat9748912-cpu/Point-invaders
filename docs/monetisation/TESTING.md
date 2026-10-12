@@ -539,6 +539,34 @@ Unchanged from the Phase 1 table: 2, 3, 4, 7, 8, 9 and 10. The rest:
 - **Cloudflare's real runtime**, as opposed to its local copy (workerd), and Google's real token endpoint and
   database. These are first exercised by your `/health` call and the Stripe test event.
 
+### Gate 1: your deployment (2026-10-12)
+
+You deployed the Worker at **`https://point-invaders-shop.pointinvaders.workers.dev`**, in Stripe test mode
+(a sandbox).
+
+- **What you reported:** `/health` first answered `"db":"denied"`. Google had accepted the service account key,
+  but the database refused it. After the fix (checking the IAM role, or using Firebase's own Admin SDK key; which
+  one is still to be confirmed), it answered `{"ok":true,"live":false,"db":"ok"}`. The webhook destination shows
+  **Active** in Stripe's Workbench.
+- **Verified by execution from here** (`curl`, nothing written):
+
+  | Check | Result |
+  |---|---|
+  | `GET /health` | `{"ok":true,"live":false,"db":"ok"}`, 200 |
+  | preflight from `https://pointinvaders.com` | 204, with `allow-origin` the site, methods `POST, OPTIONS`, headers `Authorization, Content-Type`, `max-age` 600, `vary: Origin`, `no-store` |
+  | preflight from another origin | 403 `{"error":"origin"}` |
+  | checkout with no token | 401 `{"error":"auth"}` |
+  | checkout with a forged token | 401 `{"error":"auth"}` |
+  | webhook with no signature | 400 `{"error":"signature"}` |
+  | webhook with a bad signature | 400 `{"error":"signature"}` |
+  | unknown route | 404 `{"error":"route"}` |
+
+- **Not yet reported:**
+  - the test event's delivery status, which is the first proof that the Worker can **write** to the database;
+  - the seed table;
+  - whether the rules are published;
+  - which database fix worked.
+
 ### The six open items, updated
 
 U5 (Blaze, other functions) is **resolved**: there is no Blaze plan and no Cloud Function. U4 and U6 are unchanged

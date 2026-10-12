@@ -254,7 +254,7 @@ Never send a key, the signing secret, the JSON key file, or a screenshot that sh
 |---|---|---|
 | `/health` → `"missing":[…]` | a secret isn't set | run `npx wrangler secret put <that name>` again (step 5 or 6) |
 | `/health` → `"db":"key"` | Google refused the service account key | redo step 2.3 to make a new key, then the `FIREBASE_SERVICE_ACCOUNT` line in step 5 |
-| `/health` → `"db":"denied"` | the service account lacks its role | Google Cloud → IAM: give `point-invaders-shop` the role **Firebase Realtime Database Admin** |
+| `/health` → `"db":"denied"` | Google accepted the key, but the database refused it: usually the service account lacks its role, or the role hasn't taken effect yet | Google Cloud → IAM & Admin → **IAM** (not Service Accounts): check that `point-invaders-shop@…` has **Firebase Realtime Database Admin**, or add it with **Grant access**. Wait 5 minutes, then reload. Still denied? Use Firebase's own key instead: Firebase console → ⚙️ Project settings → **Service accounts** → **Generate new private key**, then redo the `FIREBASE_SERVICE_ACCOUNT` line of step 5 with that file. It can reach more of Firebase, so keep Cloudflare two-step sign-in on. |
 | step 2: "Service account key creation is disabled" | an organisation policy | tell me |
 | `npx wrangler deploy` → "You need to register a workers.dev subdomain" | a new Cloudflare account | Cloudflare dashboard → **Workers & Pages**, which sets one up, then run the deploy again |
 | `'npx' is not recognized` | Node.js isn't installed, or the window was opened before it was | install Node.js, then open a new Command Prompt |
