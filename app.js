@@ -3444,6 +3444,11 @@ function enterHub(){
   // one place every "I'm done with multiplayer" path passes through, so the
   // room is released here rather than in each of them. A no-op when there is
   // no room, which is the common case.
+  // v83 — A 3-2-1 still counting belongs to a round nobody is going to play: end it here. stopGame() does
+  // this for QUIT, but the hub is also reached without stopGame() — a speedrun's "End Run" pressed (from the
+  // keyboard, on the card it has just left) after the next chapter began counting in — and the countdown
+  // then finished over the hub and started the mission behind it. A no-op unless one is pending.
+  try{ cancelCountdown(); }catch(e){ console.warn(e); }
   // v79 — 🏆 A tournament first (§ 44): its listener, its seat, and — for the organiser — the record. BEFORE
   // the room is let go, because a match of it may be mid-round on this screen and has to be ended as one.
   try{ if(typeof abortTourney === 'function') abortTourney('hub'); }catch(e){ console.warn(e); }
@@ -6333,6 +6338,8 @@ function shopCardEl(cat, item){
     : cat==='worlds'
       // 🌍 A world is judged by its sky, so its card is one.
       ? `<div class="shop-sky" style="background:linear-gradient(180deg,${item.sky[0]},${item.sky[1]} 70%,${item.sky[2] || '#05060f'})"><span>${item.emoji}</span></div>`
+      // v82 — 🛸 a living companion's card shows it living (§ 38); every other card is the emoji it was.
+      : (cat === 'companions' && typeof cmpPreview === 'function') ? cmpPreview(item)
       : `<div class="shop-emoji">${item.emoji}</div>`;
   const badge = rarity ? `<div class="rarity-badge ${rarity}">${rarity}</div>` : '';
   const p = priceOf(cat, item);
@@ -24398,7 +24405,7 @@ const PIA_MODELS = {
 // pictures. The renderer uploads them (TEXTURE SETS) and builds the mip chains.
 //   PI_ASSETS[name] = { v: 1, size: 2048, paintRef: 0.35, kappa: 1,
 //                       maps: { base: [mime, b64], nrm: [...], orm: [...], mask: [...], emis?: [...] } }
-const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=80' };                          // set name → chunk file (filled by the v62 splice)
+const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=83' };                          // set name → chunk file (filled by the v62 splice)
 const piAssetState = Object.create(null);           // set name → { blobs, meta, loading }
 function piAssetChunk(file){
   return new Promise((resolve, reject) => {
@@ -36880,7 +36887,9 @@ P.games.meteor = function(){
   const SHOT_V = 62;        // bolt speed, world units a second
   const HIT_PAD = 0.8;      // the bolt's own radius, added to the fragment's
   const LOCK_SLACK = 1.35;  // how far off the sight line a fragment may still lock
-  const time0 = Math.round(75 * getTimeModifier());
+  // v83 — 80, the 2D board's length (it was 75): the two builds share one best, one set of medals and one pace
+  // ghost, so the 3D round was being asked for the same score in five seconds less.
+  const time0 = Math.round(80 * getTimeModifier());
   let time = time0, score = 0, killed = 0, wave = 1, chain = 0, bestChain = 0;
   let over = false, cool = 0, aimX = 0, aimY = 6, spawnT = 0, waveT = 0;
 
@@ -38492,6 +38501,10 @@ P.games.hacker = function(){
 
   let level = 1, score = 0, seq = [], inputIdx = 0, phase = 'play';
   let cleared = 0, best = 0, time = time0, ended = false;
+  // v83 — the LEVEL pill, as on the 2D board (resetGameStage hides it again for the next round).
+  const lvlPill = document.getElementById('tetris-lvl-pill'), lvlEl = document.getElementById('tetris-lvl');
+  if(lvlPill) lvlPill.style.display = '';
+  if(lvlEl) lvlEl.textContent = level;
 
   document.getElementById('g-time').textContent = time;
   document.getElementById('prog-fill').style.width = '100%';
@@ -38553,6 +38566,7 @@ P.games.hacker = function(){
                                    { speed: 8, life: 0.7, size: 0.28, vy: 4 }));
         setStatus(`✅ NODE DECRYPTED · +${bonus} PTS`, '#39ff88');
         level++;
+        if(lvlEl) lvlEl.textContent = level;                       // v83
         gLater(nextLevel, 950);
       }
     } else {
@@ -47398,10 +47412,17 @@ document.getElementById('pause-audio')?.addEventListener('click', () => {
 document.getElementById('pause-restart')?.addEventListener('click', () => {
   if(!pauseCanRestart()) return;
   const gid = curGame;
+  // v83 — 🌐 An open world restarts as ITSELF. This menu is older than the worlds (§ 31) and relaunched every
+  // round with prepGame(): in a world, RESTART started the ordinary mission under the world's title — its
+  // board and its ten-second clock where the borderless world and its long one had been. Asked BEFORE
+  // stopGame(), which ends the world. (A world reached through a mode's OPEN lane is not restartable at all:
+  // pauseCanRestart() has already said no to every such mode.)
+  const world = typeof owActive === 'function' && owActive() && typeof startOpenWorld === 'function';
   pauseAbort();
   stopGame();
   setControls(null);
   document.getElementById('game-screen').classList.remove('canvas-game');
+  if(world){ startOpenWorld(gid); return; }                  // its own sound, title, screen and countdown
   snd('success');
   showScreen('game-screen');
   prepGame(gid);
@@ -47532,7 +47553,10 @@ function activeEvent(now = Date.now()){
   const forced = eventById(EV_FORCE);
   if(forced){
     const win = eventWindow(forced, now) || { start: now, end: now + 864e5 };
-    return { ev: forced, win: { ...win, live: true, key: forced.id + '-' + new Date(now).getUTCFullYear() } };
+    // v83 — inside the event's REAL window the preview keeps that window's key (the year it OPENED): forcing
+    // COLD BOOT in January named `coldboot-<this year>` while the date itself named `coldboot-<last year>`,
+    // so a preview read an empty board and banked its runs under a key nobody else was on.
+    return { ev: forced, win: { ...win, live: true, key: (win.live && win.key) || (forced.id + '-' + new Date(now).getUTCFullYear()) } };
   }
   for(const ev of EVENTS){
     const win = eventWindow(ev, now);
@@ -59203,8 +59227,23 @@ function owClock(secs, onEnd, onTick){
   return { get left(){ return left; }, add };
 }
 
+// v83 hook — port to the v56 OW sources.
+// A world whose mission has NO countdown keeps that here. On their 2D boards and in their 3D builds Cyber
+// Runner counts the seconds you have lasted, and Flappy Drone and Server Stack show ∞ — each runs until you
+// fail — but all three open worlds counted down from 120 like every other world, and ended a clean run at
+// two minutes. `kind` is 'up' (the seconds lasted, as the 3D Runner shows them) or 'inf' (∞). Nothing is
+// registered with the Time Dilator, exactly as in those 3D rounds: there is no countdown to add seconds to.
+// The world ends on its own terms (three shields, three slabs). Same shape as owClock()'s return.
+function owFreeClock(kind, isOver){
+  const el = document.getElementById('g-time');
+  let secs = 0;
+  if(el) el.textContent = kind === 'up' ? '0' : '∞';
+  if(kind === 'up') gTimer = setInterval(() => { if(isOver && isOver()) return; secs++; if(el) el.textContent = secs; }, 1000);
+  return { get left(){ return Infinity; }, get secs(){ return secs; }, add(){} };
+}
+
 P.owKit = { V, TAU, wrapAng, ease, ihash, basisYPR, basisLook, makeInput, makeHud, makeField, makeFx, makeDust,
-            plume, drawBodies, drawFloor, owBegin, owClock, SPACE, NIGHT, touchButtons, makeSpecials, SPECIAL_DEFS,
+            plume, drawBodies, drawFloor, owBegin, owClock, owFreeClock, SPACE, NIGHT, touchButtons, makeSpecials, SPECIAL_DEFS,
             QT, attFrom, attTurn, attSpin, attLevelRoll, attElevate, attFace, basisQ, yawOf, elevOf };
 
 })();
@@ -61077,7 +61116,7 @@ P.ow.lightcycle = function(){
 'use strict';
 const P = window.PI3D;
 if(!P || !P.owKit || !P.owGround) return;
-const { V, TAU, wrapAng, ease, makeField, drawFloor, owClock } = P.owKit;
+const { V, TAU, wrapAng, ease, makeField, drawFloor, owClock, owFreeClock } = P.owKit;
 const { groundBegin, chaseCam, makeCity, drawRover } = P.owGround;
 const { mine, clamp, runLoop } = P.kit;
 
@@ -61118,7 +61157,9 @@ P.ow.runner = function(){
   const bar = document.getElementById('prog-fill');
   bar.style.width = '100%';
   bar.style.background = 'linear-gradient(90deg,#ff4f6a,#ffd700)';
-  const clock = owClock(120, () => end('clock'));
+  // v83 hook — port to the v56 OW sources. The seconds you have lasted, counting UP, as on the 2D board and in
+  // the 3D build — it was a 120-second countdown here and nowhere else. The run ends when the shields do.
+  const clock = owFreeClock('up', () => over);
   const say = (s, t) => { msg = s; msgT = t || 2; };
 
   // Box test in an obstacle's own frame.
@@ -61169,7 +61210,9 @@ P.ow.runner = function(){
     hit: o => { obs.kill(o); fx.explode([o.p[0], 1, o.p[2]], 1.6, { color: '#ff4fd8', debris: 4, debrisGeo: 'slab', debrisColor: '#2a1a2a', smoke: 1 }); },
     heal: () => { me.shields = Math.min(3, me.shields + 1); bar.style.width = (me.shields / 3 * 100) + '%'; }
   });
-  P.owDebug = { state: () => ({ score, dist: Math.round(me.dist), speed: Math.round(me.speed), shields: me.shields }), specials: () => SP.state(), grant: k => SP.grant(k), useSpecial: () => SP.use() };
+  // v83 hook — port to the v56 OW sources: `lose` (as the Pylon Field's hook has), so a test can take a shield.
+  P.owDebug = { state: () => ({ score, dist: Math.round(me.dist), speed: Math.round(me.speed), shields: me.shields }), specials: () => SP.state(), grant: k => SP.grant(k), useSpecial: () => SP.use(),
+               lose(){ me.inv = 0; hurt(me.p); } };
 
   runLoop(dt => {
     if(finished) return false;
@@ -62861,7 +62904,7 @@ P.ow.reaction = function(){
 'use strict';
 const P = window.PI3D;
 if(!P || !P.owKit || !P.owGround || !P.owFly) return;
-const { V, TAU, wrapAng, ease, makeField, drawFloor, owClock, basisYPR } = P.owKit;
+const { V, TAU, wrapAng, ease, makeField, drawFloor, owClock, owFreeClock, basisYPR } = P.owKit;
 const { groundBegin, chaseCam, makeCity } = P.owGround;
 const { drawRing, throughRing } = P.owFly;
 const { mine, clamp, runLoop } = P.kit;
@@ -62902,7 +62945,9 @@ P.ow.flappy = function(){
   const bar = document.getElementById('prog-fill');
   bar.style.width = '100%';
   bar.style.background = 'linear-gradient(90deg,#46c8ff,#ffffff)';
-  const clock = owClock(120, () => end('clock'));
+  // v83 hook — port to the v56 OW sources. ∞, as on the 2D board and in the 3D build: a flight has no clock,
+  // it ends when the shields are gone. (It counted down from 120 here and nowhere else.)
+  const clock = owFreeClock('inf');
   const say = (s, t) => { msg = s; msgT = t || 2; };
 
   // A point in a gate's own frame: x along the wall, z through it.
@@ -66582,7 +66627,7 @@ P.ow.path = function(){
 'use strict';
 const P = window.PI3D;
 if(!P || !P.owKit || !P.owGround) return;
-const { V, TAU, ease, drawFloor, owClock } = P.owKit;
+const { V, TAU, ease, drawFloor, owClock, owFreeClock } = P.owKit;
 const { groundBegin, makeCity } = P.owGround;
 const { mine, clamp, runLoop } = P.kit;
 const H = 1.2, BASE = 10, AMP = 13, PERFECT = 0.3;
@@ -66605,7 +66650,9 @@ P.ow.stack = function(){
   const bar = document.getElementById('prog-fill');
   bar.style.width = '100%';
   bar.style.background = 'linear-gradient(90deg,#ff8a3a,#ff2bd6)';
-  const clock = owClock(120, () => end('clock'));
+  // v83 hook — port to the v56 OW sources. ∞, as on the 2D board and in the 3D build: a tower has no clock,
+  // it ends at the third lost slab. (It counted down from 120 here and nowhere else.)
+  const clock = owFreeClock('inf');
   const say = (s, t) => { msg = s; msgT = t || 2; };
 
   const top = () => slabs[slabs.length - 1];
@@ -69931,12 +69978,15 @@ SHOP_ITEMS.companions = [
     desc:'Two rings turning inside each other.' },
   { id:'cmp-bit',   name:'Bit',          price:16, emoji:'🧊', look:2,
     desc:'A stray cube of the grid that took a liking to you.' },
-  { id:'cmp-scout', name:'Scout',        price:20, emoji:'🛸', look:3,
-    desc:'A pocket recon unit in your colours — not one of theirs.' },
-  { id:'cmp-nova',  name:'Nova',         price:25, emoji:'🪐', look:4,
-    desc:'A small sun with three moons in tow.' },
-  { id:'cmp-wing',  name:'Wingmate',     price:30, emoji:'🚀', look:5,
-    desc:'A miniature of your own ship, flying your wing.' }
+  // v82 — the EPIC and LEGENDARY three are ALIVE (`live`): they move by themselves wherever a companion is
+  // drawn — beside the cursor, on a 2D board, in a 3D world — and on their own shelf card. See cmpLive2d,
+  // cmpPreview, cmpDraw3d and style.css "§ 38 · v82". The three RARE ones stay what they were.
+  { id:'cmp-scout', name:'Scout',        price:20, emoji:'🛸', look:3, live:1,
+    desc:'A pocket recon unit in your colours — not one of theirs. It hovers on a tilt and sweeps a scanner under itself.' },
+  { id:'cmp-nova',  name:'Nova',         price:25, emoji:'🪐', look:4, live:1,
+    desc:'A small sun with three moons in tow — each on its own orbit, passing behind it and round again.' },
+  { id:'cmp-wing',  name:'Wingmate',     price:30, emoji:'🚀', look:5, live:1,
+    desc:'A miniature of your own ship, flying your wing: engine lit, banking into your turns, and a roll when you score big.' }
 ];
 
 var CMP_LS = 'pi_cmp', CMP_OFF = 'pi_cmp_off';
@@ -69951,7 +70001,7 @@ var cmp2x = 0, cmp2y = 0, cmp2t = 0, cmp2n = 0;
 // 3D — reused every frame
 var cmpAimed = false, cmpAx = 0, cmpAy = 0, cmpAz = 0, cmp3w = null, cmp3n = 0;
 var cmpP = [0, 0, 0];
-var CMP_D = [0, 1, 2, 3].map(() => ({ pos: [0, 0, 0], rot: [0, 0, 0], scale: [1, 1, 1], color: '#ffffff', emissive: '#ffffff',
+var CMP_D = [0, 1, 2, 3, 4, 5, 6].map(() => ({ pos: [0, 0, 0], rot: [0, 0, 0], scale: [1, 1, 1], color: '#ffffff', emissive: '#ffffff',
                                       emissiveStrength: 1, alpha: 1, metallic: 0.3, roughness: 0.4, rim: 0.8 }));
 
 function cmpKnown(id){ return !!id && SHOP_ITEMS.companions.some(i => i.id === id); }
@@ -70083,6 +70133,8 @@ function cmpDom(){
   if(show){
     const body = cmpEl.firstElementChild;
     if(body && body.textContent !== cmpCur.emoji) body.textContent = cmpCur.emoji;
+    const look = cmpCur.live ? String(cmpCur.look) : '';                // v82 — a living one: its parts are styled by look
+    if((cmpEl.dataset.look || '') !== look){ if(look) cmpEl.dataset.look = look; else delete cmpEl.dataset.look; }
     cmpEl.classList.toggle('cmp-still', cmpStill);
     if(!cmpShown){
       cmpShown = true; cmpEl.hidden = false; cmpPlaced = false; cmpAnchorAt = 0; cmpWx = cmpWy = -1e9;
@@ -70141,8 +70193,66 @@ function cmpDraw2d(x, y){
   c.globalAlpha = 0.96; c.shadowBlur = 9 + cheer * 12; c.shadowColor = cmpCol;
   c.scale(s, s);
   c.font = '16px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
-  c.fillText(it.emoji, 0, 0);
+  // v82 — the living three move on the board as well; under reduced motion they are their emoji, like the rest.
+  if(it.live && !cmpStill) cmpLive2d(c, it, now, tx - cmp2x);
+  else c.fillText(it.emoji, 0, 0);
   c.restore();
+}
+// v82 — A living companion on a 2D board. Drawn round the emoji with a handful of paths, on the round's own
+// clock (gNow), so a pause and photo mode hold it. `lag` is how far behind its mark it is, in pixels: the
+// Wingmate banks into it. Called inside cmpDraw2d's save/restore, origin on the companion.
+function cmpLive2d(c, it, now, lag){
+  const col = cmpCol;
+  if(it.look === 4){
+    // NOVA — three moons on a tilted orbit. The far half of the orbit is drawn BEFORE the sun and the near
+    // half after it, so a moon passes behind and comes round in front. The sun breathes.
+    c.shadowBlur += 4 + Math.sin(now / 300) * 4;
+    c.fillStyle = col;
+    for(let pass = 0; pass < 2; pass++){
+      if(pass === 1) c.fillText(it.emoji, 0, 0);
+      for(let i = 0; i < 3; i++){
+        const a = now / (620 + i * 190) + i * 2.0944, y = Math.sin(a) * 5;
+        if((y < 0) !== (pass === 0)) continue;
+        c.beginPath(); c.arc(Math.cos(a) * (13 + i * 1.5), y - 1, 1.7 - i * 0.2, 0, 6.2832); c.fill();
+      }
+    }
+    return;
+  }
+  if(it.look === 3){
+    // SCOUT — hovering on a tilt over a scanner beam that sweeps and pulses, one running light blinking.
+    const sweep = Math.sin(now / 900) * 6;
+    c.save();
+    c.globalAlpha = 0.2 + 0.14 * Math.sin(now / 260); c.fillStyle = col; c.shadowBlur = 0;
+    c.beginPath(); c.moveTo(0, 5); c.lineTo(sweep - 7, 22); c.lineTo(sweep + 7, 22); c.closePath(); c.fill();
+    c.restore();
+    c.rotate(Math.sin(now / 520) * 0.16);
+    c.fillText(it.emoji, 0, 0);
+    if(Math.floor(now / 380) % 2 === 0){ c.fillStyle = '#ffffff'; c.beginPath(); c.arc(8, -1, 1.3, 0, 6.2832); c.fill(); }
+    return;
+  }
+  // WINGMATE — banks into the turn it is catching up on, its engine burning: a flame that flickers at the tail
+  // (the 🚀 points up and right, so the tail is down and left) and two embers drifting off down the wake.
+  c.rotate(Math.max(-0.5, Math.min(0.5, lag / 46)));
+  const f = 5 + 2.5 * Math.sin(now / 43) + 1.5 * Math.sin(now / 17);
+  c.save();
+  c.shadowBlur = 8; c.shadowColor = '#ff9a3c';
+  c.globalAlpha = 0.9; c.fillStyle = '#ffd24a';
+  c.beginPath(); c.moveTo(-4, 8); c.lineTo(-8, 4); c.lineTo(-6 - f * 0.9, 6 + f * 0.9); c.closePath(); c.fill();
+  c.fillStyle = '#ff7a1a';
+  for(let i = 0; i < 2; i++){
+    const k = (now / 260 + i * 0.5) % 1;
+    c.globalAlpha = (1 - k) * 0.55;
+    c.beginPath(); c.arc(-9 - k * 9, 9 + k * 9, 2.2 - k * 1.4, 0, 6.2832); c.fill();
+  }
+  c.restore();
+  c.fillText(it.emoji, 0, 0);
+}
+// v82 — the shelf card of a living companion shows it living: the same parts the follower has, at card size.
+// shopCardEl() asks; anything that is not one of the three gets the ordinary emoji block back.
+function cmpPreview(item){
+  if(!item || !item.live) return '<div class="shop-emoji">' + (item ? item.emoji : '') + '</div>';
+  return '<div class="shop-emoji cmp-prev" data-look="' + item.look + '"><span class="cmp-fx-body">' + item.emoji + '</span>' +
+         '<i class="cmp-o cmp-o1"></i><i class="cmp-o cmp-o2"></i><i class="cmp-o cmp-o3"></i></div>';
 }
 
 // ── 3D: where the mission said its player is ──────────────────────────────
@@ -70185,7 +70295,7 @@ function cmpDraw3d(w, r){
   }
   const cheer = cmpCheerK(), spin = cmpStill ? 0 : t * (1.6 + cheer * 6), q = s * (1 + cheer * 0.45);
   const x = cmpP[0], y = cmpP[1] + (cmpStill ? 0 : Math.sin(t * 2.6) * s * 0.22), z = cmpP[2];
-  const glow = 1.6 + cheer * 2.4, A = CMP_D[0], B = CMP_D[1], C = CMP_D[2], D = CMP_D[3];
+  const glow = 1.6 + cheer * 2.4, A = CMP_D[0], B = CMP_D[1], C = CMP_D[2], D = CMP_D[3], E = CMP_D[4];
   cmp3n++;
   switch(it.look){
     case 1:   // HALO — two rings, one inside the other
@@ -70197,21 +70307,34 @@ function cmpDraw3d(w, r){
       r.draw('cube', cmpPut(A, x, y, z, spin * 0.8, spin, spin * 0.3, q * 0.62, q * 0.62, q * 0.62, glow * 0.7, 1));
       r.draw('cube', cmpPut(B, x + Math.cos(spin * 1.7) * q * 0.9, y + q * 0.35, z + Math.sin(spin * 1.7) * q * 0.9, spin, 0, spin, q * 0.2, q * 0.2, q * 0.2, glow, 1));
       break;
-    case 3:   // SCOUT — the hull, lit from inside, under a ring no hostile carries
-      r.draw('drone', cmpPut(A, x, y, z, 0, spin * 0.5, 0, q * 0.8, q * 0.8, q * 0.8, 0.9 + cheer, 1));
+    case 3: { // SCOUT — the hull, lit from inside, under a ring no hostile carries. v82: it hovers on a tilt,
+              // the eye under it blinks, and a search light circles the ground it is looking at.
+      const wob = cmpStill ? 0 : 1, blink = cmpStill ? 1 : (Math.sin(t * 6.5) > 0.2 ? 1 : 0.15);
+      r.draw('drone', cmpPut(A, x, y, z, Math.cos(t * 1.9) * 0.12 * wob, spin * 0.5, Math.sin(t * 2.4) * 0.18 * wob, q * 0.8, q * 0.8, q * 0.8, 0.9 + cheer, 1));
       r.draw('thintorus', cmpPut(B, x, y + q * 0.55, z, 0, spin * 3, 0, q * 1.5, q * 0.4, q * 1.5, glow, 0.55));
-      break;
-    case 4:   // NOVA — a small sun, three moons
-      r.draw('lowsphere', cmpPut(A, x, y, z, 0, spin * 0.4, 0, q * 0.5, q * 0.5, q * 0.5, glow + 0.6, 1));
+      r.draw('sphere', cmpPut(C, x, y - q * 0.32, z, 0, 0, 0, q * 0.13, q * 0.13, q * 0.13, (glow + 2) * blink, 1));
+      if(!cmpStill) r.draw('sphere', cmpPut(D, x + Math.cos(t * 2.2) * q * 0.95, y - q, z + Math.sin(t * 2.2) * q * 0.95, 0, 0, 0, q * 0.1, q * 0.1, q * 0.1, glow + 1, 0.8));
+      break; }
+    case 4: { // NOVA — a small sun, three moons. v82: the sun breathes inside a corona, and each moon keeps
+              // an orbit of its own — its own radius, its own pace, its own tilt.
+      const br = cmpStill ? 1 : 1 + Math.sin(t * 3.1) * 0.12;
+      r.draw('lowsphere', cmpPut(A, x, y, z, 0, spin * 0.4, 0, q * 0.5 * br, q * 0.5 * br, q * 0.5 * br, glow + 0.6 + (br - 1) * 6, 1));
+      r.draw('thintorus', cmpPut(E, x, y, z, 1.1, spin * 0.6, 0.4, q * 0.95, q * 0.95, q * 0.95, glow * 0.8, 0.35));
       for(let i = 0; i < 3; i++){
-        const a = spin * 1.4 + i * 2.0944, o = i === 0 ? B : i === 1 ? C : D;
-        r.draw('sphere', cmpPut(o, x + Math.cos(a) * q * 1.05, y + Math.sin(a * 0.9) * q * 0.3, z + Math.sin(a) * q * 1.05, 0, 0, 0, q * 0.16, q * 0.16, q * 0.16, glow, 1));
+        const a = spin * (1.1 + i * 0.45) + i * 2.0944, rad = q * (0.9 + i * 0.2), m = q * (0.17 - i * 0.025), o = i === 0 ? B : i === 1 ? C : D;
+        r.draw('sphere', cmpPut(o, x + Math.cos(a) * rad, y + Math.sin(a + i) * q * 0.32, z + Math.sin(a) * rad, 0, 0, 0, m, m, m, glow, 1));
       }
-      break;
-    case 5:   // WINGMATE — your own ship, small, nose the way the camera looks
-      r.draw('ship', cmpPut(A, x, y, z, 0.05, Math.atan2(-fx, -fz), cmpStill ? 0 : Math.sin(t * 1.8) * 0.25, q * 0.55, q * 0.55, q * 0.55, 0.5 + cheer, 1));
+      break; }
+    case 5: { // WINGMATE — your own ship, small, nose the way the camera looks. v82: two embers burn behind
+              // the tail, and a big play is answered with a barrel roll.
+      const roll = cmpStill ? 0 : Math.sin(t * 1.8) * 0.25 + cheer * 6.2832;
+      r.draw('ship', cmpPut(A, x, y, z, 0.05, Math.atan2(-fx, -fz), roll, q * 0.55, q * 0.55, q * 0.55, 0.5 + cheer, 1));
       r.draw('thintorus', cmpPut(B, x, y - q * 0.3, z, 0, spin * 2, 0, q * 1.1, q * 0.3, q * 1.1, glow, 0.45));
-      break;
+      for(let i = 0; i < 2; i++){
+        const fl = cmpStill ? 1 : 0.75 + 0.35 * Math.sin(t * 31 + i * 2.1), back = q * (0.62 + i * 0.3), m = q * (0.17 - i * 0.06) * fl;
+        r.draw('sphere', cmpPut(i ? D : C, x - fx * back, y - q * 0.02, z - fz * back, 0, 0, 0, m, m, m, glow + 2.2, 0.85 - i * 0.35));
+      }
+      break; }
     default:  // SPARK — a point of light and its ring
       r.draw('sphere', cmpPut(A, x, y, z, 0, 0, 0, q * 0.42, q * 0.42, q * 0.42, glow + 0.8, 1));
       r.draw('thintorus', cmpPut(B, x, y, z, 0.5, spin * 2, 0, q * 1.2, q * 0.5, q * 1.2, glow, 0.5));
@@ -72634,6 +72757,13 @@ const TUT_STEPS = (function(){
       ? 'The mode rail. It swipes sideways — I will slide it for you as we go.'
       : 'The mode banners: everything that is more than one mission at a time. We will take them one by one.');
   read('lane', '#cp-banner .lane-pick', 'CLASSIC · 3D · OPEN', 'Each banner has its own lane switch: the classic boards, their 3D versions, or open worlds. It only changes that one mode.', { opt: 1 });
+  // v83 — a seasonal event (§ 14) puts a banner on the rail while it runs, or in the week before it opens.
+  read('ev-banner', '#ev-banner', 'A SEASONAL EVENT', () => {
+    const a = activeEvent(), z = a ? null : eventTeaser(), ev = (a || z || {}).ev;
+    if(!ev) return '';
+    return a ? ev.icon + ' ' + ev.name + '. For a few weeks the grid dresses up. Finish ' + ev.goalRuns + ' missions before it ends for a badge you can wear as a title. LIMITED STOCK opens a market shelf that goes when the event does.'
+             : ev.icon + ' ' + ev.name + ' arrives in ' + z.days + ' day' + (z.days === 1 ? '' : 's') + ': a badge to earn, a board of its own and a limited shelf in the market.';
+  }, { opt: 1 });
   act('camp', '#btn-campaign', '📖 THE CAMPAIGN', 'Twenty chapters against THE GLITCH. Open the map.', shown('campaign-overlay'));
   read('camp-in', panel('campaign-overlay'), 'THE CHAPTER MAP', 'Each chapter is a mission with a target, worth up to three stars — and stars open the next act.',
     { ov: 'campaign-overlay', open: '#btn-campaign' });
@@ -72676,6 +72806,7 @@ const TUT_STEPS = (function(){
   act('pcard', () => document.querySelector('#lb-panel .lb-row[data-uid]'), 'PLAYER CARDS', 'Tap a row to open that operative’s card.', shown('pcard-overlay'), { opt: 1 });
   read('pcard-in', panel('pcard-overlay'), 'AN OPERATIVE’S CARD', 'Rank, medals and bests. On someone else’s card: ☆ ADD AS RIVAL puts them on your Rivals tab, 💰 PLACE BOUNTY stakes credits on one of their scores, and a crew’s founder shows 🛡️ ASK TO JOIN. All three are public, so they are yours to press.',
     { ov: 'pcard-overlay', open: '#lb-panel .lb-row[data-uid]' });
+  read('ev-board', '#ev-lb-panel', 'THE EVENT BOARD', 'The event’s own board: every point banked while it runs, ranked. It closes when the event does.', { opt: 1 });   // v83
   read('chal', '#chal-panel', '⚔️ RIVAL CHALLENGES', 'Scores posted from a results card for anyone to beat. Beat one and the board says so.', { opt: 1 });
   read('bnty', '#bnty-panel', '💰 BOUNTIES', 'Credits staked on a score. HUNT one to play for it; beat the score and the purse is yours.', { opt: 1 });
   read('chat', '#chat-panel', '💬 THE GRID TERMINAL', 'Live chat with everyone on the grid. What you send is public and carries your callsign — so the typing is yours.', { opt: 1 });
@@ -72691,6 +72822,8 @@ const TUT_STEPS = (function(){
     { at: 'market', when: tutLinked, opt: 1 });
   read('mk-tabs', '.market-tabs', 'THE AISLES', 'Power-ups to use in a round; colours, cursors and skins to wear; music drives; exit states; worlds; companions — and a limited shelf while an event is on.',
     { at: 'market', when: tutLinked });
+  read('mk-event', '#market-tab-event', 'LIMITED STOCK', 'The running event’s shelf. On sale only while the event lasts — and yours for good once you have bought it.',
+    { at: 'market', when: tutLinked, opt: 1 });                                                            // v83
   act('mk-comp', '.market-tab[data-tab="companions"]', '🛸 COMPANIONS', 'Open the companions aisle.', () => tutVisible(tutId('panel-companions')),
     { at: 'market', when: tutLinked, opt: 1 });
   read('mk-comp-in', '#shop-companions', 'A DRONE OF YOUR OWN', 'A small follower that trails your marker and reacts to your big plays. It is only for show — it never changes a score.',

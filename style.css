@@ -6384,3 +6384,68 @@ body.tut-peek #pause-overlay{opacity:0 !important;pointer-events:none !important
 }
 @media (max-height:480px){ .tut-card{max-height:70vh;padding:9px 12px 8px} .tut-body{font-size:.76rem;line-height:1.4} .tut-hint{margin-top:6px} }
 @media (pointer:coarse){ .tut-btns .btn{min-height:40px} }
+
+/* ═══════════════════════════════════════
+   § 38 · v82 — 🛸 COMPANIONS · the rarer three are alive (Scout, Nova, Wingmate)
+   ═══════════════════════════════════════ */
+/* The follower (#cmp-fx) and a shelf card's preview (.cmp-prev) carry the same parts: the emoji
+   (.cmp-fx-body) and three spare pieces (.cmp-o1..3). A living companion sets data-look on the holder,
+   and everything below is keyed on that — so the three RARE ones, which set nothing, are untouched.
+   Sizes are in --u (1px beside the cursor, larger on a card). Only transform, translate, rotate, scale,
+   opacity, filter and z-index are animated: nothing here lays anything out again. */
+#cmp-fx{--u:1px}
+.cmp-o{position:absolute;left:50%;top:50%;width:0;height:0;display:none;pointer-events:none;
+  transition-property:none}   /* a part never morphs from one companion's shape into another's (the page's
+                                reduced-motion rule gives EVERYTHING a short transition on every property) */
+/* A block as wide as its emoji, centred — so the rarity badge stays on the line UNDER it, as on every other card. */
+.cmp-prev{position:relative;display:block;width:fit-content;margin-left:auto;margin-right:auto;isolation:isolate;--u:1.9px}
+.cmp-prev > .cmp-fx-body{display:inline-block;width:auto;height:auto;font-size:inherit;line-height:1.15;filter:drop-shadow(0 0 8px var(--cyan))}
+
+/* 🪐 NOVA — the sun breathes; three moons, each on an ellipse of its own. An ellipse is two swings a
+   quarter-turn apart (translate left-right, transform up-down), and z-index steps with the upper half
+   of it, so a moon goes BEHIND the sun and comes round in front. */
+[data-look="4"] > .cmp-fx-body{animation:cmpBob 2.6s ease-in-out infinite,cmpSun 1.9s ease-in-out infinite alternate}
+@keyframes cmpSun{from{filter:drop-shadow(0 0 5px var(--cyan))}to{filter:drop-shadow(0 0 13px var(--cyan)) brightness(1.25)}}
+[data-look="4"] > .cmp-o{display:block;width:calc(var(--u)*5);height:calc(var(--u)*5);margin:calc(var(--u)*-2.5) 0 0 calc(var(--u)*-2.5);
+  border-radius:50%;background:var(--cyan);box-shadow:0 0 calc(var(--u)*5) var(--cyan);
+  animation:cmpOx 1.25s ease-in-out infinite alternate,cmpOy 1.25s ease-in-out infinite alternate,cmpOz 2.5s steps(1) infinite}
+[data-look="4"] > .cmp-o1{animation-delay:0s,-.625s,0s}
+[data-look="4"] > .cmp-o2{animation-duration:1.7s,1.7s,3.4s;animation-delay:-.6s,-1.45s,-.6s;opacity:.85}
+[data-look="4"] > .cmp-o3{animation-duration:2.3s,2.3s,4.6s;animation-delay:-1.5s,-2.65s,-1.5s;opacity:.7;scale:.8}
+@keyframes cmpOx{from{translate:calc(var(--u)*-17) 0}to{translate:calc(var(--u)*17) 0}}
+@keyframes cmpOy{from{transform:translateY(calc(var(--u)*-6))}to{transform:translateY(calc(var(--u)*6))}}
+@keyframes cmpOz{0%{z-index:1}50%{z-index:-1}}
+
+/* 🛸 SCOUT — hovers on a tilt; a scanner beam under it sweeps and pulses; one running light blinks. */
+[data-look="3"] > .cmp-fx-body{animation:cmpBob 2.6s ease-in-out infinite,cmpTilt 1.8s ease-in-out infinite alternate}
+@keyframes cmpTilt{from{rotate:-8deg}to{rotate:8deg}}
+[data-look="3"] > .cmp-o1{display:block;z-index:-1;margin:calc(var(--u)*4) 0 0 calc(var(--u)*-8);
+  border-left:calc(var(--u)*8) solid transparent;border-right:calc(var(--u)*8) solid transparent;border-bottom:calc(var(--u)*17) solid var(--cyan);
+  transform-origin:50% 0;opacity:.3;animation:cmpSweep 2.2s ease-in-out infinite alternate,cmpBeam 1.1s ease-in-out infinite alternate}
+@keyframes cmpSweep{from{rotate:-22deg}to{rotate:22deg}}
+@keyframes cmpBeam{from{opacity:.14}to{opacity:.42}}
+[data-look="3"] > .cmp-o2{display:block;width:calc(var(--u)*3);height:calc(var(--u)*3);margin:calc(var(--u)*-3) 0 0 calc(var(--u)*7);
+  border-radius:50%;background:#fff;box-shadow:0 0 calc(var(--u)*4) #fff;animation:cmpBlink .8s steps(1) infinite}
+@keyframes cmpBlink{0%{opacity:1}50%{opacity:0}}
+
+/* 🚀 WINGMATE — banks from side to side with its engine lit: a flame at the tail (the rocket points up
+   and right, so the tail is down and left) and two embers drifting off down its wake. */
+[data-look="5"] > .cmp-fx-body{animation:cmpBob 2.6s ease-in-out infinite,cmpBank 2.1s ease-in-out infinite alternate}
+@keyframes cmpBank{from{rotate:-7deg}to{rotate:9deg}}
+[data-look="5"] > .cmp-o1{display:block;z-index:-1;width:calc(var(--u)*6);height:calc(var(--u)*9);margin:calc(var(--u)*3) 0 0 calc(var(--u)*-11);
+  border-radius:50% 50% 50% 50% / 35% 35% 65% 65%;background:linear-gradient(#ffd24a,#ff7a1a);box-shadow:0 0 calc(var(--u)*6) #ff9a3c;
+  rotate:45deg;transform-origin:50% 0;animation:cmpFlame .16s ease-in-out infinite alternate}
+@keyframes cmpFlame{from{transform:scaleY(.7);opacity:.75}to{transform:scaleY(1.2);opacity:1}}
+[data-look="5"] > .cmp-o2,[data-look="5"] > .cmp-o3{display:block;z-index:-1;width:calc(var(--u)*4);height:calc(var(--u)*4);
+  margin:calc(var(--u)*8) 0 0 calc(var(--u)*-12);border-radius:50%;background:#ff9a3c;animation:cmpPuff .7s linear infinite}
+[data-look="5"] > .cmp-o3{animation-delay:-.35s}
+@keyframes cmpPuff{from{translate:0 0;opacity:.7;scale:1}to{translate:calc(var(--u)*-10) calc(var(--u)*10);opacity:0;scale:.3}}
+
+/* Reduced motion: nothing moves. The moons are parked round the sun, the beam and the flame are still,
+   the embers are put out. (.cmp-still is the follower's own switch; a card listens to the page's.) */
+#cmp-fx.cmp-still > .cmp-o,html.reduced-motion .cmp-prev > .cmp-o,html.reduced-motion .cmp-prev > .cmp-fx-body{animation:none}
+#cmp-fx.cmp-still[data-look="4"] > .cmp-o1,html.reduced-motion .cmp-prev[data-look="4"] > .cmp-o1{translate:calc(var(--u)*-16) calc(var(--u)*-3)}
+#cmp-fx.cmp-still[data-look="4"] > .cmp-o2,html.reduced-motion .cmp-prev[data-look="4"] > .cmp-o2{translate:calc(var(--u)*15) calc(var(--u)*2)}
+#cmp-fx.cmp-still[data-look="4"] > .cmp-o3,html.reduced-motion .cmp-prev[data-look="4"] > .cmp-o3{translate:calc(var(--u)*4) calc(var(--u)*7)}
+#cmp-fx.cmp-still[data-look="5"] > .cmp-o2,#cmp-fx.cmp-still[data-look="5"] > .cmp-o3,
+html.reduced-motion .cmp-prev[data-look="5"] > .cmp-o2,html.reduced-motion .cmp-prev[data-look="5"] > .cmp-o3{display:none}
