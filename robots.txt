@@ -1,0 +1,6 @@
+# Everything may be crawled. Nothing is disallowed on purpose: link URLs such as ?vs= ?lab= ?wall=
+# name the home page as their canonical, and a crawler can only see that if it is allowed to fetch them.
+User-agent: *
+Allow: /
+
+Sitemap: https://pointinvaders.com/sitemap.xml

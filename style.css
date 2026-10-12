@@ -5937,3 +5937,450 @@ body.mode-3d .lab-sw.on{box-shadow:0 1px 0 #0a8f9a,0 2px 0 #0a8f9a,0 3px 0 #0554
 }
 /* The hub's ⛶ was the one control left under a thumb's width (30px). */
 @media (pointer:coarse){ #btn-fs-hub{min-width:44px} }
+
+/* ═════════════════════════════════════════════════
+   § 34 · v69 — 📊 THE DOSSIER, PART TWO · runs by mode
+   Eleven counts today and more as modes are added: a wrapping row of chips,
+   not eleven more tiles — on a phone that would be six rows of boxes. A mode
+   never played is dimmed rather than hidden, so the list is also a map of
+   what the arcade has.
+   ═════════════════════════════════════════════════ */
+.dos-modes{display:flex;flex-wrap:wrap;gap:8px}
+.dos-mode{
+  display:inline-flex;align-items:baseline;gap:6px;white-space:nowrap;
+  padding:7px 10px;border:1px solid var(--border);border-radius:8px;
+  font-size:.74rem;color:var(--dim)
+}
+.dos-mode b{font-family:var(--fd);font-size:.86rem;font-weight:900;color:var(--text)}
+.dos-mode.zero{opacity:.45}
+@media (max-width:480px){
+  .dos-modes{gap:6px}
+  .dos-mode{padding:6px 8px;font-size:.7rem}
+}
+
+/* ═════════════════════════════════════════════════
+   § 35 · v70 — 📜 THE CODEX · a second view inside the campaign overlay
+   One column of entries on every screen: these are paragraphs, and a paragraph
+   split across two narrow columns is harder to read than one that runs the
+   width of a phone. .cp-tools is the tool row above the map — the codex's door
+   lives there, and later sections add theirs beside it.
+   ═════════════════════════════════════════════════ */
+.cp-tools{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.cp-tools .btn{min-height:40px}
+@media (pointer:coarse){ .cp-tools .btn{min-height:44px} }
+.cx-list{display:flex;flex-direction:column;gap:10px}
+.cx-head{
+  font-family:var(--fd);font-size:.58rem;font-weight:700;letter-spacing:.18em;color:var(--dim);
+  margin:14px 0 2px;padding-bottom:6px;border-bottom:1px solid var(--border)
+}
+.cx-head:first-child{margin-top:0}
+.cx-entry{border:1px solid var(--border);border-radius:var(--r);padding:12px 14px;background:var(--s1)}
+.cx-entry.cx-act{border-color:var(--border2);background:var(--s2)}
+.cx-entry.cx-boss{border-color:rgba(255,36,66,.42)}
+.cx-kicker{font-family:var(--fd);font-size:.5rem;font-weight:700;letter-spacing:.2em;line-height:1.6;color:var(--lime)}
+.cx-entry.cx-boss .cx-kicker{color:var(--red)}
+.cx-title{font-family:var(--fd);font-size:.84rem;font-weight:900;letter-spacing:.04em;margin:4px 0 6px}
+.cx-text{font-size:.86rem;line-height:1.55}
+.cx-text em{font-style:normal;color:var(--dim)}
+.cx-new{
+  display:inline-block;margin-left:6px;padding:1px 6px;border-radius:6px;
+  background:var(--lime);color:var(--bg);letter-spacing:.1em
+}
+.cx-entry.locked .cx-kicker{color:var(--dim)}
+.cx-redact{color:var(--dimmer);user-select:none;overflow-wrap:anywhere;word-break:break-all}
+.cx-need{margin-top:8px;font-size:.74rem;color:var(--dim)}
+@media (max-width:480px){
+  .cx-entry{padding:10px 12px}
+  .cx-text{font-size:.82rem}
+}
+
+/* ═══════════════════════════════════════
+   § 37 · v72 — ⟳ PRESTIGE · the badge, the door on the rail, the confirm
+   ═══════════════════════════════════════ */
+/* The badge rides inside a name (.lb-name) or the level line (.pc-lvl): it
+   takes their size and only brings its own colour. */
+.pr-chip{
+  display:inline-block;margin-left:5px;padding:0 5px;border-radius:999px;
+  font-family:var(--fd);font-size:.82em;font-weight:900;letter-spacing:.04em;line-height:1.5;
+  color:#ffd76a;border:1px solid rgba(255,215,106,.45);background:rgba(255,215,106,.08);
+  vertical-align:baseline;white-space:nowrap
+}
+/* The perk button once level 25 is reached. Gold, so it does not read as the
+   green "points to spend" state it replaces. */
+.xp-rail.can-reboot{border-color:rgba(255,215,106,.45);box-shadow:0 0 18px rgba(255,215,106,.12)}
+.xp-rail .btn.xp-reboot-btn{
+  background:linear-gradient(135deg,#ffd76a,#ff9f3a);color:#1a1205;border-color:transparent;
+  box-shadow:0 0 16px rgba(255,190,80,.35);animation:prPulse 2.4s ease-in-out infinite
+}
+@keyframes prPulse{0%,100%{box-shadow:0 0 12px rgba(255,190,80,.25)}50%{box-shadow:0 0 22px rgba(255,190,80,.55)}}
+.reduced-motion .xp-rail .btn.xp-reboot-btn{animation:none}
+@media (prefers-reduced-motion:reduce){ .xp-rail .btn.xp-reboot-btn{animation:none} }
+
+.reboot-modal{max-width:560px}
+.rb-cols{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:4px 0 12px}
+.rb-col{border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:10px 12px;background:rgba(255,255,255,.03)}
+.rb-hdr{font-family:var(--fd);font-size:.56rem;font-weight:900;letter-spacing:.16em;margin-bottom:6px}
+.rb-lose{border-color:rgba(255,80,110,.35)}
+.rb-lose .rb-hdr{color:#ff6b88}
+.rb-keep{border-color:rgba(57,255,20,.3)}
+.rb-keep .rb-hdr{color:var(--green,#39ff14)}
+.rb-col ul{list-style:none;margin:0;padding:0}
+.rb-col li{font-size:.74rem;line-height:1.45;padding:2px 0 2px 14px;position:relative;color:var(--text,#dfe7ff)}
+.rb-col li::before{content:'·';position:absolute;left:3px;top:1px;font-weight:900}
+.rb-gain{
+  font-size:.74rem;line-height:1.5;padding:9px 12px;border-radius:10px;margin-bottom:12px;
+  border:1px solid rgba(255,215,106,.35);background:rgba(255,215,106,.06);color:var(--text,#dfe7ff)
+}
+.rb-gain b{color:#ffd76a}
+.rb-acts{display:flex;flex-wrap:wrap;gap:8px}
+.rb-acts .btn{flex:1 1 150px}
+@media (max-width:520px){
+  .rb-cols{grid-template-columns:1fr}
+  .rb-acts .btn{flex:1 1 100%}
+}
+@media (max-height:560px) and (orientation:landscape){
+  .rb-cols{gap:8px;margin-bottom:8px}
+  .rb-col{padding:7px 10px}
+  .rb-col li{font-size:.68rem;line-height:1.3;padding-top:1px;padding-bottom:1px}
+  .rb-gain{padding:6px 10px;margin-bottom:8px}
+}
+@media (pointer:coarse){ .rb-acts .btn{min-height:44px} }
+
+/* ═══════════════════════════════════════
+   § 38 · v73 — 🛸 COMPANIONS · the follower, the shelf, and a tab row told where to break
+   ═══════════════════════════════════════ */
+/* The companion outside a round. Fixed and moved by transform only; it sits
+   under every overlay (2000) and takes no pointer events at all, so whatever
+   is beneath it is clicked as if it were not there. */
+#cmp-fx{
+  position:fixed;left:0;top:0;width:30px;height:30px;margin:-15px 0 0 -15px;
+  z-index:1900;pointer-events:none;will-change:transform;contain:layout style
+}
+#cmp-fx[hidden]{display:none}
+.cmp-fx-body{
+  display:block;width:30px;height:30px;font-size:21px;line-height:30px;text-align:center;
+  filter:drop-shadow(0 0 6px var(--cyan));animation:cmpBob 2.6s ease-in-out infinite
+}
+@keyframes cmpBob{0%,100%{transform:translateY(-2px)}50%{transform:translateY(3px)}}
+#cmp-fx.cmp-react .cmp-fx-body{animation:cmpCheer .9s cubic-bezier(.2,.9,.3,1.2) 1}
+@keyframes cmpCheer{
+  0%{transform:scale(1) rotate(0)}
+  35%{transform:scale(1.7) rotate(200deg);filter:drop-shadow(0 0 14px var(--cyan)) brightness(1.4)}
+  100%{transform:scale(1) rotate(360deg)}
+}
+/* Reduced motion: it stays put, and a big play is a glow rather than a spin. */
+#cmp-fx.cmp-still .cmp-fx-body{animation:none}
+#cmp-fx.cmp-still.cmp-react .cmp-fx-body{animation:cmpGlow .9s ease-out 1}
+@keyframes cmpGlow{
+  0%,100%{filter:drop-shadow(0 0 6px var(--cyan))}
+  40%{filter:drop-shadow(0 0 16px var(--cyan)) brightness(1.5)}
+}
+
+/* ── THE TAB ROW ──
+   Ten tabs (nine without the seasonal one) do not fit one line at 1060px, and
+   a flex row that wraps leaves whatever did not fit alone on a second line. A
+   grid breaks where it is told to: five across — two full rows, or 5 + 4 —
+   and three across on a phone, where the seasonal tab takes a row of its own
+   instead of being the orphan. A label that is too long for its cell wraps
+   inside the tab rather than widening the row. */
+.market-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.market-tab{min-width:0;padding-left:8px;padding-right:8px;text-align:center;white-space:normal;line-height:1.25}
+.market-tab[hidden]{display:none}
+@media (max-width:700px){
+  .market-tabs{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+  .market-tab{font-size:.56rem;letter-spacing:.05em;padding:8px 4px}
+  .market-tab-event{grid-column:1 / -1}
+}
+
+/* The shelf's note carries the per-device switch. */
+.cmp-note{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.cmp-note .btn{margin-left:auto;flex:0 0 auto}
+@media (max-width:520px){ .cmp-note .btn{margin-left:0;flex:1 1 100%} }
+@media (pointer:coarse){ .cmp-note .btn{min-height:44px} }
+
+/* ═══════════════════════════════════════
+   § 39 · v74 — ⏱️ SPEEDRUN · the clock on the HUD and the briefing in the campaign overlay
+   ═══════════════════════════════════════ */
+/* The pill rides the round's stat strip, first, the way the boss chain's
+   integrity pill does. Tabular figures so the tenths do not make it wobble. */
+.spd-pill{display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}
+.spd-pill em{font-style:normal;color:var(--cyan)}
+.spd-pill .spd-d{font-size:.9em;color:var(--dim)}
+.spd-pill .spd-d:empty{display:none}
+.spd-pill.ahead .spd-d{color:var(--lime)}
+.spd-pill.behind .spd-d{color:var(--red)}
+
+.spd-brief{display:flex;flex-direction:column;gap:12px}
+.spd-rules{
+  display:flex;flex-direction:column;gap:6px;padding:11px 13px;border-radius:10px;
+  border:1px solid rgba(0,245,255,.25);background:rgba(0,245,255,.05);font-size:.76rem;line-height:1.45
+}
+.spd-lanes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.spd-lane{
+  display:flex;flex-direction:column;gap:3px;padding:10px 8px;border-radius:10px;text-align:center;
+  border:1px solid var(--border);background:var(--s2);min-width:0
+}
+.spd-lane.on{border-color:var(--gold);box-shadow:0 0 14px rgba(255,215,0,.14)}
+.spd-lane span{font-family:var(--fd);font-size:.5rem;font-weight:700;letter-spacing:.1em;color:var(--dim)}
+.spd-lane.on span{color:var(--gold)}
+.spd-lane b{font-family:var(--fd);font-size:.95rem;font-variant-numeric:tabular-nums;color:var(--text)}
+.spd-lane em{font-style:normal;font-size:.62rem;color:var(--dim)}
+.spd-note{font-size:.68rem;line-height:1.45;color:var(--dim)}
+.spd-head{
+  font-family:var(--fd);font-size:.56rem;font-weight:900;letter-spacing:.16em;color:var(--cyan);margin-top:4px
+}
+.spd-splits{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 14px}
+.spd-split{display:flex;justify-content:space-between;gap:8px;font-size:.72rem;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.06)}
+.spd-split span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim)}
+.spd-split b{font-variant-numeric:tabular-nums;font-weight:700}
+@media (max-width:520px){
+  .spd-splits{grid-template-columns:1fr}
+  .spd-lane b{font-size:.82rem}
+}
+@media (pointer:coarse){ .spd-brief .btn{min-height:44px} }
+
+/* ═══════════════════════════════════════
+   § 40 · v75 — 🌀 GLITCH RUN · the banner, the map, the relic cards
+   ═══════════════════════════════════════ */
+.gl-banner{border-color:rgba(168,85,247,.45);background:linear-gradient(120deg,rgba(168,85,247,.14),rgba(0,245,255,.06))}
+.gl-banner .mp-banner-title{color:#c084fc}
+.gl-pill{display:flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums}
+.gl-pill em{font-style:normal;color:#c084fc}
+
+.glitch-modal{max-width:620px;border-color:rgba(168,85,247,.45);box-shadow:0 0 70px rgba(168,85,247,.16),inset 0 0 0 1px rgba(255,255,255,.03)}
+#glitch-body{display:flex;flex-direction:column;gap:12px}
+.gl-rules{
+  display:flex;flex-direction:column;gap:6px;padding:11px 13px;border-radius:10px;font-size:.76rem;line-height:1.45;
+  border:1px solid rgba(168,85,247,.3);background:rgba(168,85,247,.06)
+}
+.gl-seed{display:flex;align-items:center;gap:10px}
+.gl-seed span{font-family:var(--fd);font-size:.56rem;font-weight:900;letter-spacing:.16em;color:#c084fc}
+.gl-seed .input{flex:1;min-width:0;text-transform:uppercase;letter-spacing:.12em;font-family:var(--fd)}
+.gl-best,.gl-note{font-size:.74rem;color:var(--dim)}
+.gl-best b{color:var(--gold)}
+.gl-head{font-family:var(--fd);font-size:.56rem;font-weight:900;letter-spacing:.16em;color:#c084fc;margin-top:2px}
+.gl-notebar{font-size:.76rem;line-height:1.4;padding:8px 12px;border-radius:10px;border:1px solid rgba(57,255,20,.3);background:rgba(57,255,20,.06)}
+
+/* The map: one row a layer, top to bottom, the boss last. A node is its
+   mission's glyph; where you stand, where you have been and where you can go
+   are told by the ring, not by colour alone. */
+.gl-map{display:flex;flex-direction:column;gap:5px;padding:10px;border-radius:12px;border:1px solid var(--border);background:rgba(255,255,255,.03)}
+.gl-layer{display:flex;align-items:center;justify-content:center;gap:10px;position:relative;min-height:34px;border-radius:8px}
+.gl-layer.next{background:rgba(168,85,247,.1)}
+.gl-ln{position:absolute;left:6px;font-family:var(--fd);font-size:.48rem;font-weight:700;letter-spacing:.1em;color:var(--dimmer)}
+.gl-node{
+  display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:30px;padding:0 6px;border-radius:9px;font-size:.95rem;
+  border:1px solid var(--border);background:var(--s1);opacity:.5
+}
+.gl-node.gl-elite{border-style:dashed}
+.gl-node.gl-boss{min-width:54px;border-color:rgba(255,36,66,.5)}
+.gl-node.been{opacity:.85;border-color:rgba(57,255,20,.5)}
+.gl-node.open{opacity:1;border-color:#c084fc;box-shadow:0 0 10px rgba(168,85,247,.35)}
+.gl-node.here{opacity:1;border:2px solid var(--gold);box-shadow:0 0 12px rgba(255,215,0,.35)}
+
+.gl-offer,.gl-routes{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px}
+.gl-card,.gl-route{
+  display:flex;flex-direction:column;gap:5px;text-align:left;padding:11px 12px;border-radius:11px;cursor:pointer;
+  border:1px solid rgba(168,85,247,.45);background:rgba(168,85,247,.08);color:var(--text);font-family:var(--fb);min-height:64px
+}
+.gl-card:hover,.gl-route:hover,.gl-card:focus-visible,.gl-route:focus-visible{border-color:#c084fc;background:rgba(168,85,247,.16);outline:none}
+.gl-card b,.gl-route b{font-family:var(--fd);font-size:.62rem;letter-spacing:.08em}
+.gl-card span,.gl-route span{font-size:.72rem;line-height:1.4;color:var(--dim)}
+.gl-card em,.gl-relic em{font-style:normal;font-size:.64rem;line-height:1.35;color:#ffb070}
+.gl-route.gl-boss{border-color:rgba(255,36,66,.55);background:rgba(255,36,66,.08)}
+.gl-route.gl-elite{border-style:dashed}
+.gl-own{display:flex;flex-wrap:wrap;gap:6px}
+.gl-own span{font-family:var(--fd);font-size:.52rem;letter-spacing:.06em;padding:4px 8px;border-radius:999px;border:1px solid var(--border);background:var(--s1)}
+.gl-own .none{color:var(--dim)}
+.gl-relics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 12px}
+.gl-relic{display:flex;flex-direction:column;gap:2px;font-size:.7rem;line-height:1.4;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.06)}
+.gl-relic b{font-family:var(--fd);font-size:.56rem;letter-spacing:.06em}
+.gl-relic span{color:var(--dim)}
+@media (max-width:520px){
+  .gl-relics{grid-template-columns:1fr}
+  .gl-offer,.gl-routes{grid-template-columns:1fr}
+}
+@media (pointer:coarse){ #glitch-body .btn{min-height:44px} }
+
+/* ═══════════════════════════════════════
+   § 42 · v77 — 💰 BOUNTIES · the hub list, the card block, the posting sheet
+   ═══════════════════════════════════════ */
+/* A bounty row is a challenge row (.chal-row) wearing gold. */
+.bn-row{border-color:rgba(255,215,0,.28)}
+.bn-row .chal-name{color:var(--gold)}
+.bn-row.own{background:rgba(255,215,0,.06)}
+.bn-tag{font-family:var(--fd);font-size:.5rem;font-weight:900;letter-spacing:.12em;color:var(--gold);white-space:nowrap}
+.bn-news{font-size:.74rem;line-height:1.45;padding:9px 12px;margin-bottom:8px;border-radius:10px;border:1px solid rgba(255,215,0,.3);background:rgba(255,215,0,.06)}
+.bn-card{margin-top:10px}
+.bn-card .chal-row{margin-bottom:6px}
+.bn-why{font-size:.66rem;line-height:1.4;color:var(--dim);margin-top:5px;text-align:center}
+
+.bnty-modal{max-width:500px;border-color:rgba(255,215,0,.4);box-shadow:0 0 70px rgba(255,215,0,.12),inset 0 0 0 1px rgba(255,255,255,.03)}
+#bnty-body{display:flex;flex-direction:column;gap:9px}
+.bn-lbl{font-family:var(--fd);font-size:.52rem;font-weight:900;letter-spacing:.16em;color:var(--gold);margin-top:2px}
+.bn-pick{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.bn-pick.bn-tiers{grid-template-columns:repeat(3,minmax(0,1fr))}
+.bn-opt{
+  display:flex;flex-direction:column;gap:3px;align-items:flex-start;padding:9px 10px;border-radius:10px;cursor:pointer;min-height:44px;
+  border:1px solid var(--border);background:var(--s2);color:var(--text);font-family:var(--fd);font-size:.52rem;letter-spacing:.06em;text-align:left;min-width:0
+}
+.bn-opt b{font-size:.8rem;font-variant-numeric:tabular-nums;color:var(--gold)}
+.bn-opt.on{border-color:var(--gold);background:rgba(255,215,0,.1)}
+.bn-tiers .bn-opt{align-items:center;text-align:center}
+.bn-amt{display:flex;align-items:center;justify-content:center;gap:14px}
+.bn-amt .btn{min-width:48px;min-height:44px;font-size:1rem}
+.bn-cr{font-family:var(--fd);font-size:1rem;font-weight:900;color:var(--gold);min-width:110px;text-align:center;font-variant-numeric:tabular-nums}
+.bn-sum{font-size:.74rem;line-height:1.5;padding:9px 12px;border-radius:10px;border:1px solid rgba(255,215,0,.3);background:rgba(255,215,0,.05)}
+.bn-sum b{color:var(--gold)}
+.bn-acts{display:flex;flex-wrap:wrap;gap:8px}
+.bn-acts .btn{flex:1 1 150px;min-height:44px}
+@media (max-width:420px){ .bn-pick{grid-template-columns:1fr} .bn-pick.bn-tiers{grid-template-columns:repeat(3,minmax(0,1fr))} }
+
+/* ═══════════════════════════════════════
+   § 43 · v78 — 🛡️ CREWS · the tag, the fourth board tab, the crew sheet
+   ═══════════════════════════════════════ */
+/* The tag. It takes its colour from --cc (the crew's, always one of the
+   shop's colours) and its size from where it sits. */
+.crew-chip{
+  display:inline-block;margin-left:5px;padding:0 5px;border-radius:5px;font-style:normal;
+  font-family:var(--fd);font-size:.8em;font-weight:900;letter-spacing:.06em;line-height:1.5;white-space:nowrap;vertical-align:baseline;
+  color:var(--cc,#00f5ff);border:1px solid var(--cc,#00f5ff);background:rgba(0,0,0,.35)
+}
+/* In the hub bar it is a button (it opens the sheet). Small on purpose: the
+   bar is the tightest strip in the arcade, and the name beside it gives way. */
+.hub-crew{margin:0;font-size:.55rem;padding:2px 6px;cursor:pointer;flex:0 0 auto}
+.hub-crew[hidden]{display:none}
+
+/* Four tabs now: on a narrow phone they are two rows of two, not four slivers. */
+@media (max-width:420px){
+  #lb-tabs{flex-wrap:wrap}
+  .lb-tab{flex:1 1 calc(50% - 3px)}
+}
+.cw-mine{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 0 10px;font-size:.74rem;color:var(--dim)}
+.cw-lb .lb-tag{margin-left:6px}
+
+.crew-modal{max-width:520px}
+#crew-body{display:flex;flex-direction:column;gap:10px}
+.cw-box{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;border:1px solid var(--border);background:rgba(255,255,255,.03)}
+.cw-lbl{font-family:var(--fd);font-size:.54rem;font-weight:900;letter-spacing:.16em;color:var(--cyan)}
+.cw-head{font-family:var(--fd);font-size:.8rem;font-weight:900;letter-spacing:.06em}
+.cw-head .crew-chip{margin-left:0;margin-right:6px}
+.cw-field{display:flex;align-items:center;gap:10px}
+.cw-field span{flex:0 0 46px;font-family:var(--fd);font-size:.5rem;font-weight:700;letter-spacing:.12em;color:var(--dim)}
+.cw-field .input{flex:1;min-width:0}
+.cw-swatches{display:flex;flex-wrap:wrap;gap:8px}
+.cw-sw{width:36px;height:36px;border-radius:50%;cursor:pointer;background:var(--cc);border:2px solid transparent;box-shadow:0 0 10px var(--cc)}
+.cw-sw.on{border-color:#fff;transform:scale(1.12)}
+.cw-note{font-size:.7rem;line-height:1.45;color:var(--dim)}
+.cw-code{display:flex;align-items:center;gap:10px;font-family:var(--fd);font-size:.56rem;letter-spacing:.14em;color:var(--dim)}
+.cw-code b{font-size:.95rem;letter-spacing:.2em;color:var(--gold);user-select:all}
+.cw-roster{display:flex;flex-direction:column;gap:4px}
+.cw-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;background:rgba(255,255,255,.04);font-size:.76rem}
+.cw-row.ask{background:rgba(255,215,0,.07)}
+.cw-who{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cw-pts{font-family:var(--fd);font-size:.56rem;color:var(--cyan);font-variant-numeric:tabular-nums}
+@media (pointer:coarse){ #crew-body .btn{min-height:44px} .cw-sw{width:44px;height:44px} }
+
+/* ═══════════════════════════════════════
+   § 44 · v79 — 🏆 TOURNAMENTS · the card in the arena, the lobby, the bracket
+   ═══════════════════════════════════════ */
+.mp-tourney-card{border-color:rgba(255,215,0,.4)}
+.mp-tourney-join{display:flex;gap:8px;margin-top:8px}
+.mp-tourney-join .input{flex:1;min-width:0;text-transform:uppercase;letter-spacing:.18em;font-family:var(--fd);text-align:center}
+
+.tn-body{display:flex;flex-direction:column;gap:12px;width:100%;max-width:860px}
+.tn-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}
+.tn-code{display:flex;align-items:center;gap:10px;font-family:var(--fd);font-size:.56rem;letter-spacing:.14em;color:var(--dim)}
+.tn-code b{font-size:1.3rem;letter-spacing:.24em;color:var(--gold);user-select:all}
+.tn-lock{font-family:var(--fd);font-size:.52rem;letter-spacing:.1em;color:var(--cyan)}
+.tn-seats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.tn-seat{display:flex;flex-direction:column;gap:3px;padding:10px;border-radius:10px;border:1px dashed var(--border);background:var(--s1);min-width:0}
+.tn-seat.on{border-style:solid;border-color:rgba(0,245,255,.4)}
+.tn-seat span{font-family:var(--fd);font-size:.46rem;letter-spacing:.12em;color:var(--dim)}
+.tn-seat b{font-size:.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tn-set{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.tn-set label{display:flex;flex-direction:column;gap:4px}
+.tn-set span{font-family:var(--fd);font-size:.46rem;letter-spacing:.12em;color:var(--dim)}
+.tn-note{font-size:.74rem;color:var(--dim)}
+.tn-mine{padding:10px 12px;border-radius:10px;border:1px solid rgba(57,255,20,.35);background:rgba(57,255,20,.06);font-family:var(--fd);font-size:.6rem;letter-spacing:.08em}
+.tn-mine.out{border-color:var(--border);background:var(--s1);color:var(--dim)}
+.tn-champ{padding:12px;border-radius:10px;text-align:center;border:1px solid var(--gold);background:rgba(255,215,0,.1);font-family:var(--fd);font-size:.8rem;font-weight:900;letter-spacing:.1em;color:var(--gold)}
+
+/* Three columns, each centred on the pair that feeds it. On a phone they stack. */
+.tn-bracket{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;align-items:center}
+.tn-col{display:flex;flex-direction:column;gap:8px;justify-content:space-around;height:100%}
+.tn-col em{font-style:normal;font-family:var(--fd);font-size:.46rem;letter-spacing:.14em;color:var(--dim)}
+.tn-match{display:flex;flex-direction:column;gap:2px;padding:7px 8px;border-radius:9px;border:1px solid var(--border);background:rgba(255,255,255,.03)}
+.tn-side{display:flex;justify-content:space-between;gap:8px;font-size:.74rem;padding:2px 4px;border-radius:5px}
+.tn-side span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.tn-side b{font-variant-numeric:tabular-nums;color:var(--dim)}
+.tn-side.win{background:rgba(57,255,20,.1);color:var(--lime)}
+.tn-side.lost{opacity:.5}
+.tn-how{display:flex;align-items:center;justify-content:space-between;gap:6px;font-family:var(--fd);font-size:.42rem;letter-spacing:.12em;color:var(--dim);min-height:14px}
+@media (max-width:620px){
+  .tn-seats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .tn-bracket{grid-template-columns:1fr}
+}
+@media (pointer:coarse){ .tn-body .btn, .tn-body select, .mp-tourney-join .btn, .mp-tourney-join .input{min-height:44px} }
+
+/* ═══════════════════════════════════════
+   § 45 · v80 — 🎓 THE FULL TOUR · the spotlight layer and ARC's card
+   ═══════════════════════════════════════ */
+/* Body-level, over every overlay (2000), the party picker (2050), the pause
+   tint (2100) and the exit animation (2500); under the offline bar (9000) and
+   the toast (9999). The root is PAINTED, faintly: with a transparent root
+   Chrome draws the 3D chrome's lifted buttons over a fixed layer (#exit-fx met
+   that first). It takes no clicks itself — the dim path does, everywhere but
+   the cut-out. */
+.tut-layer{position:fixed;inset:0;z-index:2600;display:none;pointer-events:none;background:rgba(3,6,14,.01)}
+.tut-layer.on{display:block}
+.tut-layer [hidden],#btn-tutorial-replay[hidden]{display:none !important}
+.tut-mask{position:absolute;left:0;top:0;pointer-events:none}
+.tut-mask path{fill:rgba(3,6,14,.76);fill-rule:evenodd;pointer-events:fill}
+.tut-ring,.tut-plug{position:absolute;left:0;top:0;box-sizing:border-box}
+.tut-ring{pointer-events:none;border:2px solid var(--cyan);border-radius:12px;
+  box-shadow:0 0 0 3px rgba(0,245,255,.16),0 0 28px rgba(0,245,255,.55),inset 0 0 18px rgba(0,245,255,.12);
+  animation:tutPulse 1.5s ease-in-out infinite}
+.tut-layer.calm .tut-ring{animation:none}
+@keyframes tutPulse{0%,100%{box-shadow:0 0 0 3px rgba(0,245,255,.16),0 0 28px rgba(0,245,255,.55),inset 0 0 18px rgba(0,245,255,.12)}
+  50%{box-shadow:0 0 0 6px rgba(0,245,255,.08),0 0 40px rgba(0,245,255,.8),inset 0 0 18px rgba(0,245,255,.2)}}
+/* Lit, but not to be pressed: an explain-only step's control. */
+.tut-plug{pointer-events:auto;background:rgba(0,0,0,.001);cursor:default}
+
+.tut-card{position:absolute;left:0;top:0;box-sizing:border-box;width:min(370px,calc(100vw - 20px));max-height:min(62vh,430px);overflow:auto;
+  pointer-events:auto;padding:14px 16px 12px;border-radius:14px;
+  background:linear-gradient(160deg,rgba(10,14,34,.98),rgba(6,8,22,.98));border:1px solid var(--cyan);
+  box-shadow:0 14px 50px rgba(0,0,0,.7),0 0 26px rgba(0,245,255,.18);color:var(--text,#e8f0ff)}
+.tut-chap{font-family:var(--fd);font-size:.46rem;letter-spacing:.16em;color:var(--dim)}
+.tut-title{margin-top:5px;font-family:var(--fd);font-size:.84rem;font-weight:900;letter-spacing:.08em;color:var(--cyan)}
+.tut-body{margin-top:7px;font-size:.84rem;line-height:1.5}
+.tut-hint{margin-top:9px;padding:6px 9px;border-radius:8px;font-family:var(--fd);font-size:.5rem;letter-spacing:.1em;
+  color:var(--lime);border:1px dashed rgba(57,255,20,.45);background:rgba(57,255,20,.06)}
+.tut-btns{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:11px}
+.tut-btns #tut-skip{margin-right:auto;opacity:.8}
+.tut-card.busy #tut-next,.tut-card.busy #tut-pass,.tut-card.busy #tut-doit{pointer-events:none;opacity:.45}
+.tut-prog{margin-top:10px;height:3px;border-radius:3px;background:rgba(255,255,255,.1);overflow:hidden}
+.tut-prog i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--lime));transition:width .3s ease}
+
+/* During the countdown and the live seconds: a strip under the header. No
+   dim, nothing blocked, and the strip itself lets every tap through — only
+   its SKIP button can be pressed. */
+.tut-layer.coach{background:none}
+.tut-layer.coach .tut-mask,.tut-layer.coach .tut-ring,.tut-layer.coach .tut-plug{display:none}
+.tut-layer.coach .tut-card{width:min(520px,calc(100vw - 16px));padding:9px 12px;pointer-events:none;display:grid;grid-template-columns:1fr auto;gap:2px 12px;align-items:center}
+.tut-layer.coach .tut-chap,.tut-layer.coach .tut-prog{display:none}
+.tut-layer.coach .tut-title{margin:0;grid-column:1}
+.tut-layer.coach .tut-body{margin:0;grid-column:1;font-size:.78rem}
+.tut-layer.coach .tut-btns{margin:0;grid-column:2;grid-row:1 / span 2}
+.tut-layer.coach #tut-skip{pointer-events:auto;margin:0}
+
+/* The guided round is held, and the tour is pointing at the header: the pause
+   menu steps out of the way without letting go of the round. */
+body.tut-peek #pause-overlay{opacity:0 !important;pointer-events:none !important}
+
+@media (max-width:620px){
+  .tut-card{width:calc(100vw - 16px);max-height:46vh;padding:12px 13px 10px}
+  .tut-body{font-size:.8rem}
+}
+@media (max-height:480px){ .tut-card{max-height:70vh;padding:9px 12px 8px} .tut-body{font-size:.76rem;line-height:1.4} .tut-hint{margin-top:6px} }
+@media (pointer:coarse){ .tut-btns .btn{min-height:40px} }

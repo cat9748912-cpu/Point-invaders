@@ -3,6 +3,31 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<!-- 🔒 HTTPS, BEFORE THE ARCADE BOOTS.
+     The custom domain answers on plain http as well as https, and the GitHub
+     address forwards to it over http — so everyone who followed a shared link
+     used to land on the insecure copy of the site. That copy has no service
+     worker, no clipboard and no share sheet, and a browser keeps its storage
+     apart from the https site's: the same player arrived signed out, or as a
+     second guest. This sends the visit to https, keeping the path, the ?vs= /
+     ?lab= link and the #fragment.
+     ONLY on the arcade's own public hosts and only on the default port, so a
+     localhost server, a LAN address and a test harness are left alone.
+     replace(), not assign(): the http entry must not stay in the back stack, or
+     BACK would walk straight into this redirect again.
+     The flag is for app.js. The page goes on parsing while the new navigation
+     commits, and app.js stops at its first line when it sees it (see there). -->
+<script>
+(function(){
+  try{
+    var l = location;
+    if(l.protocol === 'http:' && !l.port && /(^|\.)pointinvaders\.com$|\.github\.io$/i.test(l.hostname)){
+      l.replace('https://' + l.host + l.pathname + l.search + l.hash);
+      window.__piHttpsHop = true;
+    }
+  }catch(e){}
+})();
+</script>
 <!-- Added to Home Screen, these give a real fullscreen launch on iOS,
      where Safari offers no Fullscreen API for non-video elements. -->
 <meta name="mobile-web-app-capable" content="yes">
@@ -23,7 +48,11 @@
      or WhatsApp drops the picture. The mission count is written by hand here,
      in the manifest below and on og.jpg itself — bump it with a new mission.
      The canonical link is also what 📣 Share Score sends (shareRun() in
-     app.js), so moving the site to a new address is one edit, here. -->
+     app.js), so moving the site to a new address is one edit, here.
+     It is the address Google indexes too, so it must be the one the site is
+     SERVED from: while it still named the old GitHub address (which forwards
+     here), Search Console filed this domain as an "alternate page" of it and
+     kept it out of the index. -->
 <meta name="description" content="31 free arcade missions in 2D or full 3D: live duels, a 20-chapter campaign, Boss Rush and party mode. No download, no signup — play as a guest in seconds.">
 <link rel="canonical" href="https://pointinvaders.com/">
 <meta property="og:type" content="website">
@@ -48,7 +77,7 @@
      forever, so a CDN or a browser cache is free to pair last deploy's CSS
      with this deploy's markup — which renders as unstyled elements for every
      rule the old file did not have yet. -->
-<link rel="stylesheet" href="style.css?v=67">
+<link rel="stylesheet" href="style.css?v=80">
 </head>
 <body>
 
@@ -68,6 +97,9 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
 <canvas id="bg-canvas"></canvas>
 <div id="cd-ov"><div id="cd-num">3</div></div>
 <div id="toast"></div>
+<!-- 🛸 COMPANION (v73, § 38) — the equipped companion outside a round. pointer-events:none: it can pass over
+     any button and never take its click. Hidden until a companion is equipped and switched on. -->
+<div id="cmp-fx" aria-hidden="true" hidden><span class="cmp-fx-body"></span></div>
 
 <div class="screen active" id="auth-screen">
   <div class="wrap">
@@ -121,7 +153,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
 
       <div class="auth-divider">or</div>
       <button class="btn btn-guest btn-full btn-lg" id="btn-guest">🎮 Play as Guest</button>
-      <div class="guest-note">No signup — progress is tied to this browser only. Save it to an account any time from ⚙️ Settings.</div>
+      <div class="guest-note">No signup — your progress is kept in this browser. Your guest profile leaves the online boards when you close the game and comes back when you return here; clearing site data or pressing Exit deletes it for good. Save it to an account any time from ⚙️ Settings.</div>
     </div>
   </div>
 </div>
@@ -130,6 +162,8 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
   <div class="hub-bar">
     <div class="hub-logo-sm">⚡ POINT INVADERS</div>
     <div class="hub-right">
+      <!-- 🛡️ v78 · The crew tag (§ 43): shown only while you are a verified member; opens the crew sheet. -->
+      <button class="crew-chip hub-crew" id="h-crew" type="button" hidden aria-label="Your crew"></button>
       <div class="hub-uname" id="h-uname">PLAYER</div>
       <div class="hub-pts" id="h-pts">🏆 0 PTS</div>
       <div class="hub-credits" id="h-credits">💎 0 CR</div>
@@ -260,6 +294,18 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
           <div class="lane-pick" data-lane="bossrush" role="group" aria-label="Boss Rush: classic 2D, 3D or open worlds"><button type="button" class="lp-seg on" data-v="classic" aria-pressed="true">▶ CLASSIC</button><button type="button" class="lp-seg" data-v="3d" aria-pressed="false">🧊 3D</button><button type="button" class="lp-seg" data-v="open" aria-pressed="false">🌐 OPEN WORLD</button></div>
         </div>
         <button class="btn btn-primary" id="btn-boss-rush">RUN IT →</button>
+      </div>
+      <!-- 🌀 GLITCH RUN (v75, § 40) — a branching map of missions with a relic between each: the roguelike lane.
+           Beside Boss Rush because it is the same kind of thing, a chained run under one score. -->
+      <div class="mp-banner gl-banner" id="gl-banner">
+        <span class="mp-banner-icon">🌀</span>
+        <div class="mp-banner-txt">
+          <div class="mp-banner-title">GLITCH RUN</div>
+          <div class="mp-banner-sub">Pick a route through seven layers of missions. Clear a node, take a relic, go deeper — one score at the end.</div>
+          <!-- 🌐 ▶ CLASSIC (2D), 🧊 3D or 🌐 OPEN WORLD for this mode's rounds (§ 31). -->
+          <div class="lane-pick" data-lane="glitch" role="group" aria-label="Glitch Run: classic 2D, 3D or open worlds"><button type="button" class="lp-seg on" data-v="classic" aria-pressed="true">▶ CLASSIC</button><button type="button" class="lp-seg" data-v="3d" aria-pressed="false">🧊 3D</button><button type="button" class="lp-seg" data-v="open" aria-pressed="false">🌐 OPEN WORLD</button></div>
+        </div>
+        <button class="btn btn-primary" id="btn-glitch">JACK IN →</button>
       </div>
       <!-- 🎉 PARTY MODE — pass-and-play on one device (§ 19). Nothing a party
            turn does is saved to anyone's profile. -->
@@ -572,6 +618,12 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
         <div class="lb-empty">No anomaly runs logged this week yet.</div>
       </div>
 
+      <!-- 🌀 v75 · The third derived board: every player's best Glitch Run (§ 40). -->
+      <div class="sec-label">🌀 GLITCH BOARD</div>
+      <div class="lb-panel dh-lb-panel" id="gl-lb-panel">
+        <div class="lb-empty">No Glitch Run banked yet.</div>
+      </div>
+
       <!-- ⚔️ RIVAL CHALLENGES — the asynchronous half of the arena. Posted runs
            other operatives have left standing; take one and you race their
            pace curve on the same HUD the personal-best ghost uses. Discovered
@@ -580,6 +632,14 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <div class="sec-label">⚔️ RIVAL CHALLENGES</div>
       <div class="lb-panel chal-panel" id="chal-panel">
         <div class="lb-empty">Reading the challenge board…</div>
+      </div>
+
+      <!-- 💰 BOUNTIES (v77, § 42) — credits on somebody else's best score. Beside the rival challenges
+           because it is their mirror: a challenge is your run for points, a bounty is their score for
+           credits. Found through the leaderboard's read of every player; no new database node. -->
+      <div class="sec-label">💰 BOUNTIES</div>
+      <div class="lb-panel chal-panel bnty-panel" id="bnty-panel">
+        <div class="lb-empty">Reading the bounty board…</div>
       </div>
 
       <!-- 📟 GRID TERMINAL — the arcade's ambient noise. Wired to Firebase when
@@ -677,6 +737,18 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
           <div class="mp-bot-lvls" id="mp-bot-lvls"></div>
           <button class="btn btn-primary btn-full" id="btn-mp-bot">Deploy Droid</button>
         </div>
+        <!-- 🏆 TOURNAMENT (v79, § 44) — eight seats, single elimination, droids in the empty ones. Its code
+             is SIX characters, so neither JOIN nor WATCH (four) will take it. -->
+        <div class="card mp-conn-card mp-tourney-card">
+          <div class="mp-conn-icon">🏆</div>
+          <div class="mp-conn-name">TOURNAMENT</div>
+          <div class="mp-conn-desc">Eight seats, knockout: quarter-finals, semis, a final. Droids take the empty seats.</div>
+          <button class="btn btn-primary btn-full" id="btn-tourney-host" type="button">Host One</button>
+          <div class="mp-tourney-join">
+            <input class="input" id="tourney-code" maxlength="6" placeholder="T·····" autocomplete="off" spellcheck="false" aria-label="Tournament code">
+            <button class="btn btn-secondary" id="btn-tourney-join" type="button">Join</button>
+          </div>
+        </div>
         <div class="card mp-conn-card">
           <div class="mp-conn-icon">➕</div>
           <div class="mp-conn-name">CREATE ROOM</div>
@@ -706,6 +778,11 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     </div>
 
     <!-- ── STAGE 3 · watching someone else's duel ── -->
+    <!-- 🏆 THE TOURNAMENT STAGE (v79, § 44) — the lobby, then the bracket. Painted by tourneyRender(). -->
+    <div class="mp-stage" id="mp-stage-tourney">
+      <div class="sec-label">🏆 TOURNAMENT</div>
+      <div class="tn-body" id="tourney-body"></div>
+    </div>
     <div class="mp-stage" id="mp-stage-watch">
       <div class="card mp-room" id="spec-body"></div>
       <div class="mp-room-btns">
@@ -789,6 +866,9 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <button class="market-tab" data-tab="exits">💀 Exit States</button>
     <!-- 🌍 WORLD THEMES — one tint over every 3D mission (§ 20). -->
     <button class="market-tab" data-tab="worlds">🌍 Worlds</button>
+    <!-- 🛸 COMPANIONS (v73, § 38). The tenth tab: the row is a GRID now (style.css § 38), five across on a
+         desktop and three on a phone, so it breaks where it is told to instead of wherever it runs out. -->
+    <button class="market-tab" data-tab="companions">🛸 Companions</button>
     <!-- 🎃 SEASONAL STOCK — shown only while an event runs (renderEventShelf). -->
     <button class="market-tab market-tab-event" data-tab="event" id="market-tab-event" hidden>🎃 Limited</button>
     <!-- 🎒 No loadout door here: it pushed this row onto a second line. Loadouts
@@ -828,6 +908,12 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <div class="market-panel" id="panel-worlds">
       <div class="ev-shelf-note wld-note">🌍 A world theme rebuilds the city and restyles the sky, the haze and the light of EVERY 3D mission and 🌐 OPEN WORLD at once. The missions show it in 3D CYBERPUNK mode — switch from ⚙️ Settings; the open worlds always do.</div>
       <div class="shop-grid" id="shop-worlds"></div>
+    </div>
+    <div class="market-panel" id="panel-companions">
+      <div class="ev-shelf-note cmp-note">🛸 A companion keeps up with you: the cursor in the hub, your marker on the 2D boards, your ship or rover in Neon Nebula, Runner, Cyber Arena and the 🌐 open worlds. It is only for show — it never touches a score, a hitbox or a click.
+        <button class="btn btn-secondary btn-sm" id="cmp-toggle" type="button" aria-pressed="true">🛸 COMPANION ON THIS DEVICE: ON</button>
+      </div>
+      <div class="shop-grid" id="shop-companions"></div>
     </div>
     <div class="market-panel" id="panel-event">
       <div class="ev-shelf-note" id="ev-shelf-note"></div>
@@ -1120,6 +1206,95 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════
+     🛡️ CREWS (v78, § 43) — found one, ask to join one, or run yours.
+     Static shell; crewRender() paints the body for the state you are in.
+     Opened from the 🛡️ CREWS tab of the leaderboard and from the hub tag. -->
+<div class="fb-overlay crew-tint" id="crew-overlay" aria-hidden="true">
+  <div class="fb-modal crew-modal" role="dialog" aria-modal="true" aria-labelledby="crew-heading">
+    <button class="fb-close" id="crew-close" aria-label="Close crew">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="crew-heading">🛡️ CREW</div>
+      <div class="fb-sub" id="crew-sub">—</div>
+    </div>
+    <div id="crew-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     💰 PLACE A BOUNTY (v77, § 42) — opened from another operative's card.
+     Static shell; the three choices are painted by bntyRenderDraft(). -->
+<div class="fb-overlay bnty-tint" id="bnty-overlay" aria-hidden="true">
+  <div class="fb-modal bnty-modal" role="dialog" aria-modal="true" aria-labelledby="bnty-heading">
+    <button class="fb-close" id="bnty-close" aria-label="Close bounty">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="bnty-heading">💰 PLACE A BOUNTY</div>
+      <div class="fb-sub" id="bnty-sub">—</div>
+    </div>
+    <div id="bnty-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     🌀 GLITCH RUN (v75, § 40) — the briefing before a run and the screen
+     between its nodes: the map, a relic offer, the route. Static shell; the
+     body is painted by glitchRender(). Its closer is run-aware — between
+     nodes, BACK or ✕ cashes the run out (glitchLeave). -->
+<div class="fb-overlay glitch-tint" id="glitch-overlay" aria-hidden="true">
+  <div class="fb-modal glitch-modal" role="dialog" aria-modal="true" aria-labelledby="glitch-heading">
+    <button class="fb-close" id="glitch-close" aria-label="Close Glitch Run">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="glitch-heading">🌀 GLITCH RUN</div>
+      <div class="fb-sub" id="glitch-sub">—</div>
+    </div>
+    <div id="glitch-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     ⟳ REBOOT (v72, § 37) — the confirm for a prestige at level 25. Static:
+     the two lists ARE the contract, and they read the same for everyone.
+     The perk button on the operative rail opens this once the level is
+     reached; the tree itself is the second button in here. -->
+<div class="fb-overlay reboot-tint" id="reboot-overlay" aria-hidden="true">
+  <div class="fb-modal reboot-modal" role="dialog" aria-modal="true" aria-labelledby="reboot-heading">
+    <button class="fb-close" id="reboot-close" aria-label="Close reboot">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="reboot-heading">⟳ REBOOT</div>
+      <div class="fb-sub" id="reboot-sub">—</div>
+    </div>
+    <div class="rb-cols">
+      <div class="rb-col rb-lose">
+        <div class="rb-hdr">RESETS</div>
+        <ul>
+          <li>Your level — back to 1</li>
+          <li>The perk tree — every node unspent</li>
+          <li>Perk points — 0, earned again as you level</li>
+          <li>Missions you have never scored in lock until their level</li>
+        </ul>
+      </div>
+      <div class="rb-col rb-keep">
+        <div class="rb-hdr">STAYS</div>
+        <ul>
+          <li>Points, rank and credits</li>
+          <li>Everything you own and have equipped</li>
+          <li>Achievements, medals and your title</li>
+          <li>Bests, run history and high scores</li>
+          <li>Campaign stars, heat, streak, weekly total</li>
+          <li>Rivals and challenges</li>
+          <li>Every mission you have scored in stays open</li>
+        </ul>
+      </div>
+    </div>
+    <div class="rb-gain" id="reboot-gain">—</div>
+    <div class="rb-acts">
+      <button class="btn btn-primary" id="reboot-go" type="button">⟳ REBOOT NOW</button>
+      <button class="btn btn-secondary" id="reboot-perks" type="button">🌳 PERK TREE</button>
+      <button class="btn btn-secondary" id="reboot-cancel" type="button">NOT YET</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
      🎖️ SEASON TRACK — ten tiers off the weekly point total. The weekly
      bucket already existed and only ranked the board, which made it a reward
      for being the single best player on the grid and a statistic for everyone
@@ -1254,10 +1429,10 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      ══════════════════════════════════════════════════════════════ -->
 <div class="fb-overlay" id="cl-overlay" aria-hidden="true">
   <div class="fb-modal cl-modal" role="dialog" aria-modal="true" aria-labelledby="cl-heading">
-    <button class="fb-close" id="cl-close" aria-label="Close challenge">✕</button>
+    <button class="fb-close" id="cl-close" aria-label="Close Beat My Ghost">✕</button>
     <div class="fb-head">
-      <div class="fb-title" id="cl-heading">⚔️ INCOMING CHALLENGE</div>
-      <div class="fb-sub">Someone shared a run with you. Beat their score.</div>
+      <div class="fb-title" id="cl-heading">👻 BEAT MY GHOST</div>
+      <div class="fb-sub">Someone sent you their run. Beat it.</div>
     </div>
     <div id="cl-body"></div>
   </div>
@@ -1364,6 +1539,29 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      ══════════════════════════════════════════════════════════════ -->
 <div id="exit-fx" aria-hidden="true"><div id="exit-fx-body"></div></div>
 
+<!-- 🎓 v80 · THE TOUR (§ 45). NOT a .fb-overlay: a body-level layer at z 2600, so it can stand over any
+     overlay and light one control through a cut-out. The dim is one svg path (even-odd: the cut-out takes
+     no clicks); #tut-plug covers the cut-out on an explain-only step. Static markup, like every overlay:
+     an older cached app.js never looks for it, and this app.js falls back to the old four cards without it. -->
+<div class="tut-layer" id="tut-layer" aria-hidden="true">
+  <svg class="tut-mask" id="tut-mask" aria-hidden="true" focusable="false"><path id="tut-dim" d=""/></svg>
+  <div class="tut-ring" id="tut-ring" hidden></div>
+  <div class="tut-plug" id="tut-plug" hidden></div>
+  <div class="tut-card" id="tut-card" role="dialog" aria-live="polite" aria-labelledby="tut-title" aria-describedby="tut-body">
+    <div class="tut-chap" id="tut-chap"></div>
+    <div class="tut-title" id="tut-title"></div>
+    <div class="tut-body" id="tut-body"></div>
+    <div class="tut-hint" id="tut-hint" hidden></div>
+    <div class="tut-btns">
+      <button class="btn btn-secondary btn-sm" id="tut-skip" type="button">SKIP TOUR</button>
+      <button class="btn btn-secondary btn-sm" id="tut-pass" type="button" hidden>SKIP STEP ›</button>
+      <button class="btn btn-primary btn-sm" id="tut-doit" type="button" hidden>Ⓐ PRESS IT</button>
+      <button class="btn btn-primary btn-sm" id="tut-next" type="button">NEXT →</button>
+    </div>
+    <div class="tut-prog" aria-hidden="true"><i id="tut-bar"></i></div>
+  </div>
+</div>
+
 <!-- ══════════════════════════════════════════════════════════════
      ⚙️ SETTINGS — what the gear on the hub bar opens.
      Three things that used to be scattered. The render mode was only on the
@@ -1439,8 +1637,10 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
          list at the bottom of § 11 and this panel steps aside for it. -->
     <section class="set-sec" aria-labelledby="set-tut-h">
       <div class="set-sec-h"><span id="set-tut-h">🎓 TUTORIAL</span></div>
-      <p class="set-note">Replay the guided run — four cards and one real round on CLICK FRENZY, about thirty seconds.</p>
-      <button class="btn btn-secondary btn-full" id="btn-tutorial">🎓 Replay Guided Run</button>
+      <p class="set-note" id="set-tut-note">ARC walks you through every control in the arcade, and one real round on CLICK FRENZY. A few minutes; skip whenever you like.</p>
+      <button class="btn btn-secondary btn-full" id="btn-tutorial">🎓 Start Tutorial</button>
+      <!-- v80 · Shown while a tour is unfinished: the button above then RESUMES, this one starts again (§ 45). -->
+      <button class="btn btn-secondary btn-full" id="btn-tutorial-replay" type="button" hidden style="display:none">↺ Replay From The Start</button>
     </section>
 
     <!-- ── 📲 APP ── (§ 28) Shown only where this browser can install the
@@ -1624,7 +1824,7 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
      served at a different version from the code it depends on. In 2D mode
      nothing in it allocates a GL context — the renderer is built lazily on the
      first 3D round. -->
-<script src="app.js?v=67"></script>
+<script src="app.js?v=80"></script>
 <script>
 // ══════════════════════════════════════════════════════════════════════
 //  📦 INSTALL BOOTSTRAP — icon, manifest, service worker

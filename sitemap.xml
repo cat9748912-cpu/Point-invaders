@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The arcade is one page, so this lists one address: the one every tag names as canonical
+     (index.html: rel="canonical", og:url). Listing a URL in a sitemap is one of the signals Google
+     reads when it chooses between duplicates of a page - here, this address and the GitHub Pages one
+     the arcade used to live at, which now redirects here. No <lastmod>: a hand-kept date goes stale,
+     and Google ignores the field once it has been wrong. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://pointinvaders.com/</loc>
+  </url>
+</urlset>

@@ -1,3 +1,12 @@
+// 🔒 index.html has just sent this visit to https (the guard at the top of its
+// <head> — it only ever fires on plain http on the arcade's own public hosts).
+// The page is still parsing while that navigation commits, and booting here
+// would open the http copy's saved session for a few hundred milliseconds:
+// long enough to touch the network on behalf of a profile this player is never
+// coming back to. A throw is the only way to end a classic script early, and
+// nothing is listening for errors yet — so this is the first line on purpose.
+if(window.__piHttpsHop) throw new Error('Point Invaders: continuing on https');
+
 // ══════════════════════════════════════════════════════════════════════
 //  🔊 POINT INVADERS — AUDIO ENGINE
 // ══════════════════════════════════════════════════════════════════════
@@ -1298,6 +1307,9 @@ function withTimeout(p, ms){
 
 function cacheProfile(u){
   if(!u || !u.uid) return;
+  // 🧹 § 33: a live guest's mirror is shared by every tab of that guest and is the only copy left once
+  // the tab closes — so for them this is a merge, not an overwrite.
+  try{ if(typeof gcCache === 'function' && gcCache(u)) return; }catch(e){ console.warn('Guest mirror merge failed:', e); }
   lsSet(LS_PROFILE, { uid: u.uid, at: Date.now(), data: u });
 }
 function readCachedProfile(uid){
@@ -1323,10 +1335,16 @@ function paintOfflineBanner(){
 }
 
 function setOfflineMode(on){
+  // 🧹 § 33: the rules refused to put this guest's record back. Until the next load the mirror IS the
+  // profile, and a browser `online` event must not start a flush into a record that is not there.
+  try{ if(!on && typeof gcRefused === 'function' && gcRefused()){ paintOfflineBanner(); return; } }catch(e){}
   if(offlineMode === on){ paintOfflineBanner(); return; }
   offlineMode = on;
   document.documentElement.classList.toggle('is-offline', on);
   paintOfflineBanner();
+  // 🧹 § 33: back online is where a guest resumed offline is first looked after (it never passed through
+  // loadUser), and where a record deleted while the socket was down is rebuilt — before the flush below.
+  try{ if(!on && typeof gcOnLink === 'function') gcOnLink(true); }catch(e){ console.warn('Guest cleanup failed on reconnect:', e); }
   if(!on) flushPendingRuns();
 }
 
@@ -1451,6 +1469,7 @@ function startLocalPlay(){
   user = { uid, ...ensureUserDefaults({ username: 'Player', isLocal: true, isGuest: true }) };
   user.isLocal = true;
   user.isGuest = true;
+  tutFresh = uid;                                // v80 — 🎓 a local profile made here, now (§ 45)
   lsSet(LS_LOCAL, 1);
   cacheProfile(user);
   setOfflineMode(true);
@@ -1494,6 +1513,7 @@ async function claimLocalAccount(){
     // Re-point the session at the real identity. The local totals stay on
     // screen meanwhile — the flush recomputes them from the server and the
     // final resync repaints, so the player never watches them fall to zero.
+    try{ if(typeof tutMove === 'function') tutMove(user.uid, uid); }catch(e){}   // v80 — 🎓 the tour follows the profile (§ 45)
     user.uid      = uid;
     user.isLocal  = false;
     user.isGuest  = true;
@@ -1819,11 +1839,33 @@ function runMissionStart(fn){
   // ⏸️ The round's frames go through the pause wrapper from its first
   // requestAnimationFrame to stopGame() — see § 13.
   try{ if(typeof pauseWrapFrames === 'function') pauseWrapFrames(); }catch(e){ console.warn('Pause wrapper failed:', e); }
+  // v75 — A frame the mission's own START asks for belongs to the round, even when the mission does not
+  // keep its id in gameLoopId (Grid Snake's and Flappy's first frame). § 13 marks those, and stopGame()
+  // cancels one that has not run yet. Without it a round that ended inside its first frame — a quit, a
+  // chained mode's tap — left the mission's loop running behind the hub, to end and score from there.
+  try{ if(typeof pauseBootFrames === 'function') pauseBootFrames(true); }catch(e){}
   try{ fn(); }
-  finally{ window.setInterval = real; }
+  finally{
+    window.setInterval = real;
+    try{ if(typeof pauseBootFrames === 'function') pauseBootFrames(false); }catch(e){}
+  }
+  // 📊 § 34: the round's play time starts here — AFTER the build has started, because a 3D build that
+  // throws calls stopGame() from inside fn() and a mark taken earlier would be closed at zero.
+  try{ if(typeof playGo === 'function') playGo(); }catch(e){}
+  // v74 — ⏱️ …and so does a speedrun's clock (§ 39): the same window, for the same reason.
+  try{ if(typeof spdGo === 'function') spdGo(); }catch(e){}
+  // v75 — 🌀 …and the relic that needs the mission's own clock door, which exists only now (§ 40).
+  try{ if(typeof glitchGo === 'function') glitchGo(); }catch(e){}
 }
 
+// v74 — ⏱️ Is a speedrun in progress? (§ 39 — `speedrun` is a hoisted var, null or the run.) Asked by the
+// three places a run must be fair in: the boss chain's chaos roll, the power-up dock, and a spent power-up.
+function spdOn(){ try{ return typeof speedrun !== 'undefined' && !!speedrun; }catch(e){ return false; } }
+
 function stopGame(){
+  // 📊 § 34: …and ends here, in the one teardown every round of every kind passes, a quit included.
+  try{ if(typeof playEnd === 'function') playEnd(); }catch(e){ console.warn('Play time not counted:', e); }
+  try{ if(typeof spdStop === 'function') spdStop(); }catch(e){}       // v74 — ⏱️ § 39
   roundClockAdd = null;
   _clockSkip = 0;
   // ⏱️ A countdown still running belongs to the round being torn down — see countdown().
@@ -2006,14 +2048,15 @@ function getDifficultyModifier(){
   // already scales by, which is what lets one lane ramp twenty-six missions in
   // two renderers without any of them opting in. endlessSpeedMul() is 1 outside
   // an endless run.
-  return DIFFICULTY_TIERS[currentDifficultyTier].speedMult * chaosSpeedMul * endlessSpeedMul();
+  // v75 — 🌀 …and a Glitch Run's THROTTLE relic (§ 40): `glitchRun` is a hoisted var, null outside a run.
+  return DIFFICULTY_TIERS[currentDifficultyTier].speedMult * chaosSpeedMul * endlessSpeedMul() * ((glitchRun && glitchRun.spd) || 1);
 }
 // Countdown/timer modifier for the active tier (<1 = less time)
 function getTimeModifier(){
   // ♾️ And the clock, for the same reason: "no clock" in an endless lane is a
   // clock long enough that it is not what ends the run. A mission that reads
   // this gets a generous stage; one that runs on infinity is unaffected.
-  return DIFFICULTY_TIERS[currentDifficultyTier].timeMult * endlessTimeMul();
+  return DIFFICULTY_TIERS[currentDifficultyTier].timeMult * endlessTimeMul() * ((glitchRun && glitchRun.tim) || 1);   // v75 — 🌀 OVERTIME (§ 40)
 }
 // 🔵 SAFE MODE, for the handful of missions written before the tier dial
 // existed that never read it (Memory Match, Math Blitz, Cyber Pong, 2D Dodge
@@ -2184,6 +2227,8 @@ const showScreen=id=>{
   const a=document.activeElement;
   if(a?.closest && a.closest('.screen') && a.closest('.screen')!==next) a.blur?.();
   setTimeout(()=>next?.classList.add('active'),40);
+  // v73 — 🛸 the companion outside a round is shown or hidden by the screen that is up (§ 38).
+  try{ if(typeof cmpScreen === 'function') cmpScreen(id); }catch(e){}
 };
 
 let _tt;
@@ -2203,7 +2248,14 @@ const toast=(msg,ms=2500,tintClass=null)=>{const el=document.getElementById('toa
 // and a mission written tomorrow buzzes correctly without its author knowing.
 // hapticFor() maps a small set of sound ids to patterns and returns null for
 // everything else, so the cost on a hot path is one object lookup.
-const snd   = (name, opts) => { if(window.SFX) SFX.play(name, opts); haptic(name); };
+// v73 — 🛸 The four sounds that mean a BIG PLAY are also told to the companion (§ 38). One property
+// lookup on the hot path; the guarded call only for those four.
+const SND_BIG = { victory: 1, levelUp: 1, lineClear: 1, bigExplode: 1 };
+const snd   = (name, opts) => {
+  if(window.SFX) SFX.play(name, opts);
+  haptic(name);
+  if(SND_BIG[name]){ try{ if(typeof cmpHear === 'function') cmpHear(name); }catch(e){} }
+};
 const music = track        => { if(window.SFX) SFX.music(track); };
 // "The clock is nearly out." Driven from one MutationObserver on #g-time rather
 // than from eighteen game loops — see watchGameClock().
@@ -2983,6 +3035,7 @@ document.getElementById('btn-signup').onclick=async()=>{
   try{
     const c=await withTimeout(auth.createUserWithEmailAndPassword(email,pass), NET_WAIT);
     await db.ref('players/' + c.user.uid).set({ username: name, totalPoints: 0, gamesPlayed: 0 });
+    tutFresh = c.user.uid;                       // v80 — 🎓 an account made here, now: the tour's start signal (§ 45)
     await loadUser(c.user.uid);
   }catch(e){
     console.error('Sign-up failed:',e);
@@ -3061,7 +3114,13 @@ async function signInAsGuest(){
     const c=await withTimeout(auth.signInAnonymously(), NET_WAIT);
     const ref=db.ref('players/' + c.user.uid);
     const snap=await withTimeout(ref.once('value'), NET_WAIT);
-    if(!snap.exists()){
+    // 🧹 § 33: signInAnonymously() hands back the EXISTING anonymous user when there is one, and since
+    // v68 that guest's record is deleted whenever they are away — so "no record" no longer means "new".
+    // A blank seed here would be written over a returning guest; loadUser() rebuilds them instead.
+    let gcWho = 'new';
+    try{ if(typeof gcGuestButton === 'function') gcWho = gcGuestButton(c.user.uid, snap); }
+    catch(e){ console.warn('Guest restore check failed:', e); }
+    if(!snap.exists() && gcWho !== 'back'){
       await ref.set({
         username: guestTag(c.user.uid),
         totalPoints: 0,
@@ -3070,9 +3129,13 @@ async function signInAsGuest(){
         isGuest: true,
         createdAt: firebase.database.ServerValue.TIMESTAMP
       });
+      if(gcWho === 'new'){ gcFreshGuest = c.user.uid; tutFresh = c.user.uid; }   // the one moment a guest is really created (v80: and the tour's start signal, § 45)
     }
     await loadUser(c.user.uid);
-    toast('🎮 Guest access granted — progress lives in this browser only.',4000);
+    if(!(typeof gcRefused === 'function' && gcRefused())){
+      toast(gcWho === 'back' ? '🎮 Welcome back — your guest profile is on the grid again.'
+                             : '🎮 Guest access granted — your progress is kept in this browser.',4000);
+    }
   }catch(e){
     console.error('Guest sign-in failed:',e);
     // A dead network is not a credential problem: a new anonymous identity
@@ -3100,10 +3163,12 @@ function ensureUserDefaults(raw){
     // paid out are DERIVED from it by xpLevel(), and stored only so a level-up
     // can be detected between two rounds rather than recomputed from scratch.
     xp: 0, level: 1, perkSpent: 0,
-    owned: { colors: [], cursors: [], skins: [], drives: [], exits: [], worlds: [] },
+    // v73 — 🛸 `companions` (§ 38): a shelf like the others in memory; on the wire its two children are
+    // written by cmpPush() on their own, never inside another write.
+    owned: { colors: [], cursors: [], skins: [], drives: [], exits: [], worlds: [], companions: [] },
     equipped: {
       colors: 'col-cyan', cursors: 'cur-default', skins: 'skin-default',
-      drives: 'drv-synthwave', exits: 'exit-default', worlds: 'wld-rain'
+      drives: 'drv-synthwave', exits: 'exit-default', worlds: 'wld-rain', companions: 'cmp-none'
     }
   };
   return {
@@ -3114,7 +3179,8 @@ function ensureUserDefaults(raw){
       skins: [...(raw.owned && raw.owned.skins || [])],
       drives: [...(raw.owned && raw.owned.drives || [])],
       exits: [...(raw.owned && raw.owned.exits || [])],
-      worlds: [...(raw.owned && raw.owned.worlds || [])]
+      worlds: [...(raw.owned && raw.owned.worlds || [])],
+      companions: [...(raw.owned && raw.owned.companions || [])]
     },
     equipped: { ...defaults.equipped, ...(raw.equipped || {}) },
     // Progression state. Firebase drops empty objects, so an established player
@@ -3163,6 +3229,10 @@ function ensureUserDefaults(raw){
 
 async function loadUser(uid){
   let data = null, live = false, existed = false;
+  // 🧹 § 33: ONE look at this browser's copy, taken before anything below can overwrite it. The two
+  // reconcilers used to read the mirror one after the other, and the first one's saveProfilePatch()
+  // rewrote it in between — which lost offline campaign stars whenever heat had changed offline too.
+  const held = readCachedProfile(uid);
 
   if(db){
     try{
@@ -3178,27 +3248,45 @@ async function loadUser(uid){
   if(!live){
     // Nothing live and nothing mirrored means this device has never once
     // loaded this profile, so there is genuinely nothing to open.
-    data = readCachedProfile(uid);
+    data = held;
     if(!data){ showAuthOfflineNotice(); return; }
   }
+
+  // 🧹 § 33: a guest's record is deleted whenever they are away, so "missing" is the normal way to find
+  // it. What to do about it is decided here, before `user` exists: rebuild it from the mirror, seed a
+  // tourist, mend a stale guest flag — or stop, because this profile was exited in another tab.
+  let gcPlan = null;
+  try{ if(live && typeof gcOnLoad === 'function') gcPlan = gcOnLoad(uid, data, existed); }
+  catch(e){ console.warn('Guest restore plan failed:', e); }
+  if(gcPlan && gcPlan.stop){
+    const el = document.getElementById('auth-err');
+    if(el){ el.textContent = '🚪 This guest profile was exited in another tab.'; el.style.display = 'block'; }
+    return;
+  }
+  if(gcPlan && gcPlan.data) data = gcPlan.data;
 
   // 🆔 A Google account signing in for the first time has no profile yet (a
   // tab closed on the callsign dialog comes back here too): it names itself
   // before the hub opens, instead of landing as "Player" (§ 28).
-  if(live && !existed && typeof gNeedsCallsign === 'function' && gNeedsCallsign()){
+  if(live && !existed && !(gcPlan && gcPlan.publish) && typeof gNeedsCallsign === 'function' && gNeedsCallsign()){
     if(typeof gOpenCallsign === 'function'){ gOpenCallsign(uid); return; }
   }
   user = { uid, ...ensureUserDefaults(data) };
+  user.uid = uid;   // a mirror carries its own uid, and one taken over from a lost sign-in carries the OLD one
   // Anonymous sessions are the source of truth for guest status, not the DB flag.
   user.isGuest = !!(auth && auth.currentUser && auth.currentUser.isAnonymous);
   if(user.isGuest && live && !existed) user.username = guestTag(uid);
 
   setOfflineMode(!live);
+  // 🧹 § 33: put the record back (stage 1 is awaited: one round trip) and pledge its delete BEFORE the
+  // reconcilers and the hub write anything — a child write that got there first would be a stub.
+  try{ if(live && typeof gcAfterLoad === 'function') await gcAfterLoad(gcPlan); }
+  catch(e){ console.warn('Guest cleanup failed to settle:', e); }
   if(live){
     // Stars earned offline (or under rules that do not name `campaign` yet) exist only in the mirror — carry them
     // over BEFORE cacheProfile() overwrites it with the server's copy. See campaignReconcile, § 21.
-    try{ if(typeof heatReconcile === 'function') heatReconcile(readCachedProfile(uid)); }catch(e){ console.warn('Heat reconcile failed:', e); }
-    try{ if(typeof campaignReconcile === 'function') campaignReconcile(readCachedProfile(uid)); }
+    try{ if(typeof heatReconcile === 'function') heatReconcile(held); }catch(e){ console.warn('Heat reconcile failed:', e); }
+    try{ if(typeof campaignReconcile === 'function') campaignReconcile(held); }
     catch(e){ console.warn('Campaign reconcile skipped:', e); }
     cacheProfile(user);
   }
@@ -3244,11 +3332,15 @@ if(auth)auth.onAuthStateChanged(async u=>{
 // screen offers "Continue Offline as Guest_…" with every point intact, and the
 // banked runs replay into whatever account signs in next.
 function forgetLocalProfile(){
+  // 🎓 § 45: the tour's state is this device's copy of the profile too (asked first: it reads who that was).
+  try{ if(typeof tutForget === 'function') tutForget(); }catch(e){}
   try{
     localStorage.removeItem(LS_PROFILE);
     localStorage.removeItem(LS_QUEUE);
     localStorage.removeItem(LS_LOCAL);
   }catch(e){}
+  // 🧹 § 33: a parked guest copy and the upgrade mark are this device's copy of the profile too.
+  try{ if(typeof gcForget === 'function') gcForget(); }catch(e){}
   // An offer drawn earlier this visit would still name the deleted profile.
   ['btn-offline-resume', 'offline-resume-note'].forEach(id => {
     const el = document.getElementById(id);
@@ -3270,7 +3362,16 @@ async function purgeGuestAccount(){
   const cu = auth && auth.currentUser;
   if(!cu || !cu.isAnonymous) return false;
   const uid = cu.uid;
-  if(db) await withTimeout(db.ref('players/' + uid).remove(), NET_WAIT);
+  // 🧹 § 33: this delete is on purpose. The other tabs are told first and a tombstone is left for the one
+  // that wakes late (it would otherwise see the name vanish and helpfully rebuild the record), and this
+  // tab's own onDisconnect pledge is taken back. If the removal then fails, the session carries on.
+  try{ if(typeof gcLeave === 'function') await gcLeave(uid); }catch(e){ console.warn('Guest cleanup hand-off failed:', e); }
+  try{
+    if(db) await withTimeout(db.ref('players/' + uid).remove(), NET_WAIT);
+  }catch(e){
+    try{ if(typeof gcStay === 'function') gcStay(uid); }catch(x){}
+    throw e;
+  }
   try{ await cu.delete(); }            // delete() also ends the session
   catch(e){ console.warn('Guest identity purge failed:', e); if(auth) await auth.signOut().catch(() => {}); }
   forgetLocalProfile();
@@ -3281,6 +3382,7 @@ document.getElementById('btn-logout').onclick=async()=>{
   // Signing out while holding a room would leave it on the grid until the tab
   // closed, so the seat goes back first whatever the player decides below.
   await mpLeaveRoom();
+  try{ if(typeof abortTourney === 'function') await abortTourney('logout'); }catch(e){}       // v79 — 🏆 § 44
   // The grid terminal is the one thing that keeps ticking with nobody in the
   // hub, and its listener is bound to this account's session.
   stopChatTerminal();
@@ -3296,7 +3398,9 @@ document.getElementById('btn-logout').onclick=async()=>{
       // means clearing the mirror and the banked queue, or the next boot's
       // resume path would cheerfully resurrect what was just deleted.
       forgetLocalProfile();
-    } else if(offlineMode){
+    } else if(offlineMode && !(typeof gcRefused === 'function' && gcRefused())){
+      // (🧹 § 33: a guest the rules would not put back is "offline" with a working connection — their
+      // Exit goes through.)
       // A real guest's purge is two server deletes; offline they never settle
       // and the button would simply freeze. Refuse honestly instead.
       toast('📴 Deleting a guest profile needs a connection. Reconnect and try again.');
@@ -3334,10 +3438,15 @@ document.getElementById('btn-logout').onclick=async()=>{
 //  🏠 CENTRAL HUB CONTROLLER
 // ════════════════════════════════════════════
 function enterHub(){
+  // 📊 § 34: a play-time mark nothing closed (an open world that failed to start lands here) is not play.
+  try{ if(typeof playDrop === 'function') playDrop(); }catch(e){}
   // Standing in the hub means you are not in a Network Arena room — this is the
   // one place every "I'm done with multiplayer" path passes through, so the
   // room is released here rather than in each of them. A no-op when there is
   // no room, which is the common case.
+  // v79 — 🏆 A tournament first (§ 44): its listener, its seat, and — for the organiser — the record. BEFORE
+  // the room is let go, because a match of it may be mid-round on this screen and has to be ended as one.
+  try{ if(typeof abortTourney === 'function') abortTourney('hub'); }catch(e){ console.warn(e); }
   if(typeof mpLeaveRoom === 'function') mpLeaveRoom();
   // Same reasoning for a chained run and for a watched room: reaching the hub
   // ends both, and a spectator that kept its listeners would leak them.
@@ -3354,6 +3463,12 @@ function enterHub(){
   // 📖 And for a campaign chapter: walking away hands the borrowed stability
   // tier back (§ 21). Wrapped because § 21 loads long after this function.
   try{ if(typeof abortCampaign === 'function') abortCampaign(); }catch(e){ console.warn(e); }
+  // v74 — ⏱️ …and a speedrun (§ 39): its own state, its own abort. The chapter above handed the tier back.
+  try{ if(typeof spdAbort === 'function') spdAbort('hub'); }catch(e){ console.warn(e); }
+  // v75 — 🌀 …and a Glitch Run (§ 40): forfeit, and vsResultTap is given back.
+  try{ if(typeof abortGlitch === 'function') abortGlitch(); }catch(e){ console.warn(e); }
+  try{ if(typeof bntyHub === 'function') bntyHub(); }catch(e){}                    // v77 — 💰 § 42
+  try{ if(typeof crewHub === 'function') crewHub(); }catch(e){}                    // v78 — 🛡️ § 43
   if(typeof mpStopSpectating === 'function') mpStopSpectating();
   // 📈 The pace ghost deliberately OUTLIVES stopGame() — the results card is
   // written after the round is torn down and it is the thing that reads the
@@ -3456,7 +3571,7 @@ document.querySelectorAll('.game-card').forEach(card=>{
     if(!missionUnlocked(gid)){
       snd('deny');
       const need = missionClearance(gid);
-      toast(`🔒 ${META[gid].name} needs CLEARANCE ${need} — you are level ${xpLevel(user.xp || 0).level}.`, 3200);
+      toast(`🔒 ${META[gid].name} needs CLEARANCE ${need} — you are level ${xpShown(user).level}.`, 3200);
       return;
     }
     // 🌐 With the grid switched to OPEN WORLD every card launches its world
@@ -3474,6 +3589,9 @@ document.getElementById('btn-quit').onclick=()=>{
   // 📊 Pressing Quit is walking away, even on the missions whose quit banks
   // the board and shows a results card — so it is logged here, first (§ 23).
   try{ if(typeof statsRoundEnd === 'function') statsRoundEnd('quit'); }catch(e){}
+  // v74 — ⏱️ QUIT ends a speedrun before anything else (§ 39): a mission whose quit banks the board and
+  // shows a card must show a chapter's card, not a split.
+  try{ if(typeof spdAbort === 'function') spdAbort('quit'); }catch(e){}
   if(onQuitGame){const fn=onQuitGame;onQuitGame=null;fn();return;}
   stopGame();
   setControls(null);
@@ -3490,6 +3608,8 @@ document.getElementById('btn-quit').onclick=()=>{
 // server clock, not a local one).
 function resetGameStage(gid){
   stopGame();
+  // 📊 § 34: the only function every round passes that is handed the MISSION's gid.
+  try{ if(typeof playArm === 'function') playArm(gid); }catch(e){}
   onQuitGame=null;
   // 🌀 The record the results card reads about "what was this round played
   // under". chaosClear() deliberately will not overwrite it with nothing — it
@@ -3566,6 +3686,9 @@ function prepGame(gid, mod){
   resetGameStage(gid);
   const start = SOLO_START[gid];
   if(!start) return;
+  // v77 — 💰 Can a bounty be collected in this round? (§ 42) Asked HERE: every mode that is not a plain
+  // grid round has its flag standing at this moment, and several are gone by the time the card is built.
+  try{ if(typeof bntyArm === 'function') bntyArm(gid); }catch(e){}
   // 🌀 An ordinary mission rolls its own, but only when the player has armed
   // CHAOS PROTOCOL. Rolled HERE rather than at the game card so that Play Again
   // rerolls too — a modifier you could out-wait by pressing the same button is
@@ -3590,6 +3713,8 @@ function prepGame(gid, mod){
   try{ if(window.PI3D && PI3D.prewarm) PI3D.prewarm(); }catch(e){}   // ✨ v62 · p41 · compile while 3-2-1 plays
   countdown(()=>{
     chaosArm(chaos.pending);
+    // v75 — 🌀 a Glitch Run's relics that live in the chaos globals are put back here, every node (§ 40).
+    try{ if(typeof glitchArm === 'function') glitchArm(gid); }catch(e){}
     // 🧊 3D MODE. The 3D missions are the same rounds behind a different
     // renderer, so they run through chaosRun() exactly as the 2D ones do —
     // that is what keeps the setInterval doubling and the inverted-key wrapper
@@ -3618,7 +3743,8 @@ function prepGame(gid, mod){
     if(Ghost.pacing){
       const rv = Ghost.paceRival;
       toast(rv
-        ? `⚔️ Racing ${String(rv.name || 'RIVAL').slice(0, 14)} — ${Ghost.paceTarget.toLocaleString()} to beat`
+        ? (rv.link ? `👻 Racing ${String(rv.name || 'RIVAL').slice(0, 14)}'s ghost — ${Ghost.paceTarget.toLocaleString()} to beat`
+                   : `⚔️ Racing ${String(rv.name || 'RIVAL').slice(0, 14)} — ${Ghost.paceTarget.toLocaleString()} to beat`)
         : `👀 Pacing your best run — ${Ghost.paceTarget.toLocaleString()} to beat`, 2600);
     }
     showPowerDock();
@@ -3646,23 +3772,44 @@ const Ghost = (function(){
   const PREFIX = 'pi_ghost_';
   const MAX_FRAMES = 5000;          // ~80s at 60fps, then recording simply stops
   let rec = null, play = null;
+  // 👻 § 36: `play` is the trail DRAWN on the board. `own` is this device's best — what a personal best
+  // is measured against, and the only thing finish() ever overwrites. `rival` is a link's sender.
+  let own = null, rival = null, last = null, t0 = 0;
 
   const key = gid => `${PREFIX}${gid}:${currentDifficultyTier}`;
 
   function begin(gid){
-    rec = null; play = null;
+    rec = null; play = null; own = null; rival = null;
     // A duel, a Boss Rush stage or a party turn is not the owner's solo run —
     // no ghost either way (a party guest must never overwrite the owner's best).
     // Nor a Brick Lab run (§ 25): a custom pit or course is a different board,
     // so its trail would be a lie on the real one — and must never replace it.
     if(mp || bossRush || (typeof partyRunActive === 'function' && partyRunActive()) ||
        (typeof labActive === 'function' && labActive())) return;
-    rec = { gid, frames: [] };
+    // 👻 § 36: a later mode can keep its rounds out altogether (GHOST_SKIP).
+    try{ if(typeof GHOST_SKIP === 'function' && GHOST_SKIP(gid)) return; }catch(e){}
+    rec = { gid, frames: [], r: null };
+    // The clock starts on the round's FIRST FRAME (see sample()), not here: between this call and that frame
+    // sit the 3-2-1 and, in 3D, a build that takes as long as the device needs — neither is part of a run.
+    t0 = 0;
     try{
       const raw = localStorage.getItem(key(gid));
       const best = raw ? JSON.parse(raw) : null;
-      if(best && Array.isArray(best.frames) && best.frames.length) play = best;
-    }catch(e){ play = null; }
+      if(best && Array.isArray(best.frames) && best.frames.length){ own = best; own.gid = gid; }
+    }catch(e){ own = null; }
+    play = own;
+    // 👻 § 36 — BEAT MY GHOST. In a link race the board shows the SENDER's run, or no ghost at all: never
+    // the visitor's own best under a toast and result rows about somebody else. (A board challenge carries
+    // no trail and is left as it was.)
+    let c = null;
+    try{ c = chalActive; }catch(e){ c = null; }
+    if(c && c.link){
+      play = null;
+      const tr = c.trail;
+      if(tr && Array.isArray(tr.pts) && tr.pts.length > 1 && tr.ms > 0 && c.gid === gid){
+        rival = { gid, pts: tr.pts, ms: tr.ms, r: tr.r, score: c.pts, name: String(c.name || 'RIVAL') };
+      }
+    }
   }
 
   // Values are rounded to a tenth — a ghost is a visual pace car, and full
@@ -3675,27 +3822,76 @@ const Ghost = (function(){
   function sample(a, b){
     if(!rec || rec.frames.length >= MAX_FRAMES) return;
     if(gPause.on) return;
+    // 👻 § 36: which renderer is recording — the 3D builds sample from inside the GL loop. It matters because
+    // 3D keeps dodge's and flappy's vertical axis the other way up (see at()).
+    if(!rec.r) rec.r = (window.PI3D && PI3D.looping) ? '3' : '2';
+    if(!t0) t0 = gNow();
     rec.frames.push(b == null ? Math.round(a * 10) / 10
                               : [Math.round(a * 10) / 10, Math.round(b * 10) / 10]);
   }
 
+  // 👻 § 36: with no index, "now" — the frame being drawn (3D Flappy and 3D Runner keep no frame counter).
+  // A link's trail is read by TIME: the sender's device and this one do not tick at the same rate, and
+  // between two of its thinned points the ghost moves in a straight line.
   function at(i){
+    const here = rec ? rec.r : null;
+    if(rival){
+      const u = t0 ? (gNow() - t0) / rival.ms : 0;      // waiting on its first point until the round's first frame
+      if(!(u >= 0) || u > 1) return null;
+      const f = u * (rival.pts.length - 1), lo = Math.floor(f), hi = Math.min(rival.pts.length - 1, lo + 1), k = f - lo;
+      const a = rival.pts[lo], b = rival.pts[hi];
+      const flip = !!here && rival.r !== here && (rival.gid === 'dodge' || rival.gid === 'flappy');
+      if(Array.isArray(a)){
+        let x = a[0] + (b[0] - a[0]) * k, y = a[1] + (b[1] - a[1]) * k;
+        if(rival.gid === 'snake'){ x = Math.round(x); y = Math.round(y); }      // a cell, not a point between two
+        return [x, flip ? BOARD_H - y : y];
+      }
+      const v = a + (b - a) * k;
+      return flip ? BOARD_H - v : v;
+    }
     if(!play) return null;
-    return i < play.frames.length ? play.frames[i] : null;
+    if(i === undefined) i = rec ? rec.frames.length - 1 : -1;
+    const v = (i >= 0 && i < play.frames.length) ? play.frames[i] : null;
+    // A best recorded in the OTHER renderer: 3D keeps dodge's and flappy's vertical axis the other way up.
+    if(v != null && play.r && here && play.r !== here && (play.gid === 'dodge' || play.gid === 'flappy')){
+      return Array.isArray(v) ? [v[0], BOARD_H - v[1]] : BOARD_H - v;
+    }
+    return v;
   }
 
   function finish(score){
     if(!rec) return;
-    const beat = !play || score > play.score;
+    // Measured against YOUR best, whoever's ghost was on the board.
+    const beat = !own || score > own.score;
+    const ms = t0 ? Math.max(0, Math.round(gNow() - t0)) : 0;
     if(beat && rec.frames.length){
-      try{ localStorage.setItem(key(rec.gid), JSON.stringify({ score, frames: rec.frames })); }
+      try{ localStorage.setItem(key(rec.gid), JSON.stringify({ score, frames: rec.frames, ms, r: rec.r || '2' })); }
       catch(e){ /* quota or private mode — a missing ghost is not an error */ }
     }
+    // 👻 § 36: the run that just ended can travel in a link — the results card asks for it (lastTrail).
+    last = { gid: rec.gid, frames: rec.frames, ms, r: rec.r || '2', at: Date.now() };
     rec = null;
     return beat;
   }
 
-  function cancel(){ rec = null; play = null; }
+  function cancel(){ rec = null; play = null; own = null; rival = null; }
+
+  // 👻 § 36: a recording, thinned to what a link can carry — { r, ms, pts, score }.
+  function thin(o){
+    const kind = (typeof clTrailKind === 'function') ? clTrailKind(o.gid) : 0;
+    const pts = kind ? clTrailThin(o.frames, kind) : null;
+    if(!pts) return null;
+    return { r: o.r === '3' ? '3' : '2', ms: o.ms > 0 ? o.ms : Math.round(o.frames.length * 1000 / 60), pts, score: o.score };
+  }
+  // The run on the results card (only for the few seconds it IS the run on the card)…
+  function lastTrail(gid){ return (last && last.gid === gid && Date.now() - last.at < 8000) ? thin(last) : null; }
+  // …and this tier's stored best.
+  function bestTrail(gid){
+    try{
+      const b = JSON.parse(localStorage.getItem(key(gid)) || 'null');
+      return (b && Array.isArray(b.frames) && b.frames.length > 1) ? thin({ gid, frames: b.frames, ms: b.ms, r: b.r, score: b.score }) : null;
+    }catch(e){ return null; }
+  }
 
   // ══════════════════════════════════════════════════════════════════════
   //  📈 THE PACE GHOST — the other kind of ghost, for the other seventeen
@@ -3735,6 +3931,7 @@ const Ghost = (function(){
     // a duel board, a Boss Rush stage and a seeded Daily Hack are not the run
     // this personal best describes.
     if(mp || bossRush || dailyActive) return;
+    try{ if(typeof GHOST_SKIP === 'function' && GHOST_SKIP(gid)) return; }catch(e){}   // § 36
     let mine = null;
     try{
       const raw = localStorage.getItem(paceKey(gid));
@@ -3816,7 +4013,7 @@ const Ghost = (function(){
     const rival = pace.rival;
     el.classList.toggle('vs-rival', !!rival);
     el.innerHTML =
-      `<span class="gp-ico">${rival ? '⚔️' : '👻'}</span>` +
+      `<span class="gp-ico">${rival && !rival.link ? '⚔️' : '👻'}</span>` +
       `<span class="gp-delta">${diff >= 0 ? '▲ +' : '▼ −'}${Math.abs(diff).toLocaleString()}</span>` +
       `<span class="gp-target">${rival ? esc(String(rival.name || 'RIVAL')).slice(0, 10).toUpperCase() : 'PB'} ` +
       `${pace.best.score.toLocaleString()}</span>`;
@@ -3857,10 +4054,13 @@ const Ghost = (function(){
   }
 
   return {
-    begin, sample, at, finish, cancel,
+    begin, sample, at, finish, cancel, lastTrail, bestTrail,
     beginPace, samplePace, finishPace, endPace,
-    get racing(){ return !!play; },
+    // "Racing YOUR best run" — which is what the eight builds' toast and result rows say. False in a link
+    // race (§ 36): the trail on the board is the sender's, and the challenge names them itself.
+    get racing(){ return !!play && !rival; },
     get target(){ return play ? play.score : 0; },
+    get rival(){ return rival ? { name: rival.name, score: rival.score } : null; },
     // True while a pace ghost is live AND has a best run to race. Read by the
     // round-start toast, which should not promise a race that is not happening.
     get pacing(){ return !!(pace && pace.best); },
@@ -3985,7 +4185,8 @@ function bossRushNext(){
   // then two. That ramp is the same every run, which is what lets a player plan
   // for it: spend integrity early, because the end is where it gets expensive.
   const step = bossRush.idx;
-  const forced = step === 0 ? 0 : step <= 2 ? 1 : 2;
+  // v74 — ⏱️ in a speedrun the finale is the same three stages for every run: nothing rolled (§ 39).
+  const forced = spdOn() ? 0 : step === 0 ? 0 : step <= 2 ? 1 : 2;
   const rolled = chaosForce(forced);
   if(rolled.length) bossRush.mods.push(`${step + 1}: ${chaosLabel(rolled)}`);
   prepGame(gid, rolled.length ? rolled : null);
@@ -4155,6 +4356,10 @@ function showResults(gid,pts,bd,opts){
   // once both boards are done. `internal` is how the race shows that card
   // without the tap swallowing it in turn.
   if(vsResultTap && !opts.internal && vsResultTap(gid, pts, bd)) return;
+  // 📊 § 34: one finished run, counted for its mode. HERE, not on the card: this is the one place every
+  // mode's flag is still guaranteed to be standing (an exit animation can put seconds, and a pad press
+  // that aborts them all, between this line and the card).
+  try{ if(typeof playCountCard === 'function') playCountCard(gid, opts); }catch(e){ console.warn('Run not counted:', e); }
   stopGame();
   // 💀 The equipped EXIT STATE plays over the board that just died, and the card
   // lands when it clears. Split here rather than inside the card so the exit
@@ -4203,7 +4408,12 @@ function showResultsCard(gid,pts,bd,opts){
   const rawTop = roundRawOf(pts);
   const chalRes = opts.internal ? null : settleChallenge(gid, pts, rawTop);
   const chalMult = chalRes ? chalRes.mult : 1;
-  const finalPts = Math.round(pts * (opts.noBonus ? 1 : tier.pointMult) * perkMult * chaosMult * chipMult * echoMult * chalMult);
+  const multPts = Math.round(pts * (opts.noBonus ? 1 : tier.pointMult) * perkMult * chaosMult * chipMult * echoMult * chalMult);
+  // v72 — ⟳ The prestige bonus (§ 37): +2% a reboot to +10%, as its own share with its own row. It lifts
+  // an award UP TO maxAwardFor() — the clamp saveScore() applies anyway — and never past it.
+  let prGain = 0;
+  try{ if(typeof prBonusPts === 'function') prGain = prBonusPts(gid, opts, multPts) || 0; }catch(e){ prGain = 0; }
+  const finalPts = multPts + prGain;
   // ♾️ The cap a run is measured against. Ordinarily the mission's own, but an
   // ENDLESS run has no finish line to be a fraction of — it rides the same
   // uncapped lane CYBER ARENA has always used, generalised into one option
@@ -4217,6 +4427,8 @@ function showResultsCard(gid,pts,bd,opts){
   // lands the flourish on the card appearing rather than under the explosion.
   // A plain timeout, not gLater(), because stopGame() has already run.
   setTimeout(()=>snd(opts.sound || (pct>.75 ? 'victory' : 'results')), 300);
+  // v73 — 🛸 a card above 75% is a big play whatever sound it was handed (§ 38; once — cmpHear debounces).
+  if(pct > .75) setTimeout(() => { try{ if(typeof cmpHear === 'function') cmpHear('victory'); }catch(e){} }, 340);
   document.getElementById('res-emoji').textContent=opts.emoji||(pct>.75?'🎉':'💪');
   document.getElementById('res-gname').textContent=opts.name||m.name;
 
@@ -4255,6 +4467,10 @@ function showResultsCard(gid,pts,bd,opts){
   }
   if(perkMult > 1) bd['🌳 Perk · Arcade Boost'] = `+${Math.round((perkMult-1)*100)}%`;
   if(chipMult > 1) bd['⚙️ Overclock Chip'] = `+${Math.round((chipMult-1)*100)}%`;
+  try{
+    const prRow = (typeof prBonusRow === 'function') ? prBonusRow(gid, opts, prGain) : null;   // v72 — ⟳ § 37
+    if(prRow) bd[prRow[0]] = prRow[1];
+  }catch(e){}
   // `none` means there was a pace ghost RECORDING but nothing to race, which is
   // every first run on a mission — a row saying "0 vs 0" there is noise.
   if(paceRes && !paceRes.none){
@@ -4267,6 +4483,12 @@ function showResultsCard(gid,pts,bd,opts){
     Object.assign(bd, chalRes.rows);
     if(chalMult > 1) bd['⚔️ Takedown Bonus'] = `+${Math.round((chalMult-1)*100)}%`;
   }
+  // v77 — 💰 COLLECTED / HELD for a bounty standing on this mission and tier (§ 42). Credits, not points:
+  // nothing here touches the award.
+  try{
+    const bn = (typeof bntySettle === 'function') ? bntySettle(gid, pts, rawTop, opts) : null;
+    if(bn) Object.assign(bd, bn);
+  }catch(e){ console.warn('Bounty settle failed:', e); }
   const heatN = (typeof heatWas === 'function') ? heatWas(gid) : 0;
   if(chaos.lastStack && chaos.lastStack.length && heatN){
     // 🔥 The same stack, named for what it was: hazards the player chose (§ 24).
@@ -4388,6 +4610,8 @@ function showResultsCard(gid,pts,bd,opts){
   // function must not return early above this line, or a chapter would never
   // end and the tier would stay locked (§ 21).
   try{ if(typeof campaignRunActive === 'function' && campaignRunActive()) campaignAfterCard(); }catch(e){ console.warn(e); }
+  // v74 — ⏱️ …and in a speedrun the two buttons become the run's: next (or retry) by itself, or end it (§ 39).
+  try{ if(typeof spdAfterCard === 'function') spdAfterCard(); }catch(e){ console.warn(e); }
 }
 
 // The highest single award a mission can legitimately pay: its cap times the
@@ -4425,14 +4649,34 @@ async function saveScore(gid,pts,ctx){
 // The single server write for a finished round. Split out of saveScore() so the
 // offline flush replays banked runs through exactly the same path, rather than
 // a parallel copy that could drift away from it.
-function pushRun({ gid, award, ctx }){
+function pushRun(run){
+  // 🧹 § 33: for a guest the record has to be WHOLE before a score is added to it, and clear of the
+  // re-seed's own lastScoreAt (the rate rule refuses a score inside 2.5 s of it). null for everyone else.
+  let pre = null;
+  try{ if(typeof gcBeforeScore === 'function') pre = gcBeforeScore(); }catch(e){ pre = null; }
+  return pre ? pre.then(() => pushRunNow(run)) : pushRunNow(run);
+}
+function pushRunNow({ gid, award, ctx }, again){
   const playerRef = db.ref('players/' + user.uid);
   return withTimeout(playerRef.once('value'), NET_WAIT).then(snapshot => {
+    // 🧹 § 33: a guest's record can be deleted under a live tab (the other tab closed, the socket
+    // blinked). The line below used to read that as "zero points so far" and write the totals back from
+    // nothing. Now the record is rebuilt first and the run is added to it — once; a second miss is an
+    // error, which banks the run locally like any other failed write.
+    if(typeof gcScoreGap === 'function' && gcScoreGap(snapshot)){
+      if(again){ const e = new Error('guest record is not on the grid'); e.code = 'app/guest-parked'; throw e; }
+      const go = () => pushRunNow({ gid, award, ctx }, true);
+      const wait = gcBeforeScore();
+      return wait ? wait.then(go) : go();
+    }
     const d  = snapshot.val() || { totalPoints: 0, gamesPlayed: 0, highScores: {} };
     const hs = d.highScores || {};
     const newPoints     = parseInt(d.totalPoints || 0) + award;
     const newGames      = parseInt(d.gamesPlayed || 0) + 1;
     const newHighScores = { ...hs, [gid]: Math.max(parseInt(hs[gid] || 0), award) };
+    // 🧹 § 33: a guest's server copy dies with the tab, so a run that is only "on its way" must already
+    // be in the mirror — or closing the tab in the next 200 ms would lose it for good.
+    try{ if(typeof gcPreScore === 'function') gcPreScore(newPoints, newGames, newHighScores); }catch(e){}
 
     return withTimeout(playerRef.update({
       username: user.username,
@@ -4449,6 +4693,8 @@ function pushRun({ gid, award, ctx }){
       // Runs after the score lands, so achievement thresholds test against the
       // totals the player actually has rather than the ones they had a moment ago.
       recordRun(gid, award, ctx);
+      // 🧹 § 33: the totals above are the server's sum now, so no banked run is counted inside them.
+      try{ if(typeof gcQueueSettled === 'function') gcQueueSettled(); }catch(e){}
       cacheProfile(user);
       loadLeaderboard();
     });
@@ -4461,7 +4707,8 @@ function pushRun({ gid, award, ctx }){
 // a replayed run can never double-count.
 function bankRunOffline(gid, award, ctx){
   const q = pendingRuns();
-  q.push({ gid, award, ctx, at: Date.now() });
+  // inc: these points are counted inside the local totals from here on (see gcIncluded, § 33).
+  q.push({ gid, award, ctx, at: Date.now(), inc: 1 });
   lsSet(LS_QUEUE, q);
 
   user.totalPoints = (user.totalPoints || 0) + award;
@@ -4499,6 +4746,7 @@ async function flushPendingRuns(){
         await new Promise(r => setTimeout(r, 2600));
         await pushRun(run);
         left.shift();
+        left.forEach(r => { if(r) delete r.inc; });   // § 33: the totals are the server's now (see gcQueueSettled)
         lsSet(LS_QUEUE, left);   // persisted per run, so a mid-flush reload resumes
       }catch(e){
         // Still unreachable — keep whatever is left for the next reconnect.
@@ -4512,9 +4760,16 @@ async function flushPendingRuns(){
       // totals get replaced rather than added to.
       try{
         const snap = await withTimeout(db.ref('players/' + user.uid).once('value'), NET_WAIT);
+        // 🧹 § 33: a guest's record can be gone at this very moment. Replacing `user` with nothing — and
+        // the mirror after it — is the one thing that must never happen: keep what this device holds and
+        // let the restore run.
+        if(typeof gcScoreGap === 'function' && gcScoreGap(snap)){ gcEnsure('flush'); throw new Error('guest record missing — kept this device\'s copy'); }
         const held = user;   // what this device knew, before the server's copy replaces it
         user = { uid: user.uid, ...ensureUserDefaults(snap.val() || {}) };
         user.isGuest = !!(auth && auth.currentUser && auth.currentUser.isAnonymous);
+        // 🧹 § 33: for a guest the mirror is the durable copy, so a key the server never took (the rules
+        // may not name it) is carried over rather than dropped with the old object.
+        try{ if(typeof gcKeep === 'function') gcKeep(user, held); }catch(e){ console.warn('Guest copy carry-over failed:', e); }
         try{ if(typeof heatReconcile === 'function') heatReconcile(held); }catch(e){ console.warn('Heat reconcile failed:', e); }
         try{ if(typeof campaignReconcile === 'function') campaignReconcile(held); }
         catch(e){ console.warn('Campaign reconcile skipped:', e); }
@@ -4594,7 +4849,11 @@ const ACHIEVEMENTS = [
   { id:'campaign-stars', icon:'⭐', name:'Star Operative', desc:'Earn all 60 campaign stars.', cr:50, test:(c)=>(c.campaignStars||0) >= 60 },
   // ── 🔥 HEAT (v53) — cleared = a bronze-medal raw score under the heat, § 24.
   { id:'heat-5',  icon:'🔥', name:'Turn Up The Heat', desc:'Clear any mission at HEAT 5 or hotter.', cr:8,  test:(c)=>(c.heatBest||0) >= 5 },
-  { id:'heat-13', icon:'🌋', name:'Inferno',          desc:'Clear any mission at HEAT 13 — all six hazards at once.', cr:25, test:(c)=>(c.heatBest||0) >= 13 }
+  { id:'heat-13', icon:'🌋', name:'Inferno',          desc:'Clear any mission at HEAT 13 — all six hazards at once.', cr:25, test:(c)=>(c.heatBest||0) >= 13 },
+  // ── ⟳ PRESTIGE (v72) — read off the profile by the next finished round, see § 37.
+  { id:'reboot-1', icon:'⟳', name:'First Reboot',     desc:'Reach level 25 and reboot your clearance.', cr:25, test:(c)=>(c.prestige||0) >= 1 },
+  // ── 🏆 TOURNAMENTS (v79) — read off the champion's earned skin by the next finished round, see § 44.
+  { id:'tourney-win', icon:'🏆', name:'Champion',     desc:'Win a Network Arena tournament.', cr:30, test:(c)=>!!c.tourneyWin }
 ];
 
 const achById = id => ACHIEVEMENTS.find(a => a.id === id);
@@ -4952,7 +5211,7 @@ let chalPrevTier = null;
 // The curve the pace ghost should race this round, or null for your own record.
 function chalRival(){
   if(!chalActive || !Array.isArray(chalActive.curve) || !chalActive.curve.length) return null;
-  return { score: chalActive.pts, pts: chalActive.curve, name: chalActive.name };
+  return { score: chalActive.pts, pts: chalActive.curve, name: chalActive.name, link: !!chalActive.link };
 }
 
 // Settled on the results card. Returns the breakdown rows it wants added and
@@ -4983,12 +5242,12 @@ function settleChallenge(gid, pts, raw){
   setTimeout(() => {
     snd(won ? 'victory' : 'results');
     toast(won
-      ? `⚔️ CHALLENGE TAKEN DOWN — beat ${String(c.name || 'RIVAL').slice(0, 14)} by ${Math.abs(margin).toLocaleString()}${past}`
-      : `⚔️ CHALLENGE HELD — ${String(c.name || 'RIVAL').slice(0, 14)} keeps it by ${Math.abs(margin).toLocaleString()}${past}`,
+      ? `${c.link ? '👻 GHOST BEATEN' : '⚔️ CHALLENGE TAKEN DOWN'} — beat ${String(c.name || 'RIVAL').slice(0, 14)} by ${Math.abs(margin).toLocaleString()}${past}`
+      : `${c.link ? '👻 GHOST HELD' : '⚔️ CHALLENGE HELD'} — ${String(c.name || 'RIVAL').slice(0, 14)} keeps it by ${Math.abs(margin).toLocaleString()}${past}`,
       3600);
   }, 1600);
   const rows = {
-    [c.link ? '🔗 Challenge Link' : '⚔️ Rival Challenge']: `${esc(String(c.name || 'RIVAL').slice(0, 14))} · ${(c.pts || 0).toLocaleString()} PTS` +
+    [c.link ? '👻 Beat My Ghost' : '⚔️ Rival Challenge']: `${esc(String(c.name || 'RIVAL').slice(0, 14))} · ${(c.pts || 0).toLocaleString()} PTS` +
       (theirs.raw > theirs.pts ? ` (+${(theirs.raw - theirs.pts).toLocaleString()} past the cap)` : ''),
     '⚔️ Outcome': (won ? 'TAKEN DOWN' : 'HELD') + (capped && margin !== 0 ? ' · ON THE SCORE PAST THE CAP' : '')
   };
@@ -5077,7 +5336,7 @@ function renderDossier(){
   const sub  = document.getElementById('dossier-sub');
   if(!wrap || !user) return;
 
-  const st = xpLevel(user.xp || 0);
+  const st = xpShown(user);
   const gids = Object.keys(SOLO_START);
   // Read from localStorage each time it is opened rather than trusting the copy
   // on the profile: the log is written by bumpActivityDay() and a session that
@@ -5135,6 +5394,9 @@ function renderDossier(){
   html += `</div><div class="dos-heat-key"><span>quiet</span>` +
           `<span class="dos-cell l0"></span><span class="dos-cell l1"></span><span class="dos-cell l2"></span>` +
           `<span class="dos-cell l3"></span><span class="dos-cell l4"></span><span>busy</span></div>`;
+
+  // ── 📊 § 34: TIME PLAYED · BY MODE · STREAKS ──
+  try{ if(typeof playDossierHtml === 'function') html += playDossierHtml(tile); }catch(e){ console.warn('Play stats failed to render:', e); }
 
   // ── PER-MISSION ──
   // Ranked by how close the best run got to the mission's CAP, not by the raw
@@ -5327,7 +5589,10 @@ function recordRun(gid, pts, ctx){
     chaos: ctx.chaos || null,
     daily: !!ctx.daily,
     teamSize: +ctx.teamSize || 1,
+    // v72 — the LIFETIME level on purpose: a reboot (§ 37) does not un-earn a level achievement.
     level: xpLevel(user.xp || 0).level,
+    prestige: xpReboots(user),
+    tourneyWin: !!(user.owned && (user.owned.skins || []).includes('skin-champion')),      // v79 — 🏆 § 44
     totalPoints: user.totalPoints || 0,
     gamesPlayed: user.gamesPlayed || 0,
     streak: user.streak.count || 0,
@@ -5461,14 +5726,14 @@ function missionClearance(gid){ return MISSION_CLEARANCE[gid] || 1; }
 function missionUnlocked(gid){
   if(!user) return true;                       // pre-login: nothing to gate
   if(missionScored(gid)) return true;
-  return xpLevel(user.xp || 0).level >= missionClearance(gid);
+  return xpShown(user).level >= missionClearance(gid);
 }
 
 // Paints the grid. Called from enterHub and from refreshHubProgression, so a
 // level gained mid-session opens its cards without a reload.
 function paintMissionLocks(){
   if(!user) return;
-  const lvl = xpLevel(user.xp || 0).level;
+  const lvl = xpShown(user).level;
   document.querySelectorAll('.game-card').forEach(card => {
     const gid = card.dataset.game;
     const need = missionClearance(gid);
@@ -5724,6 +5989,10 @@ const SHOP_ITEMS = {
 };
 
 function findItem(cat, id){ return (SHOP_ITEMS[cat]||[]).find(i=>i.id===id); }
+// v73 — 🛸 A category whose two children the live rules may not name yet writes them itself (§ 38): the
+// payment goes up alone, so one refused key can never take the credits write down with it.
+function shopOwnWrite(cat){ try{ return typeof cmpOwns === 'function' && !!cmpOwns(cat); }catch(e){ return false; } }
+function shopOwnSave(){ try{ if(typeof cmpSave === 'function') cmpSave(); }catch(e){ console.warn('Companion save failed:', e); } }
 
 // ── ⏳ DAILY FEATURED ROTATION ──
 // Derived from the UTC day rather than stored anywhere, so every client picks
@@ -5830,11 +6099,20 @@ function getEquippedColorHex(){
   const item = user && findItem('colors', user.equipped && user.equipped.colors);
   return item ? item.color : '#00f5ff';
 }
+// v78 — 🛡️ The colour BATTLE BOTS units wear: the crew's while you are a verified member of one (§ 43),
+// otherwise your own. Three callers only (2D, 3D, the open world). getEquippedColorHex() above is NOT
+// changed — forty "this is you" draws read it, and none of them is a crew's.
+function bbUnitColor(){
+  try{ if(typeof crewColorNow === 'function'){ const c = crewColorNow(); if(c) return c; } }catch(e){}
+  return getEquippedColorHex();
+}
 function getEquippedSkinEmoji(){
   const item = user && findItem('skins', user.equipped && user.equipped.skins);
   return item ? item.emoji : null;
 }
 function drawSkinBadge(x, y, size=13){
+  // v73 — 🛸 this is where a 2D board says "the player is here": the companion follows it (§ 38).
+  try{ if(typeof cmpDraw2d === 'function') cmpDraw2d(x, y); }catch(e){}
   const emoji = getEquippedSkinEmoji();
   if(!emoji) return;
   aCtx.save();
@@ -5916,12 +6194,15 @@ function applyEquippedCosmetics(){
   // The soundtrack is a cosmetic like any other, so it is re-applied on the same
   // pass that repaints the colour and the pointer.
   applyMusicDrive();
+  // v73 — 🛸 …and so is the companion: its look and its colour are cached here, not per frame (§ 38).
+  try{ if(typeof cmpRefresh === 'function') cmpRefresh(); }catch(e){}
 }
 
 function openMarket(){
   showScreen('market-screen');
   refreshMarketBalances();
   ['powerups','colors','cursors','skins','drives','exits','worlds'].forEach(renderShop);
+  if(SHOP_ITEMS.companions) renderShop('companions');          // v73 — 🛸 § 38
   if(typeof renderEventShelf === 'function') renderEventShelf();
   paintPowerKit();
   switchMarketTab('convert');
@@ -6140,7 +6421,8 @@ async function handleShopAction(act, cat, id){
     } else {
       user.credits -= price;
       user.owned[cat] = [...(user.owned[cat]||[]), id];
-      await saveProfilePatch({ credits:user.credits, ['owned/'+cat]: user.owned[cat] });
+      if(shopOwnWrite(cat)){ await saveProfilePatch({ credits:user.credits }); shopOwnSave(); }   // v73 — § 38
+      else await saveProfilePatch({ credits:user.credits, ['owned/'+cat]: user.owned[cat] });
       snd('purchase');
       toast(price < item.price
         ? `✅ Purchased ${item.name} — saved 💎${item.price - price}`
@@ -6148,14 +6430,16 @@ async function handleShopAction(act, cat, id){
     }
   } else if(act==='equip'){
     user.equipped[cat] = id;
-    await saveProfilePatch({ ['equipped/'+cat]: id });
+    if(shopOwnWrite(cat)) shopOwnSave();                                                          // v73 — § 38
+    else await saveProfilePatch({ ['equipped/'+cat]: id });
     snd('equip');
     toast(`⚡ Equipped ${item.name}`);
     applyEquippedCosmetics();
   } else if(act==='unequip'){
     const defItem = SHOP_ITEMS[cat].find(i=>i.default);
     user.equipped[cat] = defItem.id;
-    await saveProfilePatch({ ['equipped/'+cat]: defItem.id });
+    if(shopOwnWrite(cat)) shopOwnSave();                                                          // v73 — § 38
+    else await saveProfilePatch({ ['equipped/'+cat]: defItem.id });
     snd('uiBack');
     toast(`Unequipped ${item.name}`);
     applyEquippedCosmetics();
@@ -6588,6 +6872,8 @@ function startNebula(){
       aCtx.beginPath(); aCtx.moveTo(0, -this.h/3); aCtx.lineTo(-3, 3); aCtx.lineTo(3, 3); aCtx.closePath(); aCtx.fill();
       aCtx.fillStyle = Math.random() > 0.5 ? '#ff0844' : '#ff6600'; aCtx.fillRect(-3, this.h/2 - 2, 6, Math.random()*6+3);
       aCtx.restore();
+      // v72 — ⟳ a rebooted profile leaves a wake (§ 37): a square every third frame, none under reduced motion.
+      try{ if(typeof prWake2d === 'function') prWake2d(particles, this.x + this.w/2, this.y + this.h/2 + this.h/2 * PLAYER_SHIP_SCALE); }catch(e){}
       drawSkinBadge(this.x + this.w/2, this.y + this.h/2 - this.h/2 * PLAYER_SHIP_SCALE - 10);
     }
   };
@@ -7780,7 +8066,7 @@ function lbRows(panel, players, scoreOf){
     const canAdd = user && !isMe && !d.isGuest;
     row.innerHTML =
       `<div class="lb-rank">${medals[i] || '#' + (i+1)}</div>` +
-      `<div class="lb-name">${esc(d.username)}${isMe ? ' ← You' : ''}${typeof titleChip === 'function' ? titleChip(d) : ''}</div>` +
+      `<div class="lb-name">${esc(d.username)}${isMe ? ' ← You' : ''}${typeof titleChip === 'function' ? titleChip(d) : ''}${typeof prBadge === 'function' ? prBadge(isMe ? user : d) : ''}${typeof crewChip === 'function' ? crewChip(d.uid) : ''}</div>` +
       (canAdd ? `<button class="lb-fr${isFriend ? ' on' : ''}" data-uid="${esc(d.uid)}" data-name="${esc(d.username)}"
                    title="${isFriend ? 'Remove rival' : 'Add as rival'}">${isFriend ? '★' : '☆'}</button>` : '') +
       `<div class="lb-score">${(parseInt(scoreOf(d)) || 0).toLocaleString()} PTS</div>`;
@@ -7810,6 +8096,16 @@ async function loadLeaderboard(){
 
     q.once('value', snapshot => {
       if(!snapshot.exists()){ panel.innerHTML = '<div class="lb-empty">No logged scores inside network nodes.</div>'; return; }
+      // v77 — 💰 Bounties are found HERE (§ 42): this read is every player, where the challenge board's is
+      // only the top sixty by points.
+      try{ if(typeof bntyIngest === 'function') bntyIngest(snapshot); }catch(e){ console.warn('Bounties unreadable:', e); }
+      // v78 — 🛡️ …and so are crews (§ 43): who is verified in which, and each crew's week. On the 🛡️ CREWS
+      // scope the panel is theirs.
+      try{ if(typeof crewIngest === 'function') crewIngest(snapshot); }catch(e){ console.warn('Crews unreadable:', e); }
+      if(scope === 'crews'){
+        try{ crewBoard(panel); }catch(e){ console.warn('Crew board failed:', e); }
+        return;
+      }
       let players = [];
       snapshot.forEach(c => { players.push({ uid:c.key, ...c.val() }); });
       players.reverse();
@@ -11725,7 +12021,7 @@ function startBattleBots(){
   // player sprite does. Every other bot is a hue-rotation of that one colour
   // rather than a fixed palette, so however the deck grows the whole roster
   // still reads as one faction against the malware's fixed pinks and reds.
-  const pColor = getEquippedColorHex();
+  const pColor = bbUnitColor();       // v78 — 🛡️ the crew's colour while you are in one (§ 43)
   const colorOf = {
     scout:  pColor,
     wall:   shiftHue(pColor, -26),
@@ -15898,6 +16194,10 @@ function saveProfilePatch(patch){
   if(!user) return Promise.resolve();
   cacheProfile(user);
   if(!db || offlineMode || isLocalSession()) return Promise.resolve();
+  // 🧹 § 33: a guest's record is deleted whenever their connection ends, and a child write under a
+  // deleted record leaves a nameless stub. While it is not verified whole this stays in the mirror
+  // (written just above) and is sent up as soon as the record is back.
+  try{ if(typeof gcHold === 'function' && gcHold(patch)) return Promise.resolve(); }catch(e){}
   return db.ref('players/' + user.uid).update(patch)
     .catch(e => { console.warn('Profile write failed — kept in the local mirror:', e); });
 }
@@ -16540,9 +16840,20 @@ function xpLevel(xp){
   const level = Math.floor(total / XP_PER_LEVEL) + 1;
   return { level, into: total % XP_PER_LEVEL, need: XP_PER_LEVEL, total };
 }
+// v72 — ⟳ The level a player SEES and is GATED by: the XP earned since their last reboot. § 37 owns the
+// arithmetic; this is the lifetime level until that section has run, or if it throws. `rec` is the
+// signed-in profile or another player's public record. xpLevel() stays the LIFETIME level — what
+// awardXp() stores (it never goes down) and what level achievements are measured in.
+function xpShown(rec){
+  try{ if(typeof prLevelOf === 'function') return prLevelOf(rec); }catch(e){}
+  return xpLevel(rec ? rec.xp : 0);
+}
+function xpReboots(rec){ try{ if(typeof prCountOf === 'function') return prCountOf(rec) || 0; }catch(e){} return 0; }
+function xpTrail(){ try{ if(typeof prTrailK === 'function') return prTrailK() || 0; }catch(e){} return 0; }
 // One point per level gained, first level free.
-const perkPointsEarned = xp => xpLevel(xp).level - 1;
-const perkPointsLeft   = () => user ? perkPointsEarned(user.xp) - (user.perkSpent || 0) : 0;
+const perkPointsEarned = () => xpShown(user).level - 1;
+// v72 — never below zero: a reboot whose perk reset has not landed yet holds more than it has earned.
+const perkPointsLeft   = () => user ? Math.max(0, perkPointsEarned() - (user.perkSpent || 0)) : 0;
 
 // A TREE, not a shelf. Two things make it one: `needs` names the node that has
 // to be owned first, and cost rises with depth — so a point spent at the top is
@@ -16613,7 +16924,7 @@ function perkScoreMult(gid, opts){
   // reach, which is exactly why Netrunner exists — same seam, other side.
   if(opts && opts.internal) return hasPerk('perk-duel') ? 1.08 : 1;
   if(!hasPerk('perk-score')) return 1;
-  if(!SOLO_START[gid] && gid !== 'bossrush' && gid !== 'endless' && gid !== 'openworld') return 1;
+  if(!SOLO_START[gid] && gid !== 'bossrush' && gid !== 'endless' && gid !== 'openworld' && gid !== 'glitchrun') return 1;   // v75 — + 🌀 § 40
   return 1.05;
 }
 // 🌳 Perk B. Read once by startBattleBots().
@@ -16622,15 +16933,17 @@ const perkRamMult = () => hasPerk('perk-ram') ? 1.25 : 1;
 // Granted on every finished round, online or off.
 function awardXp(award){
   if(!user || !(award > 0)) return;
-  const before = xpLevel(user.xp || 0).level;
+  const before = xpShown(user).level;
   // 🌳 Neural Uplink. Applied to the GRANT rather than to the level threshold,
   // so a profile that owns it and a profile that does not still mean the same
   // thing by "level 12" — one of them just got there faster.
   const xpMult = hasPerk('perk-xp') ? 1.25 : 1;
   user.xp = Math.max(0, Math.floor((user.xp || 0) + award * XP_RATE * xpMult));
-  const after = xpLevel(user.xp).level;
-  user.level = after;
-  saveProfilePatch({ xp: user.xp, level: after });
+  const after = xpShown(user).level;
+  // v72 — the server keeps the LIFETIME level, which only rises; the level shown and announced is the
+  // XP past the last reboot (§ 37).
+  user.level = xpLevel(user.xp).level;
+  saveProfilePatch({ xp: user.xp, level: user.level });
   if(after > before){
     // Held back so it lands on the results card rather than under the death
     // sting the round is still playing.
@@ -16651,7 +16964,7 @@ function awardXp(award){
 
 function paintXpRail(){
   if(!user) return;
-  const st = xpLevel(user.xp || 0);
+  const st = xpShown(user);
   const lvl = document.getElementById('xp-lvl');
   const fill = document.getElementById('xp-fill');
   const num = document.getElementById('xp-num');
@@ -16674,6 +16987,8 @@ function paintXpRail(){
   // so it repaints with it rather than needing its own hook on every path that
   // changes a score.
   if(typeof paintSeasonRail === 'function') paintSeasonRail();
+  // v72 — ⟳ the reboot badge on the level; at the cap the perk button becomes the REBOOT door (§ 37).
+  try{ if(typeof prPaintRail === 'function') prPaintRail(); }catch(e){}
 }
 
 // A node is OPEN when its prerequisite is owned and you can afford it, LOCKED
@@ -16689,7 +17004,7 @@ function renderPerkTree(){
   if(!wrap || !user) return;
   const left = perkPointsLeft();
   const sub = document.getElementById('perk-sub');
-  const st = xpLevel(user.xp || 0);
+  const st = xpShown(user);
   const owned = PERKS.filter(p => hasPerk(p.id)).length;
   if(sub){
     sub.textContent = left > 0
@@ -16837,6 +17152,7 @@ const powerHeld = id => (user && user.powerups && +user.powerups[id]) || 0;
 // Spends one, if there is one. Returns whether it fired, so a caller can use it
 // directly as the condition on a crash.
 function powerConsume(id, label){
+  if(spdOn()) return false;                 // v74 — ⏱️ nothing is spent in a speedrun, the shield included (§ 39)
   if(powerHeld(id) <= 0) return false;
   user.powerups[id] = powerHeld(id) - 1;
   saveProfilePatch({ ['powerups/' + id]: user.powerups[id] });
@@ -16890,6 +17206,7 @@ function hidePowerDock(){
 function paintPowerDock(){
   const dock = document.getElementById('pu-dock');
   if(!dock || !user || mp) return;
+  if(spdOn()){ dock.style.display = 'none'; dock.innerHTML = ''; return; }      // v74 — ⏱️ no dock in a speedrun (§ 39)
   // 🎒 A loadout can nominate which consumable this build leads with. It is a
   // SORT, not a filter: the kit is still the whole kit, the named one is just
   // the one first under the thumb.
@@ -16931,6 +17248,7 @@ const TIME_DILATOR_SECONDS = 3;
 const OVERCLOCK_CHIP_MULT = 1.3;
 
 function usePowerUp(id){
+  if(spdOn()){ snd('deny'); toast('⏱ No power-ups in a speedrun.', 2200); return; }   // v74 — § 39
   if(id === 'pu-overclock') return useOverclockChip();
   if(id === 'pu-dampener')  return useChaosDampener();
   if(id !== 'pu-dilator') return;
@@ -17831,16 +18149,15 @@ async function shareRun(){
   // RAW score, because that is the one the friend's race is settled against —
   // the card's total includes this player's own tier, perk and chip bonuses.
   const run = (typeof clLastRun === 'object') ? clLastRun : null;
-  let url = document.querySelector('link[rel="canonical"]')?.href ||
-            location.href.replace(/[?#].*$/, '');
+  let url = piShareBase();
   let text = pts > 0
     ? `👾 I scored ${pts.toLocaleString()} in ${name} on Point Invaders. Think you can beat it?`
     : `👾 Come play ${name} with me on Point Invaders — a free neon arcade, right in the browser.`;
   if(run && META[run.gid]){
     try{
       url = clUrl(run);
-      text = `⚔️ I scored ${run.pts.toLocaleString()} in ${META[run.gid].name} on Point Invaders. ` +
-             `Tap to race my run — think you can beat it?`;
+      text = `👻 Beat my ghost: I scored ${run.pts.toLocaleString()} in ${META[run.gid].name} on Point Invaders. ` +
+             (run.trail ? `My run plays on your board — think you can beat it?` : `Tap to race my run — think you can beat it?`);
     }catch(e){ console.warn('Challenge link failed — sharing the plain link:', e); }
   }
   const base = (btn && btn.dataset.base) || '📣 Share Score';
@@ -17993,8 +18310,11 @@ document.getElementById('ach-overlay')?.addEventListener('click', e => {
   if(e.target.id === 'ach-overlay') closeOverlay('ach-overlay');
 });
 
-document.getElementById('btn-perks')?.addEventListener('click',
-  () => openOverlay('perk-overlay', renderPerkTree));
+document.getElementById('btn-perks')?.addEventListener('click', () => {
+  // v72 — ⟳ at the level cap this button is the REBOOT door (§ 37); the tree is one tap further in.
+  try{ if(typeof prRailClick === 'function' && prRailClick()) return; }catch(e){}
+  openOverlay('perk-overlay', renderPerkTree);
+});
 document.getElementById('perk-close')?.addEventListener('click', () => closeOverlay('perk-overlay'));
 document.getElementById('perk-overlay')?.addEventListener('click', e => {
   if(e.target.id === 'perk-overlay') closeOverlay('perk-overlay');
@@ -18419,10 +18739,16 @@ async function sendFeedback(payload){
     submitEl.textContent = '🔒 Re-keying identity…';
 
     try{
+      // 🧹 § 33: the record is about to become permanent. It must be whole, and the guest's
+      // delete-on-disconnect pledge must be cancelled BEFORE the link — same uid, so a pledge left
+      // standing would delete the new account the next time this tab closed. A throw here is the
+      // "no connection" error; the catch below re-arms the pledge if the link itself fails.
+      if(typeof gcUpgradeBegin === 'function') await gcUpgradeBegin();
       // linkWithCredential keeps the SAME uid — every score, credit and
       // cosmetic already stored under players/<uid> stays exactly where it is.
       const cred = firebase.auth.EmailAuthProvider.credential(email, pass);
       await auth.currentUser.linkWithCredential(cred);
+      try{ if(typeof gcUpgradeEnd === 'function') gcUpgradeEnd(true); }catch(x){}
 
       const uid = auth.currentUser.uid;
       await db.ref('players/' + uid).update({
@@ -18449,6 +18775,7 @@ async function sendFeedback(payload){
       try{ if(typeof statsEvent === 'function') statsEvent('_save_e'); }catch(e){}
       loadLeaderboard();
     }catch(e){
+      try{ if(typeof gcUpgradeEnd === 'function') gcUpgradeEnd(false); }catch(x){}
       console.error('Account upgrade failed:', e);
       showAuthErr(errEl, e, 'email');
       saving = false;
@@ -18471,6 +18798,12 @@ async function sendFeedback(payload){
     if(!/^[a-zA-Z0-9_-]{2,20}$/.test(name)){ snd('error'); errEl.textContent='Format error inside username syntax.'; nameEl.focus(); return; }
     if(!auth || !auth.currentUser || !auth.currentUser.isAnonymous){ snd('error'); errEl.textContent='No guest session to upgrade.'; return; }
     if(typeof gInApp === 'function' && gInApp()){ snd('error'); errEl.textContent = G_INAPP_MSG; return; }
+    // 🧹 § 33: SYNCHRONOUS on purpose — nothing may be awaited in front of the popup. It checks the
+    // record is whole on this connection and fires (does not wait for) the cancel of the guest's
+    // delete-on-disconnect pledge; operations on one connection stay in order.
+    if(typeof gcUpgradeBeginSync === 'function' && !gcUpgradeBeginSync()){
+      snd('error'); errEl.textContent = '📡 Still linking your guest profile to the grid — try again in a moment.'; return;
+    }
     saving = true;
     errEl.textContent = '';
     googleEl.disabled = true;
@@ -18479,6 +18812,7 @@ async function sendFeedback(payload){
       popup = auth.currentUser.linkWithPopup(gProvider());
       googleEl.innerHTML = '<span>⏳ Waiting for Google…</span>';
       await popup;
+      try{ if(typeof gcUpgradeEnd === 'function') gcUpgradeEnd(true); }catch(x){}
       const uid = auth.currentUser.uid;
       await db.ref('players/' + uid).update({
         username:   name,
@@ -18504,6 +18838,7 @@ async function sendFeedback(payload){
       loadLeaderboard();
     }catch(e){
       saving = false;
+      try{ if(typeof gcUpgradeEnd === 'function') gcUpgradeEnd(false); }catch(x){}
       console.warn('Google save failed:', e);
       if(e && e.code === 'auth/credential-already-in-use'){
         // This Google account is already a player. Say so, and offer the switch.
@@ -18582,7 +18917,11 @@ let mp = null;
 let netOffset = 0, netConnected = false;
 if(db){
   db.ref('.info/serverTimeOffset').on('value', s => { netOffset = s.val() || 0; });
-  db.ref('.info/connected').on('value', s => { netConnected = !!s.val(); mpPaintLink(); });
+  db.ref('.info/connected').on('value', s => {
+    netConnected = !!s.val(); mpPaintLink();
+    // 🧹 § 33: every new connection — a guest's delete-on-disconnect pledge died with the old one.
+    try{ if(typeof gcOnLink === 'function') gcOnLink(netConnected); }catch(e){ console.warn('Guest cleanup failed on reconnect:', e); }
+  });
 }
 const netNow = () => Date.now() + netOffset;
 
@@ -18976,6 +19315,9 @@ async function mpJoinRoom(rawCode){
   const r = snap.val() || {};
   if(r.host === user.uid) throw new Error('OWN_ROOM');
   if((r.status || 'waiting') !== 'waiting') throw new Error('IN_PROGRESS');
+  // v79 — 🏆 A tournament match's room (§ 44) is for its two seeded players and nobody else. (Joining
+  // never looked at `open`, so the code alone would have been enough.)
+  if(r.tm && r.tm.a !== user.uid && r.tm.b !== user.uid) throw new Error('NO_ROOM');
 
   // ── 👥 2v2: claim one of the four slots ──
   // Same rule as the duel below — a transaction on a single LEAF, so two people
@@ -19087,6 +19429,7 @@ async function mpLeaveRoom(){
   mp = null;                                  // everything else now no-ops
   session.roundUnsub.concat(session.unsub).forEach(([r,e,c]) => { try{ r.off(e,c); }catch(err){} });
   cancelAnimationFrame(session.cdRaf);
+  if(session.inRound) document.getElementById('cd-ov')?.classList.remove('show');   // v79 — its 3-2-1 goes with it
   clearInterval(session.autoBotTimer);
   if(session.bot) session.bot.stop();
 
@@ -19121,6 +19464,9 @@ async function mpLeaveRoom(){
 // Host only: hand the room back to its lobby, ready for a rematch.
 function mpResetRoom(){
   if(!mp || !mp.isHost) return;
+  // v79 — 🏆 a tournament match is played once: its room is never handed back to its lobby, and never
+  // re-opened to Quick Match (§ 44). It is removed when its host goes back to the bracket.
+  if((mp.room && mp.room.tm) || mp.tm) return;
   const upd = { status:'waiting', open:true, startAt:null, endsAt:null, chaos:null };
   upd['players/' + mp.myId + '/ready'] = true;
   // A person has to say they want another round. A droid has no opinion, and
@@ -19203,6 +19549,12 @@ function mpOnRoom(s){
 // The host closed the room, or the whole thing was swept. If a duel was running
 // the survivor takes it by walkover; otherwise it's just a trip back to the
 // lobby with an explanation.
+// v79 — 🏆 "Back to the pick stage" asks first: inside a tournament, back is the bracket (§ 44).
+function mpHomeStage(){
+  try{ if(typeof tourneyHome === 'function' && tourneyHome()) return; }catch(e){}
+  mpShowStage('pick');
+  renderMpModes();
+}
 function mpRoomGone(){
   if(!mp) return;
   const wasInRound = mp.inRound;
@@ -19211,6 +19563,7 @@ function mpRoomGone(){
   mp = null;
   session.roundUnsub.concat(session.unsub).forEach(([r,e,c]) => { try{ r.off(e,c); }catch(err){} });
   cancelAnimationFrame(session.cdRaf);
+  if(wasInRound) document.getElementById('cd-ov')?.classList.remove('show');        // v79 — its 3-2-1 goes with it
   clearInterval(session.autoBotTimer);
   if(session.bot) session.bot.stop();
   mpPaintLink();
@@ -19224,9 +19577,9 @@ function mpRoomGone(){
     setControls(null);
     document.getElementById('game-screen').classList.remove('canvas-game');
   }
-  toast('🔌 The room closed — your rival left the grid.', 3200);
-  mpShowStage('pick');
-  renderMpModes();
+  // (In a tournament the match's room closing is how every match ends — nothing to announce.)
+  if(!(typeof tourneyActive === 'function' && tourneyActive())) toast('🔌 The room closed — your rival left the grid.', 3200);
+  mpHomeStage();
   showScreen('mp-screen');
 }
 
@@ -19259,7 +19612,7 @@ async function mpSpectateRoom(rawCode){
   };
   const onRoom = s => {
     if(!spec) return;
-    if(!s.exists()){ toast('🔌 That room closed.', 2600); mpStopSpectating(); mpShowStage('pick'); return; }
+    if(!s.exists()){ toast('🔌 That room closed.', 2600); mpStopSpectating(); mpHomeStage(); return; }
     spec.room = s.val();
     paintSpectator();
   };
@@ -19654,6 +20007,7 @@ function mpOpenLobby(){
   mpPaintLink();
   showScreen('mp-screen');
   music('hub');
+  try{ if(typeof tourneyHome === 'function') tourneyHome(); }catch(e){}       // v79 — 🏆 a tournament in progress is where you land
 }
 
 // Every connect button funnels through here so the "working…" state, the error
@@ -19824,6 +20178,8 @@ function mpBeginRound(){
   mpCountdown(mp.startAt, () => {
     if(!mp || !mp.inRound) return;
     chaosArm(mod);
+    // 📊 § 34: the three live duels never pass runMissionStart(); a score race passes both, marked once.
+    try{ if(typeof playGo === 'function') playGo(); }catch(e){}
     chaosRun(mode.start);
     showPowerDock();
   });
@@ -19853,6 +20209,9 @@ function mpRoundCleanup(){
   if(!mp) return;
   mpOff('round');
   cancelAnimationFrame(mp.cdRaf);
+  // v79 — a round left during the arena's own 3-2-1 (← Quit, a cancelled tournament) took the frame that
+  // was drawing it, and the overlay stayed up over the lobby. cancelCountdown() does not know this one.
+  document.getElementById('cd-ov')?.classList.remove('show');
   mp.inRound = false;
   mp.round = null;
   clearCanvasDrag();
@@ -19881,14 +20240,17 @@ async function mpQuitRound(){
   setControls(null);
   document.getElementById('game-screen').classList.remove('canvas-game');
   toast('🏳️ Duel forfeited.', 2400);
+  // v79 — 🏆 …and in a tournament the forfeit is RECORDED: the match is the other player's (§ 44).
+  try{ if(typeof tourneyForfeit === 'function') tourneyForfeit(); }catch(e){}
   await mpLeaveRoom();
-  mpShowStage('pick');
-  renderMpModes();
+  mpHomeStage();
   showScreen('mp-screen');
 }
 
 // The results card, in duel dress. `outcome` is 'win' | 'loss' | 'draw'.
 function mpShowDuelResult(gid, pts, outcome, bd){
+  // 📊 § 34: the only place that knows how a duel went.
+  try{ if(typeof playDuel === 'function') playDuel(outcome); }catch(e){ console.warn('Duel not counted:', e); }
   const badge = {
     win:  { text:'🌐 NETWORK ARENA · VICTORY', cls:'res-bonus-win'  },
     loss: { text:'🌐 NETWORK ARENA · DEFEAT',  cls:'res-bonus-loss' },
@@ -19914,15 +20276,21 @@ function mpShowDuelResult(gid, pts, outcome, bd){
   bd = rows;
 
   const inRoom = !!mp;
+  // v79 — 🏆 A tournament match (§ 44): the result is reported to the bracket, and the card's two buttons
+  // become the tournament's. Null outside one.
+  let tn = null;
+  try{ if(typeof tourneyDuelDone === 'function') tn = tourneyDuelDone(outcome); }catch(e){ console.warn('Tournament result failed:', e); }
   showResults(gid, pts, bd, {
     internal: true,                        // this IS the duel's card — don't re-tap it
     tier: tier.key,                        // the shared tier the round was played on
     duelWin: outcome === 'win',
-    botLevel: (mp && mp.bot) ? mpBotLevel : null,
+    // v79 — the level of the droid that was PLAYED, not the lobby's dial: a tournament seats droids at
+    // its own level, and crediting the dial paid (or withheld) the wrong droid achievement.
+    botLevel: (mp && mp.bot) ? (mp.botLevel || mpBotLevel) : null,
     badge,
     emoji: outcome === 'win' ? '🏆' : (outcome === 'draw' ? '🤝' : '💀'),
     sound: outcome === 'win' ? 'victory' : (outcome === 'draw' ? 'results' : 'gameOver'),
-    again: {
+    again: tn ? tn.again : {
       label: inRoom ? 'Back to Room' : 'Network Arena',
       fn: () => {
         if(mp){ mpShowStage('room'); mpPaintRoom(); }
@@ -19930,7 +20298,7 @@ function mpShowDuelResult(gid, pts, outcome, bd){
         showScreen('mp-screen');
       }
     },
-    hub: {
+    hub: tn ? tn.hub : {
       label: 'Hub',
       fn: async () => {
         await mpLeaveRoom();
@@ -19972,8 +20340,7 @@ document.getElementById('btn-mp-spec').onclick = function(){
 };
 document.getElementById('btn-spec-leave').onclick = () => {
   mpStopSpectating();
-  mpShowStage('pick');
-  renderMpModes();
+  mpHomeStage();                           // v79 — 🏆 back to the bracket when a tournament is on
 };
 
 const mpCodeInput = document.getElementById('mp-code-input');
@@ -20031,10 +20398,12 @@ document.getElementById('btn-mp-start').onclick = async () => {
       status: 'playing', open: false,
       startAt,
       endsAt: startAt + ((mode && mode.seconds) || 60) * 1000,
-      tier: currentDifficultyTier,          // re-stamped: the lobby may have sat a while
+      // v79 — 🏆 in a tournament match the organiser's lock stands (§ 44): its tier, and no chaos at all.
+      tier: (mp.room && mp.room.tm) || mp.tm ? ((mp.room && mp.room.tier) || 'stable')
+                                             : currentDifficultyTier,          // re-stamped: the lobby may have sat a while
       // 🌀 Rolled ONCE, by the host, into the room — the same reason the tier
       // lives there. Every client reads this id; nobody rolls their own.
-      chaos: (chaosRoll() || {}).id || null,
+      chaos: ((mp.room && mp.room.tm) || mp.tm) ? null : ((chaosRoll() || {}).id || null),
       result: null
     });
   }catch(e){
@@ -21633,13 +22002,15 @@ function makeDroid(net, code, botId, levelKey, modeKey){
 // A droid room is an ordinary room in an in-memory database: same shape, same
 // lifecycle, same listeners. The human is always the host, the droid is
 // pre-seated and pre-ready, and START is live immediately.
-async function mpStartBotRoom(modeKey, levelKey){
+// v79 — 🏆 `o` is a tournament's (§ 44): its locked tier and lane instead of the local dials, and that
+// droid's own name and id. Absent, this is the droid duel it always was.
+async function mpStartBotRoom(modeKey, levelKey, o){
   const L = MP_BOT_LEVELS[levelKey] || MP_BOT_LEVELS.veteran;
   const net = makeLoopDB();
   const code = 'DR' +
     MP_CODE_CHARS[Math.floor(Math.random()*MP_CODE_CHARS.length)] +
     MP_CODE_CHARS[Math.floor(Math.random()*MP_CODE_CHARS.length)];
-  const botId = 'droid-' + L.key;
+  const botId = (o && o.id) || ('droid-' + L.key);
 
   await net.ref('rooms/' + code).set({
     mode: modeKey,
@@ -21648,19 +22019,21 @@ async function mpStartBotRoom(modeKey, levelKey){
     hostName: (user && user.username) || 'Operative',
     status: 'waiting',
     open: false,
-    tier: currentDifficultyTier,
+    tier: (o && o.tier) || currentDifficultyTier,
     // 🌐 The player's lane (§ 31): a race against the droid can be an open-world one.
-    ow: !!(typeof owLanePref === 'function' && owLanePref('arena') && owWorldsOk() && MP_MODES[modeKey].kind === 'race'),
+    ow: o ? !!(o.ow && owWorldsOk() && MP_MODES[modeKey].kind === 'race')
+          : !!(typeof owLanePref === 'function' && owLanePref('arena') && owWorldsOk() && MP_MODES[modeKey].kind === 'race'),
     createdAt: Date.now(),
     guest: botId,
     players: {
       [user.uid]: mpCard('host'),
-      [botId]: { name: L.name, color: L.color, skin: L.skin, role: 'guest',
+      [botId]: { name: (o && o.name) || L.name, color: L.color, skin: L.skin, role: 'guest',
                  ready: true, bot: true, lvl: L.chip, joinedAt: Date.now() }
     }
   });
   const bot = makeDroid(net, code, botId, L.key, modeKey);
   mpAttach(code, true, net, bot);
+  mp.botLevel = L.key;             // v79 — the level this room's droid really is (see mpShowDuelResult)
   return code;
 }
 
@@ -24025,7 +24398,7 @@ const PIA_MODELS = {
 // pictures. The renderer uploads them (TEXTURE SETS) and builds the mip chains.
 //   PI_ASSETS[name] = { v: 1, size: 2048, paintRef: 0.35, kappa: 1,
 //                       maps: { base: [mime, b64], nrm: [...], orm: [...], mask: [...], emis?: [...] } }
-const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=67' };                          // set name → chunk file (filled by the v62 splice)
+const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=80' };                          // set name → chunk file (filled by the v62 splice)
 const piAssetState = Object.create(null);           // set name → { blobs, meta, loading }
 function piAssetChunk(file){
   return new Promise((resolve, reject) => {
@@ -33381,6 +33754,8 @@ function createWorld(cfg){
       const a = clamp(p.life / p.max, 0, 1);
       r.glowFx([p.x, p.y, p.z], p.size * (0.35 + a), p.color, 1.6 * a * a);
     }
+    // v73 — 🛸 the companion, if this frame's mission said where its player is (cmpAim, § 38).
+    try{ if(typeof cmpDraw3d === 'function') cmpDraw3d(w, r); }catch(e){}
     r.render();
   };
 
@@ -34439,9 +34814,11 @@ P.games.nebula = function(){
       const cx = Math.cos(ship.pitch), sx = Math.sin(ship.pitch), cz = Math.cos(ship.roll), sz = Math.sin(ship.roll), S = 1.95 * PLAYER_SHIP_SCALE;
       const at = q => [ship.x + (cz * q[0] - sz * cx * q[1] + sz * sx * q[2]) * S, ship.y + (sz * q[0] + cz * cx * q[1] - cz * sx * q[2]) * S, (sx * q[1] + cx * q[2]) * S];
       const back = [sz * sx, -cz * sx, cx];
+      try{ if(typeof cmpAim === 'function') cmpAim(ship.x, ship.y, 0); }catch(e){}        // v73 — 🛸 § 38
+      const pk = xpTrail();        // v72 — ⟳ a rebooted profile's flames run longer and brighter (§ 37): no extra draw
       for(const s of [-1, 1]){
-        const ep = at([s * 0.36, -0.02, 0.86]), len = (2.2 + Math.sin(w.t * 37 + s) * 0.15) * PLAYER_SHIP_SCALE;
-        r.streak(ep, [ep[0] + back[0] * len, ep[1] + back[1] * len, ep[2] + back[2] * len], 0.5 * PLAYER_SHIP_SCALE, colour, 1.9, s > 0 ? 2.31 : 2.73);
+        const ep = at([s * 0.36, -0.02, 0.86]), len = (2.2 + Math.sin(w.t * 37 + s) * 0.15) * PLAYER_SHIP_SCALE * (1 + pk * 0.2);
+        r.streak(ep, [ep[0] + back[0] * len, ep[1] + back[1] * len, ep[2] + back[2] * len], 0.5 * PLAYER_SHIP_SCALE, colour, 1.9 * (1 + pk * 0.12), s > 0 ? 2.31 : 2.73);
       }
     }
     // Weapon-level ring: a flat halo under the hull, so it reads as a status
@@ -35846,6 +36223,11 @@ P.games.flappy = function(){
     const droneRot = [tilt, 0, Math.sin(w.t * 3) * 0.07];
     const droneLook = { color:'#aab6cc', metallic: 0.6, roughness: 0.3, rim: 0.9, emissive: colour, emissiveStrength: 0.004 };
     r.draw('drone', { pos:[0, y, 0], rot: droneRot, scale: 1.9, ...droneLook });
+    // 👻 § 36: this build recorded a ghost and never drew it. The same hollow ring 3D Dodge draws, so it
+    // can never be taken for a firewall. The trail is board height; this build's y runs the other way.
+    const gv = Ghost.at();
+    if(gv != null) r.draw('thintorus', { pos:[0, (gv / BOARD_H - 0.5) * 2 * YL, 0], rot:[0, 0, w.t], scale: 3.0,
+                                         color: colour, emissive: colour, emissiveStrength: 1.3, alpha: 0.35 });
     // ✨ v60 · Its four rotors really turn now (the Blender rotor on each
     // anchor, see drawRotors) — the glowing rings that stood in for them are gone.
     P.kit.drawRotors(r, [0, y, 0], droneRot, 1.9, w.t, droneLook);
@@ -36403,6 +36785,10 @@ P.games.runner = function(){
     // ✨ v57 · Painted metal under a key light, as in Neon Nebula — the
     // trailing light below used to wash the whole hull in one colour.
     keyRig(w, [x, 1.2 + air, 0], colour, { key: 170, fill: 100 });
+    // 👻 § 36: …and so did this one. A hollow ring in the lane the ghost held.
+    const gv = Ghost.at();
+    if(gv != null) r.draw('thintorus', { pos:[(gv / BOARD_W - 0.5) * 2 * LANE * 1.5, 1.1, 0], rot:[0, 0, w.t], scale: 2.6,
+                                         color: colour, emissive: colour, emissiveStrength: 1.3, alpha: 0.35 });
     if(!blink){
       // The hull noses down −Z, into the track (as Neon Nebula draws it) —
       // it used to be turned round and raced along tail-first.
@@ -36414,11 +36800,12 @@ P.games.runner = function(){
       // ✨ v59 · flames out of the nozzles (the model's anchors at z +0.86),
       // trailing back toward the camera.
       // The anchors are the model's (±0.36, −0.02, 0.86) at the drawn scale.
-      const HS = 1.5 * PLAYER_SHIP_SCALE;
+      try{ if(typeof cmpAim === 'function') cmpAim(x, 1.1 + air, 0); }catch(e){}           // v73 — 🛸 § 38
+      const HS = 1.5 * PLAYER_SHIP_SCALE, pk = xpTrail();        // v72 — ⟳ § 37, as in Neon Nebula
       for(const s of [-1, 1]){
         const ex = x + s * 0.36 * HS, ey = 1.1 - 0.02 * HS + air, ez = 0.86 * HS;
-        const len = (1.5 + Math.sin(run * 40 + s) * 0.1) * PLAYER_SHIP_SCALE;
-        r.streak([ex, ey, ez], [ex, ey, ez + len], 0.36 * PLAYER_SHIP_SCALE, colour, 1.7, s > 0 ? 2.37 : 2.79);
+        const len = (1.5 + Math.sin(run * 40 + s) * 0.1) * PLAYER_SHIP_SCALE * (1 + pk * 0.2);
+        r.streak([ex, ey, ez], [ex, ey, ez + len], 0.36 * PLAYER_SHIP_SCALE, colour, 1.7 * (1 + pk * 0.12), s > 0 ? 2.37 : 2.79);
       }
     }
     r.light({ pos:[x, 3.2 + air, 3.2], color: colour, intensity: 34, range: 20 });
@@ -39751,12 +40138,14 @@ P.games.arena = function(){
       // ✨ v59 · Flames out of the nozzles, longer under thrust (no glow blob).
       const sp = Math.hypot(player.vx, player.vz) / 20;
       {
-        const ya = player.ang + Math.PI, yc = Math.cos(ya), ys = Math.sin(ya), len = (0.5 + sp * 1.4) * PLAYER_SHIP_SCALE;
+        try{ if(typeof cmpAim === 'function') cmpAim(player.x, 1.0, player.z); }catch(e){}   // v73 — 🛸 § 38
+        const pk = xpTrail();        // v72 — ⟳ § 37, as in Neon Nebula
+        const ya = player.ang + Math.PI, yc = Math.cos(ya), ys = Math.sin(ya), len = (0.5 + sp * 1.4) * PLAYER_SHIP_SCALE * (1 + pk * 0.2);
         const HS = 1.15 * PLAYER_SHIP_SCALE;
         for(const sx of [-1, 1]){
           const q = [sx * 0.36, -0.02, 0.86];
           const ep = [player.x + (q[0] * yc + q[2] * ys) * HS, 1.0 + q[1] * HS, player.z + (-q[0] * ys + q[2] * yc) * HS];
-          r.streak(ep, [ep[0] - Math.sin(player.ang) * len, ep[1], ep[2] - Math.cos(player.ang) * len], 0.22 * PLAYER_SHIP_SCALE, pcol, 1.2 + sp, sx > 0 ? 2.41 : 2.83);
+          r.streak(ep, [ep[0] - Math.sin(player.ang) * len, ep[1], ep[2] - Math.cos(player.ang) * len], 0.22 * PLAYER_SHIP_SCALE, pcol, (1.2 + sp) * (1 + pk * 0.12), sx > 0 ? 2.41 : 2.83);
         }
       }
     }
@@ -39883,7 +40272,7 @@ P.games.battlebots = function(){
   const P_SPAWN = P_END + 10, E_SPAWN = E_END - 10;
   const LANE_Z = [-4.6, 0, 4.6];
 
-  const pColor = getEquippedColorHex();
+  const pColor = bbUnitColor();       // v78 — 🛡️ the crew's colour while you are in one (§ 43)
   const colorOf = {
     scout:  pColor,
     wall:   shiftHue(pColor, -26),
@@ -44287,6 +44676,7 @@ function loadLaneBoards(){
   if(!db || offlineMode || !user){
     localOnly();
     try{ if(typeof paintEventBoardLocal === 'function') paintEventBoardLocal(); }catch(e){}
+    try{ if(typeof glitchBoard === 'function') glitchBoard(null); }catch(e){}       // v75 — 🌀 § 40
     return;
   }
 
@@ -44296,6 +44686,8 @@ function loadLaneBoards(){
       try{ ingestGridRecords(snap); }catch(e){ console.warn('Grid records failed:', e); }
       // 🎃 …and so does a running event's board.
       try{ if(typeof ingestEventBoard === 'function') ingestEventBoard(snap); }catch(e){ console.warn('Event board failed:', e); }
+      // v75 — 🌀 …and the Glitch Run board (§ 40).
+      try{ if(typeof glitchBoard === 'function') glitchBoard(snap); }catch(e){ console.warn('Glitch board failed:', e); }
       const en = [], an = [];
       snap.forEach(c => {
         const v = c.val() || {};
@@ -44330,6 +44722,7 @@ function loadLaneBoards(){
     .catch(e => {
       console.warn('Lane board read failed:', e); localOnly();
       try{ if(typeof paintEventBoardLocal === 'function') paintEventBoardLocal(); }catch(err){}
+      try{ if(typeof glitchBoard === 'function') glitchBoard(null); }catch(err){}   // v75 — 🌀 § 40
     });
 }
 
@@ -45633,7 +46026,7 @@ function finishOnboard(run){
   closeOverlay('onboard-overlay');
   onboardRunning = false;
   markOnboard();
-  if(!run) { toast('🎓 Tutorial skipped — reopen it any time from the ⓘ on the hub rail.', 3200); return; }
+  if(!run) { toast('🎓 Tutorial skipped — reopen it any time from ⚙️ Settings → TUTORIAL.', 3200); return; }
   // A real round, through the real funnel. Nothing about the guided run is a
   // special case: it is prepGame('click'), and the coach line rides over it.
   curGame = 'click';
@@ -46117,6 +46510,7 @@ function renderMissionDossier(gid){
       tile('♾️', 'Endless best', enBest.pts ? (+enBest.pts).toLocaleString() : '—',
            enBest.waves ? enBest.waves + ' waves' : 'lane ' + (endlessReady(gid) ? 'open' : 'locked')) +
       tile('🔒', 'Clearance', 'LVL ' + missionClearance(gid)) +
+      ((typeof playMissionTile === 'function') ? playMissionTile(gid, tile) : '') +   // 📊 § 34
     '</div>' +
 
     '<div class="dos-sec">📈 PACE CURVE <em>your best run on each tier, score against time</em></div>' +
@@ -46135,9 +46529,12 @@ function renderMissionDossier(gid){
     '<div class="dos-mbtns">' +
       '<button class="btn btn-primary" id="dos-play">▶ PLAY ' + esc(m.name) + '</button>' +
       (endlessReady(gid) ? '<button class="btn btn-secondary" id="dos-endless">♾️ ENDLESS LANE</button>' : '') +
+      ((typeof clBestButton === 'function') ? clBestButton(gid) : '') +   // 👻 § 36: any best, not just the last run
     '</div>';
 
   document.getElementById('dos-back').onclick = () => renderDossier();
+  const gh = document.getElementById('dos-ghost');
+  if(gh) gh.onclick = () => { if(typeof clSendBest === 'function') clSendBest(gid, gh); };
   document.getElementById('dos-play').onclick = () => {
     closeOverlay('dossier-overlay');
     if(!missionUnlocked(gid)){ snd('deny'); toast('🔒 ' + m.name + ' needs CLEARANCE ' + missionClearance(gid) + '.', 3200); return; }
@@ -46323,7 +46720,7 @@ function paintSettings(){
             'Then save it with Google or an email from here, so you can sign in on any device'];
   }else if(guest){
     tone = ['warn', 'GUEST · NOT SAVED'];
-    note.append('Guest progress is tied to this browser. Clearing site data — or pressing Exit — deletes this profile and its ',
+    note.append('Guest progress is kept in this browser. Your profile leaves the online boards when you close the game and comes back when you return here. Clearing site data — or pressing Exit — deletes this profile and its ',
       bold((user.totalPoints || 0).toLocaleString() + ' PTS'), ' for good.');
     if(offlineMode) note.append(' Saving needs a connection, so reconnect first.');
     list = ['Pick a username — 2–20 letters, numbers, _ or -',
@@ -46365,7 +46762,8 @@ document.addEventListener('keydown', e => {
 [
   ['btn-save-acct', '#up-overlay.show'],
   ['btn-feedback',  '#fb-overlay.show'],
-  ['btn-tutorial',  '#onboard-overlay.show']
+  ['btn-tutorial',  '#onboard-overlay.show, #tut-layer.on'],
+  ['btn-tutorial-replay', '#tut-layer.on']          // v80 — 🎓 § 45
 ].forEach(([id, sel]) => {
   document.getElementById(id)?.addEventListener('click', () => setTimeout(() => {
     if(settingsOpen() && document.querySelector(sel)) closeSettings(true);
@@ -46801,7 +47199,7 @@ function pauseWrapFrames(){
   const wrap = { realRAF, realCAF, raf: null, caf: null };
   wrap.raf = function(cb){
     const id = ++PauseCtl.seq;
-    const rec = { cb, real: 0, fire: null };
+    const rec = { cb, real: 0, fire: null, boot: !!PauseCtl.booting };      // v75 — asked for by the round's own start
     rec.fire = ts => {
       PauseCtl.live.delete(id);
       if(PauseCtl.on){ PauseCtl.parked.set(id, rec); return; }
@@ -46830,8 +47228,18 @@ function pauseUnwrapFrames(){
   if(window.cancelAnimationFrame === w.caf) window.cancelAnimationFrame = w.realCAF;
   // Anything still parked belongs to a round that is over.
   PauseCtl.parked.clear();
+  // v75 — …and so does a frame the round's own start asked for that has not run yet (see runMissionStart).
+  // Only those: the hub's starfield and the gamepad poll also pass through the wrapper while a round is up,
+  // and they must go on.
+  PauseCtl.live.forEach((rec, id) => {
+    if(!rec.boot) return;
+    try{ w.realCAF.call(window, rec.real); }catch(e){}
+    PauseCtl.live.delete(id);
+  });
   PauseCtl.wrapped = null;
 }
+// runMissionStart() brackets the mission's start with this: frames requested in between are the round's.
+function pauseBootFrames(on){ PauseCtl.booting = !!on; }
 
 // ── IS THERE A ROUND TO HOLD? ──────────────────────────────────────────
 function pauseRefusal(){
@@ -46931,7 +47339,8 @@ function pauseCanRestart(){
             !anomalyActive && !chalActive && !endless &&
             !(typeof partyRunActive === 'function' && partyRunActive()) &&
             !(typeof labActive === 'function' && labActive()) &&
-            !(typeof campaignRunActive === 'function' && campaignRunActive()));
+            !(typeof campaignRunActive === 'function' && campaignRunActive()) &&
+            !glitchRun);            // v75 — 🌀 a node is not replayed: fail it and the run is over (§ 40)
 }
 
 function paintPauseMenu(){
@@ -47468,7 +47877,8 @@ paintEvent();
 const TITLE_WORDS = {
   'first-blood':'FIRST CONTACT', 'pts-5k':'FIVE-K OPERATIVE', 'pts-25k':'HIGH ROLLER',
   'pts-100k':'SIX FIGURES', 'streak-7':'LOCKED IN', 'squad':'SQUAD LEADER',
-  'medal-diamond':'FLAWLESS', 'max-overclock':'OVERCLOCKED', 'haunt':'HAUNTED'
+  'medal-diamond':'FLAWLESS', 'max-overclock':'OVERCLOCKED', 'haunt':'HAUNTED',
+  'reboot-1':'REBOOTED', 'tourney-win':'CHAMPION'
 };
 function titleText(id){
   const a = typeof achById === 'function' ? achById(id) : null;
@@ -47522,7 +47932,7 @@ function renderPlayerCard(rec){
   if(!body) return;
   const isMe = !!(user && rec.uid === user.uid);
   const skin = findItem('skins', rec.equipped && rec.equipped.skins) || SHOP_ITEMS.skins[0];
-  const lvl = xpLevel(rec.xp || 0).level;
+  const lvl = xpShown(isMe ? user : rec).level;       // v72 — the level since their last reboot (§ 37)
   const season = seasonKey();
   const weekly = (rec.weekly && rec.weekly.season === season) ? (+rec.weekly.pts || 0) : 0;
   const achs = rec.achievements || {};
@@ -47559,7 +47969,7 @@ function renderPlayerCard(rec){
       `<div class="pc-skin">${skin.emoji}</div>` +
       `<div class="pc-id"><div class="pc-name" id="pcard-heading">${esc(rec.username || 'Operative')}${isMe ? ' <span class="pc-you">YOU</span>' : ''}</div>` +
       (title ? `<div class="pc-title">🏷️ ${esc(title)}</div>` : '') +
-      `<div class="pc-lvl">LVL ${lvl}${rec.isGuest ? ' · GUEST' : ''}</div></div>` +
+      `<div class="pc-lvl">LVL ${lvl}${typeof prBadge === 'function' ? prBadge(isMe ? user : rec) : ''}${rec.isGuest ? ' · GUEST' : ''}</div></div>` +
     `</div>` +
     `<div class="pc-tiles">` +
       tile('🏆', (+rec.totalPoints || 0).toLocaleString(), 'points') +
@@ -47597,6 +48007,10 @@ function renderPlayerCard(rec){
   }
   if(btns.length) html += `<div class="pc-btns">${btns.join('')}</div>`;
   body.innerHTML = html;
+  // v77 — 💰 a bounty standing on this operative, and the door to post one (§ 42).
+  try{ if(typeof bntyCard === 'function') bntyCard(rec, isMe, body); }catch(e){ console.warn('Bounty card failed:', e); }
+  // v78 — 🛡️ the crew tag beside the name; on a founder's card, the door to ask (§ 43).
+  try{ if(typeof crewCard === 'function') crewCard(rec, isMe, body); }catch(e){ console.warn('Crew card failed:', e); }
 
   document.getElementById('pc-title-btn')?.addEventListener('click', () => {
     closeOverlay('pcard-overlay');
@@ -50308,6 +50722,9 @@ function settleCampaign(gid, raw, opts){
     saveProfilePatch({ ['campaign/' + c.id]: got });
     setTimeout(() => snd('levelUp'), 800);
   }
+  // 📜 § 35: a FIRST clear writes a codex entry (and perhaps an act summary or a threat file with it).
+  // Announced here, once — a replay has had > 0 and says nothing.
+  try{ if(got > had && had === 0 && typeof codexAnnounce === 'function') codexAnnounce(c, rows); }catch(e){}
   const nextI = i + 1;
   // "Cleared" means cleared on ANY run: a poor replay of a chapter already held
   // must not read "one star to clear", nor lose its Next Chapter button.
@@ -50317,6 +50734,8 @@ function settleCampaign(gid, raw, opts){
     const act = CAMPAIGN_ACTS[CAMPAIGN[nextI].act - 1];
     rows['📖 Next'] = `ACT ${act.n} needs ${act.need} ★ — you have ${campaignTotal()}`;
   }
+  // v74 — ⏱️ a speedrun reads THIS attempt's stars: a split, or a failed attempt (§ 39).
+  try{ if(typeof spdSettle === 'function') spdSettle(i, got, rows); }catch(e){ console.warn('Speedrun split failed:', e); }
   campaignActive.done = { i, got, best };
   return rows;
 }
@@ -50364,6 +50783,11 @@ function renderCampaign(){
   const body = document.getElementById('campaign-body');
   const sub = document.getElementById('campaign-sub');
   if(!body || !user) return;
+  // 📜 § 35: the codex is a second VIEW of this overlay. While it is open it paints the body instead —
+  // this function is what every click here re-runs, so this is the one place the view can survive.
+  try{ if(typeof codexRender === 'function' && codexRender(body, sub)) return; }catch(e){ console.warn('Codex failed to render:', e); }
+  // ⏱️ § 39: …and so is the speedrun briefing.
+  try{ if(typeof spdRender === 'function' && spdRender(body, sub)) return; }catch(e){ console.warn('Speedrun briefing failed to render:', e); }
   const total = campaignTotal();
   if(sub) sub.textContent = `${total} of ${CAMPAIGN_MAX_STARS} ★ · told by ARC, the grid's sysadmin`;
   const i = Math.max(0, Math.min(CAMPAIGN.length - 1, campaignSel || 0));
@@ -50415,6 +50839,10 @@ function renderCampaign(){
     campaignScrollTop(true);
   }));
   document.getElementById('cp-play')?.addEventListener('click', () => startChapter(i));
+  // 📜 § 35: the tool row above the map (#cp-tools) and the codex's door in it.
+  try{ if(typeof codexButton === 'function') codexButton(body); }catch(e){ console.warn('Codex button failed:', e); }
+  // ⏱️ § 39: the speedrun's door, in the same row — only once ROOT ACCESS is cleared.
+  try{ if(typeof spdButton === 'function') spdButton(body); }catch(e){ console.warn('Speedrun button failed:', e); }
 }
 
 function paintCampaignBanner(){
@@ -50522,9 +50950,14 @@ function clEncode(r){
   // A run that stayed under its cap writes the version every older client
   // reads; only one with a score past the cap needs the tenth field.
   const v2 = raw > pts;
-  const f = [v2 ? '2' : '1', r.gid, pts.toString(36), CL_TIER[r.tier] || 's',
+  // 👻 § 36: version 3 is version 2 plus a position trail, written ONLY when there is a trail to carry —
+  // every other link stays byte for byte what an older client reads.
+  let tr = '';
+  try{ if(r.trail && typeof clTrailEncode === 'function') tr = clTrailEncode(r.trail, r.gid); }catch(e){ tr = ''; }
+  const f = [tr ? '3' : v2 ? '2' : '1', r.gid, pts.toString(36), CL_TIER[r.tier] || 's',
              clB64(String(r.name || 'OPERATIVE').slice(0, 20)), mods, cv, r.tag || '0000'];
-  if(v2) f.push(raw.toString(36));
+  if(v2 || tr) f.push(Math.max(raw, pts).toString(36));
+  if(tr) f.push(tr);
   const body = f.join('.');
   return body + '.' + hashStr(body).toString(36);
 }
@@ -50532,9 +50965,12 @@ function clEncode(r){
 // Returns null for anything it cannot vouch for. A link is typed, pasted and
 // truncated by strangers' apps, so every field is checked on the way in.
 function clDecode(raw){
+  // (§ 36) Nothing the encoder writes comes near this; a link that does was not written by it.
+  if(String(raw || '').length > 640) return null;
   const parts = String(raw || '').trim().split('.');
   const ver = parts[0];
-  if(!((ver === '1' && parts.length === 9) || (ver === '2' && parts.length === 10))) return null;
+  if(!((ver === '1' && parts.length === 9) || (ver === '2' && parts.length === 10) ||
+       (ver === '3' && parts.length === 11))) return null;
   const n = parts.length - 1;
   const body = parts.slice(0, n).join('.');
   if(hashStr(body).toString(36) !== parts[n]) return null;
@@ -50545,7 +50981,7 @@ function clDecode(raw){
   // 🔺 Version 2's run past the cap. Never below the capped score, and held to
   // the same sanity ceiling as the score itself.
   let over = pts;
-  if(ver === '2'){
+  if(ver === '2' || ver === '3'){
     over = parseInt(parts[8], 36);
     if(!Number.isFinite(over) || over < pts || over > (META[gid].maxPts || 1000) * 6) return null;
   }
@@ -50566,11 +51002,36 @@ function clDecode(raw){
     curve.push([t * 100, v]);
   }
   if(curve.length < 2 || curve.length > 64) return null;
-  return { gid, pts, raw: over, tier, name, mods: [...new Set(ids)], curve, tag: String(tag || ''), link: true };
+  // 👻 § 36: version 3's position trail. This function runs at SCRIPT LOAD (clBoot), before § 36 has —
+  // clTrailDecode is a hoisted declaration that reads none of that section's variables.
+  let trail = null;
+  if(ver === '3'){
+    try{ trail = (typeof clTrailDecode === 'function') ? clTrailDecode(parts[9], gid) : null; }catch(e){ trail = null; }
+    if(!trail) return null;
+  }
+  const out = { gid, pts, raw: over, tier, name, mods: [...new Set(ids)], curve, tag: String(tag || ''), link: true };
+  if(trail) out.trail = trail;
+  return out;
+}
+
+// 🔗 THE ADDRESS EVERY SHARED LINK STARTS FROM. The arcade lives at
+// pointinvaders.com; the GitHub Pages address it is published from, the www
+// name and plain http all forward there — and whichever of them a player
+// arrived by, the link they hand a friend is the site's own. The canonical tag
+// in index.html says so and is read first, so the page and the code cannot
+// drift apart (it is also the address Google indexes: see the note beside it).
+// What this replaces is the fallback: all five share sites used to fall back
+// to location.href, which carries whatever ?utm= or #fragment the player came
+// in with — and an index.html with the tag stripped took that branch. A
+// function declaration on purpose: the run-share handler sits far above this line.
+function piShareBase(){
+  let href = '';
+  try{ href = document.querySelector('link[rel="canonical"]')?.href || ''; }catch(e){}
+  return href || 'https://pointinvaders.com/';
 }
 
 function clUrl(r){
-  const base = document.querySelector('link[rel="canonical"]')?.href || location.href.replace(/[?#].*$/, '');
+  const base = piShareBase();
   return base + (base.includes('?') ? '&' : '?') + CL_PARAM + '=' + clEncode(r);
 }
 
@@ -50607,9 +51068,13 @@ function clNoteRun(gid, pts, tierKey, paceRes, flags, chalRes, raw){
     mods: (chaos.lastStack || []).map(m => m && m.id).filter(Boolean),
     name: user.username || 'OPERATIVE', tag: clTag(user.uid)
   } : null;
+  // 👻 § 36: in the four position-ghost missions the run's trail rides along, so it plays on the friend's board.
+  if(clLastRun){
+    try{ const tr = Ghost.lastTrail(gid); if(tr) clLastRun.trail = { r: tr.r, ms: tr.ms, pts: tr.pts }; }catch(e){}
+  }
   const btn = document.getElementById('btn-share-run');
   if(btn){
-    btn.dataset.base = (chalRes && clLastRun) ? '📣 Challenge Back' : '📣 Share Score';
+    btn.dataset.base = clLastRun ? (chalRes ? '👻 Send My Ghost Back' : '👻 Beat My Ghost') : '📣 Share Score';
     btn.textContent = btn.dataset.base;
   }
 }
@@ -50632,7 +51097,7 @@ function clBoot(){
   clPending = held ? clDecode(held) : null;
   if(held && !clPending){
     try{ sessionStorage.removeItem(CL_STORE); }catch(e){}
-    setTimeout(() => toast('⚠️ That challenge link could not be read — it may have been cut short. Ask for it again.', 4200), 900);
+    setTimeout(() => toast('⚠️ That 👻 Beat My Ghost link could not be read — it may have been cut short. Ask for it again.', 4200), 900);
   }
   paintClAuth();
 }
@@ -50644,7 +51109,7 @@ function paintClAuth(){
   if(!c){ el.style.display = 'none'; el.innerHTML = ''; return; }
   const m = META[c.gid];
   el.innerHTML =
-    `<div class="cl-auth-top">⚔️ ${esc(c.name.toUpperCase())} CHALLENGED YOU</div>` +
+    `<div class="cl-auth-top">👻 ${esc(c.name.toUpperCase())} SENT YOU THEIR GHOST</div>` +
     `<div class="cl-auth-mid"><span class="cl-auth-ico">${m.emoji}</span> ${esc(m.name)} · ` +
     `<strong>${c.pts.toLocaleString()}</strong> to beat</div>` +
     `<div class="cl-auth-sub">Pick how to play below and the race starts straight after.</div>`;
@@ -50657,7 +51122,7 @@ function maybeLinkChallenge(tries){
   if(!clPending || !user) return;
   tries = tries || 0;
   if(!document.getElementById('hub-screen')?.classList.contains('active')) return;
-  if(document.querySelector('.fb-overlay.show')){
+  if(document.querySelector('.fb-overlay.show') || (typeof tutOn === 'function' && tutOn())){   // v80 — 🎓 or the tour (§ 45)
     if(tries < 24) setTimeout(() => maybeLinkChallenge(tries + 1), 500);
     return;
   }
@@ -50691,11 +51156,11 @@ function openClOverlay(){
     (how ? `<div class="cl-how">${esc(how)}</div>` : '') +
     (mods ? `<div class="cl-note">🌀 Played under ${esc(mods)} — you race under the same rules.</div>` : '') +
     (locked ? `<div class="cl-note">🔓 This mission is normally locked until CLEARANCE ${missionClearance(c.gid)}. The challenge gets you in for this race.</div>` : '') +
-    `<div class="cl-note dim">Their pace runs beside yours on the HUD — ▲ means you are ahead.` +
+    `<div class="cl-note dim">${c.trail ? 'Their ghost plays on your board, and their pace runs' : 'Their pace runs'} beside yours on the HUD — ▲ means you are ahead.` +
       (own ? ' Racing your own link pays no takedown bonus.' : '') + `</div>` +
     `<div class="cl-btns">` +
       `<button class="btn btn-secondary" id="cl-later" type="button">NOT NOW</button>` +
-      `<button class="btn btn-primary" id="cl-go" type="button">⚔️ ACCEPT &amp; RACE</button>` +
+      `<button class="btn btn-primary" id="cl-go" type="button">👻 ACCEPT &amp; RACE</button>` +
     `</div>`;
   document.getElementById('cl-go').onclick = () => clAccept();
   document.getElementById('cl-later').onclick = () => clDismiss();
@@ -50718,7 +51183,7 @@ function clAccept(){
 function clDismiss(){
   clForget();
   closeOverlay('cl-overlay');
-  toast('⚔️ Challenge set aside — open the link again any time to race it.', 3000);
+  toast('👻 Ghost set aside — open the link again any time to race it.', 3000);
 }
 
 try{
@@ -51691,7 +52156,7 @@ function labIsEmpty(d){
   return !(d.cells || []).some(v => v);
 }
 function labUrl(d){
-  const base = document.querySelector('link[rel="canonical"]')?.href || location.href.replace(/[?#].*$/, '');
+  const base = piShareBase();
   return base + (base.includes('?') ? '&' : '?') + 'lab=' + labEncode(d);
 }
 // The key a design's best is kept under. A wall keeps v53's.
@@ -51827,6 +52292,8 @@ function labFinish(res){
   if(vsResultTap === labTap) vsResultTap = null;
   onQuitGame = null;
   if(!run) return;
+  // 📊 § 34: a lab run has no results card, so it is counted here. res === null is a quit.
+  try{ if(res && typeof playCount === 'function') playCount('lab'); }catch(e){}
   labGid = run.gid;
   const before = labBestOf(run.key);
   if(res && res.pts > before) labSetBest(run.key, res.pts);
@@ -52375,7 +52842,7 @@ function maybeLabInvite(tries){
   if(!labPending || !user) return;
   tries = tries || 0;
   if(!document.getElementById('hub-screen')?.classList.contains('active')) return;
-  if(document.querySelector('.fb-overlay.show')){
+  if(document.querySelector('.fb-overlay.show') || (typeof tutOn === 'function' && tutOn())){   // v80 — 🎓 or the tour (§ 45)
     if(tries < 30) setTimeout(() => maybeLabInvite(tries + 1), 600);
     return;
   }
@@ -54531,7 +54998,7 @@ async function clipProbe(){
   return clipCodec;
 }
 function clipHost(){
-  const href = document.querySelector('link[rel="canonical"]')?.href || location.href;
+  const href = piShareBase();
   try{ const u = new URL(href); return (u.host + u.pathname).replace(/\/+$/, ''); }catch(e){ return 'Point Invaders'; }
 }
 
@@ -54808,8 +55275,8 @@ async function saveClip(){
     const file = new File([blob], name, { type });
     if(navigator.canShare({ files: [file] })){
       const run = (typeof clLastRun === 'object' && clLastRun) ? clLastRun : null;
-      const text = run ? `⚔️ Beat my ${run.pts.toLocaleString()} in ${META[run.gid].name} on Point Invaders: ${clUrl(run)}`
-                       : `👾 ${META[d.gid].name} on Point Invaders — play free: ${document.querySelector('link[rel="canonical"]')?.href || location.href}`;
+      const text = run ? `👻 Beat my ghost — ${run.pts.toLocaleString()} in ${META[run.gid].name} on Point Invaders: ${clUrl(run)}`
+                       : `👾 ${META[d.gid].name} on Point Invaders — play free: ${piShareBase()}`;
       try{ await navigator.share({ files: [file], title: 'Point Invaders', text }); snd('coin'); return; }
       catch(e){ if(e && e.name === 'AbortError') return; }
     }
@@ -55199,6 +55666,7 @@ async function gCallsignGo(){
     gCloseCallsign();
     csUid = null;
     authPending = false;
+    tutFresh = uid;                              // v80 — 🎓 a new Google account: the tour's start signal (§ 45)
     await loadUser(uid);
     try{ statsEvent('_new_g'); }catch(e){}
     toast(`🔒 Welcome to the grid, ${name} — your progress is saved to Google.`, 4200);
@@ -55235,8 +55703,23 @@ async function gSwitchAccounts(e){
   authPending = true;
   try{
     if(typeof mpLeaveRoom === 'function') await mpLeaveRoom();
-    try{ if(db) await withTimeout(db.ref('players/' + old.uid).remove(), NET_WAIT); }catch(x){ console.warn('Guest purge before switch failed:', x); }
+    // 🧹 § 33: the same standard as Exit (purgeGuestAccount). Tell the other tabs, take the pledge back,
+    // and remove the record FIRST — if that fails, the identity is the only thing that can ever remove
+    // it, so nothing is deleted and nothing is switched.
+    try{ if(typeof gcLeave === 'function') await gcLeave(old.uid); }catch(x){ console.warn('Guest cleanup hand-off failed:', x); }
+    let gone = true;
+    try{ if(db) await withTimeout(db.ref('players/' + old.uid).remove(), NET_WAIT); }
+    catch(x){ gone = false; console.warn('Guest purge before switch failed:', x); }
+    if(!gone){
+      try{ if(typeof gcStay === 'function') gcStay(old.uid); }catch(x){}
+      authPending = false;
+      toast('⚠️ This guest profile could not be deleted, so nothing was switched — try again in a moment.', 4600);
+      return false;
+    }
     try{ await old.delete(); }catch(x){ try{ await auth.signOut(); }catch(y){} }
+    // The mirror is a login and the banked runs carry no uid: left behind, they would open the guest
+    // offline and replay its runs into the Google account.
+    forgetLocalProfile();
     if(cred) await auth.signInWithCredential(cred);
     else await auth.signInWithPopup(gProvider());
     try{ statsEvent('_login_g'); }catch(x){}
@@ -59854,6 +60337,8 @@ function followCam(w, p, o, dt){
   w.cam.fov = o.fov || 52;
   w.goal.eye = w.cam.eye; w.goal.target = w.cam.target; w.goal.fov = w.cam.fov;
   w.up = [0, 1, 0];
+  // v73 hook — port to the v56 OW sources: the companion follows whatever this camera follows (§ 38).
+  try{ if(typeof cmpAim === 'function') cmpAim(p[0], p[1], p[2]); }catch(e){}
 }
 // A chase camera behind a heading (yaw: 0 = −Z), eased in the target's frame.
 function chaseCam(w, p, yaw, o, dt){
@@ -59870,6 +60355,8 @@ function chaseCam(w, p, yaw, o, dt){
   w.cam.fov = o.fov || 60;
   w.goal.eye = w.cam.eye; w.goal.target = w.cam.target; w.goal.fov = w.cam.fov;
   w.up = [0, 1, 0];
+  // v73 hook — port to the v56 OW sources: the companion follows whatever this camera follows (§ 38).
+  try{ if(typeof cmpAim === 'function') cmpAim(p[0], p[1], p[2]); }catch(e){}
 }
 // Screen point (CSS px in the board) → the ground plane y = gy, using the
 // HUD's own camera (call after hud.begin()). Null if the ray misses.
@@ -66619,8 +67106,11 @@ P.ow.battlebots = function(){
   // you" in the arcade — unless it sits within 40° of the defenders' red
   // (Crimson, Amber, Pumpkin, Pink), where the two armies would be one colour
   // on a dark field. Those wear the friendly cyan the radar marks your units in.
-  const armyHue = hueOf(colour);
-  const army = armyHue > 40 && armyHue < 320 ? colour : '#00f5ff';
+  // v78 hook — port to the v56 OW sources: the units wear the crew's colour while you are in one (§ 43).
+  // The red-hue guard is unchanged — it now judges the colour the units will actually wear.
+  const unitCol = (typeof bbUnitColor === 'function') ? bbUnitColor() : colour;
+  const armyHue = hueOf(unitCol);
+  const army = armyHue > 40 && armyHue < 320 ? unitCol : '#00f5ff';
   const diff = getDifficultyModifier();
   setControlHint('LEFT: DRIVE · TAP A CARD, THEN THE GROUND: DEPLOY · ⚡ / LB: SPECIAL', 'WASD: DRIVE · 1 / 2 / 3 or Q/E: PICK A UNIT · CLICK THE GROUND: DEPLOY IT THERE · SPACE: DEPLOY AHEAD · V: SPECIAL');
 
@@ -67963,3 +68453,4685 @@ addEventListener('popstate', e => {
   addEventListener('resize', soon);
   soon();
 })();
+
+// ═════════════════════════════════════════════════
+//  § 33 · v68 — 🧹 GUEST CLEANUP · off the grid when the tab closes,
+//                                   back from this browser when you return
+// ═════════════════════════════════════════════════
+// A guest who closed the tab without pressing 🚪 Exit used to stay in the
+// database for good, and since v66 every one of them is a Guest_XXXXX row on
+// ALL PLAYERS. The owner's decision: when a guest's connection ends, their
+// players/<uid> record is DELETED; when they come back in the same browser it
+// is RESTORED from the copy this browser keeps (pi_profile_v1, "the mirror").
+//
+// The server cannot tell a closed tab from a reload, a locked phone, a wifi
+// blip or the other of two tabs — each fires the same delete — so the restore
+// is the HOT path, not an edge case. Four rules hold the section together:
+//
+//  1. THE PLEDGE. onDisconnect().remove() is queued only by a live anonymous
+//     session, only once the record is known to be whole, and again on every
+//     new connection (a pledge that fired is used up). It belongs to the
+//     connection that made it, so every tab makes and cancels its own.
+//  2. THE RECORD COMES BACK IN TWO STAGES. Stage 1 is ONE set() of the keys the
+//     client has always written there (the guest seed, highScores, recordRun's
+//     batch) plus lastScoreAt — the write the owner's rule (a) admits. Stage 2
+//     is every other key as its OWN update(), each allowed to fail: the rules
+//     may enumerate keys, and one unnamed key in a batch refuses the batch.
+//     Stage 2 sends every key on `user`, so a key a later section adds is
+//     restored without this section hearing about it.
+//  3. NOTHING WRITES TO A RECORD THAT IS NOT WHOLE. A child write under a
+//     deleted node leaves a nameless stub. saveProfilePatch() keeps a guest's
+//     write in the mirror while the record is unverified (gcHold); pushRun()
+//     waits for the restore and re-checks what it read — it used to read a
+//     missing node as zero and reset the totals; a stub found anyway is
+//     removed before the set(), so rule (a) can stay keyed on "missing".
+//  4. A BLANK PROFILE NEVER OVERWRITES A COPY THAT HAS PROGRESS. Tabs of one
+//     guest share one mirror, so writing it is a three-way merge (gcCache):
+//     what this tab changed stands, what another tab changed since is kept,
+//     and what only ever grows takes the larger. totalPoints is NOT in that
+//     last list, tempting as it is: PTS → CR spends it.
+//
+// In this browser (nothing new on the server):
+//   pi_profile_v1  { uid, at, rev, by, data }   rev/by: which tab wrote last
+//   pi_pending_v1  a banked run carries inc:1 while its points are still inside
+//                  the mirror's totals; a restore publishes the totals WITHOUT
+//                  those and lets the replay add them — never counted twice
+//   pi_gc_gone     { uid, at }   Exit's tombstone: no tab may rebuild this uid
+//   pi_gc_up       uid           this guest was saved to an account here
+//   pi_gc_orphan   { at, data }  a guest copy whose sign-in no longer exists
+//   pi_gc_no       { key: until } keys the rules refused, not re-sent for 12 h
+//
+// ⚠️ Untouched, exactly as Exit never touched them: daily/<day>/<uid>
+//    (write-once), chat lines, lab items, likes and flags.
+// ⚠️ A refused stage 1 loses nothing: play goes on from the mirror in offline
+//    mode, runs bank locally, ONE toast, and the next load tries again.
+// ⚠️ An upgrade keeps the uid, so the pledge is cancelled BEFORE the link —
+//    and upgradeGoogle() may not await anything in front of its popup.
+// ⚠️ gcFreshGuest is the file's only honest "a brand-new guest was just
+//    created": a returning guest presses the same button with the same uid.
+
+var gcOn = false, gcUid = null, gcWhole = false, gcBusy = null, gcLoading = false;
+var gcRefusedLatch = false, gcToasted = false, gcDirty = null, gcSeededAt = 0, gcUpgrading = false;
+var gcSeen = 0, gcBase = null, gcFreshGuest = null, gcPledgeLost = false, gcAir = null;
+var gcWatchRef = null, gcWatchFn = null, gcWatchT = 0, gcChan = null, gcHeard = {};
+var gcTab = Math.random().toString(36).slice(2, 10);
+
+var GC_GONE = 'pi_gc_gone', GC_UP = 'pi_gc_up', GC_ORPHAN = 'pi_gc_orphan', GC_NO = 'pi_gc_no', GC_MSG = 'pi_gc_msg';
+var GC_NUM = ['gamesPlayed', 'xp', 'level'];                               // plain numbers that only rise
+var GC_MAP = ['highScores', 'best', 'runs', 'mbest', 'campaign', 'heat'];  // key → number, each of which only rises
+var GC_SESSION = { uid: 1, isLocal: 1, isGuest: 1 };                        // facts about the session: never merged, never sent
+var GC_SCORE = { username: 1, totalPoints: 1, gamesPlayed: 1 };             // only stage 1 and pushRun() ever write these
+
+// ── SMALL THINGS ──────────────────────────────────────────────────────────
+function gcRec(){ return lsGet(LS_PROFILE, null); }
+// Firebase THROWS on an undefined anywhere in a value, before any .catch() can see it.
+function gcClean(v){ return JSON.parse(JSON.stringify(v === undefined ? null : v)); }
+// "Is there anything in it?" Firebase drops nulls and empty objects, and a default such as
+// { day:null, pts:0 } is not worth a write of its own.
+function gcFilled(v){
+  if(v === null || v === undefined || v === '' || v === 0 || v === false) return false;
+  if(typeof v !== 'object') return true;
+  for(const k in v) if(gcFilled(v[k])) return true;
+  return false;
+}
+function gcHasProgress(d){
+  return !!d && ((+d.totalPoints || 0) > 0 || (+d.gamesPlayed || 0) > 0 || (+d.xp || 0) > 0 || (+d.credits || 0) > 0 ||
+                 gcFilled(d.owned) || gcFilled(d.achievements) || gcFilled(d.campaign));
+}
+function gcGone(uid){ const g = lsGet(GC_GONE, null); return !!(g && g.uid === uid); }
+function gcRefused(){ return gcRefusedLatch; }
+function gcLinked(){ try{ return !!netConnected; }catch(e){ return true; } }
+// A LIVE Firebase anonymous session this page may look after. Never a local session.
+function gcIsGuestSession(){
+  return !!(user && !user.isLocal && db && auth && auth.currentUser && auth.currentUser.isAnonymous && auth.currentUser.uid === user.uid);
+}
+// The durable facts, read again every time. Exit clears both, so a tab that wakes late — after any
+// message it missed — still cannot rebuild a record somebody deleted on purpose.
+function gcMay(uid){
+  const rec = gcRec();
+  return !!(user && user.uid === uid && auth && auth.currentUser && auth.currentUser.uid === uid &&
+            auth.currentUser.isAnonymous && rec && rec.uid === uid && !gcGone(uid));
+}
+function gcNo(k, set){
+  const m = lsGet(GC_NO, {}) || {}, now = Date.now();
+  if(set){ m[k] = now + 12 * 3600 * 1000; lsSet(GC_NO, m); return true; }
+  return (+m[k] || 0) > now;
+}
+
+// ── THE MIRROR: one copy, every tab ───────────────────────────────────────
+// Fold `src` — what ANOTHER tab left in the mirror — into `dst`, what this tab holds. `base` is what this
+// tab last wrote or read, per key, as JSON: a key this tab has changed since keeps its own value. With no
+// base (a load), everything that does not simply grow is taken from `src`.
+function gcMergeInto(dst, src, base){
+  if(!dst || !src) return dst;
+  GC_NUM.forEach(k => { if((+src[k] || 0) > (+dst[k] || 0)) dst[k] = +src[k]; });
+  GC_MAP.forEach(k => {
+    const s = src[k];
+    if(!s || typeof s !== 'object') return;
+    const d = (dst[k] && typeof dst[k] === 'object') ? dst[k] : (dst[k] = {});
+    for(const g in s) if((+s[g] || 0) > (+d[g] || 0)) d[g] = +s[g];
+  });
+  if(src.achievements && typeof src.achievements === 'object'){
+    dst.achievements = dst.achievements || {};
+    for(const a in src.achievements) if(!dst.achievements[a]) dst.achievements[a] = src.achievements[a];
+  }
+  if(src.owned && typeof src.owned === 'object'){
+    dst.owned = dst.owned || {};
+    for(const c in src.owned){
+      if(!Array.isArray(src.owned[c])) continue;
+      const have = Array.isArray(dst.owned[c]) ? dst.owned[c] : (dst.owned[c] = []);
+      src.owned[c].forEach(id => { if(have.indexOf(id) < 0) have.push(id); });
+    }
+  }
+  for(const k in src){
+    if(GC_SESSION[k] || GC_NUM.indexOf(k) >= 0 || GC_MAP.indexOf(k) >= 0 || k === 'achievements' || k === 'owned') continue;
+    if(base && JSON.stringify(dst[k] === undefined ? null : dst[k]) !== (base[k] === undefined ? 'null' : base[k])) continue;
+    dst[k] = gcClean(src[k]);
+  }
+  return dst;
+}
+function gcSnap(u){ const b = {}; for(const k in u) b[k] = JSON.stringify(u[k] === undefined ? null : u[k]); return b; }
+// `u` was just rebuilt from the SERVER's copy (the end of a flush); `held` is what this device knew. The
+// server's totals stand — but a key it never took, and anything that only grows, is carried over.
+function gcKeep(u, held){
+  if(!gcOn || !u || !held || u.uid !== gcUid) return;
+  for(const k in held){
+    if(GC_SESSION[k] || GC_SCORE[k]) continue;
+    if(!gcFilled(u[k]) && gcFilled(held[k])) u[k] = gcClean(held[k]);
+  }
+  GC_MAP.forEach(k => {
+    const s = held[k];
+    if(!s || typeof s !== 'object') return;
+    const d = (u[k] && typeof u[k] === 'object') ? u[k] : (u[k] = {});
+    for(const g in s) if((+s[g] || 0) > (+d[g] || 0)) d[g] = +s[g];
+  });
+}
+
+// cacheProfile()'s other half, for a guest this page is looking after. Returns true when it wrote.
+function gcCache(u){
+  if(!gcOn || !u || u.uid !== gcUid) return false;
+  const rec = gcRec();
+  const mine = !!(rec && rec.uid === u.uid && rec.data);
+  if(mine && (rec.rev | 0) !== gcSeen && rec.by !== gcTab) gcMergeInto(u, rec.data, gcBase);
+  gcSeen = (mine ? (rec.rev | 0) : 0) + 1;
+  let data = u;
+  if(gcAir){
+    // a score is on its way to the server (gcPreScore): the tab may close before the answer does
+    if(Date.now() - gcAir.at > 8000) gcAir = null;
+    else data = Object.assign({}, u, gcAir.v);
+  }
+  lsSet(LS_PROFILE, { uid: u.uid, at: Date.now(), rev: gcSeen, by: gcTab, data });
+  gcBase = gcSnap(u);
+  return true;
+}
+
+// The banked runs whose points are still counted inside this browser's totals.
+function gcIncluded(){
+  let sum = 0, n = 0;
+  pendingRuns().forEach(r => { if(r && r.inc){ sum += (+r.award || 0); n++; } });
+  return { sum, n };
+}
+// The totals in memory were just replaced by a figure the SERVER worked out, so no banked run is inside
+// them any more.
+function gcQueueSettled(){
+  gcAir = null;
+  const q = pendingRuns();
+  let hit = false;
+  q.forEach(r => { if(r && r.inc){ delete r.inc; hit = true; } });
+  if(hit) lsSet(LS_QUEUE, q);
+}
+
+// ── THE PLEDGE ────────────────────────────────────────────────────────────
+function gcPledge(uid){
+  gcPledgeLost = false;
+  try{
+    db.ref('players/' + uid).onDisconnect().remove()
+      // Not pledged means this guest would stay on the grid after closing, as before v68 — worth another
+      // try the next time the tab wakes (gcOnVisible), not worth holding the session up for.
+      .catch(e => { gcPledgeLost = true; console.warn('Guest cleanup pledge not accepted (rules?):', e && e.code); });
+  }catch(e){ gcPledgeLost = true; console.warn('Guest cleanup pledge failed:', e); }
+}
+// cancel() on players/<uid> also cancels anything queued on its children — nothing here queues any.
+function gcUnpledge(uid){
+  try{ return db.ref('players/' + uid).onDisconnect().cancel().catch(() => {}); }
+  catch(e){ return Promise.resolve(); }
+}
+
+// ── PUTTING THE RECORD BACK ───────────────────────────────────────────────
+// Stage 1 — the one write the owner's rule (a) has to admit. Resolves with the keys that landed.
+async function gcPublish(u, anon, stub, seed){
+  const ref = db.ref('players/' + u.uid), SV = firebase.database.ServerValue.TIMESTAMP;
+  const inc = gcIncluded();
+  const min = {
+    username: String(u.username || guestTag(u.uid)),
+    totalPoints: Math.max(0, (parseInt(u.totalPoints) || 0) - inc.sum),
+    gamesPlayed: Math.max(0, (parseInt(u.gamesPlayed) || 0) - inc.n),
+    credits: Math.max(0, parseInt(u.credits) || 0),
+    isGuest: !!anon,
+    createdAt: SV
+  };
+  // A stub is in the way: clear it, so what follows is the creation of a record that is not there.
+  if(stub) await withTimeout(ref.remove(), NET_WAIT).catch(e => { if(e && e.isOffline) throw e; });
+  // A profile with nothing in it gets today's guest seed, key for key: no rule has to change for a tourist.
+  if(seed || !gcHasProgress(u)){ await withTimeout(ref.set(min), NET_WAIT); gcSeededAt = 0; return min; }
+  min.lastScoreAt = SV;
+  const full = Object.assign({}, min);
+  if(gcFilled(u.highScores)) full.highScores = gcClean(u.highScores);
+  if(gcFilled(u.history)) full.history = gcClean(u.history);
+  if(u.weekly && u.weekly.season) full.weekly = { season: u.weekly.season, pts: +u.weekly.pts || 0 };   // EXACTLY { season, pts }
+  if(gcFilled(u.streak)) full.streak = gcClean(u.streak);
+  if(gcFilled(u.achievements)) full.achievements = gcClean(u.achievements);
+  let sent = full;
+  if(gcNo('stage1')){ sent = min; await withTimeout(ref.set(min), NET_WAIT); }
+  else{
+    try{ await withTimeout(ref.set(full), NET_WAIT); }
+    catch(e){
+      if(e && e.isOffline) throw e;
+      // The long form carries something the rules will not take in a create. The seed-sized form is tried
+      // once and remembered, so the hot path does not ask twice on every reload.
+      console.warn('Guest restore: full record not stored (rules?):', e && e.code);
+      await withTimeout(ref.set(min), NET_WAIT);
+      gcNo('stage1', true);
+      sent = min;
+    }
+  }
+  gcSeededAt = Date.now();
+  return sent;
+}
+
+// Stage 2 — everything else, one key per write. A refusal costs that key on the server and nothing else.
+function gcStage2(u, sent){
+  if(!db || !u) return;
+  const ref = db.ref('players/' + u.uid), data = gcClean(u);
+  // v73 — 🛸 `owned` and `equipped` go up whole here; the companion's two children may not be named by the
+  // rules yet, so they are taken out and sent by their own writer (§ 38) — one key, one write.
+  try{ if(typeof cmpStrip === 'function') cmpStrip(data); }catch(e){}
+  Object.keys(data).forEach(k => {
+    if(GC_SESSION[k] || GC_SCORE[k] || k === 'days' || k === 'createdAt' || k === 'lastScoreAt' || (sent && k in sent)) return;
+    if(!gcFilled(data[k]) || gcNo('k:' + k)) return;
+    ref.update({ [k]: data[k] }).catch(e => {
+      if(e && e.code === 'PERMISSION_DENIED') gcNo('k:' + k, true);
+      console.warn('Guest restore: ' + k + ' not stored (rules?):', e && e.code);
+    });
+  });
+}
+
+// The writes saveProfilePatch() kept back while the record was not whole (gcHold), now that it is.
+function gcTopUp(keys){
+  if(!gcOn || !gcWhole || !user || !db) return;
+  const ref = db.ref('players/' + user.uid), data = gcClean(user);
+  Object.keys(keys).forEach(k => {
+    if(GC_SESSION[k] || GC_SCORE[k] || data[k] === undefined || data[k] === null) return;
+    ref.update({ [k]: data[k] }).catch(e => console.warn('Profile write failed — kept in the local mirror:', e && e.code));
+  });
+}
+
+// The rules said no. Nothing is lost: the mirror is the profile, play goes on in offline mode (runs bank
+// locally), and the next load tries again. One toast a page, however many writes ask.
+function gcRefuse(e, uid){
+  gcRefusedLatch = true;
+  gcWhole = false;
+  console.warn("Guest profile could not be put back on the grid (rules?) — playing from this browser's copy:", e && e.code);
+  if(uid && gcIsGuestSession()) gcPledge(uid);        // nothing whole to delete, but a stub must not outlive the tab either
+  setOfflineMode(true);
+  if(!gcToasted){
+    gcToasted = true;
+    toast("📴 Your profile could not be put back on the grid — playing from this browser's copy. It tries again next time you open the arcade.", 6500);
+  }
+}
+
+// Is the record there and whole? If not, rebuild it — before anything else is written. One at a time:
+// the watcher, a reconnect, a waking tab and a finished round can all ask in the same second.
+function gcEnsure(why){
+  if(gcBusy) return gcBusy;
+  gcBusy = gcEnsureNow(why).then(
+    ok => { gcBusy = null; return ok; },
+    e => { gcBusy = null; console.warn('Guest cleanup check failed (' + why + '):', e); return false; });
+  return gcBusy;
+}
+async function gcEnsureNow(why){
+  if(gcRefusedLatch || gcLoading || !gcOn || !gcIsGuestSession()) return gcWhole;
+  const uid = user.uid, ref = db.ref('players/' + uid);
+  let snap;
+  try{ snap = await withTimeout(ref.once('value'), NET_WAIT); }
+  catch(e){ gcWhole = false; return false; }          // no answer: the next connection asks again
+  if(!gcOn || !gcMay(uid)) return false;
+  const v = snap.val();
+  if(!(v && v.username)){
+    // Gone — or the nameless stub a stray child write left. Fold in whatever another tab banked since
+    // (cacheProfile → gcCache), then rebuild from the result.
+    gcWhole = false;
+    try{ cacheProfile(user); }catch(e){}
+    let sent;
+    try{ sent = await gcPublish(user, true, !!v, false); }
+    catch(e){
+      if(e && e.isOffline) return false;
+      if(gcOn && gcMay(uid)) gcRefuse(e, uid);
+      return false;
+    }
+    if(!gcOn || !gcMay(uid)){
+      // Exited (or saved to an account) while that write was in the air: take it back.
+      if(gcGone(uid)) db.ref('players/' + uid).remove().catch(() => {});
+      return false;
+    }
+    gcStage2(user, sent);
+    gcDirty = null;                                    // stage 2 just sent everything
+  }
+  gcPledge(uid);
+  gcWhole = true;
+  if(gcDirty){ const d = gcDirty; gcDirty = null; gcTopUp(d); }
+  return true;
+}
+
+// ── WHO WRITES WHEN ───────────────────────────────────────────────────────
+// saveProfilePatch(): true = keep this one in the mirror for now. A child write under a deleted record is a
+// stub, and one handed to the SDK while the socket is down is sent BEFORE .info/connected turns true.
+function gcHold(patch){
+  if(!gcOn){
+    // An anonymous session this page is NOT looking after is on its way out (Exit, the account switch, a
+    // stand-down in another tab's favour): its record is being deleted on purpose, and a child write that
+    // lands a moment later — a timer that was already running — would leave a stub nothing ever removes.
+    return !!(user && !user.isLocal && auth && auth.currentUser && auth.currentUser.isAnonymous && auth.currentUser.uid === user.uid);
+  }
+  if(gcWhole && gcLinked()) return false;
+  gcDirty = gcDirty || {};
+  for(const k in (patch || {})) gcDirty[String(k).split('/')[0]] = 1;
+  return true;
+}
+// pushRun(): null for anyone who is not a guest here. Otherwise a promise that settles once the record is
+// whole AND clear of the re-seed's own lastScoreAt — a score inside 2.5 s of it is refused by the rate
+// rule, and a refused score write flips the whole client offline.
+function gcBeforeScore(){
+  if(!gcOn || !gcIsGuestSession()) return null;
+  return (gcWhole ? Promise.resolve(true) : gcEnsure('score')).then(ok => {
+    if(!ok){ const e = new Error('guest record is not on the grid'); e.code = 'app/guest-parked'; throw e; }
+    const wait = 2700 - (Date.now() - gcSeededAt);
+    return wait > 0 ? new Promise(r => setTimeout(r, wait)) : true;
+  });
+}
+// pushRun() is about to send these totals. The mirror gets them NOW, without touching `user`: gcCache()
+// lays them over whatever it writes until the write is answered (gcQueueSettled) — or for a few seconds
+// if it never is, by which time the banking path has added the same award to the old totals itself.
+function gcPreScore(points, games, highScores){
+  if(!gcOn || !user || user.uid !== gcUid) return;
+  gcAir = { at: Date.now(), v: { totalPoints: points, gamesPlayed: games, highScores } };
+  cacheProfile(user);
+}
+// pushRun() just read the record: is it the gap this section exists for?
+function gcScoreGap(snapshot){
+  if(!gcOn || !gcIsGuestSession()) return false;
+  const v = snapshot && snapshot.val();
+  return !(v && v.username);
+}
+
+// ── ONE GUEST, SEVERAL TABS ───────────────────────────────────────────────
+// The name is the first thing to go when a record is deleted and the last thing a stub ever has.
+function gcWatch(uid){
+  gcUnwatch();
+  try{
+    gcWatchRef = db.ref('players/' + uid + '/username');
+    gcWatchFn = gcWatchRef.on('value', s => {
+      if(s.exists() || !gcOn || gcUid !== uid || gcLoading) return;
+      gcWhole = false;                                 // nothing more is written until it is back
+      clearTimeout(gcWatchT);
+      gcWatchT = setTimeout(() => { if(gcOn && !gcWhole && gcLinked()) gcEnsure('watch'); }, 300 + Math.random() * 300);
+    }, () => {});
+  }catch(e){ console.warn('Guest cleanup watcher failed:', e); }
+}
+function gcUnwatch(){
+  clearTimeout(gcWatchT);
+  try{ if(gcWatchRef && gcWatchFn) gcWatchRef.off('value', gcWatchFn); }catch(e){}
+  gcWatchRef = gcWatchFn = null;
+}
+function gcAdopt(uid){
+  gcOn = true; gcUid = uid;
+  const rec = gcRec();
+  gcSeen = (rec && rec.uid === uid) ? (rec.rev | 0) : 0;
+  gcBase = user ? gcSnap(user) : null;
+  gcWatch(uid);
+}
+function gcStop(){ gcOn = false; gcWhole = false; gcUid = null; gcDirty = null; gcUnwatch(); }
+
+function gcSay(m){
+  m.n = gcTab + ':' + Date.now() + ':' + Math.random().toString(36).slice(2, 6);
+  try{ if(gcChan) gcChan.postMessage(m); }catch(e){}
+  try{ localStorage.setItem(GC_MSG, JSON.stringify(m)); }catch(e){}     // the fallback: a storage event reaches every OTHER tab
+}
+function gcHear(m){
+  if(!m || !m.t || !m.n || gcHeard[m.n]) return;
+  gcHeard[m.n] = 1;
+  if(String(m.n).indexOf(gcTab + ':') === 0) return;
+  const mine = !!(user && user.uid === m.uid) || gcUid === m.uid;
+  if(!mine) return;
+  if(m.t === 'exit') gcStandDown();
+  if(m.t === 'up'){
+    // Saved to an account in another tab: same uid, a guest no longer. The pledge THIS tab made is this
+    // tab's to cancel — the other tab's cancel() never touched it.
+    gcUnpledge(m.uid);
+    gcStop();
+    if(user && user.uid === m.uid) user.isGuest = false;
+  }
+}
+// Another tab pressed Exit. This one must not rebuild the record, and has no profile left to show.
+function gcStandDown(){
+  const was = gcOn || !!(user && !user.isLocal && user.isGuest);
+  gcStop();
+  if(!was) return;
+  let last = 0;
+  try{ last = +sessionStorage.getItem('pi_gc_sd') || 0; }catch(e){}
+  if(Date.now() - last < 15000) return;                // never a reload loop
+  try{ sessionStorage.setItem('pi_gc_sd', String(Date.now())); }catch(e){}
+  toast('🚪 This guest profile was exited in another tab.', 2500);
+  setTimeout(() => location.reload(), 900);
+}
+
+// ── THE DOORS: load, the guest button, Exit, Save Account ─────────────────
+// loadUser(), right after it read the record and BEFORE `user` exists: what to do about what it found.
+function gcOnLoad(uid, data, existed){
+  const cu = auth && auth.currentUser;
+  if(!cu || cu.uid !== uid) return null;
+  const anon = !!cu.isAnonymous, rec = gcRec();
+  const mine = !!(rec && rec.uid === uid && rec.data);
+  const whole = !!(existed && data && data.username);
+  if(anon && gcGone(uid)) return { stop: true };
+  // gcLoading keeps the watcher and the reconnect hook out of the way until gcAfterLoad() has finished. If
+  // loadUser() never gets that far (it threw, or left for the callsign dialog), it must not stay set.
+  setTimeout(() => { gcLoading = false; }, 20000);
+  if(anon){
+    gcLoading = true;
+    if(whole){
+      // Another tab is keeping it alive, or it predates v68. The server's copy is the base; a mirror this
+      // code wrote is at least as new, so what it holds is folded in (and sent up afterwards).
+      const fold = mine && (rec.rev | 0) > 0;
+      return { anon, uid, fold, data: fold ? gcMergeInto(data, rec.data, null) : null };
+    }
+    if(mine) return { anon, uid, publish: true, stub: !!existed, data: gcClean(rec.data) };
+    return { anon, uid, publish: true, stub: !!existed, seed: true };
+  }
+  // An account. The one case this section owns: it was a guest in THIS browser, and a guest-era tab that
+  // slept through the upgrade let its pledge fire afterwards. The trade-off is the owner's rule (a2).
+  if(!whole && mine && lsGet(GC_UP, null) === uid && gcHasProgress(rec.data)){
+    gcLoading = true;
+    return { anon: false, uid, publish: true, stub: !!existed, data: gcClean(rec.data) };
+  }
+  if(whole && data.isGuest === true) return { anon: false, uid, heal: true };
+  return null;
+}
+// …and once `user` exists, before the hub writes a thing: put the record back, then make the pledge.
+async function gcAfterLoad(plan){
+  if(!plan || plan.stop) return;
+  const uid = plan.uid;
+  try{
+    if(plan.anon) gcAdopt(uid);
+    if(plan.seed) user.username = guestTag(uid);
+    if(plan.publish){
+      let sent;
+      try{ sent = await gcPublish(user, plan.anon, plan.stub, plan.seed); }
+      catch(e){
+        if(e && e.isOffline){ setOfflineMode(true); return; }     // a timeout means what it always meant here
+        gcRefuse(e, uid);
+        return;
+      }
+      if(!plan.seed) gcStage2(user, sent);
+    }else if(plan.heal){
+      // The link went through and the write after it did not: the record still says "guest".
+      db.ref('players/' + uid).update({ isGuest: false })
+        .catch(e => console.warn('Guest flag not cleared (rules?):', e && e.code));
+    }
+    if(plan.anon){
+      gcPledge(uid);
+      gcWhole = true;
+      if(plan.fold) gcStage2(user, null);
+      else if(!plan.publish) gcQueueSettled();           // `user` is the server's copy: no banked run is inside it
+    }
+  }finally{ gcLoading = false; }
+}
+
+// "Play as Guest", once the anonymous sign-in has answered. signInAnonymously() hands back the EXISTING
+// anonymous user when there is one, so a returning guest lands here with their old uid and no record.
+//   'back'   a copy with progress: skip the blank seed, loadUser() rebuilds from the mirror
+//   'known'  this browser has met this guest, but there is nothing to restore
+//   'new'    nobody was here before
+function gcGuestButton(uid, snap){
+  const g = lsGet(GC_GONE, null);
+  if(g && g.uid !== uid){ try{ localStorage.removeItem(GC_GONE); }catch(e){} }
+  let rec = gcRec();
+  if(!(rec && rec.uid === uid && rec.data)){
+    const o = lsGet(GC_ORPHAN, null);
+    if(o && o.data && gcHasProgress(o.data) && !(snap && snap.exists())){
+      // The sign-in that copy belonged to is gone, the progress is still this browser's: the new guest
+      // identity takes it over.
+      const data = gcClean(o.data);
+      data.uid = uid; data.username = guestTag(uid); data.isGuest = true;
+      lsSet(LS_PROFILE, { uid, at: Date.now(), data });
+      rec = gcRec();
+    }
+    try{ localStorage.removeItem(GC_ORPHAN); }catch(e){}
+  }
+  if(!(rec && rec.uid === uid && rec.data)) return 'new';
+  return gcHasProgress(rec.data) ? 'back' : 'known';
+}
+
+// Exit and the account switch: this uid is about to be deleted ON PURPOSE. Tell the other tabs first, leave
+// a tombstone they can read however late they wake, and take the pledge back.
+async function gcLeave(uid){
+  lsSet(GC_GONE, { uid, at: Date.now() });
+  gcSay({ t: 'exit', uid });
+  gcStop();
+  if(db && uid && !(user && user.isLocal)) await withTimeout(gcUnpledge(uid), 2500).catch(() => {});
+}
+// …and it could not be deleted after all: this session carries on.
+function gcStay(uid){
+  try{ localStorage.removeItem(GC_GONE); }catch(e){}
+  if(user && user.uid === uid && gcIsGuestSession()){ gcAdopt(uid); gcEnsure('stay'); }
+}
+function gcForget(){
+  // The profile is leaving this device (Exit, "leave it behind", the account switch): whatever happens
+  // next, this page is no longer looking after it.
+  gcStop();
+  try{ [GC_ORPHAN, GC_NO, GC_UP].forEach(k => localStorage.removeItem(k)); }catch(e){}
+}
+
+// Save Account with an email: this path may wait. The record is about to become permanent, so it has to be
+// whole first; then the pledge goes.
+async function gcUpgradeBegin(){
+  if(!gcOn || !user) return;
+  if(!(gcWhole || await gcEnsure('upgrade'))){
+    const e = new Error('offline-timeout'); e.code = 'app/offline'; e.isOffline = true; throw e;
+  }
+  gcUpgrading = true;
+  await withTimeout(gcUnpledge(user.uid), 3000).catch(() => {});
+}
+// Save with Google: NOTHING may be awaited in front of the popup. The cancel is fired, not waited for —
+// operations on one connection stay in order, so it is ahead of anything the link's success writes.
+function gcUpgradeBeginSync(){
+  if(!gcOn || !user) return true;
+  if(!gcWhole || !gcLinked()){ gcEnsure('upgrade'); return false; }
+  gcUpgrading = true;
+  gcUnpledge(user.uid);
+  return true;
+}
+function gcUpgradeEnd(ok){
+  if(!gcUpgrading) return;
+  gcUpgrading = false;
+  if(!user) return;
+  const uid = user.uid;
+  if(ok){
+    gcStop();
+    lsSet(GC_UP, uid);
+    gcSay({ t: 'up', uid });
+  }else if(gcOn && gcIsGuestSession()){
+    gcPledge(uid);                                     // the link failed: still a guest, the pledge stands again
+  }
+}
+
+// ── CONNECTION, VISIBILITY, A SESSION THAT NO LONGER EXISTS ───────────────
+// The connection came (back): whatever was pledged on the old one has fired or died with it.
+function gcOnLink(up){
+  if(!up){ gcWhole = false; return; }
+  if(gcLoading || !user || user.isLocal) return;
+  const cu = auth && auth.currentUser;
+  if(cu && cu.uid === user.uid && !cu.isAnonymous){
+    if(gcOn){ gcUnpledge(user.uid); gcStop(); user.isGuest = false; }   // saved in a tab that could not tell this one
+    return;
+  }
+  // A guest resumed offline never went through loadUser(): this is where it is first looked after.
+  if(!gcOn && gcIsGuestSession() && !gcGone(user.uid)) gcAdopt(user.uid);
+  if(!gcOn) return;
+  gcEnsure('link').then(ok => {
+    // A blip that ended in a banked run left the client "offline" with the socket back. Nothing else
+    // would ever turn that around short of a reload.
+    if(ok && offlineMode && !gcRefusedLatch && navigator.onLine) setOfflineMode(false);
+  });
+}
+function gcOnVisible(){
+  if(document.visibilityState === 'hidden'){
+    // The mirror is all a guest has once the tab is gone: nothing may sit in memory only.
+    try{ if(gcOn && user) cacheProfile(user); }catch(e){}
+    return;
+  }
+  if(!user || user.isLocal) return;
+  const cu = auth && auth.currentUser;
+  if(cu && cu.uid === user.uid && !cu.isAnonymous){
+    if(gcOn){ gcUnpledge(user.uid); gcStop(); user.isGuest = false; }
+    return;
+  }
+  if(gcOn && !gcWhole && !gcRefusedLatch && gcLinked()) gcEnsure('wake');
+  else if(gcOn && gcWhole && gcPledgeLost && gcLinked()) gcPledge(user.uid);
+}
+// Firebase has answered and there is no session — yet this browser holds a guest's copy. Its sign-in is
+// gone (Auth clean-up, cleared IndexedDB), so "Continue Offline as Guest_…" would open a profile nothing
+// can ever sync again. It is parked instead, and the next guest here takes it over (gcGuestButton).
+function gcOnAuth(u){
+  if(u || user || authPending) return;
+  const rec = gcRec();
+  if(!rec || !rec.data || !rec.data.isGuest || rec.data.isLocal || lsGet(LS_LOCAL, 0)) return;
+  if(gcHasProgress(rec.data) && !gcGone(rec.uid)) lsSet(GC_ORPHAN, { at: Date.now(), data: rec.data });
+  try{ localStorage.removeItem(LS_PROFILE); }catch(e){}
+  ['btn-offline-resume', 'offline-resume-note'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.style.display = 'none';
+  });
+}
+
+// ── WIRING ──
+try{
+  if(typeof BroadcastChannel === 'function'){
+    gcChan = new BroadcastChannel('pi_gc');
+    gcChan.onmessage = e => { try{ gcHear(e.data); }catch(x){} };
+  }
+  addEventListener('storage', e => {
+    if(e.key === GC_MSG && e.newValue){ try{ gcHear(JSON.parse(e.newValue)); }catch(x){} }
+  });
+  document.addEventListener('visibilitychange', () => { try{ gcOnVisible(); }catch(e){} });
+  addEventListener('pagehide', () => { try{ if(gcOn && user) cacheProfile(user); }catch(e){} });
+  if(auth) auth.onAuthStateChanged(u => { try{ gcOnAuth(u); }catch(e){ console.warn('Guest copy check failed:', e); } });
+}catch(e){ console.warn('Guest cleanup failed to wire:', e); }
+
+// ═════════════════════════════════════════════════
+//  § 34 · v69 — 📊 THE DOSSIER, PART TWO · time played, runs by mode, streaks
+// ═════════════════════════════════════════════════
+// The dossier could tell you your best run and nothing about how you play: not
+// how long you have spent in rounds, not which modes you actually use, not how
+// your duels go. All three were unanswerable — nothing recorded them. This adds
+// the record and four read-only panels (TIME PLAYED with MOST PLAYED, BY MODE,
+// STREAKS, and a time tile on each mission page). It builds no page of its own
+// and takes nothing from § 23's owner telemetry (statsRoundStart & co.).
+//
+// WHERE THE NUMBERS COME FROM — existing funnels only, nothing per mission:
+//  · TIME is gNow() between the moment a mission build starts and stopGame(),
+//    the one teardown every round of every kind ends in, a quit included. gNow
+//    stops for pause and photo mode; the 3-2-1, the exit animation and the
+//    results card are outside the window. The start has TWO seams, because no
+//    single function is both "every round" and "after the countdown":
+//    runMissionStart() for everything that runs a mission build, and the arena
+//    countdown's go for the three live duels. The mark is taken AFTER the build
+//    has started — a 3D build that throws calls stopGame() from inside its own
+//    start, and a mark opened first would close at zero and lose the fallback
+//    round — and resetGameStage() and enterHub() discard a mark nothing closed.
+//  · A MODE is counted once per finished run, in showResults() right after the
+//    tap fork: the one place every mode's flag is guaranteed to be standing
+//    (the card itself can land after a pad press has already aborted them).
+//    Boss Rush and Endless are known by their results id, so a chain is one
+//    run. Brick Lab has no card and is counted in labFinish(); a duel is
+//    counted in mpShowDuelResult(), the only place that sees win/loss/draw.
+//  · A PARTY TURN counts for nothing: it is somebody else's run on this device.
+//
+// Data — ONE own write, never part of recordRun's batch:
+//   players/<uid>/play = { secs, n, wk:{k,s}, m:{gid:secs}, modes:{mode:n},
+//                          duel:{w,l,d,cur,best} }
+//   pi_play = { uid, v }  the same thing, written first. `user` is replaced by
+//   the server's copy on load and after a flush, and the rules may never have
+//   taken `play` — playState() folds the local copy back in (larger of each)
+//   whenever the object changes hands. One refusal stops the server write for
+//   the session; the page goes on showing the local figures.
+//
+// ⚠️ A later section adds its mode with ONE line — PLAY_MODES.glitch = '…' —
+//    and, if its runs end on a card, one PLAY_HOOKS entry to name them (or to
+//    return false and count them itself with playCount()).
+
+var PLAY_LS = 'pi_play';
+var PLAY_MODES = {
+  grid: '🎮 Grid missions', campaign: '📖 Campaign', daily: '📅 Daily Hack', anomaly: '🛰️ Weekly Anomaly',
+  endless: '♾️ Endless', bossrush: '🔥 Boss Rush', challenge: '⚔️ Challenges', heat: '🌡️ Heat',
+  lab: '🧱 Brick Lab', openworld: '🌐 Open World', arena: '📡 Arena duels'
+};
+// fn(gid, opts) → a PLAY_MODES key (this card is one of mine) · false (not a run to count) · undefined (not mine)
+var PLAY_HOOKS = [];
+var playMark = null, playGid = null, playOwner = null, playSaveT = 0, playDenied = false;
+
+function playBlank(){ return { secs: 0, n: 0, wk: { k: '', s: 0 }, m: {}, modes: {}, duel: { w: 0, l: 0, d: 0, cur: 0, best: 0 } }; }
+function playNorm(p){
+  const b = playBlank();
+  if(!p || typeof p !== 'object') return b;
+  b.secs = +p.secs || 0; b.n = +p.n || 0;
+  if(p.wk && p.wk.k) b.wk = { k: String(p.wk.k), s: +p.wk.s || 0 };
+  for(const g in (p.m || {})) b.m[g] = +p.m[g] || 0;
+  for(const k in (p.modes || {})) b.modes[k] = +p.modes[k] || 0;
+  const d = p.duel || {};
+  ['w', 'l', 'd', 'cur', 'best'].forEach(k => { b.duel[k] = +d[k] || 0; });
+  return b;
+}
+// The larger of each figure. Everything here only ever rises, except the current duel streak — that one
+// follows whichever copy has seen more duels.
+function playMax(a, b){
+  const o = playNorm(a), x = playNorm(b);
+  o.secs = Math.max(o.secs, x.secs); o.n = Math.max(o.n, x.n);
+  if(x.wk.k > o.wk.k) o.wk = x.wk;
+  else if(x.wk.k === o.wk.k) o.wk.s = Math.max(o.wk.s, x.wk.s);
+  for(const g in x.m) o.m[g] = Math.max(o.m[g] || 0, x.m[g]);
+  for(const k in x.modes) o.modes[k] = Math.max(o.modes[k] || 0, x.modes[k]);
+  const games = d => d.w + d.l + d.d;
+  const best = Math.max(o.duel.best, x.duel.best);
+  if(games(x.duel) > games(o.duel)) o.duel = x.duel;
+  o.duel.best = best;
+  return o;
+}
+// The figures for whoever is signed in, reconciled. Called before every read and every change.
+function playState(){
+  if(!user) return playBlank();
+  if(playOwner !== user || !user.play || typeof user.play !== 'object'){
+    const loc = lsGet(PLAY_LS, null);
+    user.play = playMax(user.play, (loc && loc.uid === user.uid) ? loc.v : null);
+    playOwner = user;
+  }
+  return user.play;
+}
+function playSave(){
+  if(!user) return;
+  lsSet(PLAY_LS, { uid: user.uid, v: playState() });          // local first
+  clearTimeout(playSaveT);
+  // ONE write a run, not one a change: a run's time (stopGame) and its count (the result) land within
+  // moments of each other. A native timer on purpose — gLater dies in the very stopGame that got us here.
+  playSaveT = setTimeout(playPush, 1500);
+}
+function playPush(){
+  if(!user) return;
+  try{ cacheProfile(user); }catch(e){}
+  if(!db || offlineMode || isLocalSession() || playDenied) return;
+  // This runs off a timer: by now the profile may have been exited or switched away from. Only the
+  // signed-in owner of `user` writes, and never under somebody else's session.
+  if(!auth || !auth.currentUser || auth.currentUser.uid !== user.uid) return;
+  // § 33: a guest's record is not whole right now — it goes up with the rest once it is.
+  try{ if(typeof gcHold === 'function' && gcHold({ play: 1 })) return; }catch(e){}
+  db.ref('players/' + user.uid + '/play').set(gcClean(playState()))
+    .catch(e => { playDenied = true; console.warn('Play stats not stored (rules?):', e && e.code); });
+}
+
+// ── TIME ──────────────────────────────────────────────────────────────────
+function playArm(gid){ playMark = null; playGid = gid || null; }             // resetGameStage: a new round is being set up
+function playGo(){ if(!playMark && playGid) playMark = { t0: gNow(), gid: playGid }; }   // a mission build is running
+function playDrop(){ playMark = null; }                                       // enterHub: a mark nothing closed is not play
+function playEnd(){                                                           // stopGame: the round is over, however it ended
+  const mk = playMark;
+  if(!mk) return;
+  playMark = null;
+  if(!user || (typeof partyRunActive === 'function' && partyRunActive())) return;
+  const secs = Math.round(Math.max(0, Math.min(3600, (gNow() - mk.t0) / 1000)));
+  if(secs <= 0) return;
+  const p = playState(), wk = seasonKey();
+  p.secs += secs; p.n += 1;
+  if(p.wk.k !== wk) p.wk = { k: wk, s: 0 };
+  p.wk.s += secs;
+  if(META[mk.gid]) p.m[mk.gid] = (p.m[mk.gid] || 0) + secs;
+  playSave();
+}
+
+// ── RUNS BY MODE ──────────────────────────────────────────────────────────
+function playCount(mode){
+  if(!user || !mode) return;
+  const p = playState();
+  p.modes[mode] = (p.modes[mode] || 0) + 1;
+  playSave();
+}
+// showResults(), right after the tap fork. The order is what keeps the overlaps apart: c20 is a Boss Rush
+// chain INSIDE the campaign (one campaign run), and a heat level left over from an earlier round must not
+// claim a Daily Hack (which never passes prepGame, so nothing cleared it).
+function playCountCard(gid, opts){
+  if(!user) return;
+  opts = opts || {};
+  if(opts.internal) return;                                   // a duel: mpShowDuelResult() counts it, with its outcome
+  let mode;
+  for(const fn of PLAY_HOOKS){
+    try{ mode = fn(gid, opts); }catch(e){ mode = undefined; }
+    if(mode === false) return;
+    if(mode) break;
+  }
+  if(!mode){
+    if(gid === 'openworld') mode = 'openworld';
+    else if(typeof campaignRunActive === 'function' && campaignRunActive()) mode = 'campaign';
+    else if(gid === 'bossrush') mode = 'bossrush';
+    else if(gid === 'endless') mode = 'endless';
+    else if(dailyActive) mode = 'daily';
+    else if(anomalyActive) mode = 'anomaly';
+    else if(chalActive) mode = 'challenge';
+    else if(typeof heatWas === 'function' && heatWas(gid) > 0) mode = 'heat';
+    else if(SOLO_START[gid]) mode = 'grid';
+  }
+  if(mode) playCount(mode);
+}
+function playDuel(outcome){
+  if(!user) return;
+  const p = playState(), d = p.duel;
+  if(outcome === 'win'){ d.w++; d.cur++; if(d.cur > d.best) d.best = d.cur; }
+  else if(outcome === 'loss'){ d.l++; d.cur = 0; }
+  else{ d.d++; d.cur = 0; }                                   // a draw ends a run of wins too
+  p.modes.arena = (p.modes.arena || 0) + 1;
+  playSave();
+}
+
+// ── THE PANELS ────────────────────────────────────────────────────────────
+function playFmt(s){
+  s = Math.max(0, Math.round(+s || 0));
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return h ? h + 'h ' + m + 'm' : m ? m + 'm ' + x + 's' : x + 's';
+}
+// The stored streak is only rolled forward by a finished round, so after a missed day it still shows the
+// old count. Today or yesterday means it is alive; anything older means it is over.
+function playStreakNow(){
+  const s = (user && user.streak) || {};
+  if(!s.lastDay) return 0;
+  const today = dayKey(), yesterday = dayKey(Date.now() - 86400000);
+  return (s.lastDay === today || s.lastDay === yesterday) ? (+s.count || 0) : 0;
+}
+function playDossierHtml(tile){
+  const p = playState(), gids = Object.keys(SOLO_START);
+  const wk = p.wk.k === seasonKey() ? p.wk.s : 0;
+  let top = null;
+  gids.forEach(g => { const n = dosRuns(g); if(n > 0 && (!top || n > top.n)) top = { g, n }; });
+  // the same honesty marker the mission record uses: a count derived from the last twelve runs saturates
+  const topRuns = top ? top.n + (!dosRunsExact(top.g) && top.n >= HISTORY_LEN ? '+' : '') + ' run' + (top.n === 1 ? '' : 's') : '';
+  let html = '<div class="dos-sec">⏱️ TIME PLAYED <em>inside rounds — countdowns, pauses and result cards are not counted</em></div>' +
+    '<div class="dos-tiles">' +
+    tile('⏱️', 'Total', playFmt(p.secs), p.n.toLocaleString() + ' round' + (p.n === 1 ? '' : 's') + ' timed') +
+    tile('📆', 'This week', playFmt(wk)) +
+    tile('⌛', 'Average round', p.n ? playFmt(p.secs / p.n) : '—') +
+    tile('⭐', 'Most played', top ? META[top.g].emoji + ' ' + esc(META[top.g].name) : '—', topRuns) +
+    '</div>';
+  html += '<div class="dos-sec">🎮 BY MODE <em>finished runs</em></div><div class="dos-modes">' +
+    Object.keys(PLAY_MODES).map(k => {
+      const n = p.modes[k] || 0;
+      return '<span class="dos-mode' + (n ? '' : ' zero') + '" data-mode="' + k + '"><b>' + n.toLocaleString() + '</b>' + esc(PLAY_MODES[k]) + '</span>';
+    }).join('') + '</div>';
+  const d = p.duel, duels = d.w + d.l + d.d;
+  html += '<div class="dos-sec">🔥 STREAKS</div><div class="dos-tiles">' +
+    tile('🔥', 'Daily streak', String(playStreakNow()), 'days in a row') +
+    tile('🏆', 'Best daily streak', String((user.streak && user.streak.best) || 0), 'days') +
+    tile('📡', 'Duels won', String(d.w), duels ? d.l + ' lost' + (d.d ? ' · ' + d.d + ' drawn' : '') : 'no duels yet') +
+    tile('⚡', 'Best duel streak', String(d.best), d.cur ? d.cur + ' in a row right now' : 'wins in a row') +
+    '</div>';
+  return html;
+}
+function playMissionTile(gid, tile){
+  const s = playState().m[gid] || 0;
+  return tile('⏱️', 'Time played', s ? playFmt(s) : '—', 'inside rounds');
+}
+
+// ── WIRING ──
+try{
+  // The dossier had no Escape (there is no global handler). BACK and gamepad B already close the topmost
+  // .fb-overlay.show; this does the same for the keyboard, and only when the dossier IS the topmost.
+  document.addEventListener('keydown', e => {
+    if(e.key !== 'Escape') return;
+    const ov = document.getElementById('dossier-overlay');
+    if(!ov || !ov.classList.contains('show')) return;
+    if(typeof padTopOverlay === 'function' && padTopOverlay() !== ov) return;   // the same "topmost" BACK and B use
+    closeOverlay('dossier-overlay');
+  });
+}catch(e){ console.warn('Dossier stats failed to wire:', e); }
+
+// ═════════════════════════════════════════════════
+//  § 35 · v70 — 📜 THE CODEX · what ARC wrote down after each chapter
+// ═════════════════════════════════════════════════
+// The campaign had a voice — ARC, the grid's sysadmin — and gave it exactly one
+// paragraph a chapter, BEFORE the round. Clear the chapter and the story simply
+// stopped: nothing said what you had found, and nothing was kept. The codex is
+// the other half: a post-clear note for every chapter, a summary for every act,
+// and a file on each of the four things worth a file — THE RIDERS, THE DAEMONS,
+// HEAVY PROCESS and THE GLITCH. The briefings themselves are untouched.
+//
+// It is a VIEW inside the campaign overlay, not an overlay of its own, so the
+// back gesture, gamepad B and Escape already close it. renderCampaign() rebuilds
+// #campaign-body on every click; it now asks codexRender() first, which paints
+// the codex instead while codexOpen is set, and hands the map a 📜 CODEX button
+// (#btn-codex) in a tool row later sections can add to (#cp-tools).
+//
+// EVERYTHING IS DERIVED. An entry is unlocked by stars or scores the profile
+// already holds — a chapter at one star, an act when all five of its chapters
+// are cleared, RIDERS / DAEMONS / GLITCH with chapters 11 / 12 / 20, HEAVY
+// PROCESS once Command Line has been scored (no chapter plays it). So there is
+// no server key, nothing to reconcile, and stars earned offline open their
+// entries the moment campaignReconcile() has carried them over.
+//
+// The only stored thing is local and optional: pi_codex_seen { id: 1 }, which
+// is what makes an entry NEW until the codex has been opened.
+//
+// ⚠️ Entries are plain text through esc() — no markup in them, ever.
+// ⚠️ A first clear (had === 0) announces its entry on the results card, once;
+//    settleCampaign() is the only place that knows `had`.
+
+var codexOpen = false;
+var CODEX_SEEN = 'pi_codex_seen';
+
+// What ARC logged AFTER the chapter. Two to five sentences, his voice: second person, dry, exact.
+var CODEX_CHAPTERS = {
+  c01: "Hands confirmed. I logged every click; the grid counts them as heartbeats now. The Glitch noticed as well: the Battle Bots lane went quiet the moment you started, and it has not been quiet since the night it woke. Good. Let it listen.",
+  c02: "I traced the cores while you dodged them. They were never aimed. It was throwing them to see what would flinch, and you did not, so now it knows the edge of the grid has someone standing on it.",
+  c03: "Every pair you matched went back into the banks with a seal on it, and the leak stopped at the last one. Then I checked what it had been reading before you got there. Our maintenance logs. It was learning how I fix things.",
+  c04: "Sector 1 held. I went through the wreckage: every invader was a copy of the first, down to the same mistake in the same turn. It does not build yet, it repeats. That will change, because it watched how each one died.",
+  c05: "The chain held long enough to follow. Its trail does not lead out of the grid. It leads further in, down past service layers nobody has opened in years. It did not break in from outside, Operative. It was already home.",
+  c06: "One input in seven still never arrives. I measured it, and the number is exact. A fault is never exact, so it chose seven. I have started losing one in seven of its packets in return. Call it manners.",
+  c07: "You solved faster than the lock could turn, and I am back inside the checksum node. It left the clock overclocked on its way out. I am leaving it that way: the node runs fine hot, and I would rather it believed it broke something.",
+  c08: "The drone came back with dust on the lens and long stretches of footage showing nothing at all, which makes it the most useful recording I own. The blackouts ran on a timer, every second and a half. Anything on a timer can be predicted. You flew the proof.",
+  c09: "It flipped the controls and you beat it with them flipped. I looked at its side of the court afterwards. It had mirrored its own inputs to match and could not undo that in time. It laughed first. It did not laugh last.",
+  c10: "I have its access pulse on file now, every beat you played back. It changed the pattern eleven seconds after you finished, which is eleven seconds too late. That pulse opens a door on the mainframe floor, and behind the door is its network.",
+  c11: "The riders are down and their walls are still glowing, so I am leaving the trails lit as a map. Watch the replay with me some time: more than one of them hit a wall laid by its own side. Whatever is teaching them is not teaching them to share.",
+  c12: "The maze is clean and the stolen data is back in my hands. Most of it is ours. Some of it is older than the grid. The daemons put themselves back together the moment you left, as they always do, but for a few seconds they were the ones running, and I enjoyed that.",
+  c13: "You marked the rot and I have it quarantined. Here is what I did not expect: the corrupt sectors are not random. Read in order, the bad blocks spell an address. The address is its core.",
+  c14: "The static was never jamming. It was cover. Under the noise it was sending a beat of its own down the same frequency, and you kept ours loud enough for me to subtract one from the other. I now know what it sounds like when it thinks.",
+  c15: "The servers are standing, which means the way out is standing. I counted what fell: it spent more code on that storm than on everything before it put together. Nobody burns that much to win. You burn that much because something is getting close.",
+  c16: "Every node tagged and not one cone touched you. The patrols never sleep, but they never look behind them either. They were written by something that has never needed to. The tags are live, and through them I can see the core door.",
+  c17: "Four slots, opened on logic alone. The cipher was not random either: it was the first four things it ever learned, in order, and the first one is the sound of your hands in chapter one. It has been keeping a diary, Operative. You are on page one.",
+  c18: "Temperature is back under the line. It tried to cook us out of its own house, which tells you how badly it wants us gone, and that it would sooner burn the core than share it. The shaft is still warm. Do not touch the walls.",
+  c19: "The firewall stands, floor on floor, and it is cleaner than the one it tore down. Every floor you placed is one it cannot come back through. When we open the last door, the only way out for either side is forward.",
+  c20: "Root is ours. The riders broke, the daemons scattered, and THE GLITCH came down at the end of the siege lane with the integrity bar still standing. I am keeping the grid running, same as before. One note for the log: the Battle Bots lane went quiet when it fell, the same quiet I heard the night it woke. Stay close to your terminal."
+};
+var CODEX_ACTS = {
+  1: "End of the first act, and this is what we know. THE GLITCH woke inside Battle Bots, it learns from whatever we do to it, and it has been in the grid longer than I have been watching. You proved you can hold a line. From here it stops testing us and starts taking things.",
+  2: "Containment failed. I will say it plainly. It ate inputs, locked a node, cut a feed and turned the courts upside down, and none of that was damage for its own sake: each one was a wall going up around something. You went through every wall. Now we go where they were pointing.",
+  3: "We went into its network and came out with its riders beaten, its daemons robbed, its address read off its own bad sectors and its heartbeat on tape. It threw a storm at the exit to keep us in. We are not leaving, so that worked out for everyone. The core is next.",
+  4: "Last act, closed. You slipped its patrols, read its cipher, cooled its core, rebuilt our wall and took root through all three of its layers on a single chain. The grid is quiet, and for the first time in a long while the quiet is mine. Thank you, Operative. I do not say that to processes."
+};
+var CODEX_BOSSES = [
+  { id: 'b-riders', icon: '🏍️', title: 'THE RIDERS', chapter: 'c11',
+    text: "File: THE RIDERS. Droid cycle programs, the first things it built that could chase. Each lays a wall of light behind it and none of them ever brakes; a rider would rather hit a wall than turn late, and any wall will do, including its own. Box them in before they box you, and let them do some of the work for you." },
+  { id: 'b-daemons', icon: '👻', title: 'THE DAEMONS', chapter: 'c12',
+    text: "File: THE DAEMONS. Four guards, four habits: HUNTER comes straight for you, INTERCEPT goes to where you are about to be, FLANK swings in from the far side of HUNTER to close the pincer, and SHY chases until it is close, then loses its nerve and runs for its corner. Learn which is which and the maze gets a great deal bigger." },
+  { id: 'b-heavy', icon: '⚠️', title: 'HEAVY PROCESS', scored: 'cmdline',
+    text: "File: HEAVY PROCESS. The gold one: a long word where the others are short, worth more when you clear it and twice the integrity when you do not. It is not clever, only heavy, and it arrives when you can least spare the keystrokes. Start typing it early." },
+  { id: 'b-glitch', icon: '☠️', title: 'THE GLITCH', chapter: 'c20',
+    text: "File: THE GLITCH. It woke inside Battle Bots and made a tower of itself at the far end of the siege lane. Everything else, the riders, the daemons, the storm, was it finding out what you would do. It has been purged. I archived what is left under three locks, and I check the locks every night." }
+];
+
+function codexSeen(){ const s = lsGet(CODEX_SEEN, {}); return (s && typeof s === 'object') ? s : {}; }
+// Every entry, in reading order: an act's chapters, then the act's summary; the files at the end.
+function codexEntries(){
+  const out = [];
+  if(typeof CAMPAIGN === 'undefined' || typeof CAMPAIGN_ACTS === 'undefined') return out;
+  CAMPAIGN_ACTS.forEach(a => {
+    const chapters = CAMPAIGN.filter(c => c.act === a.n);
+    chapters.forEach(c => {
+      const n = CAMPAIGN.indexOf(c) + 1;
+      out.push({ id: c.id, kind: 'chapter', icon: c.chain ? '👑' : META[c.gid].emoji, kicker: 'CHAPTER ' + n,
+                 title: c.title, text: CODEX_CHAPTERS[c.id] || '', open: campaignStarsOf(c.id) >= 1,
+                 need: 'Clear chapter ' + n + ' — one star opens it' });
+    });
+    out.push({ id: 'a' + a.n, kind: 'act', icon: '📕', kicker: 'ACT ' + a.n + ' · SUMMARY', title: a.name,
+               text: CODEX_ACTS[a.n] || '', open: chapters.every(c => campaignStarsOf(c.id) >= 1),
+               need: 'Clear all ' + chapters.length + ' chapters of act ' + a.n });
+  });
+  CODEX_BOSSES.forEach(b => {
+    const c = b.chapter ? CAMPAIGN.find(x => x.id === b.chapter) : null;
+    out.push({ id: b.id, kind: 'boss', icon: b.icon, kicker: 'THREAT FILE', title: b.title, text: b.text,
+               open: c ? campaignStarsOf(c.id) >= 1 : !!(b.scored && missionScored(b.scored)),
+               need: c ? 'Clear chapter ' + (CAMPAIGN.indexOf(c) + 1) + ' — ' + c.title
+                       : 'Score a run in ' + ((META[b.scored] && META[b.scored].name) || 'the mission') });
+  });
+  return out;
+}
+function codexNewCount(){
+  if(!user) return 0;
+  const seen = codexSeen();
+  return codexEntries().filter(e => e.open && !seen[e.id]).length;
+}
+
+// renderCampaign() asks this first. true = the codex was painted, leave the body alone.
+function codexRender(body, sub){
+  if(!codexOpen || !body || !user) return false;
+  const list = codexEntries(), seen = codexSeen();
+  const got = list.filter(e => e.open).length;
+  if(sub) sub.textContent = got + ' of ' + list.length + ' entries · written by ARC, after the fact';
+  let html = '<div class="cp-tools" id="cp-tools"><button class="btn btn-secondary btn-sm" id="btn-codex-back" type="button">← CHAPTER MAP</button></div>' +
+             '<div class="cx-list">';
+  let act = 0;
+  list.forEach(e => {
+    if(e.kind === 'chapter'){
+      const a = CAMPAIGN.find(c => c.id === e.id).act;
+      if(a !== act){ act = a; html += '<div class="cx-head">ACT ' + a + ' · ' + esc(CAMPAIGN_ACTS[a - 1].name) + '</div>'; }
+    }else if(e.kind === 'boss' && act !== 99){ act = 99; html += '<div class="cx-head">THREAT FILES</div>'; }
+    html += e.open
+      ? '<div class="cx-entry cx-' + e.kind + '" data-cx="' + e.id + '">' +
+          '<div class="cx-kicker">' + e.icon + ' ' + esc(e.kicker) + (seen[e.id] ? '' : ' <span class="cx-new">NEW</span>') + '</div>' +
+          '<div class="cx-title">' + esc(e.title) + '</div>' +
+          '<div class="cx-text">' + esc(e.text) + ' <em>— ARC</em></div></div>'
+      : '<div class="cx-entry cx-' + e.kind + ' locked" data-cx="' + e.id + '" aria-label="Locked entry">' +
+          '<div class="cx-kicker">🔒 ' + esc(e.kicker) + '</div>' +
+          '<div class="cx-title cx-redact" aria-hidden="true">██████ ████████</div>' +
+          '<div class="cx-text cx-redact" aria-hidden="true">████████ ███ ██████ ████ ███████████ ██ ████ ██████ ███ █████.</div>' +
+          '<div class="cx-need">🔒 ' + esc(e.need) + '</div></div>';
+  });
+  body.innerHTML = html + '</div>';
+  document.getElementById('btn-codex-back')?.addEventListener('click', () => { codexOpen = false; snd('tab'); renderCampaign(); });
+  // Read is read: everything unlocked right now stops being NEW the next time the list is drawn.
+  const mark = Object.assign({}, seen);
+  list.forEach(e => { if(e.open) mark[e.id] = 1; });
+  lsSet(CODEX_SEEN, mark);
+  try{ paintCampaignBanner(); }catch(e){}
+  return true;
+}
+// …and when it painted the MAP instead: the door to the codex, in a tool row above the detail card.
+function codexButton(body){
+  if(!body || !user) return;
+  const list = codexEntries(), got = list.filter(e => e.open).length, fresh = codexNewCount();
+  const row = document.createElement('div');
+  row.className = 'cp-tools'; row.id = 'cp-tools';
+  const b = document.createElement('button');
+  b.className = 'btn btn-secondary btn-sm'; b.id = 'btn-codex'; b.type = 'button';
+  b.textContent = '📜 CODEX · ' + got + '/' + list.length + (fresh ? ' · ' + fresh + ' NEW' : '');
+  b.addEventListener('click', () => { codexOpen = true; snd('tab'); renderCampaign(); campaignScrollTop(false); });
+  row.appendChild(b);
+  body.insertBefore(row, body.firstChild);
+}
+// settleCampaign(), on a FIRST clear only: one row on the card naming what was just written down.
+function codexAnnounce(c, rows){
+  if(!c || !rows) return;
+  const names = [c.title];
+  const act = CAMPAIGN.filter(x => x.act === c.act);
+  if(act.every(x => campaignStarsOf(x.id) >= 1)) names.push('ACT ' + c.act + ' SUMMARY');
+  CODEX_BOSSES.forEach(b => { if(b.chapter === c.id) names.push(b.title); });
+  rows['📜 New Codex Entry'] = names.join(' · ');
+}
+
+// ── WIRING ──
+try{
+  // The campaign always opens on the map: the codex is somewhere you go, not somewhere you are left.
+  openCampaign = (function(orig){ return function(sel){ codexOpen = false; return orig(sel); }; })(openCampaign);
+  // The hub banner's line gains a nudge while something unread is waiting.
+  paintCampaignBanner = (function(orig){
+    return function(){
+      orig();
+      try{
+        const sub = document.getElementById('cp-banner-sub'), n = codexNewCount();
+        if(sub && n) sub.textContent += ' · 📜 ' + n + ' new codex entr' + (n === 1 ? 'y' : 'ies');
+      }catch(e){}
+    };
+  })(paintCampaignBanner);
+}catch(e){ console.warn('Codex failed to wire:', e); }
+
+// ═════════════════════════════════════════════════
+//  § 36 · v71 — 👻 BEAT MY GHOST · the sender's run, on your board
+// ═════════════════════════════════════════════════
+// § 22's challenge links already carried a run — score, tier, modifiers and a
+// twelve-point pace curve — and the visitor raced it as a number on the HUD.
+// What never arrived was the GHOST. Worse, in the four missions that draw one
+// (dodge, snake, flappy, runner) the visitor raced their OWN best trail under a
+// toast and result rows about somebody else, because Ghost.begin() had never
+// heard of challenges. And a link could only be made from the run on the card
+// in front of you. This closes all three, under one name: 👻 BEAT MY GHOST.
+//
+//  · THE GHOST IS SPLIT, the way the pace ghost always was: `own` is this
+//    device's best (what a personal best is measured against, and the only
+//    thing Ghost.finish() ever overwrites); what is DRAWN in a link race is the
+//    sender's trail — or nothing. Ghost.racing is false in a link race, so the
+//    eight builds' "racing your best run" toast and rows simply do not fire.
+//  · LINK v3 is a strict addition: `3.` + the ten fields of v2 + one trail
+//    field. It is written ONLY when there is a trail to carry, so every other
+//    link is byte for byte what v67 wrote and every older client still reads
+//    it. (An older client shows its "could not be read" toast for a v3 link.)
+//    The trail is the renderer it was recorded in, its length in tenths of a
+//    second, then fixed-width base36 — two characters a coordinate, at most 60
+//    points (48 for the [x,y] missions): about 200 characters on the URL.
+//  · PLAYBACK IS BY TIME, not by frame: the sender's device and yours do not
+//    tick at the same rate. Between two thinned points it is a straight line.
+//    3D records dodge and flappy with the vertical axis the other way up from
+//    2D, so a trail is flipped when the two renderers differ — which also
+//    mends a best recorded in one renderer and replayed in the other.
+//  · 3D Flappy and 3D Runner recorded a ghost and never drew it. They now draw
+//    the same hollow ring 3D Dodge uses, through Ghost.at() with no index.
+//  · 👻 SEND MY BEST GHOST, on a mission's dossier page, builds the link from
+//    what a personal best already stores (pi_pace_, and pi_ghost_ when it is
+//    the same run) — and offers it only if it survives its own decoder.
+//
+// ⚠️ clDecode() is called by clBoot() at SCRIPT LOAD, at the bottom of § 22 —
+//    before a single line of this section has run. So v3 is parsed inside
+//    clDecode itself, and everything it calls here is a function declaration
+//    that reads no variable of this section.
+// ⚠️ No server key, no new write. The pay rules (+15%, never for your own
+//    link, once per mission per day) are untouched.
+// ⚠️ Later sections that must keep a round OUT of the ghost (a Glitch Run node)
+//    set GHOST_SKIP to a function: Ghost.begin and Ghost.beginPace ask it.
+
+var GHOST_SKIP = null;        // fn(gid) → true: this round records and races nothing
+
+// 1 = one number a sample (flappy, runner), 2 = an [x,y] pair (dodge, snake), 0 = no position ghost.
+function clTrailKind(gid){
+  return (gid === 'dodge' || gid === 'snake') ? 2 : (gid === 'flappy' || gid === 'runner') ? 1 : 0;
+}
+// Evenly by index: unlike the pace curve, a position trail is sampled every frame, so index IS time.
+function clTrailThin(frames, kind){
+  const n = Array.isArray(frames) ? frames.length : 0;
+  if(n < 2) return null;
+  const m = Math.min(kind === 2 ? 48 : 60, n), out = [];
+  for(let i = 0; i < m; i++) out.push(frames[Math.round(i * (n - 1) / (m - 1))]);
+  return out;
+}
+// tr = { r:'2'|'3', ms, pts } → the link's trail field, or '' when there is nothing fit to send.
+function clTrailEncode(tr, gid){
+  const kind = clTrailKind(gid);
+  if(!kind || !tr || !Array.isArray(tr.pts) || tr.pts.length < 2 || !(tr.ms > 0)) return '';
+  const d2 = v => Math.max(0, Math.min(1295, Math.round(+v || 0))).toString(36).padStart(2, '0');
+  let s = (tr.r === '3' ? '3' : '2') + Math.max(1, Math.min(46655, Math.round(tr.ms / 100))).toString(36).padStart(3, '0');
+  for(const p of tr.pts){
+    if(kind === 2){ if(!Array.isArray(p) || p.length < 2) return ''; s += d2(p[0]) + d2(p[1]); }
+    else{ if(typeof p !== 'number') return ''; s += d2(p); }
+  }
+  return s;
+}
+// null for anything that is not exactly what clTrailEncode writes. A link is typed and pasted by strangers.
+function clTrailDecode(str, gid){
+  const kind = clTrailKind(gid);
+  str = String(str || '');
+  if(!kind || !/^[23][0-9a-z]+$/.test(str) || str.length < 4) return null;
+  const ms = parseInt(str.slice(1, 4), 36) * 100;
+  const body = str.slice(4), w = kind * 2;
+  if(!(ms > 0) || body.length % w || body.length < w * 2 || body.length > w * 64) return null;
+  const top = gid === 'snake' ? 63 : 720;       // cells for snake; board pixels (560 × 500, with some slack) otherwise
+  const pts = [];
+  for(let i = 0; i < body.length; i += 2){
+    const v = parseInt(body.slice(i, i + 2), 36);
+    if(!(v >= 0) || v > top) return null;
+    if(kind === 2){ if((i / 2) % 2) pts[pts.length - 1].push(v); else pts.push([v]); }
+    else pts.push(v);
+  }
+  return { r: str[0], ms, pts };
+}
+
+// The run a personal best would send, or null when there is none on this tier — or none that travels.
+function clBestRun(gid){
+  if(!user || !META[gid] || !SOLO_START[gid]) return null;
+  let p = null;
+  try{ p = JSON.parse(localStorage.getItem('pi_pace_' + gid + ':' + currentDifficultyTier) || 'null'); }catch(e){ p = null; }
+  if(!p || !(p.score > 0) || !Array.isArray(p.pts) || p.pts.length < 2) return null;
+  const run = { gid, pts: Math.round(p.score), raw: 0, tier: currentDifficultyTier, curve: p.pts, mods: [],
+                name: user.username || 'OPERATIVE', tag: clTag(user.uid) };
+  // The trail rides along only when it is the SAME run: the two bests are saved by different tests.
+  try{
+    const tr = Ghost.bestTrail(gid);
+    if(tr && Math.round(tr.score) === run.pts) run.trail = { r: tr.r, ms: tr.ms, pts: tr.pts };
+  }catch(e){}
+  // A best can hold a figure the decoder refuses (an Endless total kept as a pace best): not offered.
+  try{ if(!clDecode(clEncode(run))) return null; }catch(e){ return null; }
+  return run;
+}
+// Text + link out of the arcade: the share sheet on a phone, the clipboard elsewhere, the text itself last.
+async function clSend(text, url, btn){
+  const base = btn ? btn.textContent : '';
+  const done = label => { if(btn){ btn.textContent = label; setTimeout(() => { btn.textContent = base; }, 2600); } };
+  const phone = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  if(navigator.share && phone){
+    try{ await navigator.share({ title: 'Point Invaders', text, url }); snd('coin'); return true; }
+    catch(e){ if(e && e.name === 'AbortError') return false; }
+  }
+  try{
+    await navigator.clipboard.writeText(text + ' ' + url);
+    snd('coin'); done('✔ Copied — paste it anywhere');
+    toast('👻 Ghost link copied — paste it anywhere.', 2600);
+    return true;
+  }catch(e){
+    // The clipboard is blocked over plain http and inside several in-app browsers. A prompt can still be copied.
+    try{ window.prompt('Copy this and paste it anywhere:', text + ' ' + url); }catch(x){}
+    return false;
+  }
+}
+function clSendBest(gid, btn){
+  const run = clBestRun(gid);
+  if(!run){ snd('deny'); toast('👻 No best run on this stability tier that can travel — finish one first.', 3200); return; }
+  try{ if(typeof statsEvent === 'function') statsEvent('_share_lk'); }catch(e){}
+  clSend('👻 Beat my ghost: ' + run.pts.toLocaleString() + ' in ' + META[run.gid].name + ' on Point Invaders. ' +
+         (run.trail ? 'My run plays on your board — think you can beat it?' : 'Tap to race my run — think you can beat it?'),
+         clUrl(run), btn);
+}
+// The mission dossier's action row. '' when this tier has no best worth sending.
+function clBestButton(gid){
+  return clBestRun(gid) ? '<button class="btn btn-secondary" id="dos-ghost" type="button">👻 SEND MY BEST GHOST</button>' : '';
+}
+
+// ═════════════════════════════════════════════════
+//  § 37 · v72 — ⟳ PRESTIGE · reboot at level 25
+// ═════════════════════════════════════════════════
+// There is no last level: 100 XP a level for ever, every mission open by level
+// 7 and the whole perk tree owned by level 24 — after which a level is a number
+// that goes up. This gives level 25 a door. ⟳ REBOOT sends the level back to 1
+// and empties the perk tree; everything a player EARNED stays where it is, and
+// the profile wears the count for good: a badge on the name, +2% on grid awards
+// per reboot (to +10%), and a wake behind the ship.
+//
+//  · AN OFFSET, NEVER A DOWNWARD WRITE. `xp` and `level` on the server are
+//    lifetime figures and only ever rise — the rules may refuse one that falls,
+//    and a refused {xp, level} would stop XP saving at all. A reboot stores
+//    players/<uid>/prestige = { n, base } instead: `n` reboots, and `base` the
+//    XP that was spent on them. The level a player sees and is gated by is
+//    xpLevel(xp − base); xpShown() (beside xpLevel) is the one helper every
+//    display and gate reads. `base` is taken at the foot of the level the
+//    reboot happened on, so the XP already earned into it is not thrown away.
+//  · LEVEL ACHIEVEMENTS (Tenth Tier) stay on the LIFETIME level: an
+//    achievement is a thing that happened, and a reboot does not un-happen it.
+//  · THE PERK RESET is the one thing that goes down, and it is its own write.
+//    If it does not land (offline, a second device mid-purchase, rules), the
+//    profile comes back with more spent than its new level has earned — which
+//    nothing else can cause — and prState() empties the tree again on sight.
+//    perkPointsLeft() can no longer go below zero either way.
+//  · MISSIONS a player has scored in stay open (missionScored); the ones never
+//    played lock again until the level comes back. The confirm says so.
+//  · FIRST REBOOT (the achievement) is read off the profile by the NEXT
+//    finished round, the way the campaign's are — so the reboot itself changes
+//    nothing but the three things it says it changes.
+//  · THE BONUS is its own multiplier with its own row, on the same rounds the
+//    Arcade Boost perk pays on. It can lift an award UP TO maxAwardFor(), the
+//    clamp saveScore() applies anyway, and never past it — so the card and the
+//    bank agree. Duels and the fair boards (noBonus) are not touched.
+//
+// Data — ONE own write, never part of recordRun's batch:
+//   players/<uid>/prestige = { n, base }
+//   pi_prestige = { uid, v }   the same thing, written first. `user` is
+//   replaced by the server's copy on load and after a flush, and the rules may
+//   never have taken `prestige`: prState() folds the local copy back in (more
+//   reboots wins) whenever the object changes hands. One refusal stops the
+//   server write for the session; nothing else is held up by it.
+
+var PRESTIGE_LEVEL = 25;
+var PR_STEP = 0.02, PR_CAP = 0.10;       // +2% a reboot, to +10%
+var PR_LS = 'pi_prestige';
+var PR_NONE = { n: 0, base: 0 };
+var PR_WAKE = ['#7df9ff', '#a855f7', '#ffd76a', '#ff6ad5', '#ffffff'];
+var prOwner = null, prSeen = null, prCur = PR_NONE, prDenied = false, prDirty = false, prHealed = '', prTick = 0;
+
+function prNorm(p){
+  const n = Math.max(0, Math.min(999, Math.floor(+(p && p.n) || 0)));
+  return n > 0 ? { n, base: Math.max(0, Math.floor(+p.base || 0)) } : PR_NONE;
+}
+// The signed-in profile's prestige, reconciled. Called before every read and every change.
+function prState(){
+  if(!user) return PR_NONE;
+  if(prOwner !== user || user.prestige !== prSeen){
+    const loc = lsGet(PR_LS, null);
+    const a = prNorm(user.prestige), b = prNorm((loc && loc.uid === user.uid) ? loc.v : null);
+    // More reboots wins; between two copies of the same reboot, the later one (the larger base).
+    const mine = b.n > a.n || (b.n === a.n && b.base > a.base);
+    prCur = mine ? b : a;
+    if(prCur.n > 0) user.prestige = prCur;
+    prOwner = user; prSeen = user.prestige;
+    if(prCur.n > 0 && !mine && (b.n !== a.n || b.base !== a.base)) lsSet(PR_LS, { uid: user.uid, v: prCur });
+    if(mine) prDirty = true;               // the server's copy is behind this device's: send it when we can
+    prHeal();
+  }
+  return prCur;
+}
+// A rebooted profile holding more perks than its level has earned: the reset never landed. Empty it again.
+function prHeal(){
+  if(!user || !(prCur.n > 0)) return;
+  const earned = Math.max(0, xpLevel(Math.max(0, Math.floor(user.xp || 0) - prCur.base)).level - 1);
+  if((+user.perkSpent || 0) <= earned) return;
+  user.perks = {}; user.perkSpent = 0;
+  const tag = user.uid + ':' + prCur.n;
+  if(prHealed === tag) return;             // the write is tried once a session; the local reset every time
+  prHealed = tag;
+  try{ saveProfilePatch({ perks: null, perkSpent: 0 }); }catch(e){}
+}
+// xpShown()'s arithmetic. `rec` is the signed-in profile or another player's public record.
+function prLevelOf(rec){
+  const xp = Math.max(0, Math.floor((rec && +rec.xp) || 0));
+  const pr = (rec && rec === user) ? prState() : prNorm(rec && rec.prestige);
+  const st = xpLevel(Math.max(0, xp - pr.base));
+  st.total = xp;                           // the rail's "TOTAL" stays the lifetime figure
+  return st;
+}
+function prCountOf(rec){ return ((rec && rec === user) ? prState() : prNorm(rec && rec.prestige)).n; }
+// The badge: '' for a profile that has never rebooted.
+function prBadge(rec){
+  const n = prCountOf(rec);
+  return n > 0 ? ` <span class="pr-chip" title="Rebooted ${n} time${n === 1 ? '' : 's'}">⟳${n}</span>` : '';
+}
+function prPush(){
+  if(!user) return;
+  const pr = prState();
+  if(!(pr.n > 0)) return;
+  lsSet(PR_LS, { uid: user.uid, v: pr });                     // local first
+  try{ cacheProfile(user); }catch(e){}
+  if(prDenied) return;
+  if(!db || offlineMode || isLocalSession()){ prDirty = true; return; }
+  if(!auth || !auth.currentUser || auth.currentUser.uid !== user.uid) return;
+  // § 33: a guest's record is not whole right now — it goes up with the rest once it is.
+  try{ if(typeof gcHold === 'function' && gcHold({ prestige: 1 })){ prDirty = true; return; } }catch(e){}
+  prDirty = false;
+  db.ref('players/' + user.uid + '/prestige').set({ n: pr.n, base: pr.base })
+    .catch(e => { prDenied = true; console.warn('Prestige not stored (rules?):', e && e.code); });
+}
+
+// ── THE BONUS ─────────────────────────────────────────────────────────────
+function prBonusRate(gid, opts){
+  opts = opts || {};
+  const n = prState().n;
+  if(!n || opts.internal || opts.noBonus) return 0;
+  if(!SOLO_START[gid] && gid !== 'bossrush' && gid !== 'endless' && gid !== 'openworld' && gid !== 'glitchrun') return 0;   // v75 — + 🌀 § 40
+  return Math.min(PR_CAP, n * PR_STEP);
+}
+// What the bonus adds to `base` (the award with every other multiplier in): up to the clamp, never past it.
+function prBonusPts(gid, opts, base){
+  const rate = prBonusRate(gid, opts);
+  if(!rate || !(base > 0)) return 0;
+  return Math.max(0, Math.min(Math.round(base * (1 + rate)), maxAwardFor(gid)) - base);
+}
+function prBonusRow(gid, opts, gain){
+  const rate = prBonusRate(gid, opts);
+  if(!rate) return null;
+  return ['⟳ Prestige ' + prState().n,
+          gain > 0 ? `+${Math.round(rate * 100)}% · +${gain.toLocaleString()}` : 'award already at its cap'];
+}
+
+// ── THE TRAIL ─────────────────────────────────────────────────────────────
+// 0 = draw nothing extra. The 3D ships only lengthen and brighten the flames they already draw (no new
+// draw call, so no cost on any quality tier); 2D Nebula adds at most one square every third frame.
+function prTrailK(){
+  if(!user) return 0;
+  const n = prState().n;
+  if(!n) return 0;
+  try{ if(typeof VFX !== 'undefined' && VFX.reducedMotion) return 0; }catch(e){}
+  return Math.min(5, n);
+}
+function prWake2d(list, x, y){
+  const k = prTrailK();
+  if(!k || !list || list.length > 240) return;
+  if((++prTick) % 3) return;
+  const color = PR_WAKE[k - 1] || PR_WAKE[0];
+  for(let i = 0; i < (k >= 3 ? 2 : 1); i++){
+    list.push({ x: x + (Math.random() - 0.5) * (8 + k * 2), y: y + Math.random() * 4,
+                vx: (Math.random() - 0.5) * 0.5, vy: 1.1 + Math.random() * 0.9,
+                alpha: 0.85, decay: 0.045 - k * 0.004, color, size: 1.5 + Math.random() * 1.5 });
+  }
+}
+
+// ── THE DOOR ──────────────────────────────────────────────────────────────
+// paintXpRail() has just painted the level and the perk button; this adds the badge and, at the cap, turns
+// that button into the door (the rail is a 2×2 block on a phone — a fifth button would sit alone under it).
+function prPaintRail(){
+  if(!user) return;
+  const pr = prState(), st = prLevelOf(user), ready = st.level >= PRESTIGE_LEVEL;
+  const lvl = document.getElementById('xp-lvl'), btn = document.getElementById('btn-perks');
+  if(lvl){
+    lvl.textContent = 'LVL ' + st.level + (pr.n ? ' ⟳' + pr.n : '');
+    lvl.title = pr.n ? `Rebooted ${pr.n} time${pr.n === 1 ? '' : 's'}` : '';
+  }
+  if(btn){
+    btn.classList.toggle('xp-reboot-btn', ready);
+    if(ready){
+      btn.textContent = '⟳ REBOOT';
+      btn.classList.add('btn-primary'); btn.classList.remove('btn-secondary');
+    }
+  }
+  document.getElementById('xp-rail')?.classList.toggle('can-reboot', ready);
+  if(prDirty && !prDenied && db && !offlineMode) prPush();
+}
+// The perk button's click, first. true = this click was the reboot door's.
+function prRailClick(){
+  if(!user || prLevelOf(user).level < PRESTIGE_LEVEL) return false;
+  openOverlay('reboot-overlay', prRenderConfirm);
+  return true;
+}
+function prRenderConfirm(){
+  if(!user) return;
+  const pr = prState(), st = prLevelOf(user), next = pr.n + 1;
+  const now = Math.round(Math.min(PR_CAP, pr.n * PR_STEP) * 100), then = Math.round(Math.min(PR_CAP, next * PR_STEP) * 100);
+  const sub = document.getElementById('reboot-sub'), gain = document.getElementById('reboot-gain'), go = document.getElementById('reboot-go');
+  if(sub) sub.textContent = `Level ${st.level} · clearance ${PRESTIGE_LEVEL} reached` + (pr.n ? ` · rebooted ${pr.n}×` : '');
+  if(gain){
+    gain.innerHTML = `<b>⟳${next}</b> on your name, on the boards and on your card · ` +
+      (then > now ? `<b>+${then}%</b> on every grid award${now ? ` (now +${now}%)` : ''}`
+                  : `the award bonus stays at its <b>+${then}%</b> cap`) +
+      ` · a ${next > 1 ? 'brighter ' : ''}wake behind your ship`;
+  }
+  if(go){ go.disabled = false; go.textContent = '⟳ REBOOT NOW'; }
+}
+function prReboot(){
+  if(!user) return false;
+  const st = prLevelOf(user);
+  if(st.level < PRESTIGE_LEVEL){ snd('deny'); toast(`⟳ Reboot opens at level ${PRESTIGE_LEVEL}.`, 2600); return false; }
+  const cur = prState();
+  // The foot of the level this happened on: what was earned INTO it carries over.
+  const next = { n: cur.n + 1, base: cur.base + (st.level - 1) * XP_PER_LEVEL };
+  user.prestige = next; prCur = next; prSeen = next; prOwner = user;
+  user.perks = {}; user.perkSpent = 0;
+  prHealed = user.uid + ':' + next.n;
+  prPush();                                                   // its own write…
+  saveProfilePatch({ perks: null, perkSpent: 0 });            // …and the only thing that goes down, on its own too
+  try{ closeOverlay('reboot-overlay'); }catch(e){}
+  snd('levelUp');
+  const pct = Math.round(Math.min(PR_CAP, next.n * PR_STEP) * 100);
+  toast(`⟳ REBOOT ${next.n} — level 1 · +${pct}% on grid awards · the perk tree is yours to rebuild`, 4200);
+  try{ paintXpRail(); }catch(e){}
+  try{ paintMissionLocks(); }catch(e){}
+  try{ if(typeof loadLeaderboard === 'function') loadLeaderboard(); }catch(e){}
+  return true;
+}
+
+// ── WIRING ──
+try{
+  const prShut = () => closeOverlay('reboot-overlay');
+  document.getElementById('reboot-close')?.addEventListener('click', prShut);
+  document.getElementById('reboot-cancel')?.addEventListener('click', prShut);
+  document.getElementById('reboot-overlay')?.addEventListener('click', e => { if(e.target.id === 'reboot-overlay') prShut(); });
+  document.getElementById('reboot-perks')?.addEventListener('click', () => { prShut(); openOverlay('perk-overlay', renderPerkTree); });
+  document.getElementById('reboot-go')?.addEventListener('click', e => {
+    if(e.currentTarget.disabled) return;
+    e.currentTarget.disabled = true;                          // one reboot a confirm, however fast the second tap
+    prReboot();
+  });
+  // No global Escape exists; BACK and gamepad B already close the topmost overlay. Same test as theirs.
+  document.addEventListener('keydown', e => {
+    if(e.key !== 'Escape') return;
+    const ov = document.getElementById('reboot-overlay');
+    if(!ov || !ov.classList.contains('show')) return;
+    if(typeof padTopOverlay === 'function' && padTopOverlay() !== ov) return;
+    prShut();
+  });
+}catch(e){ console.warn('Prestige failed to wire:', e); }
+
+// ═════════════════════════════════════════════════
+//  § 38 · v73 — 🛸 COMPANIONS · something small that keeps up with you
+// ═════════════════════════════════════════════════
+// A sixth cosmetic shelf. A companion is bought, equipped and unequipped like
+// every other category (the shelf is SHOP_ITEMS.companions and the generic shop
+// code runs it), and then it simply follows: the cursor in the hub and the
+// menus, the player's badge point on the fifteen 2D boards that draw one, and
+// the player in the 3D worlds that say where their player is. It is PURELY
+// COSMETIC — it reads positions and writes pixels, and nothing here is ever
+// read back by a mission.
+//
+//  · NOT A DRONE, in name or in look. "Companions" on the shelf (Battle Bots
+//    has a DRONE unit and the arena has TRAINING DROIDS); in 3D it is drawn in
+//    the PLAYER'S colour as a glowing thing with a halo, never in the hostile
+//    paint and never with STANDOUT — the Scout borrows the drone hull, lit from
+//    inside and under a spinning ring, which no hostile is.
+//  · THREE PLACES, ONE STATE.
+//      – OUTSIDE A ROUND: #cmp-fx, a static fixed element with
+//        pointer-events:none, so it can pass over a button and never take its
+//        click. With a mouse it trails the cursor (eased, and parked down-right
+//        of the pointer so it is never under the click). On touch — and under
+//        reduced motion — it idles by the hub bar instead.
+//      – 2D: drawSkinBadge(x, y) is where fifteen boards already say "the
+//        player is here". cmpDraw2d() follows that point with a lag, on aCtx,
+//        inside save/restore.
+//      – 3D: a mission calls cmpAim(x, y, z) (Neon Nebula, Runner, Cyber Arena,
+//        and every open world through followCam / chaseCam / roverCam), and
+//        w.end() — the one call every 3D frame makes — draws it there. The
+//        clock is the world's own dt, so photo mode (dt 0) freezes it. Nothing
+//        is allocated per frame: the draw options below are reused.
+//  · IT REACTS to a big play — the sounds that mean one (victory, which is
+//    also what a results card above 75% plays, levelUp, lineClear, bigExplode)
+//    — once per play, by listening to snd().
+//  · PER DEVICE ON/OFF (pi_cmp_off), on the shelf itself. Reduced motion: no
+//    trailing, no bob, no spin.
+//
+// Data. The shelf lives where the other shelves do —
+//   players/<uid>/owned/companions = [ids]     players/<uid>/equipped/companions = id
+// — but both are NEW children the live rules may not name yet, so they are never
+// sent inside somebody else's write: a purchase sends the credits alone, then
+// cmpPush() sends each child as its OWN set() with a "(rules?)" catch, and the
+// guest restore leaves them out of its `owned` / `equipped` writes (cmpStrip).
+//   pi_cmp = { uid, own, eq, ok }   the device's copy, written first. `ok`
+//   means the server has acknowledged it; while it has not, this copy wins on
+//   load (cmpState), so a refused write never loses a purchase on this device.
+
+SHOP_ITEMS.companions = [
+  { id:'cmp-none',  name:'No Companion', price:0,  emoji:'🚫', default:true,
+    desc:'Nobody in tow.' },
+  { id:'cmp-spark', name:'Spark',        price:8,  emoji:'✨', look:0,
+    desc:'A point of light that keeps up with you.' },
+  { id:'cmp-halo',  name:'Halo',         price:12, emoji:'💫', look:1,
+    desc:'Two rings turning inside each other.' },
+  { id:'cmp-bit',   name:'Bit',          price:16, emoji:'🧊', look:2,
+    desc:'A stray cube of the grid that took a liking to you.' },
+  { id:'cmp-scout', name:'Scout',        price:20, emoji:'🛸', look:3,
+    desc:'A pocket recon unit in your colours — not one of theirs.' },
+  { id:'cmp-nova',  name:'Nova',         price:25, emoji:'🪐', look:4,
+    desc:'A small sun with three moons in tow.' },
+  { id:'cmp-wing',  name:'Wingmate',     price:30, emoji:'🚀', look:5,
+    desc:'A miniature of your own ship, flying your wing.' }
+];
+
+var CMP_LS = 'pi_cmp', CMP_OFF = 'pi_cmp_off';
+var CMP_BIG = { victory: 1, levelUp: 1, lineClear: 1, bigExplode: 1 };
+var cmpOwner = null, cmpDirty = false, cmpDenied = false, cmpBusy = false;
+var cmpCur = null, cmpCol = '#00f5ff', cmpStill = false;          // the cache every per-frame path reads
+var cmpCheerAt = -1e9, cmpBigAt = -1e9, cmpCheers = 0;
+// outside a round
+var cmpEl = null, cmpRaf = 0, cmpMx = -1, cmpMy = -1, cmpX = 0, cmpY = 0, cmpTx = 0, cmpTy = 0, cmpWx = -1e9, cmpWy = -1e9, cmpLast = 0, cmpAnchorAt = 0, cmpPlaced = false, cmpShown = false;
+// 2D
+var cmp2x = 0, cmp2y = 0, cmp2t = 0, cmp2n = 0;
+// 3D — reused every frame
+var cmpAimed = false, cmpAx = 0, cmpAy = 0, cmpAz = 0, cmp3w = null, cmp3n = 0;
+var cmpP = [0, 0, 0];
+var CMP_D = [0, 1, 2, 3].map(() => ({ pos: [0, 0, 0], rot: [0, 0, 0], scale: [1, 1, 1], color: '#ffffff', emissive: '#ffffff',
+                                      emissiveStrength: 1, alpha: 1, metallic: 0.3, roughness: 0.4, rim: 0.8 }));
+
+function cmpKnown(id){ return !!id && SHOP_ITEMS.companions.some(i => i.id === id); }
+function cmpOwns(cat){ return cat === 'companions'; }             // the shop asks: does this category write for itself?
+function cmpOff(){ try{ return localStorage.getItem(CMP_OFF) === '1'; }catch(e){ return false; } }
+
+// The signed-in profile's shelf, reconciled with this device's copy. Once per `user` object.
+function cmpState(){
+  if(!user) return null;
+  if(cmpOwner !== user){
+    cmpOwner = user;
+    const loc = lsGet(CMP_LS, null), mine = (loc && loc.uid === user.uid) ? loc : null;
+    if(!user.owned || typeof user.owned !== 'object') user.owned = {};
+    if(!user.equipped || typeof user.equipped !== 'object') user.equipped = {};
+    const have = (Array.isArray(user.owned.companions) ? user.owned.companions : []).filter(cmpKnown);
+    let ahead = false;
+    if(mine && Array.isArray(mine.own)) mine.own.forEach(id => { if(cmpKnown(id) && have.indexOf(id) < 0){ have.push(id); ahead = true; } });
+    let eq = user.equipped.companions;
+    // A choice the server never acknowledged is still the choice.
+    if(mine && !mine.ok && cmpKnown(mine.eq) && mine.eq !== eq){ eq = mine.eq; ahead = true; }
+    if(!cmpKnown(eq) || (eq !== 'cmp-none' && have.indexOf(eq) < 0)) eq = 'cmp-none';
+    user.owned.companions = have;
+    user.equipped.companions = eq;
+    if(ahead) cmpDirty = true;
+    if(have.length || eq !== 'cmp-none' || mine) lsSet(CMP_LS, { uid: user.uid, own: have, eq, ok: !ahead && (mine ? !!mine.ok : true) });
+  }
+  return user;
+}
+// After a change made here: this device first, then the two children, each on its own.
+function cmpSave(){
+  if(!cmpState()) return;
+  lsSet(CMP_LS, { uid: user.uid, own: user.owned.companions, eq: user.equipped.companions, ok: false });
+  try{ cacheProfile(user); }catch(e){}
+  cmpDirty = true;
+  cmpPush();
+  cmpRefresh();
+}
+function cmpPush(){
+  if(!user || !cmpDirty || cmpDenied || cmpBusy) return;
+  if(!db || offlineMode || isLocalSession()) return;
+  if(!auth || !auth.currentUser || auth.currentUser.uid !== user.uid) return;
+  // § 33: a guest's record is not whole right now — tried again once it is.
+  try{ if(typeof gcHold === 'function' && gcHold({ companions: 1 })) return; }catch(e){}
+  const uid = user.uid, own = user.owned.companions.slice(), eq = user.equipped.companions, base = db.ref('players/' + uid);
+  cmpBusy = true; cmpDirty = false;
+  Promise.all([own.length ? base.child('owned/companions').set(own) : null, base.child('equipped/companions').set(eq)])
+    .then(() => {
+      const loc = lsGet(CMP_LS, null);
+      if(loc && loc.uid === uid && loc.eq === eq && (loc.own || []).length === own.length) lsSet(CMP_LS, { uid, own, eq, ok: true });
+    })
+    .catch(e => { cmpDenied = true; cmpDirty = true; console.warn('Companion not stored (rules?):', e && e.code); })
+    .then(() => { cmpBusy = false; });
+}
+// § 33's guest restore sends `owned` and `equipped` whole: these two children go up by themselves instead.
+function cmpStrip(data){
+  if(!data) return;
+  let had = false;
+  if(data.owned && data.owned.companions !== undefined){ delete data.owned.companions; had = true; }
+  if(data.equipped && data.equipped.companions !== undefined){ delete data.equipped.companions; had = true; }
+  if(had && user && cmpState() && (user.owned.companions.length || user.equipped.companions !== 'cmp-none')){
+    cmpDirty = true;
+    setTimeout(cmpPush, 1500);                             // once the record it belongs to is whole
+  }
+}
+
+// ── THE CACHE ─────────────────────────────────────────────────────────────
+// Everything a per-frame path needs, worked out when something changes — never per frame.
+function cmpRefresh(){
+  let it = null;
+  try{
+    if(cmpState() && !cmpOff()){
+      const f = findItem('companions', user.equipped.companions);
+      if(f && !f.default) it = f;
+    }
+  }catch(e){ it = null; }
+  cmpCur = it;
+  try{ cmpCol = getEquippedColorHex(); }catch(e){ cmpCol = '#00f5ff'; }
+  try{ cmpStill = !!(typeof VFX !== 'undefined' && VFX.reducedMotion); }catch(e){ cmpStill = false; }
+  cmpDom();
+  if(cmpDirty) cmpPush();
+  const tg = document.getElementById('cmp-toggle');
+  if(tg){
+    const off = cmpOff();
+    tg.textContent = off ? '🛸 COMPANION ON THIS DEVICE: OFF' : '🛸 COMPANION ON THIS DEVICE: ON';
+    tg.setAttribute('aria-pressed', String(!off));
+    tg.classList.toggle('btn-primary', !off); tg.classList.toggle('btn-secondary', off);
+  }
+}
+// 0…1, fading: how hard it is reacting right now.
+function cmpCheerK(){
+  const k = 1 - (performance.now() - cmpCheerAt) / 900;
+  return k > 0 ? k : 0;
+}
+// snd() tells us the four sounds that mean a big play; one play gets one reaction.
+function cmpHear(name){
+  if(!CMP_BIG || !CMP_BIG[name]) return;
+  const now = performance.now(), quiet = now - cmpBigAt;
+  cmpBigAt = now;
+  // ONE PLAY, ONE REACTION. A card's fanfares — the result, a new medal, a level, a season tier — land
+  // seconds apart, and a run of line clears is one streak: it reacts again only after 2.5 s without one.
+  if(!cmpCur || quiet < 2500) return;
+  cmpCheerAt = now; cmpCheers++;
+  if(cmpEl && cmpShown){
+    cmpEl.classList.remove('cmp-react');
+    void cmpEl.offsetWidth;                                  // restart the keyframes
+    cmpEl.classList.add('cmp-react');
+  }
+}
+
+// ── OUTSIDE A ROUND: #cmp-fx ──────────────────────────────────────────────
+function cmpTrails(){
+  if(cmpStill || cmpMx < 0) return false;
+  try{ return matchMedia('(hover: hover) and (pointer: fine)').matches; }catch(e){ return false; }
+}
+// Where it idles: just under the right end of the bar of the screen that is up.
+function cmpAnchor(){
+  const scr = document.querySelector('.screen.active');
+  const bar = scr && scr.querySelector('.hub-bar, .market-bar, .mp-bar');
+  const b = bar ? bar.getBoundingClientRect() : null;
+  if(b && b.width > 0 && b.bottom > 0 && b.bottom < innerHeight - 40){ cmpTx = Math.min(innerWidth - 22, b.right - 20); cmpTy = b.bottom + 18; }
+  else{ cmpTx = innerWidth - 26; cmpTy = 74; }
+}
+function cmpDom(){
+  if(!cmpEl) cmpEl = document.getElementById('cmp-fx');
+  if(!cmpEl) return;
+  const scr = document.querySelector('.screen.active');
+  const id = scr ? scr.id : '';
+  const show = !!cmpCur && !!user && !document.hidden && id !== 'game-screen' && id !== 'auth-screen' && id !== '';
+  if(show){
+    const body = cmpEl.firstElementChild;
+    if(body && body.textContent !== cmpCur.emoji) body.textContent = cmpCur.emoji;
+    cmpEl.classList.toggle('cmp-still', cmpStill);
+    if(!cmpShown){
+      cmpShown = true; cmpEl.hidden = false; cmpPlaced = false; cmpAnchorAt = 0; cmpWx = cmpWy = -1e9;
+      // A big play that landed while it was away (a results card's fanfare can beat the screen change).
+      if(cmpCheerK() > 0.3) cmpEl.classList.add('cmp-react');
+    }
+    if(!cmpRaf){ cmpLast = 0; cmpRaf = requestAnimationFrame(cmpTick); }
+  }else if(cmpShown){
+    cmpShown = false; cmpEl.hidden = true; cmpEl.classList.remove('cmp-react');
+    if(cmpRaf){ cancelAnimationFrame(cmpRaf); cmpRaf = 0; }
+  }
+}
+function cmpTick(now){
+  cmpRaf = 0;
+  if(!cmpShown || !cmpEl) return;
+  let dt = cmpLast ? (now - cmpLast) / 1000 : 0;
+  cmpLast = now;
+  if(!(dt >= 0) || dt > 0.1) dt = 0.1;
+  if(cmpTrails()){ cmpTx = cmpMx + 26; cmpTy = cmpMy + 24; }
+  else if(now - cmpAnchorAt > 300){ cmpAnchorAt = now; cmpAnchor(); }
+  if(!cmpPlaced || cmpStill){ cmpX = cmpTx; cmpY = cmpTy; cmpPlaced = true; }
+  else{
+    const k = 1 - Math.exp(-dt / 0.13);
+    cmpX += (cmpTx - cmpX) * k; cmpY += (cmpTy - cmpY) * k;
+  }
+  // Written only when it has actually moved: an idle companion costs a comparison a frame, not a style write.
+  if(Math.abs(cmpX - cmpWx) > 0.1 || Math.abs(cmpY - cmpWy) > 0.1){
+    cmpWx = cmpX; cmpWy = cmpY;
+    cmpEl.style.transform = 'translate3d(' + (Math.round(cmpX * 10) / 10) + 'px,' + (Math.round(cmpY * 10) / 10) + 'px,0)';
+  }
+  cmpRaf = requestAnimationFrame(cmpTick);
+}
+// showScreen() tells us which screen is coming up (it gets its .active 40 ms later).
+function cmpScreen(){ setTimeout(cmpRefresh, 80); }
+
+// ── 2D: beside the badge point, a beat behind ─────────────────────────────
+function cmpDraw2d(x, y){
+  const it = cmpCur;
+  if(!it || !aCtx) return;
+  const now = gNow(), tx = x + 28, ty = y + 4;
+  let dt = (now - cmp2t) / 1000;
+  cmp2t = now;
+  // A new round, a long pause, or the player was put somewhere else: be there, do not fly there.
+  if(!(dt >= 0) || dt > 0.3 || Math.abs(tx - cmp2x) > 160 || Math.abs(ty - cmp2y) > 160){ cmp2x = tx; cmp2y = ty; dt = 0; }
+  const k = cmpStill ? 1 : 1 - Math.exp(-dt / 0.15);
+  cmp2x += (tx - cmp2x) * k; cmp2y += (ty - cmp2y) * k;
+  const cheer = cmpCheerK(), bob = cmpStill ? 0 : Math.sin(now / 430) * 2.4, s = 1 + cheer * 0.5;
+  cmp2n++;
+  const c = aCtx;
+  c.save();
+  c.translate(cmp2x, cmp2y + bob);
+  if(cheer > 0){
+    c.globalAlpha = cheer; c.strokeStyle = cmpCol; c.lineWidth = 2; c.shadowBlur = 12; c.shadowColor = cmpCol;
+    c.beginPath(); c.arc(0, 0, 9 + (1 - cheer) * 16, 0, 6.2832); c.stroke();
+  }
+  c.globalAlpha = 0.96; c.shadowBlur = 9 + cheer * 12; c.shadowColor = cmpCol;
+  c.scale(s, s);
+  c.font = '16px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText(it.emoji, 0, 0);
+  c.restore();
+}
+
+// ── 3D: where the mission said its player is ──────────────────────────────
+function cmpAim(x, y, z){
+  if(!cmpCur) return;
+  cmpAx = x; cmpAy = y; cmpAz = z; cmpAimed = true;
+}
+function cmpPut(o, x, y, z, rx, ry, rz, sx, sy, sz, glow, alpha){
+  o.pos[0] = x; o.pos[1] = y; o.pos[2] = z;
+  o.rot[0] = rx; o.rot[1] = ry; o.rot[2] = rz;
+  o.scale[0] = sx; o.scale[1] = sy; o.scale[2] = sz;
+  o.color = cmpCol; o.emissive = cmpCol; o.emissiveStrength = glow; o.alpha = alpha;
+  return o;
+}
+// w.end(), just before the frame is rendered. `r` is that world's renderer.
+function cmpDraw3d(w, r){
+  if(!cmpAimed) return;
+  cmpAimed = false;
+  const it = cmpCur;
+  if(!it || !w || !r) return;
+  const dt = w.dt > 0 ? Math.min(w.dt, 0.05) : 0, t = w.t || 0;
+  // Size and side from the camera, so it reads the same in a cockpit chase and from thirty metres up.
+  const eye = w.cam && w.cam.eye;
+  let fx = 0, fz = -1, dist = 14;
+  if(eye){
+    const dx = cmpAx - eye[0], dy = cmpAy - eye[1], dz = cmpAz - eye[2];
+    dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 14;
+    const h = Math.sqrt(dx * dx + dz * dz);
+    if(h > 0.001){ fx = dx / h; fz = dz / h; }
+  }
+  const s = Math.max(0.24, Math.min(2.6, dist * 0.055));
+  const gx = cmpAx - fz * s * 3.2, gy = cmpAy + s * 2.2, gz = cmpAz + fx * s * 3.2;      // the camera's right, and up
+  // A new world: be there. A frozen frame (photo mode, dt 0): stay exactly where it was, while the camera
+  // orbits. Otherwise ease — or jump, when the player was put somewhere else.
+  if(cmp3w !== w){ cmp3w = w; cmpP[0] = gx; cmpP[1] = gy; cmpP[2] = gz; }
+  else if(dt > 0){
+    const far = Math.abs(gx - cmpP[0]) + Math.abs(gy - cmpP[1]) + Math.abs(gz - cmpP[2]) > dist * 1.5;
+    const k = (cmpStill || far) ? 1 : 1 - Math.exp(-dt / 0.16);
+    cmpP[0] += (gx - cmpP[0]) * k; cmpP[1] += (gy - cmpP[1]) * k; cmpP[2] += (gz - cmpP[2]) * k;
+  }
+  const cheer = cmpCheerK(), spin = cmpStill ? 0 : t * (1.6 + cheer * 6), q = s * (1 + cheer * 0.45);
+  const x = cmpP[0], y = cmpP[1] + (cmpStill ? 0 : Math.sin(t * 2.6) * s * 0.22), z = cmpP[2];
+  const glow = 1.6 + cheer * 2.4, A = CMP_D[0], B = CMP_D[1], C = CMP_D[2], D = CMP_D[3];
+  cmp3n++;
+  switch(it.look){
+    case 1:   // HALO — two rings, one inside the other
+      r.draw('thintorus', cmpPut(A, x, y, z, spin, spin * 0.7, 0, q * 1.5, q * 1.5, q * 1.5, glow, 0.9));
+      r.draw('thintorus', cmpPut(B, x, y, z, 1.5708, spin * 1.3, spin, q * 1.05, q * 1.05, q * 1.05, glow, 0.9));
+      r.draw('sphere', cmpPut(C, x, y, z, 0, 0, 0, q * 0.22, q * 0.22, q * 0.22, glow + 1, 1));
+      break;
+    case 2:   // BIT — a tumbling cube and its crumb
+      r.draw('cube', cmpPut(A, x, y, z, spin * 0.8, spin, spin * 0.3, q * 0.62, q * 0.62, q * 0.62, glow * 0.7, 1));
+      r.draw('cube', cmpPut(B, x + Math.cos(spin * 1.7) * q * 0.9, y + q * 0.35, z + Math.sin(spin * 1.7) * q * 0.9, spin, 0, spin, q * 0.2, q * 0.2, q * 0.2, glow, 1));
+      break;
+    case 3:   // SCOUT — the hull, lit from inside, under a ring no hostile carries
+      r.draw('drone', cmpPut(A, x, y, z, 0, spin * 0.5, 0, q * 0.8, q * 0.8, q * 0.8, 0.9 + cheer, 1));
+      r.draw('thintorus', cmpPut(B, x, y + q * 0.55, z, 0, spin * 3, 0, q * 1.5, q * 0.4, q * 1.5, glow, 0.55));
+      break;
+    case 4:   // NOVA — a small sun, three moons
+      r.draw('lowsphere', cmpPut(A, x, y, z, 0, spin * 0.4, 0, q * 0.5, q * 0.5, q * 0.5, glow + 0.6, 1));
+      for(let i = 0; i < 3; i++){
+        const a = spin * 1.4 + i * 2.0944, o = i === 0 ? B : i === 1 ? C : D;
+        r.draw('sphere', cmpPut(o, x + Math.cos(a) * q * 1.05, y + Math.sin(a * 0.9) * q * 0.3, z + Math.sin(a) * q * 1.05, 0, 0, 0, q * 0.16, q * 0.16, q * 0.16, glow, 1));
+      }
+      break;
+    case 5:   // WINGMATE — your own ship, small, nose the way the camera looks
+      r.draw('ship', cmpPut(A, x, y, z, 0.05, Math.atan2(-fx, -fz), cmpStill ? 0 : Math.sin(t * 1.8) * 0.25, q * 0.55, q * 0.55, q * 0.55, 0.5 + cheer, 1));
+      r.draw('thintorus', cmpPut(B, x, y - q * 0.3, z, 0, spin * 2, 0, q * 1.1, q * 0.3, q * 1.1, glow, 0.45));
+      break;
+    default:  // SPARK — a point of light and its ring
+      r.draw('sphere', cmpPut(A, x, y, z, 0, 0, 0, q * 0.42, q * 0.42, q * 0.42, glow + 0.8, 1));
+      r.draw('thintorus', cmpPut(B, x, y, z, 0.5, spin * 2, 0, q * 1.2, q * 0.5, q * 1.2, glow, 0.5));
+  }
+}
+
+// What the tests (and a curious console) can see.
+function cmpPeek(){
+  return { id: cmpCur ? cmpCur.id : null, off: cmpOff(), shown: cmpShown, x: cmpX, y: cmpY, trails: cmpShown && cmpTrails(), still: cmpStill,
+           d2: cmp2n, x2: cmp2x, y2: cmp2y, d3: cmp3n, p3: cmpP.slice(), cheers: cmpCheers, cheering: cmpCheerK() > 0, dirty: cmpDirty, denied: cmpDenied };
+}
+
+// ── WIRING ──
+try{
+  document.addEventListener('mousemove', e => { cmpMx = e.clientX; cmpMy = e.clientY; }, { passive: true });
+  document.addEventListener('visibilitychange', () => cmpRefresh());
+  window.addEventListener('resize', () => { cmpAnchorAt = 0; }, { passive: true });
+  document.getElementById('cmp-toggle')?.addEventListener('click', () => {
+    const off = !cmpOff();
+    try{ if(off) localStorage.setItem(CMP_OFF, '1'); else localStorage.removeItem(CMP_OFF); }catch(e){}
+    snd(off ? 'uiBack' : 'equip');
+    toast(off ? '🛸 Companion hidden on this device.' : '🛸 Companion shown on this device.', 2200);
+    cmpRefresh();
+  });
+  document.getElementById('cmp-fx')?.addEventListener('animationend', e => { e.currentTarget.classList.remove('cmp-react'); });
+}catch(e){ console.warn('Companions failed to wire:', e); }
+
+// ═════════════════════════════════════════════════
+//  § 39 · v74 — ⏱️ SPEEDRUN · all twenty chapters against the clock
+// ═════════════════════════════════════════════════
+// Once ROOT ACCESS is cleared the campaign has nothing left to ask but stars.
+// This asks one more thing: how FAST. A speedrun plays the twenty chapters in
+// order, back to back, on a clock — c20 as its full three-stage chain — and
+// keeps a best time, split by split, per lane.
+//
+// It is the campaign's own machinery driven in a loop: every chapter starts
+// through startChapter() (so it keeps its authored tier, its curated modifiers
+// and its lane, and hands the tier back the way a chapter always does), every
+// result is settled by settleCampaign(), and the rounds bank points, XP and
+// stars like any chapter. What this section adds is the loop, the clock and
+// the book-keeping.
+//
+//  · THE CLOCK, exactly: the sum, over every attempt at every chapter, of
+//    gNow() between the moment a mission build starts running (the end of
+//    runMissionStart — after the 3-2-1) and stopGame(), the one teardown every
+//    round ends in. gNow() stands still while a round is paused or in photo
+//    mode. So the countdown, the exit animation and the time spent reading a
+//    results card are NOT on the clock; a failed attempt IS. c20's three stages
+//    are three such windows and one split.
+//  · ADVANCING. A chapter cleared on THIS attempt (≥ 1★ — an old star does not
+//    count) records its split and the next chapter starts by itself after
+//    three seconds. A chapter failed — a boss chain that reads CHAIN LOST
+//    included — starts again, the clock keeps what the attempt cost, and the
+//    attempt is counted. The total is therefore the sum of the splits.
+//  · FAIR. Chapters keep their authored rules. c20's stages are forced clean
+//    (bossRushNext rolls no chaos in a speedrun), and the power-up dock, the
+//    Time Dilator and the shield are off for the run (paintPowerDock,
+//    usePowerUp and powerConsume ask spdOn()). Heat and Chaos already stand
+//    aside for campaign rounds.
+//  · THREE LANES. A chapter is a different game in 2D, in 3D and as an open
+//    world, so a best is kept for each (the campaign banner's switch decides
+//    which one a run is, as it does for the campaign itself).
+//  · IT ENDS CLEANLY: `speedrun` is its own state with its own abort, called
+//    from enterHub() and from #btn-quit before anything else there. It never
+//    takes vsResultTap — c20's chain needs it.
+//
+// Data — bests only, never part of another write:
+//   players/<uid>/speedrun = { '2d' | '3d' | 'open': { t, s:[20 splits], n, at } }
+//   pi_speedrun = { uid, v }   written first; the faster of the two copies of
+//   a lane wins whenever `user` changes hands. One refusal stops the server
+//   write for the session and nothing else.
+//
+// ⚠️ Chapter ids c01…c20 are keys in players/<uid>/campaign and are never
+//    renamed; splits are stored by POSITION, which is why the table is fixed.
+// ⚠️ Not built: a best-split pace ghost (prepGame has one rival door, the
+//    challenge's). Campaign rounds race the ordinary own-best ghost as before.
+
+var speedrun = null;              // the run in progress — null whenever there is not one
+var spdOpen = false;              // the briefing view of the campaign overlay
+var SPD_LS = 'pi_speedrun';
+var SPD_LANES = { '2d': '2D', '3d': '3D', 'open': 'OPEN WORLD' };
+var SPD_WAIT = 3;                 // seconds a card is shown before the next chapter starts by itself
+var spdOwner = null, spdSeen = null, spdDenied = false, spdTick = 0;
+
+function spdUnlocked(){ return !!(user && user.campaign && +user.campaign[CAMPAIGN[CAMPAIGN.length - 1].id] >= 1); }
+function spdRunning(){ return !!speedrun; }
+function spdFmt(ms){
+  ms = Math.max(0, Math.round(+ms || 0));
+  const t = Math.floor(ms / 100), m = Math.floor(t / 600), s = Math.floor(t / 10) % 60;
+  return m + ':' + (s < 10 ? '0' : '') + s + '.' + (t % 10);
+}
+function spdDelta(ms){ return (ms < 0 ? '−' : '+') + spdFmt(Math.abs(ms)); }
+// The lane a run started now would be: the campaign's own switch, with the fallbacks owLaneArm() applies.
+function spdLaneNow(){
+  let k = '2d';
+  try{
+    k = laneKindPref('campaign');
+    if(k === 'open' && !owWorldsOk()) k = '2d';
+    if(k === '3d' && !gl3dOk()) k = '2d';
+  }catch(e){ k = '2d'; }
+  return SPD_LANES[k] ? k : '2d';
+}
+
+// ── BESTS ─────────────────────────────────────────────────────────────────
+function spdNormLane(b){
+  if(!b || typeof b !== 'object') return null;
+  const t = Math.round(+b.t || 0), s = Array.isArray(b.s) ? b.s.map(v => Math.max(0, Math.round(+v || 0))) : [];
+  if(!(t > 0) || s.length !== CAMPAIGN.length) return null;
+  return { t, s, n: Math.max(s.length, Math.round(+b.n || 0)), at: +b.at || 0 };
+}
+function spdNorm(v){
+  const o = {};
+  for(const k in SPD_LANES){ const b = spdNormLane(v && v[k]); if(b) o[k] = b; }
+  return o;
+}
+// The signed-in profile's bests, reconciled: the faster copy of each lane. Called before every read.
+function spdBests(){
+  if(!user) return {};
+  if(spdOwner !== user || user.speedrun !== spdSeen){
+    const loc = lsGet(SPD_LS, null);
+    const a = spdNorm(user.speedrun), b = spdNorm((loc && loc.uid === user.uid) ? loc.v : null);
+    let ahead = false, changed = false;
+    for(const k in SPD_LANES){
+      if(b[k] && (!a[k] || b[k].t < a[k].t)){ a[k] = b[k]; ahead = true; }
+      else if(a[k] && (!b[k] || a[k].t < b[k].t)) changed = true;
+    }
+    if(Object.keys(a).length) user.speedrun = a;
+    spdOwner = user; spdSeen = user.speedrun;
+    if(changed || ahead) lsSet(SPD_LS, { uid: user.uid, v: a });
+    if(ahead) setTimeout(spdPush, 1200);            // this device holds a faster run than the server does
+  }
+  return (user.speedrun && typeof user.speedrun === 'object') ? user.speedrun : {};
+}
+function spdPush(){
+  if(!user) return;
+  const v = spdBests();
+  if(!Object.keys(v).length) return;
+  lsSet(SPD_LS, { uid: user.uid, v });                          // local first
+  try{ cacheProfile(user); }catch(e){}
+  if(!db || offlineMode || isLocalSession() || spdDenied) return;
+  if(!auth || !auth.currentUser || auth.currentUser.uid !== user.uid) return;
+  // § 33: a guest's record is not whole right now — it goes up with the rest once it is.
+  try{ if(typeof gcHold === 'function' && gcHold({ speedrun: 1 })) return; }catch(e){}
+  db.ref('players/' + user.uid + '/speedrun').set(gcClean(v))
+    .catch(e => { spdDenied = true; console.warn('Speedrun best not stored (rules?):', e && e.code); });
+}
+
+// ── THE RUN ───────────────────────────────────────────────────────────────
+function spdStart(){
+  if(!user || !spdUnlocked()){ snd('deny'); toast('⏱ Speedrun opens once ROOT ACCESS is cleared.', 2800); return false; }
+  if(speedrun || bossRush || mp || endless || dailyActive || anomalyActive){ snd('deny'); return false; }
+  spdOpen = false;
+  speedrun = { lane: spdLaneNow(), i: 0, next: 0, total: 0, cur: 0, mark: null, splits: [], tries: [], pb: null, auto: 0, left: 0, card: false };
+  speedrun.pb = spdBests()[speedrun.lane] || null;
+  spdTick = setInterval(spdPaintPill, 100);
+  startChapter(0);
+  // startChapter() refuses quietly (a mode already running, a locked chapter): no run then.
+  if(!campaignRunActive()){ spdClear(); snd('deny'); return false; }
+  try{ if(typeof laneKind === 'string' && SPD_LANES[laneKind]) speedrun.lane = laneKind; }catch(e){}
+  speedrun.pb = spdBests()[speedrun.lane] || null;
+  toast(`⏱ SPEEDRUN · ${SPD_LANES[speedrun.lane]} LANE — twenty chapters, the clock runs only while you play`, 3600);
+  return true;
+}
+// Everything a run owns, put away. Safe to call twice.
+function spdClear(){
+  const sr = speedrun;
+  speedrun = null;
+  if(sr && sr.auto){ clearInterval(sr.auto); sr.auto = 0; }
+  if(spdTick){ clearInterval(spdTick); spdTick = 0; }
+  document.getElementById('spd-pill')?.remove();
+  try{ scheduleHudFit(); }catch(e){}
+}
+// enterHub() and #btn-quit: walking away ends the run. The campaign hands the tier back itself.
+function spdAbort(why){
+  if(!speedrun) return;
+  const sr = speedrun, at = sr.i + 1, t = sr.total + sr.cur;
+  spdClear();
+  if(why !== 'silent') toast(`⏱ Speedrun ended at chapter ${at} · ${spdFmt(t)} on the clock — nothing was saved`, 3400);
+}
+// The end of runMissionStart(): a round of the run is being played from here…
+function spdGo(){
+  if(!speedrun || !campaignRunActive()) return;
+  if(speedrun.mark == null) speedrun.mark = gNow();
+  speedrun.card = false;
+}
+// …to here, stopGame().
+function spdStop(){
+  const sr = speedrun;
+  if(!sr || sr.mark == null) return;
+  sr.cur += Math.max(0, gNow() - sr.mark);
+  sr.mark = null;
+}
+// What the clock reads this instant.
+function spdNow(){
+  const sr = speedrun;
+  if(!sr) return 0;
+  return sr.total + sr.cur + (sr.mark != null ? Math.max(0, gNow() - sr.mark) : 0);
+}
+// Your run against your best at the last split both have: negative is ahead. null with no best, or before split 1.
+function spdAhead(){
+  const sr = speedrun;
+  if(!sr || !sr.pb || !sr.splits.length) return null;
+  let cum = 0;
+  for(let k = 0; k < sr.splits.length; k++) cum += sr.pb.s[k];
+  return sr.total - cum;
+}
+function spdPaintPill(){
+  const sr = speedrun;
+  if(!sr) return;
+  const stats = document.querySelector('#game-screen .g-stats');
+  let pill = document.getElementById('spd-pill');
+  if(!pill){
+    if(!stats) return;
+    pill = document.createElement('div');
+    pill.id = 'spd-pill';
+    pill.className = 'stat-pill spd-pill';
+    pill.innerHTML = '⏱ <em></em><span class="spd-d"></span>';
+    stats.insertBefore(pill, stats.firstChild);
+    try{ scheduleHudFit(); }catch(e){}
+  }
+  const t = spdFmt(spdNow()), d = spdAhead();
+  const em = pill.firstElementChild, sp = pill.lastElementChild;
+  if(em.textContent !== t) em.textContent = t;
+  const dt = d == null ? '' : spdDelta(d);
+  if(sp.textContent !== dt){
+    sp.textContent = dt;
+    pill.classList.toggle('ahead', d != null && d < 0);
+    pill.classList.toggle('behind', d != null && d > 0);
+  }
+}
+// settleCampaign(), with THIS attempt's stars. Adds the card's rows and decides what happens next.
+function spdSettle(i, got, rows){
+  const sr = speedrun;
+  if(!sr || sr.i !== i || !rows) return;
+  spdStop();                                                   // (already closed by stopGame; harmless)
+  sr.tries[i] = (sr.tries[i] || 0) + 1;
+  sr.card = true;
+  if(!(got >= 1)){
+    sr.next = i;
+    rows['⏱ Speedrun'] = `attempt ${sr.tries[i]} failed — the clock keeps it · ${spdFmt(sr.total + sr.cur)}`;
+    return;
+  }
+  const split = Math.round(sr.cur);
+  sr.splits[i] = split; sr.total += split; sr.cur = 0;
+  const d = spdAhead();
+  rows[`⏱ Split ${i + 1}`] = spdFmt(split) + (sr.tries[i] > 1 ? ` · ${sr.tries[i]} attempts` : '') +
+    (sr.pb ? ` · best ${spdFmt(sr.pb.s[i])}` : '');
+  if(i < CAMPAIGN.length - 1){
+    sr.next = i + 1;
+    rows['⏱ Run'] = spdFmt(sr.total) + (d == null ? '' : ` · ${spdDelta(d)} vs your best`);
+    return;
+  }
+  // ── the finish ──
+  const old = sr.pb, tries = sr.tries.reduce((a, n) => a + (n || 0), 0), isBest = !old || sr.total < old.t;
+  sr.next = -1;
+  rows[`⏱ Speedrun · ${SPD_LANES[sr.lane]}`] = spdFmt(sr.total) + (isBest ? ' · NEW BEST' : '');
+  rows['⏱ Your Best'] = old ? `${spdFmt(old.t)} · ${spdDelta(sr.total - old.t)}` : 'first finished run on this lane';
+  CAMPAIGN_ACTS.forEach(a => {
+    rows[`⏱ Act ${a.n} splits`] = CAMPAIGN.map((c, k) => c.act === a.n ? spdFmt(sr.splits[k]) : null).filter(Boolean).join(' · ');
+  });
+  rows['⏱ Attempts'] = `${tries} for ${CAMPAIGN.length} chapters`;
+  if(isBest){
+    const v = Object.assign({}, spdBests());
+    v[sr.lane] = { t: sr.total, s: sr.splits.slice(), n: tries, at: Date.now() };
+    user.speedrun = v; spdSeen = v; spdOwner = user;
+    spdPush();
+    setTimeout(() => { snd('levelUp'); toast(`⏱ NEW BEST · ${spdFmt(sr.total)} on the ${SPD_LANES[sr.lane]} lane`, 4200); }, 2400);
+  }
+  try{ if(typeof playCount === 'function') playCount('speedrun'); }catch(e){}
+}
+// After campaignAfterCard(): the card's two buttons become the run's.
+function spdAfterCard(){
+  const sr = speedrun;
+  if(!sr || !sr.card) return;
+  sr.card = false;
+  const again = document.getElementById('btn-again'), hub = document.getElementById('btn-hub');
+  if(sr.next < 0){                                             // finished: the run is over, the card stays
+    spdClear();
+    if(again){ again.textContent = '⏱ Run It Again'; again.onclick = () => { spdStart(); }; }
+    return;
+  }
+  const retry = sr.next === sr.i, label = retry ? '↻ Retry' : '▶ Next Chapter';
+  sr.left = SPD_WAIT;
+  if(again){ again.textContent = `${label} · ${sr.left}`; again.onclick = () => spdAdvance(); }
+  if(hub){ hub.textContent = '✖ End Run'; hub.onclick = () => { enterHub(); openCampaign(); }; }
+  if(sr.auto) clearInterval(sr.auto);
+  // A native timer: gLater() died with the round. Cleared by spdClear() on every way out.
+  sr.auto = setInterval(() => {
+    if(speedrun !== sr){ clearInterval(sr.auto); return; }
+    if(document.getElementById('results-screen')?.classList.contains('active') === false) return;   // still arriving
+    sr.left--;
+    if(sr.left <= 0){ spdAdvance(); return; }
+    const b = document.getElementById('btn-again');
+    if(b) b.textContent = `${label} · ${sr.left}`;
+  }, 1000);
+}
+function spdAdvance(){
+  const sr = speedrun;
+  if(!sr) return;
+  if(sr.auto){ clearInterval(sr.auto); sr.auto = 0; }
+  if(sr.next < 0) return;
+  sr.i = sr.next;
+  startChapter(sr.i);
+  // startChapter() refuses quietly. A card whose button no longer does anything is worse than the map.
+  if(!campaignRunActive()){
+    spdAbort('silent');
+    try{ enterHub(); openCampaign(); }catch(e){}
+    toast('⏱ The next chapter would not start — speedrun ended.', 3400);
+  }
+}
+
+// ── THE BRIEFING (a view of the campaign overlay, like the codex) ─────────
+function spdButton(body){
+  if(!body || !user || !spdUnlocked()) return;
+  let row = document.getElementById('cp-tools');
+  if(!row){
+    row = document.createElement('div');
+    row.className = 'cp-tools'; row.id = 'cp-tools';
+    body.insertBefore(row, body.firstChild);
+  }
+  const best = spdBests()[spdLaneNow()];
+  const b = document.createElement('button');
+  b.className = 'btn btn-secondary btn-sm'; b.id = 'btn-speedrun'; b.type = 'button';
+  b.textContent = '⏱ SPEEDRUN' + (best ? ' · ' + spdFmt(best.t) : '');
+  b.addEventListener('click', () => { spdOpen = true; snd('tab'); renderCampaign(); campaignScrollTop(false); });
+  row.appendChild(b);
+}
+function spdRender(body, sub){
+  if(!spdOpen || !body || !user) return false;
+  if(!spdUnlocked()){ spdOpen = false; return false; }
+  const lane = spdLaneNow(), bests = spdBests(), pb = bests[lane];
+  if(sub) sub.textContent = 'all twenty chapters, back to back, against the clock';
+  let html = '<div class="cp-tools" id="cp-tools"><button class="btn btn-secondary btn-sm" id="btn-spd-back" type="button">← CHAPTER MAP</button></div>' +
+    '<div class="spd-brief">' +
+    '<div class="spd-rules">' +
+      '<div>⏱ The clock runs only while a round is being played — not in the 3-2-1, not on a results card, not while paused.</div>' +
+      '<div>▶ Clear a chapter (one star, on this attempt) and the next one starts by itself. Fail it and it starts again: the clock keeps what the attempt cost.</div>' +
+      '<div>⚖️ Every chapter keeps its own rules. The finale is three clean stages. No power-ups, no Time Dilator, no shield.</div>' +
+      '<div>🚪 QUIT or the hub ends the run. Only a finished run is kept.</div>' +
+    '</div>' +
+    '<div class="spd-lanes">' + Object.keys(SPD_LANES).map(k => {
+      const b = bests[k];
+      return '<div class="spd-lane' + (k === lane ? ' on' : '') + '" data-lane="' + k + '"><span>' + SPD_LANES[k] + (k === lane ? ' · THIS RUN' : '') + '</span>' +
+             '<b>' + (b ? spdFmt(b.t) : '—') + '</b><em>' + (b ? b.n + ' attempts' : 'no finished run') + '</em></div>';
+    }).join('') + '</div>' +
+    '<button class="btn btn-primary btn-full" id="btn-spd-go" type="button">▶ START THE RUN · ' + SPD_LANES[lane] + ' LANE</button>' +
+    '<div class="spd-note">The lane is the campaign banner\'s ▶ CLASSIC / 🌐 OPEN WORLD switch and your 2D / 3D setting — the three are different games, so each keeps its own best.</div>';
+  if(pb){
+    html += '<div class="spd-head">YOUR BEST SPLITS · ' + SPD_LANES[lane] + '</div><div class="spd-splits">' +
+      CAMPAIGN.map((c, k) => '<div class="spd-split"><span>' + (k + 1) + ' · ' + esc(c.title) + '</span><b>' + spdFmt(pb.s[k]) + '</b></div>').join('') + '</div>';
+  }
+  html += '</div>';
+  body.innerHTML = html;
+  document.getElementById('btn-spd-back')?.addEventListener('click', () => { spdOpen = false; snd('uiBack'); renderCampaign(); campaignScrollTop(false); });
+  document.getElementById('btn-spd-go')?.addEventListener('click', () => { spdStart(); });
+  return true;
+}
+
+// ── WIRING ──
+try{
+  // The campaign always opens on the map.
+  openCampaign = (function(orig){ return function(sel){ spdOpen = false; return orig(sel); }; })(openCampaign);
+  // 📊 § 34: a speedrun is ONE run, counted when it finishes — its twenty cards are not twenty campaign runs.
+  if(typeof PLAY_MODES === 'object' && PLAY_MODES) PLAY_MODES.speedrun = '⏱️ Speedruns';
+  if(typeof PLAY_HOOKS !== 'undefined' && PLAY_HOOKS && PLAY_HOOKS.push) PLAY_HOOKS.push(() => (speedrun ? false : undefined));
+}catch(e){ console.warn('Speedrun failed to wire:', e); }
+
+// ═════════════════════════════════════════════════
+//  § 40 · v75 — 🌀 GLITCH RUN · a branching run through the grid, with relics
+// ═════════════════════════════════════════════════
+// Boss Rush chains five missions in a line. A Glitch Run is a MAP: six layers of
+// two or three nodes and a boss, joined by paths that branch — you pick a route,
+// clear a node, take one relic of three, and pick again. Clear the boss and the
+// run is won; fail a node and it is over. Either way it banks what it earned,
+// once, as one score.
+//
+// Like Boss Rush it is built from doors the arcade already has:
+//  · A NODE is prepGame(gid, stack) with vsResultTap = glitchTap. The tap calls
+//    stopGame() itself, pays the node chaosPayMult() × the payout relics, and
+//    never reaches the results card — so a node writes no high score, no
+//    history, no medal, no contract and (GHOST_SKIP) no ghost.
+//  · CLEARED means raw ≥ medalThresholds(gid)[0], the bronze line: the one
+//    definition of "a decent run" every mission already has.
+//  · THE MAP is makeRng(hashStr('glitch:' + seed)) and nothing else, so the
+//    same seed is the same map — the same layers, missions and paths — on any
+//    device whose pool is the same. The pool is the missions this profile has
+//    unlocked, less arena (its Quit banks), battlebots (too long) and stack (no
+//    clock); two profiles with different clearance share the shape, not
+//    necessarily every mission. The modifiers on an elite or boss node are
+//    rolled on the spot (chaosForce) and are not part of the map.
+//  · A RELIC lives on the run object and is applied through funnels that are
+//    already there — never a mission edit:
+//      speed and clock      getDifficultyModifier() / getTimeModifier() read
+//                           glitchRun.spd / .tim
+//      seconds              roundClockAdd, as the round starts (glitchGo)
+//      the extra absorb     chaosFreeShield, re-armed after chaosArm() on every
+//                           node (glitchArm) because chaosClear() wipes it in
+//                           every stopGame()
+//      payout               in the tap
+//      a boon, a reroll,    on the run's own book-keeping
+//      a fourth choice,
+//      a second wind, a
+//      lower bar
+//    ⚠️ The exceptions are the missions', and the relic cards say so: nothing is
+//    fatal in Click Frenzy, Reaction, Cyber Pong, Pulse Sync or Meteor Shield
+//    (classic builds), so the absorb has nothing to absorb there; and Memory
+//    Match, Math Blitz, Cyber Pong, 2D Dodge Cores and 2D Cyber Arena read only
+//    Safe Mode's ease, so the speed and clock relics do not reach them.
+//  · THE SCREEN BETWEEN NODES is #glitch-overlay (static). Its closer is
+//    run-aware: BACK or ✕ there CASHES OUT — banks the run as it stands — so
+//    an armed vsResultTap is never left behind. QUIT or the hub in the middle
+//    of a node forfeits, as in Boss Rush (abortGlitch, from enterHub).
+//  · LANES: the banner's ▶ CLASSIC / 🧊 3D / 🌐 OPEN WORLD switch, through
+//    owLaneArm('glitch'); a mission with no world plays classic; the grid's own
+//    setting is back the moment the run is over (laneLive).
+//
+// Bank once: showResults('glitchrun', total, …, { noChaosPay }). META.glitchrun
+// is the lane's card, its cap derived from the cap table like Boss Rush's.
+// Data: players/<uid>/glitch = { pts, depth, seed, at } — the best run, one own
+// set() with a "(rules?)" catch, mirrored in pi_glitch — and the 🌀 GLITCH BOARD
+// in the hub is derived from the same players read the other lane boards use.
+
+var glitchRun = null;                 // the run in progress — null whenever there is not one
+var GL_LAYERS = 7;                    // six layers of nodes, then the boss
+var GL_LS = 'pi_glitch';
+var GL_SKIP = { arena: 1, battlebots: 1, stack: 1 };
+var GL_NO_FATAL = ['click', 'reaction', 'pong', 'rhythm', 'meteor'];
+var GL_OWN_PACE = ['memory', 'math', 'pong', 'dodge'];
+var glOwner = null, glSeen = null, glDenied = false, glSeedText = '';
+
+META.glitchrun = { name: 'GLITCH RUN', emoji: '🌀', maxPts: 0 };
+// The ceiling of a perfect run: the seven biggest caps a node can be, like Boss Rush's five.
+META.glitchrun.maxPts = Object.keys(SOLO_START)
+  .filter(g => !GL_SKIP[g] && META[g] && META[g].maxPts < 90000)
+  .map(g => META[g].maxPts).sort((a, b) => b - a).slice(0, GL_LAYERS).reduce((a, b) => a + b, 0);
+
+// max = how many a run can hold. `tell` is where the relic does NOT reach (shown on its card).
+var GL_RELICS = [
+  { id: 'shell',  icon: '🛡️', name: 'BACKUP SHELL',   max: 1, desc: 'Absorbs one fatal hit in EVERY node.', tell: 'fatal' },
+  { id: 'slow',   icon: '🐢', name: 'THROTTLE',       max: 2, desc: 'Hazards run 12% slower.', tell: 'pace' },
+  { id: 'clock',  icon: '⌛', name: 'OVERTIME',        max: 2, desc: 'Every clock is 15% longer.', tell: 'pace' },
+  { id: 'secs',   icon: '➕', name: 'SPARE SECONDS',   max: 3, desc: '+6 seconds on every node that has a clock.' },
+  { id: 'pay',    icon: '💰', name: 'SKIM',           max: 3, desc: 'Every node pays 25% more.' },
+  { id: 'boon',   icon: '🎲', name: 'LUCKY PACKET',   max: 9, desc: 'Your NEXT node starts with a chaos boon.' },
+  { id: 'reroll', icon: '🔁', name: 'REROUTER',       max: 2, desc: 'Two rerolls of a relic offer you do not like.' },
+  { id: 'choice', icon: '🧩', name: 'WIDE SCAN',      max: 1, desc: 'Relic offers show four instead of three.' },
+  { id: 'wind',   icon: '❤️', name: 'SECOND WIND',    max: 2, desc: 'Survive ONE failed node. Spent when it saves you.' },
+  { id: 'bar',    icon: '🥉', name: 'LOW BAR',        max: 1, desc: 'A node clears at 80% of its bronze line.' }
+];
+function glRelic(id){ return GL_RELICS.find(r => r.id === id); }
+function glNames(list){ return list.filter(g => META[g]).map(g => META[g].name).join(', '); }
+function glTell(r){
+  if(r.tell === 'fatal') return 'Nothing is fatal in ' + glNames(GL_NO_FATAL) + ' (classic) — no effect there.';
+  if(r.tell === 'pace')  return glNames(GL_OWN_PACE) + ' (2D) keep their own pace — no effect there.';
+  return '';
+}
+
+// ── THE MAP ───────────────────────────────────────────────────────────────
+function glitchPool(){
+  return Object.keys(SOLO_START).filter(g => !GL_SKIP[g] && META[g] && META[g].maxPts < 90000 && missionUnlocked(g));
+}
+function glitchSeedToday(){ return dayKey().replace(/-/g, ''); }
+function glitchSeedClean(s){ return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12); }
+// Pure: (seed, pool) → layers. No Math.random, no state.
+function glitchMap(seed, pool){
+  const rnd = makeRng(hashStr('glitch:' + seed));
+  pool = (pool && pool.length ? pool : ['click', 'reaction', 'memory', 'math']).slice();
+  let bag = [];
+  const draw = () => {
+    if(!bag.length){
+      bag = pool.slice();
+      for(let i = bag.length - 1; i > 0; i--){ const j = Math.floor(rnd() * (i + 1)), t = bag[i]; bag[i] = bag[j]; bag[j] = t; }
+    }
+    return bag.pop();
+  };
+  const layers = [];
+  for(let L = 0; L < GL_LAYERS - 1; L++){
+    const n = 2 + Math.floor(rnd() * 2), row = [];
+    for(let k = 0; k < n; k++){
+      const elite = L >= 2 && rnd() < 0.3;
+      row.push({ id: L + '.' + k, layer: L, k, gid: draw(), kind: elite ? 'elite' : 'node', next: [] });
+    }
+    layers.push(row);
+  }
+  layers.push([{ id: (GL_LAYERS - 1) + '.0', layer: GL_LAYERS - 1, k: 0, gid: draw(), kind: 'boss', next: [] }]);
+  for(let L = 0; L < GL_LAYERS - 1; L++){
+    const a = layers[L], b = layers[L + 1];
+    a.forEach((nd, k) => {
+      const base = Math.min(b.length - 1, Math.round(k * (b.length - 1) / Math.max(1, a.length - 1)));
+      nd.next.push(base);
+      if(b.length > 1 && rnd() < 0.55){
+        const alt = base + (rnd() < 0.5 ? -1 : 1);
+        if(alt >= 0 && alt < b.length && nd.next.indexOf(alt) < 0) nd.next.push(alt);
+      }
+    });
+    // Every node of the next layer can be reached from somewhere.
+    b.forEach((x, j) => { if(!a.some(nd => nd.next.indexOf(j) >= 0)) a[Math.min(a.length - 1, j)].next.push(j); });
+    a.forEach(nd => nd.next.sort((x, y) => x - y));
+  }
+  return layers;
+}
+function glitchLine(gid){
+  const t = medalThresholds(gid)[0] || 1;
+  return Math.max(1, Math.ceil(t * ((glitchRun && glitchRun.relics.bar) ? 0.8 : 1)));
+}
+
+// ── THE BEST RUN ──────────────────────────────────────────────────────────
+function glNormBest(b){
+  const pts = Math.max(0, Math.round(+(b && b.pts) || 0));
+  return pts > 0 ? { pts, depth: Math.max(0, Math.min(GL_LAYERS, Math.round(+b.depth || 0))), seed: glitchSeedClean(b.seed), at: +b.at || 0 } : null;
+}
+function glitchBest(){
+  if(!user) return null;
+  if(glOwner !== user || user.glitch !== glSeen){
+    const loc = lsGet(GL_LS, null);
+    const a = glNormBest(user.glitch), b = glNormBest((loc && loc.uid === user.uid) ? loc.v : null);
+    const mine = !!b && (!a || b.pts > a.pts);
+    const best = mine ? b : a;
+    if(best) user.glitch = best;
+    glOwner = user; glSeen = user.glitch;
+    if(best && !mine && (!b || b.pts !== best.pts)) lsSet(GL_LS, { uid: user.uid, v: best });
+    if(mine) setTimeout(glitchPush, 1200);
+  }
+  return glNormBest(user.glitch);
+}
+function glitchPush(){
+  if(!user) return;
+  const v = glitchBest();
+  if(!v) return;
+  lsSet(GL_LS, { uid: user.uid, v });
+  try{ cacheProfile(user); }catch(e){}
+  if(!db || offlineMode || isLocalSession() || glDenied) return;
+  if(!auth || !auth.currentUser || auth.currentUser.uid !== user.uid) return;
+  try{ if(typeof gcHold === 'function' && gcHold({ glitch: 1 })) return; }catch(e){}
+  db.ref('players/' + user.uid + '/glitch').set(v)
+    .catch(e => { glDenied = true; console.warn('Glitch Run best not stored (rules?):', e && e.code); });
+}
+
+// ── THE RUN ───────────────────────────────────────────────────────────────
+function glitchStart(seed){
+  if(!user) return false;
+  if(glitchRun || bossRush || mp || endless || dailyActive || anomalyActive ||
+     (typeof campaignRunActive === 'function' && campaignRunActive()) || (typeof partyRunActive === 'function' && partyRunActive())){ snd('deny'); return false; }
+  seed = glitchSeedClean(seed) || glitchSeedToday();
+  const pool = glitchPool();
+  if(pool.length < 4){ snd('deny'); toast('🌀 Unlock a few more missions first — a Glitch Run needs at least four.', 3200); return false; }
+  glitchRun = { seed, map: glitchMap(seed, pool), layer: -1, at: null, path: [], total: 0, rows: {}, cleared: 0, played: 0,
+                relics: {}, got: [], spd: 1, tim: 1, rerolls: 0, boon: 0, stage: 'map', offer: null, note: '',
+                rnd: makeRng(hashStr('glitch-relics:' + seed)) };
+  vsResultTap = glitchTap;
+  // 🌐 The banner's ▶ CLASSIC / 🧊 3D / 🌐 OPEN WORLD switch (§ 31).
+  try{ if(typeof owLaneArm === 'function') owLaneArm('glitch'); }catch(e){}
+  snd('success');
+  glitchShow();
+  return true;
+}
+function glitchRecalc(){
+  const r = glitchRun;
+  if(!r) return;
+  r.spd = Math.pow(0.88, r.relics.slow || 0);
+  r.tim = Math.pow(1.15, r.relics.clock || 0);
+}
+function glitchPayMult(){ return glitchRun ? Math.pow(1.25, glitchRun.relics.pay || 0) : 1; }
+// The route is chosen: play node `j` of the next layer.
+function glitchPlay(j){
+  const run = glitchRun;
+  if(!run || run.stage !== 'map') return;
+  const row = run.map[run.layer + 1], nd = row && row[j];
+  if(!nd) return;
+  if(run.at && run.at.next.indexOf(j) < 0){ snd('deny'); return; }       // not on a path from where you stand
+  run.layer = nd.layer; run.at = nd; run.path.push(nd.id); run.stage = 'play'; run.note = '';
+  glitchShut();
+  curGame = nd.gid;
+  document.getElementById('g-title').textContent =
+    `🌀 ${nd.layer + 1}/${GL_LAYERS} · ${nd.kind === 'boss' ? 'BOSS · ' : nd.kind === 'elite' ? 'ELITE · ' : ''}${META[nd.gid].name}`;
+  showScreen('game-screen');
+  // An elite node carries one forced modifier and the boss two (and both pay for them). Passed
+  // explicitly — null included — so neither the Chaos opt-in nor Heat adds a roll of its own.
+  let stack = chaosForce(nd.kind === 'boss' ? 2 : nd.kind === 'elite' ? 1 : 0);
+  if(run.boon > 0){
+    run.boon--;
+    const boons = CHAOS_MODS.filter(m => m.kind === 'boon' && !stack.some(s => s.id === m.id));
+    if(boons.length) stack = stack.concat([boons[Math.floor(run.rnd() * boons.length)]]);
+  }
+  prepGame(nd.gid, stack.length ? stack : null);
+  glitchPaintPill();
+}
+// prepGame's countdown, right after chaosArm(): the relics that live in the chaos globals, re-armed.
+function glitchArm(){
+  const run = glitchRun;
+  if(!run || run.stage !== 'play') return;
+  if(run.relics.shell) chaosFreeShield = true;
+}
+// The end of runMissionStart(): the round is running — the relic that needs the mission's own clock door.
+function glitchGo(){
+  const run = glitchRun;
+  if(!run || run.stage !== 'play' || !run.relics.secs) return;
+  const n = 6 * run.relics.secs, el = document.getElementById('g-time'), raw = el ? el.textContent.trim() : '';
+  const secs = parseClockText(raw);
+  if(secs == null) return;                                   // no clock on this node (Flappy runs on ∞)
+  // The Time Dilator's two doors, for the same reasons: the mission's own counter where it handed one
+  // over, and otherwise its clock simply held for that many of its own ticks.
+  if(roundClockAdd){
+    try{ roundClockAdd(n); el.textContent = raw.includes(':') ? fmtTime(secs + n) : String(secs + n); }catch(e){ console.warn('Glitch seconds not added:', e); }
+  }else _clockSkip += n;
+}
+function glitchPaintPill(){
+  const stats = document.querySelector('#game-screen .g-stats');
+  let pill = document.getElementById('gl-pill');
+  if(!glitchRun){ if(pill){ pill.remove(); try{ scheduleHudFit(); }catch(e){} } return; }
+  if(!pill && stats){
+    pill = document.createElement('div');
+    pill.id = 'gl-pill';
+    pill.className = 'stat-pill gl-pill';
+    stats.insertBefore(pill, stats.firstChild);
+  }
+  if(!pill) return;
+  const run = glitchRun, nd = run.at;
+  pill.innerHTML = '🌀 <em>' + (nd ? nd.layer + 1 : 0) + '/' + GL_LAYERS + '</em> · ' + run.total.toLocaleString() +
+                   (nd ? ' · 🥉 ' + glitchLine(nd.gid).toLocaleString() : '');
+  try{ scheduleHudFit(); }catch(e){}
+}
+// vsResultTap while a run is on. A node never reaches the results card.
+function glitchTap(gid, pts, bd){
+  const run = glitchRun;
+  if(!run) return false;
+  // Between nodes nothing is being played: a stray result (a mission's last timer) is swallowed here,
+  // never let through as a card of its own in the middle of a run.
+  if(run.stage !== 'play') return true;
+  stopGame();
+  const nd = run.at, raw = Math.max(0, Math.round(+pts || 0)), line = glitchLine(gid), ok = raw >= line;
+  const paid = Math.round(raw * chaosPayMult() * glitchPayMult());
+  run.total += paid; run.played++;
+  run.rows[`${run.played}. ${META[gid].emoji} ${META[gid].name}`] =
+    `${paid.toLocaleString()} PTS · ${ok ? 'cleared' : 'FAILED'} · ${raw.toLocaleString()} of ${line.toLocaleString()}` + (nd.kind !== 'node' ? ` · ${nd.kind.toUpperCase()}` : '');
+  glitchPaintPill();
+  const later = (fn, ms) => setTimeout(() => { if(glitchRun === run) fn(); }, ms);
+  if(ok){
+    run.cleared++;
+    if(nd.kind === 'boss'){
+      snd('levelUp'); toast(`🌀 CORE BREACHED · +${paid.toLocaleString()} PTS`, 2400);
+      run.stage = 'over';
+      later(() => glitchFinish('won'), 1300);
+      return true;
+    }
+    snd('score'); toast(`✅ NODE CLEARED · +${paid.toLocaleString()} PTS`, 1800);
+    run.note = `✅ ${META[gid].name} cleared · +${paid.toLocaleString()} PTS`;
+    run.stage = 'offer'; run.offer = glitchOffer();
+    later(glitchShow, 1000);
+    return true;
+  }
+  if(run.relics.wind > 0 && nd.kind !== 'boss'){
+    run.relics.wind--;
+    snd('shield'); toast('❤️ SECOND WIND — the run goes on', 2400);
+    run.note = `❤️ ${META[gid].name} failed (${raw.toLocaleString()} of ${line.toLocaleString()}) — SECOND WIND spent, no relic for this node`;
+    run.stage = 'map';
+    later(glitchShow, 1000);
+    return true;
+  }
+  snd('gameOver'); toast(`🌀 TRACE LOST — ${raw.toLocaleString()} of ${line.toLocaleString()} · banking what you carried`, 2800);
+  run.stage = 'over';
+  later(() => glitchFinish('lost'), 1400);
+  return true;
+}
+// Three (or four) relics the run can still take, off the run's own seeded stream.
+function glitchOffer(){
+  const run = glitchRun;
+  if(!run) return [];
+  const pool = GL_RELICS.filter(r => (run.relics[r.id] || 0) < r.max).map(r => r.id);
+  const n = Math.min(pool.length, run.relics.choice ? 4 : 3), out = [];
+  while(out.length < n){ out.push(pool.splice(Math.floor(run.rnd() * pool.length), 1)[0]); }
+  return out;
+}
+function glitchTake(id){
+  const run = glitchRun, r = glRelic(id);
+  if(!run || run.stage !== 'offer' || !r || !run.offer || run.offer.indexOf(id) < 0) return;
+  run.relics[id] = (run.relics[id] || 0) + 1;
+  run.got.push(id);
+  if(id === 'reroll') run.rerolls += 2;
+  if(id === 'boon') run.boon++;
+  glitchRecalc();
+  snd('equip');
+  run.offer = null; run.stage = 'map';
+  glitchRender();
+}
+function glitchReroll(){
+  const run = glitchRun;
+  if(!run || run.stage !== 'offer' || !(run.rerolls > 0)) return;
+  run.rerolls--;
+  run.offer = glitchOffer();
+  snd('tab');
+  glitchRender();
+}
+// Bank the run, once. how: 'won' | 'lost' | 'cash'
+function glitchFinish(how){
+  const run = glitchRun;
+  if(!run) return;
+  glitchRun = null;
+  vsResultTap = null;
+  glitchShut();
+  glitchPaintPill();
+  try{ if(window.PI3D && PI3D.syncBody) PI3D.syncBody(); }catch(e){}
+  const bd = Object.assign({}, run.rows);
+  bd['🌀 Depth'] = `${run.cleared}/${GL_LAYERS} nodes cleared` + (how === 'won' ? ' · BOSS DOWN' : '');
+  if(run.got.length) bd['🧿 Relics'] = run.got.map(id => glRelic(id).icon + ' ' + glRelic(id).name).join(' · ');
+  bd['🌱 Seed'] = run.seed;
+  const total = Math.min(run.total, META.glitchrun.maxPts);
+  if(total < run.total) bd['🔺 Held To The Cap'] = `${run.total.toLocaleString()} earned · ${total.toLocaleString()} is the lane's ceiling`;
+  const old = glitchBest();
+  if(total > 0 && (!old || total > old.pts)){
+    user.glitch = { pts: total, depth: run.cleared, seed: run.seed, at: Date.now() };
+    glSeen = user.glitch; glOwner = user;
+    glitchPush();
+    bd['🏆 Run Best'] = `${total.toLocaleString()} PTS` + (old ? ` · was ${old.pts.toLocaleString()}` : ' · first run');
+  }else if(old) bd['🏆 Run Best'] = `${old.pts.toLocaleString()} PTS stands`;
+  showResults('glitchrun', total, bd, {
+    emoji: how === 'won' ? '🌀' : how === 'cash' ? '💰' : '🩸',
+    name: how === 'won' ? 'GLITCH RUN — CORE BREACHED' : how === 'cash' ? 'GLITCH RUN — CASHED OUT' : 'GLITCH RUN — TRACE LOST',
+    cap: META.glitchrun.maxPts,
+    noChaosPay: true,
+    ...(how === 'lost' ? { sound: 'gameOver' } : {}),
+    again: { label: 'Run It Again', fn: () => { enterHub(); glitchOpen(); } }
+  });
+}
+// enterHub(): walking away in the middle of a run forfeits it, as in Boss Rush.
+function abortGlitch(){
+  if(!glitchRun) return;
+  const had = glitchRun.played > 0 || glitchRun.stage === 'play';
+  glitchRun = null;
+  vsResultTap = null;
+  glitchShut();
+  glitchPaintPill();
+  try{ if(window.PI3D && PI3D.syncBody) PI3D.syncBody(); }catch(e){}
+  if(had) toast('🌀 Glitch Run abandoned — nothing banked.', 2800);
+}
+// BACK, ✕ or the backdrop on the overlay. Between nodes that is CASH OUT; before the first node it is just "not now".
+function glitchLeave(){
+  const run = glitchRun;
+  if(!run){ glitchShut(); return; }
+  if(run.stage === 'play' || run.stage === 'over'){ glitchShut(); return; }
+  if(run.played === 0){
+    abortGlitch();
+    // Never leave the player looking at a stopped board with nothing over it.
+    if(document.querySelector('.screen.active')?.id === 'game-screen') enterHub();
+    return;
+  }
+  glitchFinish('cash');
+}
+
+// ── THE OVERLAY ───────────────────────────────────────────────────────────
+function glitchOpen(){
+  if(!user) return;
+  if(!glSeedText) glSeedText = glitchSeedToday();
+  glitchShow();
+}
+function glitchShow(){
+  const ov = document.getElementById('glitch-overlay');
+  if(!ov || !user) return;
+  glitchRender();
+  if(!ov.classList.contains('show')){ ov.classList.add('show'); ov.setAttribute('aria-hidden', 'false'); snd('tab'); }
+  const m = ov.querySelector('.fb-modal'); if(m) m.scrollTop = 0;
+}
+// The plain class flip — NOT closeOverlay(), whose registered closer is glitchLeave().
+function glitchShut(){
+  const ov = document.getElementById('glitch-overlay');
+  if(!ov) return;
+  ov.classList.remove('show'); ov.setAttribute('aria-hidden', 'true');
+}
+function glitchMapHtml(run){
+  let html = '<div class="gl-map" role="list" aria-label="The run\'s map">';
+  run.map.forEach((row, L) => {
+    html += '<div class="gl-layer' + (L === run.layer + 1 && run.stage === 'map' ? ' next' : '') + '" role="listitem"><span class="gl-ln">' + (L === GL_LAYERS - 1 ? 'BOSS' : L + 1) + '</span>';
+    row.forEach((nd, j) => {
+      const here = run.at && run.at.id === nd.id, been = run.path.indexOf(nd.id) >= 0;
+      const open = run.stage === 'map' && L === run.layer + 1 && (!run.at || run.at.next.indexOf(j) >= 0);
+      html += '<span class="gl-node gl-' + nd.kind + (here ? ' here' : been ? ' been' : open ? ' open' : '') + '" title="' + esc(META[nd.gid].name) + '">' +
+              META[nd.gid].emoji + (nd.kind === 'boss' ? '👑' : nd.kind === 'elite' ? '⚠️' : '') + '</span>';
+    });
+    html += '</div>';
+  });
+  return html + '</div>';
+}
+function glitchRender(){
+  const body = document.getElementById('glitch-body'), sub = document.getElementById('glitch-sub');
+  if(!body || !user) return;
+  const run = glitchRun;
+  let html = '';
+  if(!run){
+    const best = glitchBest(), pool = glitchPool();
+    if(sub) sub.textContent = 'a branching run through the grid · one score at the end';
+    html =
+      '<div class="gl-rules">' +
+        '<div>🗺️ Seven layers. Pick a route, clear the node, take one relic of three, pick again. The last node is the boss.</div>' +
+        '<div>🥉 A node is cleared at its mission\'s BRONZE line. Fail one and the run is over — it still banks what it earned.</div>' +
+        '<div>💰 BACK or ✕ between nodes cashes the run out. QUIT in the middle of a node forfeits it.</div>' +
+        '<div>🌱 The same seed is the same map for everyone with the same missions unlocked. Today\'s seed is today\'s date.</div>' +
+      '</div>' +
+      '<label class="gl-seed"><span>SEED</span><input class="input" id="gl-seed" type="text" maxlength="12" autocomplete="off" spellcheck="false" value="' + esc(glSeedText) + '" aria-label="Run seed"></label>' +
+      '<div class="gl-best">' + (best ? '🏆 YOUR BEST RUN · <b>' + best.pts.toLocaleString() + ' PTS</b> · ' + best.depth + '/' + GL_LAYERS + ' nodes · seed ' + esc(best.seed)
+                                      : '🏆 No run banked yet.') + '</div>' +
+      '<button class="btn btn-primary btn-full" id="gl-start" type="button"' + (pool.length < 4 ? ' disabled' : '') + '>▶ START THE RUN</button>' +
+      (pool.length < 4 ? '<div class="gl-note">Unlock a few more missions first — a run needs at least four.</div>' : '') +
+      '<div class="gl-head">THE RELICS</div><div class="gl-relics">' +
+      GL_RELICS.map(r => '<div class="gl-relic"><b>' + r.icon + ' ' + r.name + '</b><span>' + esc(r.desc) + '</span>' + (glTell(r) ? '<em>' + esc(glTell(r)) + '</em>' : '') + '</div>').join('') + '</div>';
+  }else{
+    if(sub) sub.textContent = 'seed ' + run.seed + ' · ' + run.total.toLocaleString() + ' PTS carried · ' + run.cleared + ' cleared';
+    if(run.note) html += '<div class="gl-notebar">' + esc(run.note) + '</div>';
+    html += glitchMapHtml(run);
+    if(run.stage === 'offer' && run.offer){
+      html += '<div class="gl-head">CHOOSE ONE RELIC</div><div class="gl-offer">' +
+        run.offer.map(id => { const r = glRelic(id), have = run.relics[id] || 0;
+          return '<button class="gl-card" type="button" data-relic="' + id + '"><b>' + r.icon + ' ' + r.name + (have ? ' ×' + (have + 1) : '') + '</b><span>' + esc(r.desc) + '</span>' +
+                 (glTell(r) ? '<em>' + esc(glTell(r)) + '</em>' : '') + '</button>'; }).join('') + '</div>' +
+        (run.rerolls > 0 ? '<button class="btn btn-secondary btn-sm" id="gl-reroll" type="button">🔁 REROLL THE OFFER · ' + run.rerolls + ' LEFT</button>' : '');
+    }else if(run.stage === 'map'){
+      const row = run.map[run.layer + 1] || [];
+      html += '<div class="gl-head">CHOOSE YOUR ROUTE</div><div class="gl-routes">' +
+        row.map((nd, j) => {
+          if(run.at && run.at.next.indexOf(j) < 0) return '';
+          const line = glitchLine(nd.gid);
+          return '<button class="gl-route gl-' + nd.kind + '" type="button" data-node="' + j + '"><b>' + META[nd.gid].emoji + ' ' + esc(META[nd.gid].name) + '</b>' +
+                 '<span>' + (nd.kind === 'boss' ? '👑 BOSS · two modifiers' : nd.kind === 'elite' ? '⚠️ ELITE · one modifier, paid for' : 'clean') + ' · 🥉 ' + line.toLocaleString() + ' to clear</span></button>';
+        }).join('') + '</div>';
+    }
+    const mine = Object.keys(run.relics).filter(id => run.relics[id] > 0);
+    html += '<div class="gl-own">' + (mine.length ? mine.map(id => { const r = glRelic(id); return '<span title="' + esc(r.desc) + '">' + r.icon + ' ' + r.name + (run.relics[id] > 1 ? ' ×' + run.relics[id] : '') + '</span>'; }).join('')
+                                                 : '<span class="none">no relics yet</span>') + '</div>' +
+            (run.played > 0 ? '<button class="btn btn-secondary btn-sm" id="gl-cash" type="button">💰 CASH OUT · ' + run.total.toLocaleString() + ' PTS</button>'
+                            : '<button class="btn btn-secondary btn-sm" id="gl-cash" type="button">✕ NOT NOW</button>');
+  }
+  body.innerHTML = html;
+  document.getElementById('gl-seed')?.addEventListener('input', e => { glSeedText = glitchSeedClean(e.target.value); if(e.target.value !== glSeedText) e.target.value = glSeedText; });
+  document.getElementById('gl-start')?.addEventListener('click', () => glitchStart(glSeedText));
+  document.getElementById('gl-reroll')?.addEventListener('click', glitchReroll);
+  document.getElementById('gl-cash')?.addEventListener('click', glitchLeave);
+  body.querySelectorAll('.gl-card').forEach(b => b.addEventListener('click', () => glitchTake(b.dataset.relic)));
+  body.querySelectorAll('.gl-route').forEach(b => b.addEventListener('click', () => glitchPlay(+b.dataset.node)));
+}
+
+// ── THE BOARD (derived, like the endless and anomaly boards) ──────────────
+function glitchBoard(snap){
+  const panel = document.getElementById('gl-lb-panel');
+  if(!panel) return;
+  const rows = [];
+  if(snap && snap.forEach){
+    snap.forEach(c => {
+      const v = c.val() || {}, b = glNormBest(v.glitch);
+      if(b) rows.push({ uid: c.key, name: v.username || 'Operative', pts: b.pts, tag: b.depth + '/' + GL_LAYERS });
+    });
+  }
+  const mine = glitchBest();
+  if(mine && user && !rows.some(r => r.uid === user.uid)) rows.push({ uid: user.uid, name: user.username || 'You', pts: mine.pts, tag: mine.depth + '/' + GL_LAYERS });
+  else if(mine && user) rows.forEach(r => { if(r.uid === user.uid && mine.pts > r.pts){ r.pts = mine.pts; r.tag = mine.depth + '/' + GL_LAYERS; } });
+  rows.sort((a, b) => b.pts - a.pts);
+  panel.innerHTML = rows.length
+    ? rows.slice(0, 8).map((r, i) => laneRow(r, i + 1, !!user && r.uid === user.uid)).join('')
+    : '<div class="lb-empty">No Glitch Run banked yet — be the first.</div>';
+}
+
+// ── WIRING ──
+try{
+  // 🌐 § 31 keeps a mode's lane only while that mode is running. laneLive() is a switch inside the
+  // open-world block; it learns this mode here, by wrapping, so that block is not edited.
+  if(typeof OW_LANE_NAMES === 'object' && OW_LANE_NAMES) OW_LANE_NAMES.glitch = 'GLITCH RUN';
+  laneLive = (function(orig){ return function(mode){ return mode === 'glitch' ? !!glitchRun : orig(mode); }; })(laneLive);
+  // 👻 § 36: a node records and races no ghost.
+  GHOST_SKIP = (function(prev){ return function(gid){ return !!glitchRun || (typeof prev === 'function' && !!prev(gid)); }; })(GHOST_SKIP);
+  // 📊 § 34: one run, one count.
+  if(typeof PLAY_MODES === 'object' && PLAY_MODES) PLAY_MODES.glitch = '🌀 Glitch Runs';
+  if(typeof PLAY_HOOKS !== 'undefined' && PLAY_HOOKS && PLAY_HOOKS.push) PLAY_HOOKS.push(gid => (gid === 'glitchrun' ? 'glitch' : undefined));
+  document.getElementById('btn-glitch')?.addEventListener('click', () => glitchOpen());
+  document.getElementById('glitch-close')?.addEventListener('click', () => { snd('uiBack'); glitchLeave(); });
+  document.getElementById('glitch-overlay')?.addEventListener('click', e => { if(e.target.id === 'glitch-overlay') glitchLeave(); });
+  if(typeof registerOverlayCloser === 'function') registerOverlayCloser('glitch-overlay', () => glitchLeave());
+  document.addEventListener('keydown', e => {
+    if(e.key !== 'Escape') return;
+    const ov = document.getElementById('glitch-overlay');
+    if(!ov || !ov.classList.contains('show')) return;
+    if(typeof padTopOverlay === 'function' && padTopOverlay() !== ov) return;
+    if(e.target && e.target.id === 'gl-seed') return;                      // Escape in the seed box is not "leave"
+    glitchLeave();
+  });
+  try{ if(typeof owPaintLanes === 'function') owPaintLanes(); }catch(e){}
+}catch(e){ console.warn('Glitch Run failed to wire:', e); }
+
+// (§ 41 · v76 — 🔀 MASHUPS was here: two missions' simulations in one round. Taken out in v81 at the owner's
+//  request, with its banner, its picker and every hook it had in prepGame, the pause keys, the perk and
+//  prestige allowlists, the bounty rules and the tour. A record that still carries a best under one of
+//  its three ids from a v76–v80 build is simply never read: no mission of that name exists any more.)
+
+// ═════════════════════════════════════════════════
+//  § 42 · v77 — 💰 BOUNTIES · credits on somebody else's best score
+// ═════════════════════════════════════════════════
+// A Rival Challenge is YOUR run, left standing for points. A bounty is the
+// other way round: you put CREDITS on another operative's best score in a
+// mission, and whoever beats it collects. One open bounty a player, 5–50 CR.
+//
+// Every name here is bnty* / BNTY_* — Battle Bots already pays a RAM "bounty"
+// for a kill, and the two must never be confused by a search.
+//
+//  · POSTING, from another saved operative's card. The target's best RAW score
+//    in the mission is copied into the bounty at that moment (their live best
+//    keeps moving; the bounty must not), with the stability tier the poster
+//    picks. The credits leave the poster at once, through the ordinary credit
+//    write, and players/<poster>/bnty = { target, gid, tier, raw, cr, at, exp }
+//    is written on its own. If the grid refuses that write nothing is charged.
+//  · WHO. Only SAVED accounts post or collect. A guest's record is deleted
+//    while they are away (§ 33), which would break "exactly once" in both
+//    directions; a local session has no record at all. A guest can be neither
+//    the poster nor the target.
+//  · COLLECTING. Any saved account but the poster — the target included — that
+//    BEATS the snapshot (capCompare > 0) on the same mission and tier, in an
+//    ELIGIBLE round, collects the credits, once: a localStorage pay-once and
+//    players/<claimant>/bntyWon/<poster>_<at>. Keyed on the bounty's own `at`,
+//    so a poster's next bounty is a different one.
+//  · ELIGIBLE, defined positively: a mission started from the grid through
+//    prepGame() with NO mode standing — not a party turn, a Brick Lab run, a
+//    campaign chapter, Boss Rush, the Daily Hack, the Anomaly, Endless, an
+//    accepted challenge or link, an arena round, a speedrun, a Glitch Run, a
+//    tournament match, or an open world. The flags are read when the
+//    round is PREPARED (bntyArm), because several are gone by the time the
+//    card is built.
+//  · CLOSING is the poster's job, on their next load: the earliest claim wins
+//    and the bounty is removed (the hub says who collected it). After seven
+//    days unclaimed it is refunded — credits back and the bounty gone in ONE
+//    update, so exactly once.
+//  · DISCOVERY rides loadLeaderboard()'s read, which is every player — not the
+//    challenge board's top sixty — so a bounty posted by or on anybody is seen.
+//
+// ⚠️ HONOUR SYSTEM, like every score here: credits are absolute values a
+//    client writes, so more than one operative can collect a bounty before its
+//    poster next loads, and a determined cheat can pay themselves. The caps are
+//    small on purpose. (The real fix is a bounties/<id> node with transaction()
+//    claims — it needs rules, and is written up for the owner, not built.)
+// ⚠️ No rules change is needed if players/$uid accepts new child keys; the two
+//    this adds are `bnty` and `bntyWon`.
+
+var BNTY_MIN = 5, BNTY_MAX = 50, BNTY_STEP = 5;
+var BNTY_DAYS = 7;
+var BNTY_PAID = 'pi_bnty_paid';           // { '<poster>_<at>': 1 } — collected on this device
+var BNTY_NEWS = 'pi_bnty_news';           // { uid, text, at } — what became of my last bounty
+var BNTY_TIERS = ['stable', 'overclocked', 'meltdown'];
+var bntyBoard = [];                       // open bounties, from the last full players read
+var bntyClaims = {};                      // '<poster>_<at>' → [{ uid, name, at }]
+var bntyNames = {};                       // uid → username, from the same read
+var bntyRound = null;                     // { gid, tier, ok } — the round being played, judged at prepGame
+var bntyDraft = null;                     // the bounty being composed in #bnty-overlay
+var bntyBusy = false, bntyRead = 0;
+
+function bntySaved(){ return !!(user && db && !offlineMode && !isLocalSession() && !user.isGuest && auth && auth.currentUser && !auth.currentUser.isAnonymous); }
+function bntyKey(b){ return String(b.poster || b.uid || '') + '_' + Math.round(+b.at || 0); }
+function bntyNorm(b, poster){
+  if(!b || typeof b !== 'object' || !SOLO_START[b.gid] || !META[b.gid]) return null;
+  const cr = Math.round(+b.cr || 0), raw = Math.round(+b.raw || 0), at = Math.round(+b.at || 0);
+  if(!(cr >= BNTY_MIN && cr <= BNTY_MAX) || !(raw > 0) || !(at > 0) || !b.target || b.target === poster) return null;
+  return { poster, target: String(b.target), gid: b.gid, tier: BNTY_TIERS.indexOf(b.tier) >= 0 ? b.tier : 'stable',
+           raw, cr, at, exp: Math.round(+b.exp || 0) || at + BNTY_DAYS * 864e5 };
+}
+function bntyMine(){ return user ? bntyNorm(user.bnty, user.uid) : null; }
+function bntyPaidMap(){ const m = lsGet(BNTY_PAID, {}); return (m && typeof m === 'object') ? m : {}; }
+function bntyTierName(t){ return (DIFFICULTY_TIERS[t] || DIFFICULTY_TIERS.stable).label; }
+function bntyLeft(b){
+  const ms = b.exp - Date.now();
+  return ms <= 0 ? 'expired' : ms > 864e5 ? Math.ceil(ms / 864e5) + 'd left' : Math.max(1, Math.ceil(ms / 36e5)) + 'h left';
+}
+
+// ── THE READ ──────────────────────────────────────────────────────────────
+// loadLeaderboard()'s snapshot: every player. Rebuilds the board, then lets my own bounty be closed.
+function bntyIngest(snap){
+  const board = [], claims = {}, names = {};
+  snap.forEach(c => {
+    const v = c.val() || {};
+    if(!v.username) return;                                    // a stub, not a player
+    names[c.key] = String(v.username);
+    if(!v.isGuest){
+      const b = bntyNorm(v.bnty, c.key);
+      if(b) board.push(b);
+      if(v.bntyWon && typeof v.bntyWon === 'object'){
+        for(const k in v.bntyWon){
+          const w = v.bntyWon[k] || {};
+          (claims[k] = claims[k] || []).push({ uid: c.key, name: String(v.username), at: +w.at || 0 });
+        }
+      }
+    }
+  });
+  for(const k in claims) claims[k].sort((a, b) => a.at - b.at);
+  bntyBoard = board.filter(b => names[b.target]).sort((a, b) => b.cr - a.cr || b.at - a.at);
+  bntyClaims = claims; bntyNames = names; bntyRead = Date.now();
+  bntyClose();
+  bntyRender();
+}
+// The poster's side, on their load: a claim closes it; seven days with none refunds it. Each exactly once.
+function bntyClose(){
+  const b = bntyMine();
+  if(!b || bntyBusy || !bntySaved()) return;
+  const got = (bntyClaims[bntyKey(b)] || []).filter(c => c.uid !== user.uid)[0];
+  const ref = db.ref('players/' + user.uid);
+  if(got){
+    bntyBusy = true;
+    ref.child('bnty').remove().then(() => {
+      user.bnty = null;
+      try{ cacheProfile(user); }catch(e){}
+      const text = `💰 Your ${b.cr} CR bounty on ${bntyNames[b.target] || 'an operative'}'s ${META[b.gid].name} was collected by ${got.name}.`;
+      lsSet(BNTY_NEWS, { uid: user.uid, text, at: Date.now() });
+      toast(text, 5200);
+      bntyRender();
+    }).catch(e => console.warn('Bounty not closed (rules?):', e && e.code)).then(() => { bntyBusy = false; });
+    return;
+  }
+  if(Date.now() < b.exp) return;
+  // Unclaimed and expired: the credits come back and the bounty goes in ONE update, so it cannot happen twice.
+  bntyBusy = true;
+  const back = (user.credits || 0) + b.cr;
+  ref.update({ credits: back, bnty: null }).then(() => {
+    user.credits = back; user.bnty = null;
+    try{ cacheProfile(user); }catch(e){}
+    try{ refreshMarketBalances(); }catch(e){}
+    const text = `💰 Your bounty on ${bntyNames[b.target] || 'an operative'}'s ${META[b.gid].name} expired unclaimed — ${b.cr} CR refunded.`;
+    lsSet(BNTY_NEWS, { uid: user.uid, text, at: Date.now() });
+    toast(text, 5200);
+    bntyRender();
+  }).catch(e => console.warn('Bounty not refunded (rules?):', e && e.code)).then(() => { bntyBusy = false; });
+}
+
+// ── POSTING ───────────────────────────────────────────────────────────────
+// '' when this profile may post on `rec`, else why not.
+function bntyRefusal(rec){
+  if(!user) return 'Sign in first.';
+  if(isLocalSession()) return 'A local session cannot post a bounty — save your account first.';
+  if(user.isGuest || (auth && auth.currentUser && auth.currentUser.isAnonymous)) return 'Guests cannot post a bounty — save your account first.';
+  if(!db || offlineMode) return 'Offline — a bounty needs a connection.';
+  if(!rec || !rec.uid) return 'That operative is out of reach.';
+  if(rec.uid === user.uid) return 'You cannot put a bounty on yourself.';
+  if(rec.isGuest) return 'A guest\'s record does not last — bounties are for saved operatives.';
+  if(bntyMine()) return 'You already have a bounty out — one at a time.';
+  if((user.credits || 0) < BNTY_MIN) return `A bounty costs at least ${BNTY_MIN} CR.`;
+  if(!bntyTargets(rec).length) return 'That operative has no mission score to put a bounty on yet.';
+  return '';
+}
+// The target's best missions a bounty can name: a raw best on a real mission.
+function bntyTargets(rec){
+  const mb = (rec && rec.mbest) || {};
+  return Object.keys(SOLO_START).filter(g => META[g] && Math.round(+mb[g] || 0) > 0)
+    .map(g => ({ gid: g, raw: Math.round(+mb[g]) }))
+    .sort((a, b) => (medalIdx(b.gid, b.raw) - medalIdx(a.gid, a.raw)) || (b.raw - a.raw)).slice(0, 4);
+}
+function bntyOpen(rec){
+  const why = bntyRefusal(rec);
+  if(why){ snd('deny'); toast('💰 ' + why, 3400); return; }
+  const list = bntyTargets(rec);
+  bntyDraft = { target: rec.uid, name: rec.username || 'Operative', list, gid: list[0].gid,
+                tier: BNTY_TIERS.indexOf(currentDifficultyTier) >= 0 ? currentDifficultyTier : 'stable',
+                cr: Math.max(BNTY_MIN, Math.min(10, Math.floor((user.credits || 0) / BNTY_STEP) * BNTY_STEP)) };
+  closeOverlay('pcard-overlay');
+  openOverlay('bnty-overlay', bntyRenderDraft);
+}
+function bntyRenderDraft(){
+  const body = document.getElementById('bnty-body'), sub = document.getElementById('bnty-sub'), d = bntyDraft;
+  if(!body || !d || !user) return;
+  const pick = d.list.find(x => x.gid === d.gid) || d.list[0];
+  const most = Math.min(BNTY_MAX, Math.floor((user.credits || 0) / BNTY_STEP) * BNTY_STEP);
+  d.cr = Math.max(BNTY_MIN, Math.min(most, d.cr));
+  if(sub) sub.textContent = `on ${d.name} · you hold ${(user.credits || 0).toLocaleString()} CR`;
+  body.innerHTML =
+    '<div class="bn-lbl">THE SCORE TO BEAT</div><div class="bn-pick">' +
+      d.list.map(x => '<button type="button" class="bn-opt' + (x.gid === d.gid ? ' on' : '') + '" data-gid="' + x.gid + '" aria-pressed="' + (x.gid === d.gid) + '">' +
+        META[x.gid].emoji + ' ' + esc(META[x.gid].name) + '<b>' + x.raw.toLocaleString() + '</b></button>').join('') + '</div>' +
+    '<div class="bn-lbl">ON WHICH STABILITY TIER</div><div class="bn-pick bn-tiers">' +
+      BNTY_TIERS.map(t => '<button type="button" class="bn-opt' + (t === d.tier ? ' on' : '') + '" data-tier="' + t + '" aria-pressed="' + (t === d.tier) + '">' +
+        DIFFICULTY_TIERS[t].icon + ' ' + esc(DIFFICULTY_TIERS[t].label) + '</button>').join('') + '</div>' +
+    '<div class="bn-lbl">THE BOUNTY</div><div class="bn-amt">' +
+      '<button type="button" class="btn btn-secondary" id="bn-less" aria-label="Less"' + (d.cr <= BNTY_MIN ? ' disabled' : '') + '>−</button>' +
+      '<span class="bn-cr" id="bn-cr">💎 ' + d.cr + ' CR</span>' +
+      '<button type="button" class="btn btn-secondary" id="bn-more" aria-label="More"' + (d.cr >= most ? ' disabled' : '') + '>+</button></div>' +
+    '<div class="bn-sum">Whoever beats <b>' + pick.raw.toLocaleString() + '</b> in ' + esc(META[pick.gid].name) + ' on ' + esc(bntyTierName(d.tier)) +
+      ' — a plain round from the grid — collects <b>' + d.cr + ' CR</b>. The credits leave you now. Unclaimed after ' + BNTY_DAYS + ' days, they come back.</div>' +
+    '<div class="bn-acts"><button type="button" class="btn btn-primary" id="bn-post">💰 POST · ' + d.cr + ' CR</button>' +
+      '<button type="button" class="btn btn-secondary" id="bn-cancel">CANCEL</button></div>';
+  body.querySelectorAll('[data-gid]').forEach(b => b.addEventListener('click', () => { d.gid = b.dataset.gid; snd('tab'); bntyRenderDraft(); }));
+  body.querySelectorAll('[data-tier]').forEach(b => b.addEventListener('click', () => { d.tier = b.dataset.tier; snd('tab'); bntyRenderDraft(); }));
+  document.getElementById('bn-less')?.addEventListener('click', () => { d.cr -= BNTY_STEP; snd('tab'); bntyRenderDraft(); });
+  document.getElementById('bn-more')?.addEventListener('click', () => { d.cr += BNTY_STEP; snd('tab'); bntyRenderDraft(); });
+  document.getElementById('bn-cancel')?.addEventListener('click', () => closeOverlay('bnty-overlay'));
+  document.getElementById('bn-post')?.addEventListener('click', e => { e.currentTarget.disabled = true; bntyPost(); });
+}
+async function bntyPost(){
+  const d = bntyDraft;
+  if(!d || bntyBusy) return false;
+  const why = bntyRefusal({ uid: d.target, isGuest: false, mbest: Object.fromEntries(d.list.map(x => [x.gid, x.raw])) });
+  const pick = d.list.find(x => x.gid === d.gid);
+  const cr = Math.round(d.cr);
+  if(why || !pick || !(cr >= BNTY_MIN && cr <= BNTY_MAX) || cr % BNTY_STEP){ snd('deny'); toast('💰 ' + (why || 'That bounty cannot be posted.'), 3400); return false; }
+  if((user.credits || 0) < cr){ snd('deny'); toast('💰 Insufficient credits.', 2600); return false; }
+  const at = Date.now();
+  const b = { target: d.target, gid: pick.gid, tier: d.tier, raw: pick.raw, cr, at, exp: at + BNTY_DAYS * 864e5 };
+  bntyBusy = true;
+  try{
+    // The bounty first, on its own: if the grid refuses it, nothing has been charged.
+    await withTimeout(db.ref('players/' + user.uid + '/bnty').set(b), NET_WAIT);
+  }catch(e){
+    bntyBusy = false;
+    console.warn('Bounty not stored (rules?):', e && e.code);
+    snd('deny'); toast('⚠️ The grid refused the bounty — nothing was charged.', 3400);
+    return false;
+  }
+  // …then the escrow, through the ordinary credit path.
+  user.bnty = b;
+  user.credits = (user.credits || 0) - cr;
+  await saveProfilePatch({ credits: user.credits });
+  bntyBusy = false; bntyDraft = null;
+  try{ refreshMarketBalances(); }catch(e){}
+  closeOverlay('bnty-overlay');
+  snd('purchase');
+  toast(`💰 BOUNTY POSTED — ${cr} CR on ${d.name}'s ${META[b.gid].name} · ${b.raw.toLocaleString()} to beat on ${bntyTierName(b.tier)}`, 4200);
+  bntyNames[d.target] = d.name;
+  bntyBoard = bntyBoard.filter(x => x.poster !== user.uid);
+  bntyRender();
+  return true;
+}
+
+// ── A ROUND ───────────────────────────────────────────────────────────────
+// prepGame(): is the round being prepared one a bounty can be collected in? Judged NOW, flags standing.
+function bntyArm(gid){
+  const ok = !!(user && SOLO_START[gid] && !mp && !bossRush && !endless && !dailyActive && !anomalyActive && !chalActive &&
+    !glitchRun && !speedrun &&
+    !(typeof partyRunActive === 'function' && partyRunActive()) && !(typeof labActive === 'function' && labActive()) &&
+    !(typeof campaignRunActive === 'function' && campaignRunActive()) &&
+    !(typeof tourneyActive === 'function' && tourneyActive()) &&
+    !(typeof owLaneFor === 'function' && owLaneFor(gid)));
+  bntyRound = { gid, tier: currentDifficultyTier, ok };
+}
+function bntyDisarm(){ bntyRound = null; }
+// enterHub(): a round nobody finished is not a round to pay on; and the list is repainted (offline, it says so).
+function bntyHub(){ bntyRound = null; bntyRender(); }
+// showResultsCard(): the rows for this round's bounties, paying the ones it beat. `pts` is the raw score.
+function bntySettle(gid, pts, rawTop, opts){
+  const round = bntyRound;
+  bntyRound = null;
+  opts = opts || {};
+  if(!round || !round.ok || round.gid !== gid || opts.internal || opts.ow || !user) return null;
+  const open = bntyBoard.filter(b => b.gid === gid && b.tier === round.tier && b.poster !== user.uid && Date.now() < b.exp);
+  if(!open.length) return null;
+  const rows = {}, paid = bntyPaidMap(), mine = { pts, raw: rawTop != null ? rawTop : pts };
+  const cap = (META[gid] && META[gid].maxPts) || 0;
+  let won = 0;
+  open.slice(0, 3).forEach((b, i) => {
+    const k = bntyKey(b), label = '💰 Bounty' + (open.length > 1 ? ' ' + (i + 1) : '');
+    const who = `${bntyNames[b.poster] || 'an operative'} on ${b.target === user.uid ? 'YOUR' : (bntyNames[b.target] || 'an operative') + '\'s'} ${b.raw.toLocaleString()}`;
+    const beat = capCompare(gid, mine, { pts: cap > 0 && cap < 90000 ? Math.min(cap, b.raw) : b.raw, raw: b.raw }) > 0;
+    if(paid[k] || (user.bntyWon && user.bntyWon[k])){ rows[label] = `ALREADY COLLECTED · ${who}`; return; }
+    if(!beat){ rows[label] = `HELD · ${b.cr} CR stays on ${who}`; return; }
+    if(!bntySaved()){ rows[label] = `BEATEN — but only a saved account collects (${b.cr} CR)`; return; }
+    // Collected: this device's pay-once first, then the credits, then the claim — each its own write.
+    paid[k] = 1; lsSet(BNTY_PAID, paid);
+    user.credits = (user.credits || 0) + b.cr;
+    user.bntyWon = user.bntyWon || {};
+    user.bntyWon[k] = { cr: b.cr, gid, raw: Math.round(mine.raw), at: Date.now() };
+    saveProfilePatch({ credits: user.credits });
+    db.ref('players/' + user.uid + '/bntyWon/' + k).set(user.bntyWon[k])
+      .catch(e => console.warn('Bounty claim not stored (rules?):', e && e.code));
+    rows[label] = `COLLECTED +${b.cr} CR · ${who}`;
+    won += b.cr;
+  });
+  if(won){
+    bntyBoard = bntyBoard.filter(b => !(paid[bntyKey(b)] && b.gid === gid));
+    setTimeout(() => { snd('purchase'); toast(`💰 BOUNTY COLLECTED — +${won} CR`, 3800); try{ refreshMarketBalances(); }catch(e){} }, 2000);
+  }
+  return rows;
+}
+
+// ── THE HUB LIST and THE CARD ─────────────────────────────────────────────
+function bntyRow(b, own){
+  const m = META[b.gid], locked = !missionUnlocked(b.gid), paid = bntyPaidMap()[bntyKey(b)] || (user && user.bntyWon && user.bntyWon[bntyKey(b)]);
+  return '<div class="chal-row bn-row' + (own ? ' own' : '') + (locked ? ' locked' : '') + '">' +
+    '<span class="chal-ico">' + m.emoji + '</span>' +
+    '<div class="chal-txt"><div class="chal-name">💰 ' + b.cr + ' CR · ' + esc(m.name) + '</div>' +
+    '<div class="chal-meta">beat ' + (user && b.target === user.uid ? 'YOUR' : esc(bntyNames[b.target] || 'an operative') + '\'s') + ' ' + b.raw.toLocaleString() +
+      ' on ' + esc(bntyTierName(b.tier)) + (own ? '' : ' · posted by ' + esc(bntyNames[b.poster] || 'an operative')) + ' · ' + bntyLeft(b) + '</div></div>' +
+    (own ? '<span class="bn-tag">YOURS</span>'
+         : paid ? '<span class="bn-tag">COLLECTED</span>'
+         : '<button class="btn btn-secondary btn-sm bn-go" type="button" data-k="' + esc(bntyKey(b)) + '"' + (locked ? ' disabled' : '') + '>' + (locked ? '🔒' : 'HUNT →') + '</button>') +
+    '</div>';
+}
+function bntyRender(){
+  const panel = document.getElementById('bnty-panel');
+  if(!panel) return;
+  if(!user){ panel.innerHTML = ''; return; }
+  if(!db || offlineMode){ panel.innerHTML = '<div class="lb-empty">📴 Offline — bounties need a connection.</div>'; return; }
+  const mine = bntyMine(), news = lsGet(BNTY_NEWS, null);
+  let html = '';
+  if(mine) html += '<div class="chal-mine"><div class="chal-mine-lbl">💰 YOUR BOUNTY</div>' + bntyRow(mine, true) + '</div>';
+  else if(news && news.uid === user.uid && Date.now() - (+news.at || 0) < 3 * 864e5) html += '<div class="bn-news">' + esc(news.text) + '</div>';
+  const others = bntyBoard.filter(b => b.poster !== user.uid && Date.now() < b.exp).slice(0, 8);
+  html += others.length ? others.map(b => bntyRow(b, false)).join('')
+    : '<div class="lb-empty">' + (bntyRead ? 'No bounties on the grid. Open a saved operative\'s card and put one on their best score.' : 'Reading the bounty board…') + '</div>';
+  panel.innerHTML = html;
+  panel.querySelectorAll('.bn-go').forEach(btn => btn.addEventListener('click', () => bntyHunt(btn.dataset.k)));
+}
+// HUNT →: the bounty's mission on the bounty's tier, as a plain round from the grid.
+function bntyHunt(k){
+  const b = bntyBoard.find(x => bntyKey(x) === k);
+  if(!b || !user) return;
+  if(!missionUnlocked(b.gid)){ snd('deny'); toast(`🔒 ${META[b.gid].name} needs CLEARANCE ${missionClearance(b.gid)}.`, 3000); return; }
+  if(bossRush || mp || endless || dailyActive || anomalyActive || chalActive || glitchRun || speedrun){ snd('deny'); return; }
+  closeOverlay('pcard-overlay');
+  setDifficultyTier(b.tier);
+  curGame = b.gid;
+  document.getElementById('g-title').textContent = META[b.gid].name;
+  showScreen('game-screen');
+  snd('success');
+  toast(`💰 ${b.cr} CR for beating ${b.raw.toLocaleString()} on ${bntyTierName(b.tier)}`, 3200);
+  prepGame(b.gid);
+}
+// renderPlayerCard(), after its own buttons: the bounty standing on this operative, and the door to post one.
+function bntyCard(rec, isMe, body){
+  if(!body || !user || !rec) return;
+  const on = bntyBoard.filter(b => b.target === rec.uid && Date.now() < b.exp);
+  let html = '';
+  if(on.length){
+    html += '<div class="pc-sec">💰 BOUNTY ON ' + (isMe ? 'YOU' : 'THIS OPERATIVE') + '</div>' + on.slice(0, 3).map(b => bntyRow(b, b.poster === user.uid)).join('');
+  }
+  if(!isMe && !rec.isGuest){
+    const why = bntyRefusal(rec);
+    html += '<div class="pc-btns"><button class="btn btn-secondary btn-full" id="pc-bnty-btn" type="button">💰 Place Bounty</button>' +
+            (why ? '<div class="bn-why">' + esc(why) + '</div>' : '') + '</div>';
+  }
+  if(!html) return;
+  const box = document.createElement('div');
+  box.className = 'bn-card';
+  box.innerHTML = html;
+  body.appendChild(box);
+  box.querySelector('#pc-bnty-btn')?.addEventListener('click', () => bntyOpen(rec));
+  box.querySelectorAll('.bn-go').forEach(btn => btn.addEventListener('click', () => bntyHunt(btn.dataset.k)));
+}
+
+// ── WIRING ──
+try{
+  document.getElementById('bnty-close')?.addEventListener('click', () => closeOverlay('bnty-overlay'));
+  document.getElementById('bnty-overlay')?.addEventListener('click', e => { if(e.target.id === 'bnty-overlay') closeOverlay('bnty-overlay'); });
+  document.addEventListener('keydown', e => {
+    if(e.key !== 'Escape') return;
+    const ov = document.getElementById('bnty-overlay');
+    if(!ov || !ov.classList.contains('show')) return;
+    if(typeof padTopOverlay === 'function' && padTopOverlay() !== ov) return;
+    closeOverlay('bnty-overlay');
+  });
+}catch(e){ console.warn('Bounties failed to wire:', e); }
+
+// ═════════════════════════════════════════════════
+//  § 43 · v78 — 🛡️ CREWS · up to six operatives under one tag
+// ═════════════════════════════════════════════════
+// The arcade had rivals (a one-way list) and arena teams (one room, one match).
+// A crew is the standing version: up to six SAVED operatives under one name, a
+// two-to-four letter tag and a colour, ranked together each week.
+//
+//  · TWO RECORDS, A HANDSHAKE. A member's own record says which crew they are
+//    in — players/<uid>/crew = { id, name, tag, color, founder, at } — and the
+//    founder keeps the roster: players/<founder>/crewRoster/<uid> = true. Each
+//    is its own write, by its own owner. Somebody is a MEMBER only when BOTH
+//    agree: their record names the crew AND the founder's roster lists them
+//    (and the founder's own record still names that crew as its founder). A
+//    record that merely claims a crew is a REQUEST, shown to the founder to
+//    accept, and is never counted anywhere. The crew's name, tag and colour are
+//    always read from the FOUNDER's record, so a member cannot re-badge it.
+//  · JOINING is by the crew's six-character code or from the founder's player
+//    card: that writes your record (the request); the founder's ACCEPT writes
+//    the roster line. Leaving removes your record; the founder leaving
+//    disbands the crew (their roster and record go, and everyone else's claim
+//    stops counting at once — their own client tidies it away on its next
+//    read).
+//  · ONLY SAVED ACCOUNTS. A guest's record disappears whenever they close the
+//    tab (§ 33), and a local session has none.
+//  · THE BOARD is a fourth scope on the leaderboard tabs, 🛡️ CREWS: each crew's
+//    total is the sum of its verified members' weekly.pts for the current
+//    seasonKey(), grouped from the read loadLeaderboard() already makes — so it
+//    resets with the week by itself, and `weekly` is only ever READ here.
+//  · THE TAG rides beside a member's name on board rows, on player cards and
+//    in the hub bar. BATTLE BOTS units wear the crew's colour in 2D, 3D and the
+//    open world (bbUnitColor(), the open world's red-hue guard intact);
+//    getEquippedColorHex() itself is NOT changed — forty "this is you" draws
+//    read it.
+//  · No crew chat and no crew rewards in this version.
+//
+// Data: the two keys above, nothing else. pi_crew_ok remembers the last
+// VERIFIED membership on this device (for the unit colour before the first
+// read); pi_crew_hide is the founder's "not now" on a request.
+
+var CREW_MAX = 6;
+var CREW_OK = 'pi_crew_ok', CREW_HIDE = 'pi_crew_hide';
+var crewIdx = { at: 0, crews: {}, of: {}, ask: {}, code: {} };     // from the last full players read
+var crewBusy = false, crewForm = { name: '', tag: '', color: '', code: '' }, crewSure = '';
+
+function crewColors(){ return SHOP_ITEMS.colors.filter(c => !c.event && /^#[0-9a-f]{6}$/i.test(c.color)).map(c => c.color.toLowerCase()); }
+function crewTagClean(s){ return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4); }
+function crewNameClean(s){ return String(s || '').replace(/[^A-Za-z0-9 _\-]/g, '').replace(/\s+/g, ' ').trim().slice(0, 18); }
+function crewCodeClean(s){ return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6); }
+// A crew record as far as it can be trusted: shape only. Who is IN the crew is crewIngest()'s business.
+function crewNorm(c){
+  if(!c || typeof c !== 'object') return null;
+  const id = crewCodeClean(c.id), name = crewNameClean(c.name), tag = crewTagClean(c.tag);
+  const color = String(c.color || '').toLowerCase();
+  if(id.length !== 6 || name.length < 3 || tag.length < 2 || !c.founder) return null;
+  return { id, name, tag, color: crewColors().indexOf(color) >= 0 ? color : '#00f5ff', founder: String(c.founder), at: Math.round(+c.at || 0) };
+}
+function crewRefusal(){
+  if(!user) return 'Sign in first.';
+  if(isLocalSession()) return 'A local session cannot be in a crew — save your account first.';
+  if(user.isGuest || (auth && auth.currentUser && auth.currentUser.isAnonymous)) return 'Guests cannot be in a crew — save your account first.';
+  if(!db || offlineMode) return 'Offline — crews need a connection.';
+  return '';
+}
+
+// ── THE READ ──────────────────────────────────────────────────────────────
+// Every player, once: who founded what, who is verified, who is asking, and each crew's week.
+function crewIngest(snap){
+  const P = {}, season = seasonKey();
+  snap.forEach(c => { const v = c.val() || {}; if(v.username) P[c.key] = v; });
+  const crews = {}, of = {}, ask = {}, code = {};
+  for(const f in P){
+    const F = P[f], rec = F.isGuest ? null : crewNorm(F.crew);
+    if(!rec || rec.founder !== f) continue;
+    crews[f] = { ...rec, members: [], asking: [], pts: 0 };
+  }
+  for(const uid in P){
+    const M = P[uid], rec = M.isGuest ? null : crewNorm(M.crew);
+    if(!rec) continue;
+    const crew = crews[rec.founder];
+    if(!crew || crew.id !== rec.id) continue;                            // names a crew that is not there (any more)
+    const F = P[crew.founder], listed = uid === crew.founder || !!(F.crewRoster && F.crewRoster[uid] === true);
+    const row = { uid, name: String(M.username), at: rec.at, pts: (M.weekly && M.weekly.season === season) ? Math.max(0, Math.round(+M.weekly.pts || 0)) : 0 };
+    (listed ? crew.members : crew.asking).push(row);
+  }
+  for(const f in crews){
+    const crew = crews[f];
+    // The founder first, then by when they joined; a seventh on the roster does not count.
+    crew.members.sort((a, b) => (a.uid === f ? -1 : b.uid === f ? 1 : 0) || (a.at - b.at));
+    crew.asking.push(...crew.members.splice(CREW_MAX));
+    crew.members.forEach(m => { of[m.uid] = f; crew.pts += m.pts; });
+    crew.asking.forEach(m => { ask[m.uid] = f; });
+    if(!code[crew.id] || crews[code[crew.id]].at > crew.at) code[crew.id] = f;        // two crews, one code: the older keeps it
+  }
+  crewIdx = { at: Date.now(), crews, of, ask, code, P };
+  crewTidy(P);
+  crewRemember();
+  crewPaintHub();
+  if(document.getElementById('crew-overlay')?.classList.contains('show')) crewRender();
+}
+// What became of MY record since the last read — the only records this client may write.
+function crewTidy(P){
+  if(!user || crewBusy || crewRefusal()) return;
+  const mine = crewNorm(user.crew), base = db.ref('players/' + user.uid);
+  const theirs = mine ? crewIdx.crews[mine.founder] : null;
+  if(mine && mine.founder !== user.uid && (!theirs || theirs.id !== mine.id)){
+    // The crew is gone (its founder left, or founded a different one): the claim is tidied away.
+    user.crew = null;
+    base.child('crew').remove().catch(e => console.warn('Crew record not cleared (rules?):', e && e.code));
+    try{ cacheProfile(user); }catch(e){}
+    toast(`🛡️ ${mine.name} was disbanded — you are no longer in a crew.`, 4200);
+    return;
+  }
+  if(mine && mine.founder === user.uid){
+    // The founder's roster only lists operatives who still name the crew.
+    const roster = (P[user.uid] && P[user.uid].crewRoster) || {};
+    Object.keys(roster).forEach(uid => {
+      if(uid === user.uid) return;
+      const c = P[uid] && !P[uid].isGuest ? crewNorm(P[uid].crew) : null;
+      if(!c || c.founder !== user.uid || c.id !== mine.id) base.child('crewRoster/' + uid).remove().catch(() => {});
+    });
+  }
+}
+// 'none' · 'founder' · 'member' · 'asking' (the request is out) · 'unknown' (no read yet)
+function crewState(){
+  const mine = user ? crewNorm(user.crew) : null;
+  if(!mine) return 'none';
+  if(!crewIdx.at) return 'unknown';
+  if(crewIdx.of[user.uid] === mine.founder) return mine.founder === user.uid ? 'founder' : 'member';
+  if(mine.founder === user.uid) return 'founder';                        // just created: the read has not come round yet
+  return 'asking';
+}
+function crewOf(uid){ const f = crewIdx.of[uid]; return f ? crewIdx.crews[f] : null; }
+function crewRemember(){
+  if(!user) return;
+  const c = crewOf(user.uid);
+  if(c) lsSet(CREW_OK, { uid: user.uid, id: c.id, tag: c.tag, name: c.name, color: c.color });
+  else if(crewIdx.at){ const o = lsGet(CREW_OK, null); if(o && o.uid === user.uid) lsSet(CREW_OK, null); }
+}
+// Battle Bots asks: the crew's colour while I am VERIFIED in one, else null (the equipped colour is used).
+function crewColorNow(){
+  if(!user) return null;
+  const c = crewIdx.at ? crewOf(user.uid) : null;
+  if(c) return c.color;
+  if(crewIdx.at) return null;
+  const o = lsGet(CREW_OK, null), mine = crewNorm(user.crew);
+  return (o && o.uid === user.uid && mine && mine.id === o.id && crewColors().indexOf(o.color) >= 0) ? o.color : null;
+}
+function crewChip(uid){
+  const c = crewOf(uid);
+  return c ? ` <em class="crew-chip" style="--cc:${c.color}" title="${esc(c.name)}">${esc(c.tag)}</em>` : '';
+}
+function crewRefresh(){
+  if(!db || offlineMode) return Promise.resolve(false);
+  return withTimeout(db.ref('players').once('value'), NET_WAIT).then(s => { crewIngest(s); return true; })
+    .catch(e => { console.warn('Crew read failed:', e); return false; });
+}
+
+// ── CREATE · ASK · ACCEPT · LEAVE ─────────────────────────────────────────
+async function crewWrite(fn, okText){
+  if(crewBusy) return false;
+  crewBusy = true;
+  try{ await fn(); }
+  catch(e){
+    crewBusy = false;
+    console.warn('Crew write refused (rules?):', e && e.code);
+    snd('deny'); toast('⚠️ The grid refused that — nothing was changed.', 3200);
+    return false;
+  }
+  crewBusy = false;
+  try{ cacheProfile(user); }catch(e){}
+  if(okText){ snd('success'); toast(okText, 3600); }
+  await crewRefresh();
+  crewRender();
+  try{ if(lbScope === 'crews') loadLeaderboard(); }catch(e){}
+  return true;
+}
+function crewCreate(){
+  const why = crewRefusal();
+  if(why){ snd('deny'); toast('🛡️ ' + why, 3400); return; }
+  if(crewNorm(user.crew)){ snd('deny'); toast('🛡️ Leave your crew before you start another.', 3000); return; }
+  const name = crewNameClean(crewForm.name), tag = crewTagClean(crewForm.tag);
+  const color = crewColors().indexOf(crewForm.color) >= 0 ? crewForm.color : crewColors()[0];
+  if(name.length < 3){ snd('deny'); toast('🛡️ A crew name needs at least three letters or digits.', 3000); return; }
+  if(tag.length < 2){ snd('deny'); toast('🛡️ A tag is two to four letters or digits.', 3000); return; }
+  if(!galClean(name) || !galClean(tag)){ snd('deny'); toast('🛡️ That name or tag is not allowed.', 3000); return; }
+  let id = '';
+  do{ id = Array.from({ length: 6 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join(''); }while(crewIdx.code[id]);
+  const rec = { id, name, tag, color, founder: user.uid, at: Date.now() };
+  const base = db.ref('players/' + user.uid);
+  crewWrite(async () => {
+    await withTimeout(base.child('crew').set(rec), NET_WAIT);
+    user.crew = rec;
+    await withTimeout(base.child('crewRoster/' + user.uid).set(true), NET_WAIT);
+  }, `🛡️ ${name} [${tag}] founded — share the code ${id}`);
+}
+// By code, or from the founder's card (their uid).
+function crewAsk(code, founderUid){
+  const why = crewRefusal();
+  if(why){ snd('deny'); toast('🛡️ ' + why, 3400); return; }
+  if(crewNorm(user.crew)){ snd('deny'); toast('🛡️ Leave your crew (or cancel your request) first.', 3000); return; }
+  const f = founderUid || crewIdx.code[crewCodeClean(code)];
+  const crew = f && crewIdx.crews[f];
+  if(!crew){ snd('deny'); toast('🛡️ No crew on the grid has that code.', 3000); return; }
+  if(crew.members.length >= CREW_MAX){ snd('deny'); toast(`🛡️ ${crew.name} is full — six operatives.`, 3000); return; }
+  const rec = { id: crew.id, name: crew.name, tag: crew.tag, color: crew.color, founder: crew.founder, at: Date.now() };
+  crewWrite(async () => {
+    await withTimeout(db.ref('players/' + user.uid + '/crew').set(rec), NET_WAIT);
+    user.crew = rec;
+  }, `🛡️ Request sent to ${crew.name} — you are in once its founder accepts.`);
+}
+function crewAccept(uid){
+  if(crewRefusal() || crewState() !== 'founder') return;
+  const crew = crewIdx.crews[user.uid];
+  if(!crew || !crew.asking.some(m => m.uid === uid)) return;
+  if(crew.members.length >= CREW_MAX){ snd('deny'); toast('🛡️ The crew is full — six operatives.', 3000); return; }
+  crewWrite(() => withTimeout(db.ref('players/' + user.uid + '/crewRoster/' + uid).set(true), NET_WAIT), '🛡️ Accepted.');
+}
+function crewRemove(uid){
+  if(crewRefusal() || crewState() !== 'founder' || uid === user.uid) return;
+  crewWrite(() => withTimeout(db.ref('players/' + user.uid + '/crewRoster/' + uid).remove(), NET_WAIT), '🛡️ Removed from the roster.');
+}
+function crewLeave(){
+  const mine = user ? crewNorm(user.crew) : null;
+  if(!mine) return;
+  const why = crewRefusal();
+  if(why){ snd('deny'); toast('🛡️ ' + why, 3400); return; }
+  const base = db.ref('players/' + user.uid), founder = mine.founder === user.uid, asking = crewState() === 'asking';
+  crewSure = '';
+  crewWrite(async () => {
+    if(founder) await withTimeout(base.child('crewRoster').remove(), NET_WAIT);
+    await withTimeout(base.child('crew').remove(), NET_WAIT);
+    user.crew = null;
+  }, founder ? `🛡️ ${mine.name} disbanded.` : asking ? '🛡️ Request withdrawn.' : `🛡️ You left ${mine.name}.`);
+}
+
+// ── THE OVERLAY ───────────────────────────────────────────────────────────
+function crewOpen(){
+  if(!user) return;
+  crewSure = '';
+  openOverlay('crew-overlay', crewRender);
+  crewRefresh();
+}
+function crewRender(){
+  const body = document.getElementById('crew-body'), sub = document.getElementById('crew-sub');
+  if(!body || !user) return;
+  const why = crewRefusal(), st = crewState(), mine = crewNorm(user.crew);
+  const esc2 = s => esc(String(s));
+  let html = '';
+  if(why){
+    if(sub) sub.textContent = 'saved operatives only';
+    body.innerHTML = '<div class="cw-note">🛡️ ' + esc2(why) + '</div>';
+    return;
+  }
+  if(st === 'none'){
+    if(sub) sub.textContent = 'up to six saved operatives under one tag';
+    if(!crewForm.color) crewForm.color = crewColors()[0];
+    html =
+      '<div class="cw-box"><div class="cw-lbl">FOUND A CREW</div>' +
+      '<label class="cw-field"><span>NAME</span><input class="input" id="cw-name" maxlength="18" autocomplete="off" spellcheck="false" value="' + esc2(crewForm.name) + '" placeholder="3–18 letters or digits"></label>' +
+      '<label class="cw-field"><span>TAG</span><input class="input" id="cw-tag" maxlength="4" autocomplete="off" spellcheck="false" value="' + esc2(crewForm.tag) + '" placeholder="2–4"></label>' +
+      '<div class="cw-swatches" role="group" aria-label="Crew colour">' + crewColors().map(c =>
+        '<button type="button" class="cw-sw' + (c === crewForm.color ? ' on' : '') + '" data-c="' + c + '" style="--cc:' + c + '" aria-pressed="' + (c === crewForm.color) + '" aria-label="Colour ' + c + '"></button>').join('') + '</div>' +
+      '<button class="btn btn-primary btn-full" id="cw-create" type="button">🛡️ FOUND IT</button></div>' +
+      '<div class="cw-box"><div class="cw-lbl">JOIN ONE</div>' +
+      '<label class="cw-field"><span>CODE</span><input class="input" id="cw-code" maxlength="6" autocomplete="off" spellcheck="false" value="' + esc2(crewForm.code) + '" placeholder="six characters"></label>' +
+      '<button class="btn btn-secondary btn-full" id="cw-ask" type="button">ASK TO JOIN</button>' +
+      '<div class="cw-note">The founder shares the code — or open their player card and ask from there. You are in once they accept.</div></div>';
+  }else if(st === 'unknown'){
+    if(sub) sub.textContent = '—';
+    html = '<div class="cw-note">Reading the crews…</div>';
+  }else if(st === 'asking'){
+    const crew = crewIdx.crews[mine.founder];
+    if(sub) sub.textContent = 'request sent';
+    html = '<div class="cw-box"><div class="cw-head"><em class="crew-chip" style="--cc:' + mine.color + '">' + esc2(mine.tag) + '</em> ' + esc2(crew ? crew.name : mine.name) + '</div>' +
+      '<div class="cw-note">Your request is with ' + esc2(crew && crewIdx.P[crew.founder] ? crewIdx.P[crew.founder].username : 'the founder') +
+      '. Until they accept you are not a member: no tag, no crew colour, nothing counted.</div>' +
+      '<button class="btn btn-secondary btn-full" id="cw-leave" type="button">WITHDRAW THE REQUEST</button></div>';
+  }else{
+    const crew = crewIdx.crews[mine.founder] || { ...mine, members: [{ uid: user.uid, name: user.username, pts: 0 }], asking: [], pts: 0 };
+    const founder = st === 'founder', hidden = lsGet(CREW_HIDE, {}) || {};
+    if(sub) sub.textContent = crew.members.length + ' of ' + CREW_MAX + ' · ' + crew.pts.toLocaleString() + ' PTS this week';
+    html = '<div class="cw-box"><div class="cw-head"><em class="crew-chip" style="--cc:' + crew.color + '">' + esc2(crew.tag) + '</em> ' + esc2(crew.name) + '</div>' +
+      '<div class="cw-code">CODE <b id="cw-code-out">' + esc2(crew.id) + '</b><button class="btn btn-secondary btn-sm" id="cw-copy" type="button">COPY</button></div>' +
+      '<div class="cw-roster">' + crew.members.map(m =>
+        '<div class="cw-row"><span class="cw-who">' + (m.uid === crew.founder ? '👑 ' : '') + esc2(m.name) + (m.uid === user.uid ? ' · YOU' : '') + '</span>' +
+        '<span class="cw-pts">' + m.pts.toLocaleString() + '</span>' +
+        (founder && m.uid !== user.uid ? '<button class="btn btn-secondary btn-sm cw-kick" type="button" data-uid="' + esc2(m.uid) + '">REMOVE</button>' : '') + '</div>').join('') + '</div>';
+    if(founder){
+      const asks = crew.asking.filter(m => !hidden[m.uid + ':' + crew.id]);
+      html += '<div class="cw-lbl">REQUESTS</div>' + (asks.length ? asks.map(m =>
+        '<div class="cw-row ask"><span class="cw-who">' + esc2(m.name) + '</span>' +
+        '<button class="btn btn-primary btn-sm cw-yes" type="button" data-uid="' + esc2(m.uid) + '"' + (crew.members.length >= CREW_MAX ? ' disabled' : '') + '>ACCEPT</button>' +
+        '<button class="btn btn-secondary btn-sm cw-no" type="button" data-uid="' + esc2(m.uid) + '">NOT NOW</button></div>').join('')
+        : '<div class="cw-note">Nobody is asking. Share the code.</div>');
+    }
+    html += '</div><button class="btn btn-secondary btn-full" id="cw-leave" type="button">' +
+      (crewSure === 'leave' ? (founder ? 'TAP AGAIN — THE CREW IS DISBANDED FOR EVERYONE' : 'TAP AGAIN TO LEAVE') : (founder ? 'DISBAND THE CREW' : 'LEAVE THE CREW')) + '</button>' +
+      '<div class="cw-note">Battle Bots units wear the crew colour while you are in. The crew\'s week is the sum of its members\' weekly points, and resets with the week.</div>';
+  }
+  body.innerHTML = html;
+  const bind = (id, fn) => document.getElementById(id)?.addEventListener('click', fn);
+  document.getElementById('cw-name')?.addEventListener('input', e => { crewForm.name = e.target.value; });
+  document.getElementById('cw-tag')?.addEventListener('input', e => { crewForm.tag = crewTagClean(e.target.value); if(e.target.value !== crewForm.tag) e.target.value = crewForm.tag; });
+  document.getElementById('cw-code')?.addEventListener('input', e => { crewForm.code = crewCodeClean(e.target.value); if(e.target.value !== crewForm.code) e.target.value = crewForm.code; });
+  body.querySelectorAll('.cw-sw').forEach(b => b.addEventListener('click', () => { crewForm.color = b.dataset.c; snd('tab'); crewRender(); }));
+  bind('cw-create', crewCreate);
+  bind('cw-ask', () => crewAsk(crewForm.code));
+  bind('cw-copy', () => { try{ navigator.clipboard.writeText(document.getElementById('cw-code-out').textContent); toast('🛡️ Code copied.', 1800); }catch(e){} });
+  bind('cw-leave', () => {
+    if(crewState() !== 'asking' && crewSure !== 'leave'){ crewSure = 'leave'; snd('tab'); crewRender(); return; }
+    crewLeave();
+  });
+  body.querySelectorAll('.cw-yes').forEach(b => b.addEventListener('click', () => crewAccept(b.dataset.uid)));
+  body.querySelectorAll('.cw-kick').forEach(b => b.addEventListener('click', () => crewRemove(b.dataset.uid)));
+  body.querySelectorAll('.cw-no').forEach(b => b.addEventListener('click', () => {
+    const h = lsGet(CREW_HIDE, {}) || {}; h[b.dataset.uid + ':' + mine.id] = 1; lsSet(CREW_HIDE, h); snd('uiBack'); crewRender();
+  }));
+}
+
+// ── THE BOARD, THE CARD, THE HUB ──────────────────────────────────────────
+// loadLeaderboard(), scope 'crews': the panel is the crews', not the players'.
+function crewBoard(panel){
+  if(!panel) return;
+  const list = Object.values(crewIdx.crews).filter(c => c.members.length).sort((a, b) => (b.pts - a.pts) || (a.at - b.at));
+  const mineF = user ? crewIdx.of[user.uid] : null, st = crewState(), why = crewRefusal();
+  let html = '<div class="lb-title">🛡️ CREWS · THIS WEEK</div>' +
+    '<div class="cw-mine"><span>' + (st === 'founder' || st === 'member' ? 'Your crew: ' + esc(crewOf(user.uid) ? crewOf(user.uid).name : '')
+      : st === 'asking' ? 'Your request is waiting for the founder.' : why ? esc(why) : 'You are not in a crew.') + '</span>' +
+    '<button class="btn btn-secondary btn-sm" id="cw-open" type="button">' + (st === 'none' ? '🛡️ FOUND OR JOIN' : '🛡️ MY CREW') + '</button></div>';
+  html += list.length ? list.slice(0, 20).map((c, i) =>
+    '<div class="lb-row cw-lb' + (c.founder === mineF ? ' me' : '') + (i < 3 ? ' r' + (i + 1) : '') + '">' +
+    '<div class="lb-rank">' + (['🥇', '🥈', '🥉'][i] || '#' + (i + 1)) + '</div>' +
+    '<div class="lb-name"><em class="crew-chip" style="--cc:' + c.color + '">' + esc(c.tag) + '</em> ' + esc(c.name) + ' <em class="lb-tag">' + c.members.length + '/' + CREW_MAX + '</em></div>' +
+    '<div class="lb-score">' + c.pts.toLocaleString() + ' PTS</div></div>').join('')
+    : '<div class="lb-empty">No crews on the grid yet — found the first one.</div>';
+  panel.innerHTML = html;
+  document.getElementById('cw-open')?.addEventListener('click', crewOpen);
+}
+// renderPlayerCard(): the tag beside the name, and — on a founder's card — the door to ask.
+function crewCard(rec, isMe, body){
+  if(!body || !rec) return;
+  const c = crewOf(rec.uid);
+  if(c){
+    const h = body.querySelector('#pcard-heading');
+    if(h && !h.querySelector('.crew-chip')) h.insertAdjacentHTML('beforeend', crewChip(rec.uid));
+  }
+  if(isMe || !user || !c || c.founder !== rec.uid || crewNorm(user.crew) || crewRefusal() || c.members.length >= CREW_MAX) return;
+  const box = document.createElement('div');
+  box.className = 'pc-btns';
+  box.innerHTML = '<button class="btn btn-secondary btn-full" id="pc-crew-btn" type="button">🛡️ Ask To Join ' + esc(c.name) + '</button>';
+  body.appendChild(box);
+  box.querySelector('#pc-crew-btn').addEventListener('click', () => { closeOverlay('pcard-overlay'); crewAsk(null, rec.uid); });
+}
+// enterHub(): the tag in the bar is repainted from what the last read knew.
+function crewHub(){ crewPaintHub(); }
+function crewPaintHub(){
+  const el = document.getElementById('h-crew');
+  if(!el) return;
+  const c = user ? crewOf(user.uid) : null;
+  el.hidden = !c;
+  if(c){ el.textContent = c.tag; el.style.setProperty('--cc', c.color); el.title = c.name; }
+}
+
+// ── WIRING ──
+try{
+  LB_SCOPES.crews = { label: '🛡️ CREWS', title: '🛡️ CREWS · THIS WEEK' };
+  document.getElementById('h-crew')?.addEventListener('click', crewOpen);
+  document.getElementById('crew-close')?.addEventListener('click', () => closeOverlay('crew-overlay'));
+  document.getElementById('crew-overlay')?.addEventListener('click', e => { if(e.target.id === 'crew-overlay') closeOverlay('crew-overlay'); });
+  document.addEventListener('keydown', e => {
+    if(e.key !== 'Escape') return;
+    const ov = document.getElementById('crew-overlay');
+    if(!ov || !ov.classList.contains('show')) return;
+    if(typeof padTopOverlay === 'function' && padTopOverlay() !== ov) return;
+    closeOverlay('crew-overlay');
+  });
+}catch(e){ console.warn('Crews failed to wire:', e); }
+
+// ═════════════════════════════════════════════════
+//  § 44 · v79 — 🏆 TOURNAMENTS · eight seats, single elimination
+// ═════════════════════════════════════════════════
+// The Network Arena plays one match at a time. A tournament is eight seats and
+// a bracket — quarter-finals, semi-finals, a final — of ordinary 1v1 duels, on
+// the UNCHANGED duel engines, with empty seats filled by droids.
+//
+//  · THE REGISTRY is one record under the existing `rooms` node (no new
+//    top-level node, no rules change): rooms/<TCODE>, where TCODE is 'T' + five
+//    characters. Six characters is on purpose: join-by-code and spectate accept
+//    exactly four (/^[A-Z0-9]{4}$/), and Quick Match only lists rooms with
+//    open:true — which a tournament never sets — so it can be found by none of
+//    them.
+//  · SEATS s0…s7 are claimed one LEAF at a time by transaction, the way arena
+//    seats are, so eight arrivals at once cannot share a chair. A closed tab
+//    frees its seat (onDisconnect) while the lobby is open; once the bracket
+//    is drawn it takes the seat's `on` leaf away instead, and a seat without
+//    `on` is what a walkover is decided from. Every hook is a REMOVAL: one
+//    that fires after the organiser has ended the tournament does nothing,
+//    where a write would re-create a stub of the record under a dead code.
+//  · THE ORGANISER locks ONE duel mode, ONE stability tier and ONE lane for
+//    every match (tourneyLock): the START handler and the droid room read the
+//    lock instead of the local dials, and no chaos is rolled.
+//  · THE BRACKET is seeded by total points (or at random) and paired 1v8, 4v5,
+//    2v7, 3v6. Only the quarter-finals' seats are written; a later match's two
+//    seats are DERIVED from the winners before it (tourneyMatches), so nobody
+//    has to write them and nobody can get them wrong.
+//  · A MATCH is played three ways:
+//      human v human   the higher seed opens a private room (never open, never
+//                      reset for a rematch, tagged with the two uids — nobody
+//                      else can take the seat) and the lower seed is brought in;
+//      human v droid   a local droid room at THAT droid's level and name;
+//      droid v droid   the organiser settles it at once from the droids' race
+//                      profiles.
+//  · EXACTLY ONE WINNER a match: every result is a transaction on the match
+//    node that only writes while it has none (tourneyReport). A drawn duel goes
+//    to the higher raw score, then the higher seed. A player who quits, drops,
+//    or has not checked in sixty seconds after their match was called loses by
+//    a RECORDED walkover.
+//  · OWNERSHIP: `tourney` lives outside `mp`. The arena's own ways out
+//    (mpRoomGone, mpQuitRound, the spectator's leave) come back to the bracket
+//    instead of the pick stage while it is set, and enterHub / logout call
+//    abortTourney(). If the organiser leaves or drops, the record is removed
+//    and everyone is told — no host migration in this version.
+//  · THE PRIZE: the champion's own client grants the earned skin
+//    `skin-champion` (grantChampion, idempotent like the season crown), and the
+//    achievement `tourney-win` reads that skin on the next finished round.
+
+var tourney = null;                   // { code, ref, org, seat, data, playing, timer, … } — null outside one
+var TOURNEY_CODE = /^T[A-Z0-9]{5}$/;
+var TOURNEY_SEATS = ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7'];
+var TOURNEY_PAIRS = [[0, 7], [3, 4], [1, 6], [2, 5]];          // seeds 1v8 · 4v5 · 2v7 · 3v6
+var TOURNEY_FEEDS = { s0: ['q0', 'q1'], s1: ['q2', 'q3'], f: ['s0', 's1'] };
+var TOURNEY_ORDER = ['q0', 'q1', 'q2', 'q3', 's0', 's1', 'f'];
+var TOURNEY_DROIDS = ['SPARK-9', 'VOLT-77', 'NULLTRACE', 'RELAY-4', 'KERNEL-X', 'BITSHIFT', 'OHM-12', 'DAEMON-0'];
+var TOURNEY_NOSHOW_MS = 60000;
+var tourneyDraft = { mode: 'mathrace', tier: 'stable', ow: false, droid: 'veteran', seeding: 'points' };
+
+SHOP_ITEMS.skins.push({ id: 'skin-champion', name: 'Champion', price: 0, emoji: '🏆', earned: true });
+
+function tourneyActive(){ return !!tourney; }
+// The settings every match of the running tournament is played under, or null.
+function tourneyLock(){
+  const d = tourney && tourney.data;
+  return (d && d.status === 'live') ? { mode: d.mode, tier: d.tier || 'stable', ow: !!d.ow } : null;
+}
+function tourneyModes(){ return Object.keys(MP_MODES); }        // every duel in the table is a 1v1 when its room has two seats
+function tourneyRefusal(){
+  if(!user) return 'Sign in first.';
+  if(isLocalSession()) return 'A local session has no link — tournaments need the grid.';
+  if(!db || offlineMode || !netConnected) return 'Offline — tournaments need a connection.';
+  return '';
+}
+function tourneyCard(){
+  return { uid: user.uid, name: (user.username || 'Operative').slice(0, 20), pts: Math.max(0, Math.round(+user.totalPoints || 0)), on: true, at: netNow() };
+}
+
+// ── THE BRACKET, DERIVED ──────────────────────────────────────────────────
+// Every match with its two seats: the quarter-finals' as written, the rest from the winners before them.
+function tourneyMatches(d){
+  const m = (d && d.m) || {}, out = {};
+  TOURNEY_ORDER.forEach(id => {
+    const row = m[id] || {}, feed = TOURNEY_FEEDS[id];
+    const a = feed ? (out[feed[0]].w || null) : (row.a || null), b = feed ? (out[feed[1]].w || null) : (row.b || null);
+    out[id] = { id, a, b, w: row.w || null, how: row.how || '', sa: row.sa, sb: row.sb, room: row.room || '', at: +row.at || 0, in: row.in || {} };
+  });
+  return out;
+}
+function tourneySeat(d, k){ return (d && d.seats && d.seats[k]) || null; }
+function tourneySeedOf(d, k){ const i = (d.order || []).indexOf(k); return i < 0 ? 99 : i; }
+function tourneyRound(id){ return id[0] === 'q' ? 'QUARTER-FINAL' : id[0] === 's' ? 'SEMI-FINAL' : 'FINAL'; }
+
+// ── HOST, JOIN, LEAVE ─────────────────────────────────────────────────────
+async function tourneyHost(){
+  const why = tourneyRefusal();
+  if(why) throw new Error(why);
+  if(mp) await mpLeaveRoom();
+  let code = '';
+  for(let i = 0; i < 8; i++){
+    const c = 'T' + Array.from({ length: 5 }, () => MP_CODE_CHARS[Math.floor(Math.random() * MP_CODE_CHARS.length)]).join('');
+    if(!(await db.ref('rooms/' + c).once('value')).exists()){ code = c; break; }
+  }
+  if(!code) throw new Error('CODE_BUSY');
+  const ref = db.ref('rooms/' + code);
+  if(tourneyModes().indexOf(mpMode) >= 0) tourneyDraft.mode = mpMode;
+  if(tourneyModes().indexOf(tourneyDraft.mode) < 0) tourneyDraft.mode = tourneyModes()[0];
+  tourneyDraft.tier = DIFFICULTY_TIERS[currentDifficultyTier] ? currentDifficultyTier : 'stable';
+  // Never `open`: Quick Match lists open rooms, and this is not a room anybody can be dropped into.
+  await ref.set({
+    tourney: 1, host: user.uid, hostName: (user.username || 'Operative').slice(0, 20), status: 'lobby',
+    mode: tourneyDraft.mode, game: MP_MODES[tourneyDraft.mode].gid, tier: tourneyDraft.tier, ow: false,
+    droid: tourneyDraft.droid, seeding: tourneyDraft.seeding,
+    createdAt: firebase.database.ServerValue.TIMESTAMP,
+    seats: { s0: tourneyCard() }
+  });
+  // The organiser owns it: if their link dies it goes with them (no host migration in v1).
+  ref.onDisconnect().remove();
+  tourneyAttach(code, true, 's0');
+  return code;
+}
+async function tourneyJoin(raw){
+  const why = tourneyRefusal();
+  if(why) throw new Error(why);
+  const code = String(raw || '').trim().toUpperCase();
+  if(!TOURNEY_CODE.test(code)) throw new Error('That is not a tournament code — they are six characters and start with T.');
+  const ref = db.ref('rooms/' + code);
+  const snap = await ref.once('value');
+  const d = snap.val();
+  if(!d || !d.tourney) throw new Error('No tournament on the grid has that code.');
+  if(d.status !== 'lobby') throw new Error('That tournament has already started.');
+  if(mp) await mpLeaveRoom();
+  const mine = Object.keys(d.seats || {}).find(k => d.seats[k] && d.seats[k].uid === user.uid);
+  let seat = mine || null;
+  if(!seat){
+    // One LEAF at a time, tried in order until one commits: eight arrivals cannot share a chair.
+    for(const k of TOURNEY_SEATS){
+      const res = await ref.child('seats/' + k).transaction(cur => (cur ? undefined : tourneyCard()));
+      if(res.committed && res.snapshot.val() && res.snapshot.val().uid === user.uid){ seat = k; break; }
+    }
+  }
+  if(!seat) throw new Error('That tournament is full — eight seats.');
+  // The organiser may have ended it while the claim was in flight: what the claim wrote is then a leaf under
+  // a dead code, and it is taken back.
+  const still = (await ref.once('value')).val();
+  if(!still || !still.tourney){
+    try{ await ref.child('seats/' + seat).remove(); }catch(e){}
+    throw new Error('No tournament on the grid has that code.');
+  }
+  ref.child('seats/' + seat).onDisconnect().remove();
+  tourneyAttach(code, false, seat);
+  return code;
+}
+function tourneyAttach(code, org, seat){
+  const ref = db.ref('rooms/' + code);
+  tourney = { code, ref, org, seat, data: null, playing: null, match: null, checked: null, busy: false, armed: 'lobby', timer: 0, cb: null };
+  tourney.cb = s => tourneyOnData(s);
+  ref.on('value', tourney.cb);
+  tourney.timer = setInterval(() => { if(tourney) tourneyDrive(); }, 1000);
+  tourneyShow();
+}
+// Everything a tournament holds, let go. `how`: 'hub' | 'logout' | 'gone' | 'leave'
+async function abortTourney(how, dead){
+  const t = tourney;
+  if(!t) return;
+  tourney = null;
+  clearInterval(t.timer);
+  try{ t.ref.off('value', t.cb); }catch(e){}
+  const d = t.data, live = d && d.status === 'live';
+  // One of its matches may be on this screen right now, in its countdown or its round. End that round the way
+  // QUIT does, and do it NOW, before anything is awaited: enterHub() and the logout carry straight on, and a
+  // round left running under them keeps its countdown, its borrowed tier and its teardown hook.
+  const inMatch = !!mp && !!(mp.tm || (mp.room && mp.room.tm));
+  const onBoard = () => !!document.getElementById('game-screen')?.classList.contains('active');
+  if(inMatch && (mp.inRound || onBoard())){
+    try{ stopGame(); setControls(null); document.getElementById('game-screen')?.classList.remove('canvas-game'); }
+    catch(e){ console.warn('Tournament round teardown failed:', e); }
+  }
+  // Whatever happens next, nothing of this client's stays armed on the server. (Cancelling a location cancels
+  // everything queued under it, so the seat covers its `on` leaf.)
+  try{ if(t.org) t.ref.onDisconnect().cancel(); else t.ref.child('seats/' + t.seat).onDisconnect().cancel(); }catch(e){}
+  try{
+    if(how !== 'gone'){
+      if(t.org){
+        await t.ref.remove();                                  // the record goes with its organiser
+      }else if(live){
+        // Mid-bracket: an open match of mine is the other player's by walkover, and the seat is marked gone —
+        // which is its `on` leaf taken away, never a value written (see tourneyOnData).
+        const open = Object.values(tourneyMatches(d)).find(m => !m.w && m.a && m.b && (m.a === t.seat || m.b === t.seat));
+        if(open) await tourneyReportOn(t.ref, d, open.id, open.a === t.seat ? open.b : open.a, 'walkover');
+        await t.ref.child('seats/' + t.seat + '/on').remove();
+      }else{
+        await t.ref.child('seats/' + t.seat).remove();
+      }
+    }else if(dead && !t.org){
+      // The record went (or only a stub of it is left): anything of mine that reached the server as it went
+      // is a leaf under a dead code. Removing what is not there costs nothing.
+      t.ref.child('seats/' + t.seat).remove().catch(() => {});
+      if(t.checked) t.ref.child('m/' + t.checked + '/in/' + t.seat).remove().catch(() => {});
+    }
+  }catch(e){ console.warn('Tournament teardown failed:', e && (e.code || e.message)); }
+  if(inMatch && mp) try{ await mpLeaveRoom(); }catch(e){}
+  if(how === 'gone'){
+    // Cancelled under a player who was mid-match: they are standing on a board with no round on it.
+    if(onBoard()){ mpShowStage('pick'); renderMpModes(); showScreen('mp-screen'); }
+    toast('🏆 The organiser left — the tournament was cancelled.', 4200);
+  }
+}
+
+// ── THE RECORD CHANGED ────────────────────────────────────────────────────
+function tourneyOnData(s){
+  const t = tourney;
+  if(!t) return;
+  const d = s.val();
+  if(!d || !d.tourney){
+    abortTourney('gone', true).then(() => { if(document.getElementById('mp-screen')?.classList.contains('active')){ mpShowStage('pick'); renderMpModes(); } });
+    return;
+  }
+  t.data = d;
+  if(!tourneySeat(d, t.seat) || tourneySeat(d, t.seat).uid !== user.uid){
+    abortTourney('gone').then(() => { mpShowStage('pick'); renderMpModes(); });
+    return;
+  }
+  // The bracket is drawn: a closed tab no longer frees the seat — it marks it gone, for the walkover.
+  if(d.status !== 'lobby' && t.armed === 'lobby'){
+    t.armed = 'live';
+    if(!t.org){
+      // …by taking the `on` leaf away, NOT by writing false into it: a removal that fires after the organiser
+      // has ended the tournament does nothing, where a write would re-create a stub of the record.
+      t.ref.child('seats/' + t.seat).onDisconnect().cancel();
+      t.ref.child('seats/' + t.seat + '/on').onDisconnect().remove();
+    }
+  }
+  tourneyDrive();
+  tourneyRender();
+}
+
+// ── THE ORGANISER STARTS IT ───────────────────────────────────────────────
+async function tourneyStart(){
+  const t = tourney;
+  if(!t || !t.org || !t.data || t.data.status !== 'lobby' || t.busy) return;
+  t.busy = true;
+  try{
+    const d = (await t.ref.once('value')).val() || {};
+    const seats = Object.assign({}, d.seats || {});
+    let n = 0;
+    TOURNEY_SEATS.forEach(k => {
+      if(seats[k]) return;
+      // A droid in every empty seat: its own id and its own name, at the organiser's level.
+      seats[k] = { uid: 'tdroid-' + k, name: TOURNEY_DROIDS[n++ % TOURNEY_DROIDS.length], pts: 0, bot: d.droid || 'veteran', on: true, at: 0 };
+    });
+    const keys = TOURNEY_SEATS.slice();
+    if(d.seeding === 'random'){ for(let i = keys.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)), x = keys[i]; keys[i] = keys[j]; keys[j] = x; } }
+    else keys.sort((a, b) => (!!seats[a].bot - !!seats[b].bot) || ((seats[b].pts || 0) - (seats[a].pts || 0)) || (a < b ? -1 : 1));
+    const m = {};
+    TOURNEY_PAIRS.forEach((p, i) => { m['q' + i] = { a: keys[p[0]], b: keys[p[1]], at: netNow() }; });
+    // The later rounds are in the record from the start (their seats are still derived): a result that
+    // finds NO node for its match then knows the record itself is gone, and writes nothing.
+    m.s0 = { r: 2 }; m.s1 = { r: 2 }; m.f = { r: 3 };
+    await t.ref.update({ seats, order: keys, m, status: 'live', startedAt: netNow() });
+    snd('success');
+  }catch(e){ console.warn('Tournament start failed:', e); toast('⚠️ The tournament could not be started.', 3200); }
+  t.busy = false;
+}
+function tourneySet(k, v){
+  const t = tourney;
+  if(!t || !t.org || !t.data || t.data.status !== 'lobby') return;
+  const upd = { [k]: v };
+  if(k === 'mode') upd.game = MP_MODES[v].gid;
+  tourneyDraft[k] = v;
+  t.ref.update(upd).catch(e => console.warn('Tournament setting not stored:', e && e.code));
+}
+
+// ── ONE WINNER A MATCH ────────────────────────────────────────────────────
+// A transaction on the match node that writes only while it has no winner: the first report stands.
+function tourneyReportOn(ref, d, id, winner, how, sa, sb){
+  return ref.child('m/' + id).transaction(cur => {
+    if(cur === null) return null;                              // no such match: the record is gone — write nothing
+    if(cur.w) return;                                          // settled already
+    const row = Object.assign({}, cur || {});
+    row.w = winner; row.how = how; row.doneAt = netNow();
+    if(sa != null) row.sa = Math.round(+sa || 0);
+    if(sb != null) row.sb = Math.round(+sb || 0);
+    return row;
+  }).catch(e => { console.warn('Tournament result not stored:', e && e.code); return { committed: false }; });
+}
+function tourneyReport(id, winner, how, sa, sb){
+  const t = tourney;
+  if(!t || !t.data) return Promise.resolve({ committed: false });
+  return tourneyReportOn(t.ref, t.data, id, winner, how, sa, sb);
+}
+
+// ── WHAT HAS TO HAPPEN NEXT (every snapshot, and once a second) ───────────
+function tourneyDrive(){
+  const t = tourney, d = t && t.data;
+  if(!t || !d || d.status !== 'live') return;
+  const M = tourneyMatches(d), now = netNow();
+  // THE ORGANISER referees what no player can: droid matches, the clock on a called match, the ending.
+  if(t.org){
+    for(const id of TOURNEY_ORDER){
+      const m = M[id];
+      if(m.w || !m.a || !m.b) continue;
+      const A = tourneySeat(d, m.a), B = tourneySeat(d, m.b);
+      if(!m.at){ t.ref.child('m/' + id + '/at').transaction(cur => cur || netNow()).catch(() => {}); continue; }
+      if(A.bot && B.bot){
+        // Settled from the two droids' race profiles — the same numbers a droid race is driven by.
+        const roll = L => { const r = (MP_BOT_LEVELS[L] || MP_BOT_LEVELS.veteran).race; return Math.round(1000 * Math.max(0.05, Math.min(1, r.skill + (Math.random() * 2 - 1) * r.spread))); };
+        const sa = roll(A.bot), sb = roll(B.bot);
+        tourneyReport(id, sa > sb ? m.a : sb > sa ? m.b : (tourneySeedOf(d, m.a) < tourneySeedOf(d, m.b) ? m.a : m.b), 'droid', sa, sb);
+        continue;
+      }
+      // A human who is gone, or who has not checked in a minute after the match was called, loses it.
+      const gone = k => { const S = tourneySeat(d, k); return !S.bot && (S.on !== true || (now - m.at > TOURNEY_NOSHOW_MS && !m.in[k])); };
+      const ga = gone(m.a), gb = gone(m.b);
+      if(ga || gb) tourneyReport(id, ga && gb ? (tourneySeedOf(d, m.a) < tourneySeedOf(d, m.b) ? m.a : m.b) : ga ? m.b : m.a, 'walkover');
+    }
+    if(M.f.w && d.status === 'live'){
+      const C = tourneySeat(d, M.f.w);
+      t.ref.update({ status: 'done', champ: C.uid, champName: C.name }).catch(() => {});
+    }
+  }
+  // A PLAYER looks after their own match. Checking in says "this client is here" — it is written the moment
+  // the match is called, even while the last match's card is still up.
+  const mine = TOURNEY_ORDER.map(id => M[id]).find(m => !m.w && m.a && m.b && (m.a === t.seat || m.b === t.seat));
+  if(mine && !mine.in[t.seat] && t.checked !== mine.id){
+    t.checked = mine.id;
+    t.ref.child('m/' + mine.id + '/in/' + t.seat).set(true).catch(() => { if(tourney === t) t.checked = null; });
+  }
+  // The match I am waiting for was decided without being played (the organiser recorded a walkover while I
+  // sat in its room): the room is no use any more. ONLY a room still in its lobby — a round, the beat between
+  // a round's last frame and its card, and the card itself all come back to the bracket by themselves, and
+  // letting go under them would open the next match's room behind a card the player is still reading.
+  if(t.playing && M[t.playing] && M[t.playing].w && !t.busy){
+    const scr = (document.querySelector('.screen.active') || {}).id;
+    const lobby = !mp || (mp.status === 'waiting' && !mp.inRound && !mp.round && !mp.tmStarted);
+    if(lobby && scr !== 'game-screen' && scr !== 'results-screen'){
+      t.playing = null; t.match = null;
+      if(mp && (mp.tm || (mp.room && mp.room.tm))){
+        t.busy = true;
+        mpLeaveRoom().catch(() => {}).then(() => { t.busy = false; if(tourney === t){ tourneyShow(); tourneyDrive(); } });
+        return;
+      }
+    }
+  }
+  if(mine && !t.playing && !mp && !t.busy) tourneyPlay(mine);
+  // …and a present player may claim a walkover the organiser has not got to yet.
+  if(mine && mine.at && now - mine.at > TOURNEY_NOSHOW_MS + 4000){
+    const other = mine.a === t.seat ? mine.b : mine.a, O = tourneySeat(d, other);
+    if(!O.bot && !mine.in[other] && mine.in[t.seat]) tourneyReport(mine.id, t.seat, 'walkover');
+  }
+}
+// My match: check in, then the room it is played in.
+async function tourneyPlay(m){
+  const t = tourney, d = t.data;
+  if(!t || t.playing || mp) return;
+  t.playing = m.id; t.busy = true;
+  const other = m.a === t.seat ? m.b : m.a, O = tourneySeat(d, other);
+  const host = tourneySeedOf(d, t.seat) < tourneySeedOf(d, other);
+  try{
+    if(O.bot){
+      await mpStartBotRoom(d.mode, O.bot, { tier: d.tier, ow: !!d.ow, name: O.name, id: O.uid });
+    }else if(host){
+      // The private room: never open, tagged with the only two uids that may sit in it.
+      const code = await mpFreeCode(), ref = db.ref('rooms/' + code);
+      await ref.set({
+        mode: d.mode, game: MP_MODES[d.mode].gid, host: user.uid, hostName: (user.username || 'Operative'),
+        status: 'waiting', open: false, teamSize: 1, tier: d.tier || 'stable',
+        ow: !!d.ow && owWorldsOk() && MP_MODES[d.mode].kind === 'race',
+        tm: { t: t.code, m: m.id, a: user.uid, b: O.uid },
+        createdAt: firebase.database.ServerValue.TIMESTAMP,
+        players: { [user.uid]: mpCard('host', null) }
+      });
+      ref.onDisconnect().remove();
+      db.ref('live/' + code).onDisconnect().remove();
+      mpAttach(code, true);
+      await t.ref.child('m/' + m.id + '/room').set(code);
+    }else{
+      // The lower seed is brought in as soon as the room is there.
+      if(!m.room){ t.playing = null; t.busy = false; return; }
+      await mpJoinRoom(m.room);
+    }
+    // Kept on the TOURNAMENT, not on the room: a rival who drops takes the room (and `mp`) with them, and
+    // the walkover that follows still has to find its match.
+    t.match = { id: m.id, other };
+    if(mp) mp.tm = { id: m.id };
+  }catch(e){
+    console.warn('Tournament match could not be opened:', e && (e.code || e.message));
+    t.playing = null; t.match = null;
+  }
+  t.busy = false;
+  tourneyRender();
+}
+// Once a second while a match room is up: the host starts it as soon as both are in.
+function tourneyNudge(){
+  if(!tourney || !mp || !mp.tm || mp.inRound || mp.status !== 'waiting') return;
+  if(mp.isHost && mpCanStart() && !mp.tmStarted){
+    mp.tmStarted = true;
+    setTimeout(() => { if(mp && mp.tm && !mp.inRound) document.getElementById('btn-mp-start')?.click(); }, 1200);
+  }
+}
+// mpShowDuelResult(): the duel is over — the bracket gets its winner. Returns the card's two buttons.
+function tourneyDuelDone(outcome){
+  const t = tourney;
+  if(!t || !t.match || !t.data) return null;
+  const id = t.match.id, other = t.match.other, d = t.data;
+  const res = (mp && mp.room && mp.room.result) || {};
+  const oid = (tourneySeat(d, other) || {}).uid;
+  const mineS = res.scores ? res.scores[user.uid] : null, theirS = res.scores && oid ? res.scores[oid] : null;
+  const mineR = res.raws ? res.raws[user.uid] : null, theirR = res.raws && oid ? res.raws[oid] : null;
+  // A draw is not a result a bracket can use: the higher raw score, then the higher seed.
+  let win = outcome === 'win';
+  if(outcome === 'draw'){
+    if(mineR != null && theirR != null && mineR !== theirR) win = mineR > theirR;
+    else win = tourneySeedOf(d, t.seat) < tourneySeedOf(d, other);
+  }
+  const M = tourneyMatches(d)[id];
+  const aMine = M.a === t.seat;
+  // A rival who left the room mid-match is a walkover, and is recorded as one.
+  const how = (!mp || (!mp.bot && mp.foeIds && !mp.foeIds.length)) ? 'walkover' : 'played';
+  tourneyReport(id, win ? t.seat : other, how, aMine ? mineS : theirS, aMine ? theirS : mineS).then(r => {
+    if(id === 'f' && win && r && r.committed && r.snapshot && r.snapshot.val() && r.snapshot.val().w === t.seat) grantChampion();
+  });
+  let gone = false;
+  const back = async () => {
+    if(gone) return;
+    gone = true;
+    if(mp) await mpLeaveRoom();                                  // the match's room: it is never reused
+    if(tourney){ tourney.playing = null; tourney.match = null; tourneyShow(); }
+    else{ mpShowStage('pick'); renderMpModes(); showScreen('mp-screen'); }
+  };
+  // The bracket must not wait on somebody reading a card: it comes back by itself. (A native timer — the
+  // round's own died with it.)
+  setTimeout(() => { if(tourney === t && t.playing === id && document.getElementById('results-screen')?.classList.contains('active')) back(); }, 9000);
+  return { again: { label: '🏆 Bracket', fn: back }, hub: { label: 'Hub', fn: async () => { await abortTourney('hub'); await mpLeaveRoom(); enterHub(); } } };
+}
+// A forfeit (QUIT in a duel) or a rival who left mid-match: recorded, then back to the bracket.
+function tourneyForfeit(){
+  const t = tourney;
+  if(!t || !t.match) return;
+  tourneyReport(t.match.id, t.match.other, 'walkover');
+  t.playing = null; t.match = null;
+}
+// The arena's "go back to the pick stage" asks first: inside a tournament, back is the bracket.
+function tourneyHome(){
+  if(!tourney) return false;
+  tourney.playing = null; tourney.match = null;
+  tourneyShow();
+  return true;
+}
+// 🏆 The champion's own client, once: an earned skin, like the season crown.
+async function grantChampion(){
+  if(!user || !db) return;
+  const id = 'skin-champion';
+  if((user.owned.skins || []).includes(id)) return;
+  user.owned.skins = [...(user.owned.skins || []), id];
+  try{
+    await db.ref('players/' + user.uid + '/owned/skins').set(user.owned.skins);
+    try{ cacheProfile(user); }catch(e){}
+    snd('victory');
+    toast('🏆 TOURNAMENT WON — the CHAMPION skin is yours.', 4600);
+  }catch(e){ console.warn('Champion grant failed:', e); }
+}
+
+// ── THE STAGE ─────────────────────────────────────────────────────────────
+function tourneyShow(){
+  mpShowStage('tourney');
+  showScreen('mp-screen');
+  tourneyRender();
+}
+function tourneyRender(){
+  const box = document.getElementById('tourney-body');
+  if(!box) return;
+  const t = tourney, d = t && t.data;
+  if(!t || !d){ box.innerHTML = '<div class="lb-empty">Linking to the tournament…</div>'; return; }
+  const name = k => { const S = tourneySeat(d, k); return S ? (S.bot ? '🤖 ' : '') + esc(S.name) + (S.uid === user.uid ? ' · YOU' : '') : '—'; };
+  let html = '<div class="tn-head"><div class="tn-code">TOURNAMENT <b id="tn-code">' + esc(t.code) + '</b>' +
+    '<button class="btn btn-secondary btn-sm" id="tn-copy" type="button">⧉ COPY</button></div>' +
+    '<div class="tn-lock">' + esc(MP_MODES[d.mode] ? MP_MODES[d.mode].name : d.mode) + ' · ' + esc((DIFFICULTY_TIERS[d.tier] || DIFFICULTY_TIERS.stable).label) +
+    ' · ' + (d.ow ? '🌐 OPEN WORLD' : '▶ CLASSIC') + ' · no chaos</div></div>';
+  if(d.status === 'lobby'){
+    html += '<div class="tn-seats">' + TOURNEY_SEATS.map((k, i) => '<div class="tn-seat' + (tourneySeat(d, k) ? ' on' : '') + '"><span>SEAT ' + (i + 1) + '</span><b>' + (tourneySeat(d, k) ? name(k) : 'OPEN') + '</b></div>').join('') + '</div>';
+    if(t.org){
+      const opt = (v, cur, label) => '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(label) + '</option>';
+      html += '<div class="tn-set">' +
+        '<label><span>DUEL</span><select class="input" id="tn-mode">' + tourneyModes().map(k => opt(k, d.mode, MP_MODES[k].name)).join('') + '</select></label>' +
+        '<label><span>STABILITY</span><select class="input" id="tn-tier">' + Object.keys(DIFFICULTY_TIERS).map(k => opt(k, d.tier, DIFFICULTY_TIERS[k].label)).join('') + '</select></label>' +
+        '<label><span>LANE</span><select class="input" id="tn-ow">' + opt('0', d.ow ? '1' : '0', 'Classic') + (owWorldsOk() ? opt('1', d.ow ? '1' : '0', 'Open world (races)') : '') + '</select></label>' +
+        '<label><span>DROIDS</span><select class="input" id="tn-droid">' + Object.keys(MP_BOT_LEVELS).map(k => opt(k, d.droid, MP_BOT_LEVELS[k].label)).join('') + '</select></label>' +
+        '<label><span>SEEDING</span><select class="input" id="tn-seed">' + opt('points', d.seeding, 'By total points') + opt('random', d.seeding, 'Random') + '</select></label></div>' +
+        '<button class="btn btn-primary btn-full" id="tn-start" type="button">🏆 START — DROIDS TAKE THE EMPTY SEATS</button>';
+    }else html += '<div class="tn-note">Waiting for ' + esc(d.hostName || 'the organiser') + ' to start. Empty seats are filled by droids.</div>';
+  }else{
+    const M = tourneyMatches(d);
+    const mine = TOURNEY_ORDER.map(id => M[id]).find(m => !m.w && m.a && m.b && (m.a === t.seat || m.b === t.seat));
+    const out = TOURNEY_ORDER.map(id => M[id]).some(m => m.w && (m.a === t.seat || m.b === t.seat) && m.w !== t.seat);
+    if(d.status === 'done') html += '<div class="tn-champ">🏆 CHAMPION · ' + esc(d.champName || '—') + (d.champ === user.uid ? ' · THAT IS YOU' : '') + '</div>';
+    else if(mine) html += '<div class="tn-mine">YOUR ' + tourneyRound(mine.id) + ' · vs ' + name(mine.a === t.seat ? mine.b : mine.a) + (mp && mp.tm ? ' — starting…' : ' — opening the room…') + '</div>';
+    else if(out) html += '<div class="tn-mine out">You are out. Watch the rest from here.</div>';
+    else html += '<div class="tn-mine">Waiting for your next opponent…</div>';
+    const cell = m => {
+      const side = (k, s) => '<div class="tn-side' + (m.w && m.w === k ? ' win' : m.w ? ' lost' : '') + '"><span>' + (k ? name(k) : 'TBD') + '</span><b>' + (s != null ? s : '') + '</b></div>';
+      const live = !m.w && m.room && !(m.a === t.seat || m.b === t.seat);
+      return '<div class="tn-match" data-m="' + m.id + '">' + side(m.a, m.sa) + side(m.b, m.sb) +
+        '<div class="tn-how">' + (m.w ? (m.how === 'walkover' ? 'WALKOVER' : m.how === 'droid' ? 'DROIDS' : 'PLAYED') : (m.a && m.b ? 'LIVE' : '')) +
+        (live ? ' <button class="btn btn-secondary btn-sm tn-watch" type="button" data-room="' + esc(m.room) + '">👁 WATCH</button>' : '') + '</div></div>';
+    };
+    html += '<div class="tn-bracket"><div class="tn-col"><em>QUARTER-FINALS</em>' + ['q0', 'q1', 'q2', 'q3'].map(id => cell(M[id])).join('') + '</div>' +
+      '<div class="tn-col"><em>SEMI-FINALS</em>' + ['s0', 's1'].map(id => cell(M[id])).join('') + '</div>' +
+      '<div class="tn-col"><em>FINAL</em>' + cell(M.f) + '</div></div>';
+  }
+  html += '<button class="btn btn-secondary btn-full" id="tn-leave" type="button">' + (t.org ? '✕ END THE TOURNAMENT' : (d.status === 'live' ? '🏳️ FORFEIT AND LEAVE' : '← LEAVE')) + '</button>';
+  box.innerHTML = html;
+  const on = (id, ev, fn) => document.getElementById(id)?.addEventListener(ev, fn);
+  on('tn-copy', 'click', () => { try{ navigator.clipboard.writeText(t.code); toast('🏆 Code copied.', 1800); }catch(e){} });
+  on('tn-mode', 'change', e => tourneySet('mode', e.target.value));
+  on('tn-tier', 'change', e => tourneySet('tier', e.target.value));
+  on('tn-ow', 'change', e => tourneySet('ow', e.target.value === '1'));
+  on('tn-droid', 'change', e => tourneySet('droid', e.target.value));
+  on('tn-seed', 'change', e => tourneySet('seeding', e.target.value));
+  on('tn-start', 'click', tourneyStart);
+  on('tn-leave', 'click', async () => { await abortTourney('leave'); if(mp) await mpLeaveRoom(); mpShowStage('pick'); renderMpModes(); snd('uiBack'); });
+  box.querySelectorAll('.tn-watch').forEach(b => b.addEventListener('click', async () => {
+    try{ await mpSpectateRoom(b.dataset.room); mpShowStage('watch'); }catch(e){ toast('👁 That match cannot be watched right now.', 2600); }
+  }));
+}
+
+// ── WIRING ──
+try{
+  setInterval(tourneyNudge, 1000);
+  document.getElementById('btn-tourney-host')?.addEventListener('click', async e => {
+    const b = e.currentTarget; b.disabled = true;
+    try{ await tourneyHost(); snd('success'); }
+    catch(err){ snd('deny'); toast('🏆 ' + (MP_ERR[err && err.message] || (err && err.message) || 'Could not open a tournament.'), 3600); }
+    b.disabled = false;
+  });
+  const tj = document.getElementById('tourney-code');
+  tj?.addEventListener('input', () => { tj.value = tj.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6); });
+  document.getElementById('btn-tourney-join')?.addEventListener('click', async e => {
+    const b = e.currentTarget; b.disabled = true;
+    try{ await tourneyJoin(tj ? tj.value : ''); snd('success'); }
+    catch(err){ snd('deny'); toast('🏆 ' + (MP_ERR[err && err.message] || (err && err.message) || 'Could not join.'), 3600); }
+    b.disabled = false;
+  });
+}catch(e){ console.warn('Tournaments failed to wire:', e); }
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 45 · v80 — 🎓 THE FULL TOUR
+// ══════════════════════════════════════════════════════════════════════
+// The arcade's first-run tour was four text cards and one round (§ 10), shown
+// once per DEVICE. Since then the building grew a campaign, an arena, a market
+// with nine aisles, crews, bounties, tournaments, a glitch run and a tutorial
+// button nobody could find again. This section replaces the four cards with a
+// tour that walks a new operative through every control, in hub order: it
+// spotlights the control, says what it is for in ARC's voice, and wherever
+// that is safe it waits for the player to actually USE it before moving on.
+//
+// WHO GETS IT. Nothing in a profile says "new": every way of making one writes
+// the record before loadUser() runs. So the functions that create a profile
+// raise an in-memory flag, tutFresh = uid — signInAsGuest (only when it really
+// wrote the blank seed), the sign-up handler, gCallsignGo and startLocalPlay —
+// and STARTING needs that flag, no rounds played and no saved tour state. A
+// restore, a claim, an upgrade, an offline resume or a sign-in never raises it.
+// RESUMING is a separate rule: a saved state that is neither done nor skipped
+// resumes on any hub entry, whatever gamesPlayed says — the guided round makes
+// it 1 half way through, and that must not end the tour.
+//
+// WHERE THE STATE LIVES. Per profile, not per device: localStorage
+// pi_tut_<uid> = { v, st: 'run'|'skip'|'done', s: <step id>, at, keep? }, and
+// for a saved account its own write to players/<uid>/tutorial = { st, s, at }
+// (chapter changes and endings only), so a second device knows. A guest's
+// state stays in the browser, which is also where the guest lives (§ 33).
+// pi_onboard is still WRITTEN when the tour ends, so an older cached app.js
+// does not show its four cards afterwards; it no longer decides anything here.
+//
+// THE LAYER. A .fb-overlay cannot spotlight anything: it is a full-screen blur
+// at z 2000. This is a body-level layer at z 2600 — over every overlay, the
+// pause tint and the exit animation, under the offline bar and the toast. Its
+// dim is ONE svg path, the screen with the target's rectangle cut out of it by
+// the even-odd rule: the path takes the clicks, the cut-out does not, so only
+// the target and the coach card can be pressed. The root carries a faint
+// background of its own — with a transparent root Chrome paints the 3D
+// chrome's lifted buttons over a fixed layer (the exit animation met that
+// first). On an explain-only step a transparent plug sits in the cut-out, so
+// the control is lit but cannot be pressed: Exit, Quick Match, Post Challenge,
+// the chat box, the Daily Hack.
+//
+// TARGETS ARE NEVER HELD. Half the hub is rebuilt with innerHTML, so a step
+// names its target with a selector or a function and it is looked up again on
+// every frame; the ring follows whatever the page does (a scroll, the mode
+// rail sliding sideways on a phone, a rotation). A target that is not there or
+// not visible is skipped: guest-only, touch-only, 3D-only, event-only.
+//
+// THE GUIDED ROUND is a real CLICK FRENZY through the real funnel. The tour
+// does not race a ten-second clock: the moment the round is live it presses
+// PAUSE itself and shows the header and the pause menu with the round held,
+// then the player presses RESUME and plays. During the countdown and the live
+// seconds the layer is only a strip under the header (no dim, no blockers, and
+// not a .fb-overlay — that would take the gamepad off the board).
+//
+// BACK, ESCAPE AND B. The back guard only knows screens and overlays, and on
+// the hub it wants no history entry — so a back swipe mid-tour would leave the
+// page. backGuardWanted, backAct and padTopOverlay are wrapped (they are
+// top-level functions called by name): while the layer is up the guard is
+// wanted, BACK / Escape / B put the tour away, and a controller walks the
+// coach card. Putting it away is not losing it: the state is 'skip' with the
+// step kept, and Settings → TUTORIAL offers RESUME as well as REPLAY.
+//
+// WHAT THE TOUR CHANGES, IT PUTS BACK. It asks the player to turn the
+// stability dial and to arm chaos; `keep` remembers what they were (and rides
+// in the saved state, so a reload mid-step still restores them).
+var tutFresh = null;          // uid of a profile CREATED in this page — in memory only
+var tut = null;               // the running tour, or null
+var tutTimer = 0;             // the pending start / resume
+var tutDenied = false;        // the rules refused players/<uid>/tutorial this session
+
+const TUT_V = 1;
+const TUT_SCR = { hub: 'hub-screen', market: 'market-screen', mp: 'mp-screen', game: 'game-screen', results: 'results-screen' };
+const TUT_CH = ['WELCOME', 'THE HUB BAR', 'THE DIALS', 'YOUR RANK', 'THE MISSION GRID', 'A GUIDED RUN',
+                'EVERY MODE', 'THE LIVE GRID', 'THE BLACK MARKET', 'SETTINGS'];
+// The functions this section takes over, as they were.
+const TUT_REAL = { wanted: backGuardWanted, act: backAct, top: padTopOverlay, maybe: maybeOnboard,
+                   start: startOnboard, settings: paintSettings };
+
+// The tour's own frame loop asks the BROWSER for its frames, not window.requestAnimationFrame: a round wraps
+// that for its whole length and parks every frame asked for while it is paused — and the held round is
+// exactly when the tour has to keep drawing. Taken here, at load, before any round has wrapped anything.
+const TUT_RAF = window.requestAnimationFrame.bind(window), TUT_CAF = window.cancelAnimationFrame.bind(window);
+const tutKey = uid => 'pi_tut_' + uid;
+const tutId = id => document.getElementById(id);
+const tutShown = id => !!tutId(id)?.classList.contains('show');
+const tutScreen = () => (document.querySelector('.screen.active') || {}).id || '';
+const tutPanel = id => { const ov = tutId(id); return ov ? ov.firstElementChild : null; };
+const tutWait = ms => new Promise(r => setTimeout(r, ms));
+const tutCalm = () => { try{ return !!VFX.reducedMotion; }catch(e){ return false; } };
+const tutLinked = () => !!db && !offlineMode && !isLocalSession();
+const tutLive = () => tutScreen() === 'game-screen' && !tutId('cd-ov')?.classList.contains('show') && !!(gTimer || gameLoopId);
+const tutClickCard = () => document.querySelector('.games-grid .game-card[data-game="click"]');
+function tutOn(){ return !!tut; }
+
+function tutRead(uid){
+  try{
+    const r = JSON.parse(localStorage.getItem(tutKey(uid)) || 'null');
+    return (r && typeof r === 'object' && typeof r.st === 'string') ? r : null;
+  }catch(e){ return null; }
+}
+function tutWrite(uid, rec){ try{ localStorage.setItem(tutKey(uid), JSON.stringify(rec)); }catch(e){} }
+
+// On screen, and really there: a rectangle, not hidden, inside the screen and
+// overlay that are showing. (offsetParent is no use — it is null for anything
+// position:fixed, the audio panel included.)
+function tutVisible(el){
+  if(!el || !el.isConnected) return false;
+  const r = el.getBoundingClientRect();
+  if(r.width < 3 || r.height < 3) return false;
+  const cs = getComputedStyle(el);
+  if(cs.visibility === 'hidden' || cs.display === 'none' || +cs.opacity === 0) return false;
+  const sc = el.closest('.screen');
+  if(sc && !sc.classList.contains('active')) return false;
+  const ov = el.closest('.fb-overlay');
+  if(ov && !ov.classList.contains('show')) return false;
+  return true;
+}
+function tutEl(s){
+  if(!s || !s.t) return null;
+  let el = null;
+  try{ el = typeof s.t === 'function' ? s.t() : document.querySelector(s.t); }catch(e){}
+  return tutVisible(el) ? el : null;
+}
+
+// ── THE STEPS ────────────────────────────────────────────────────────────
+// { id, ch, t: selector | fn, title, body: text | fn, do: fn | undefined,
+//   at: 'hub' (default) | 'market' | 'mp' | 'game' | 'results',
+//   ov: the overlay this step is inside, open: what opens it (selector | fn),
+//   when, enter, leave, opt (the target is conditional: skip without waiting),
+//   coach (a strip over a live round), peek (hide the pause menu, keep the
+//   round held), free (an explain step whose target may still be used) }
+// A step with `do` moves on only when that is true — never on NEXT.
+const TUT_STEPS = (function(){
+  const S = [];
+  let ch = 0;
+  const read = (id, t, title, body, x) => { S.push(Object.assign({ id, ch, t, title, body }, x || {})); };
+  const act = (id, t, title, body, done, x) => { S.push(Object.assign({ id, ch, t, title, body, do: done }, x || {})); };
+  const shown = id => () => tutShown(id);
+  const panel = id => () => tutPanel(id);
+  const hub = () => tutScreen() === 'hub-screen';
+  const hold = () => { try{ pauseRound('tut'); }catch(e){} };
+  const paused = { at: 'game', ov: 'pause-overlay', open: hold };
+
+  // 0 ───────────────────────────────────────────────────────────────────
+  read('hello', null, 'ARC ONLINE',
+    'Operative, this is ARC — I keep the grid running. Give me a few minutes and I will walk you through every switch in the building, and we will play one round together. SKIP whenever you like: I keep your place, and ⚙️ Settings brings me back.');
+
+  // 1 · THE HUB BAR ──────────────────────────────────────────────────────
+  ch = 1;
+  read('name', '#h-uname', 'THAT IS YOU', 'Your callsign, the way every board shows it. Tap any name on a board to open that operative’s card.');
+  read('pts', '#h-pts', 'PTS · YOUR RANK', 'Every finished mission banks its points here — once, automatically. PTS decide where you stand on the leaderboard.');
+  read('cr', '#h-credits', 'CR · YOUR WALLET', 'Credits buy things in the Black Market. Contracts pay them, and points can be converted into them.');
+  read('streak', '#h-streak', '🔥 THE STREAK', 'Play on consecutive days and this chip grows — and every day of it pays a little more.', { opt: 1 });
+  read('guest', '#h-guest-tag', 'A GUEST PROFILE', 'You are playing as a guest: this profile is kept in this browser. ⚙️ Settings → SAVE ACCOUNT turns it into a real account that follows you anywhere.', { opt: 1 });
+  read('crewchip', '#h-crew', '🛡️ YOUR CREW', 'Your crew’s tag. Tap it for the crew sheet: the roster, requests to join, and the way out.', { opt: 1 });
+  read('market-btn', '#btn-market', '🛒 THE BLACK MARKET', 'Colours, cursors, skins, music, companions and power-ups. We will walk the aisles in a minute.');
+  act('sound', '#btn-sound-hub', '🔊 AUDIO', 'Open the audio panel: tap the speaker.', () => !!document.querySelector('#audio-pop.open'));
+  read('soundpop', '#audio-pop', 'SOUND AND COMFORT', 'ALL · SFX · OFF, and a master volume. Under them, two comfort switches: REDUCE MOTION calms the shake and the flashes, COLORBLIND-SAFE swaps the palette. Try them if you like — the same panel is in every mission.', { opt: 1, free: 1 });
+  read('fs', '#btn-fs-hub', '⛶ FULLSCREEN', 'One tap for the whole screen, one more to give it back.', { opt: 1 });
+  read('gear', '#btn-settings', '⚙️ SETTINGS', 'Render mode, graphics, the controller, this tour, and saving your account. It is the last stop of the tour.');
+  read('exit', '#btn-logout', 'EXIT', () => (user && user.isGuest)
+    ? 'Signs you out. For a GUEST that deletes this profile for good — save the account first if you want to keep it. I will not press this one for you.'
+    : 'Signs you out. Your account stays safe on the grid: sign back in from any device.');
+
+  // 2 · THE DIALS ────────────────────────────────────────────────────────
+  ch = 2;
+  read('tier', '#diff-selector', '⚙️ SYSTEM STABILITY', 'One dial for the whole arcade. SAFE is slower and pays half. OVERCLOCK and MELTDOWN are faster and shorter, and pay ×1.5 and ×2.');
+  act('tier-try', () => tutId('diff-btn-' + (tut && tut.keep.tier === 'overclocked' ? 'stable' : 'overclocked')),
+    'TURN IT', 'Tap the lit tier and watch the multiplier beside the dial.',
+    () => !!tut && currentDifficultyTier !== tut.keep.tier,
+    { enter: () => { if(!tut.keep.tier) tut.keep.tier = currentDifficultyTier; } });
+  read('tier-back', '#diff-mult', 'AND BACK AGAIN', 'That number multiplies every payout. I have put the dial back where you had it — turn it yourself whenever you want more risk for more pay.',
+    { enter: () => tutPutBack(tut.keep, 'tier') });
+  read('chaos-is', '#chaos-selector', '🌀 CHAOS PROTOCOL', 'You have it ARMED already: most missions roll a random modifier before they start — handicaps and windfalls, and both pay extra.',
+    { when: () => chaosOptIn === true });
+  act('chaos-on', '#chaos-toggle', '🌀 CHAOS PROTOCOL', 'A gamble, not a difficulty. Armed, most missions roll a random modifier before they start — handicaps and windfalls, and both pay extra. Arm it.',
+    () => chaosOptIn === true, { when: () => chaosOptIn === false, enter: () => { tut.keep.chaos = false; } });
+  act('chaos-off', '#chaos-toggle', 'NOW STAND IT DOWN', 'Armed. Tap it again to disarm — and arm it for real when you feel lucky.',
+    () => chaosOptIn === false,
+    { when: () => !!tut && tut.keep.chaos === false, leave: () => { if(tut && chaosOptIn === false) delete tut.keep.chaos; } });
+  act('heat', '#btn-heat', '🔥 HEAT', 'Chaos rolls the dice; HEAT lets you pick your own hazards, stacked as high as you dare, with a heat record on every mission. Open it.',
+    shown('heat-overlay'), { opt: 1 });
+  act('heat-done', () => document.querySelector('#heat-body .btn-primary') || tutId('heat-close'), 'PICK, THEN CLOSE',
+    'Each hazard you switch on adds heat and pay. Nothing is on — close the panel and we move on.',
+    () => !tutShown('heat-overlay'), { ov: 'heat-overlay', open: '#btn-heat' });
+
+  // 3 · YOUR RANK ────────────────────────────────────────────────────────
+  ch = 3;
+  read('xp', '#xp-rail', 'LEVELS', 'A tenth of every point is XP, and every 100 XP is a level. Your level is your CLEARANCE — it is what opens the locked missions — and each level pays a perk point.');
+  act('perks', '#btn-perks', '🌳 THE PERK TREE', 'Open the perk tree.', () => tutShown('perk-overlay') || tutShown('reboot-overlay'));
+  read('perks-in', panel('perk-overlay'), 'PERKS', 'One point a level, spent on permanent upgrades: more score, more XP, a second chance. They cost points, never credits.',
+    { ov: 'perk-overlay', open: '#btn-perks' });
+  read('reboot', '#btn-perks', '⟳ REBOOT', 'At level 25 this same button turns into REBOOT: back to level 1 with the tree emptied, in exchange for a permanent score bonus and a ⟳ beside your level. Points, medals and everything you have unlocked stay.');
+  act('ach', '#btn-achievements', '🏆 ACHIEVEMENTS', 'Open the matrix.', shown('ach-overlay'));
+  read('ach-in', panel('ach-overlay'), 'BADGES AND TITLES', 'Every badge there is, and what earns it. Many unlock a TITLE you can wear under your name on the boards.',
+    { ov: 'ach-overlay', open: '#btn-achievements' });
+  act('season', '#btn-season', '🗓️ THE SEASON', 'Open the season.', shown('season-overlay'), { opt: 1 });
+  read('season-in', panel('season-overlay'), 'A NEW BOARD EVERY WEEK', 'What you score this week climbs the season track and its rewards, and the week’s top operative takes the crown.',
+    { ov: 'season-overlay', open: '#btn-season' });
+  act('dossier', '#btn-dossier', '📁 YOUR DOSSIER', 'Open your file.', shown('dossier-overlay'), { opt: 1 });
+  read('dossier-in', panel('dossier-overlay'), 'EVERYTHING YOU HAVE DONE', 'Bests and medals for every mission — and how you actually play: rounds in each mode, time on the grid, the missions you keep coming back to.',
+    { ov: 'dossier-overlay', open: '#btn-dossier' });
+  read('loadout', '#loadout-rail', '🎒 LOADOUTS', 'Save a whole look — colour, cursor, skin, music — into a slot, and swap between them in one tap.', { opt: 1 });
+
+  // 4 · THE MISSION GRID ─────────────────────────────────────────────────
+  ch = 4;
+  read('contracts', '#contracts-panel', '📋 CONTRACTS', 'Three jobs a day, each on a named mission. Every one pays credits; clear all three for a bonus and a power-up.', { opt: 1 });
+  read('clearance', '#mission-clearance', 'CLEARANCE', 'Your level decides which cards are open. A locked card says the level that opens it.', { opt: 1 });
+  read('ow', '#ow-switch', '🌐 OPEN WORLD', 'Flips the whole grid: every card then launches its mission as a free-roam world instead of a board.', { opt: 1 });
+  read('filters', '#grid-tools', 'FILTER AND SORT', 'Narrow the grid by kind, or down to your ☆ favourites. ⇅ changes the order.', { opt: 1 });
+  read('fav', () => { const c = tutClickCard(); return c && c.querySelector('.gc-fav'); }, '☆ FAVOURITE', 'The star pins a mission to the FAVOURITES filter.', { opt: 1 });
+  act('how', () => { const c = tutClickCard(); return c && c.querySelector('.gc-howbtn'); }, 'ⓘ THE BRIEFING',
+    'Every card has one. Tap the ⓘ to read a mission’s rules without starting it — on a phone a long press on the card does the same.',
+    shown('brief-overlay'), { opt: 1 });
+  read('how-in', panel('brief-overlay'), 'RULES, KEYS, TIPS', 'How it scores, how it controls, and what the best players do. ▶ PLAY starts the mission straight from here.',
+    { ov: 'brief-overlay', open: '.games-grid .game-card[data-game="click"] .gc-howbtn' });
+
+  // 5 · A GUIDED RUN ─────────────────────────────────────────────────────
+  ch = 5;
+  act('run', tutClickCard, 'LET US RUN ONE', 'CLICK FRENZY: ten seconds, one button, no way to lose. Tap the card.',
+    () => tutScreen() === 'game-screen',
+    { enter: () => { if(!tutVisible(tutClickCard())) document.querySelector('#grid-tools .mp-filter')?.click(); } });
+  act('count', null, '3 · 2 · 1', 'The same countdown opens every mission. Hands ready.', tutLive, { at: 'game', coach: 1 });
+  read('hold', '#btn-pause', '⏸ PAUSE', 'I have pressed PAUSE for you, so the clock waits while we look around. It holds any solo round: this button, Esc, START on a controller, or BACK on a phone.',
+    Object.assign({ peek: 1 }, paused));
+  read('hud', '#game-screen .g-stats', 'THE READOUTS', 'The clock, and your live score. Some missions add a pill of their own: a level, your ammo, a rival’s pace.', Object.assign({ peek: 1 }, paused));
+  read('quit', '#btn-quit', '← QUIT', 'Leaves the round. A round you quit banks nothing.', Object.assign({ peek: 1 }, paused));
+  read('snd2', '#btn-sound-game', '🔊 AUDIO, AGAIN', 'The same sound and comfort panel as the hub, one tap away mid-round.', Object.assign({ peek: 1, opt: 1 }, paused));
+  read('photo', '#btn-photo', '📸 PHOTO MODE', 'In 3D: freezes the round, lets you orbit the camera, and saves the shot with the run’s replay code stamped in.', Object.assign({ peek: 1, opt: 1 }, paused));
+  read('gfx2', '#btn-gfx-game', 'GRAPHICS', 'Trade effects for frame rate without leaving the round.', Object.assign({ peek: 1, opt: 1 }, paused));
+  read('fs2', '#btn-fs-game', '⛶ FULLSCREEN', 'The whole screen for the board — and the way back out of it.', Object.assign({ peek: 1, opt: 1 }, paused));
+  read('thumb', '#arcade-controls', 'THE THUMB PAD', 'On a touch screen, missions that steer put their buttons here, under your thumbs.', Object.assign({ peek: 1, opt: 1 }, paused));
+  read('pmenu', panel('pause-overlay'), 'THE PAUSE MENU', 'Your run so far, and four ways on: RESUME, RESTART, the sound switch, and QUIT.', paused);
+  act('resume', '#pause-resume', 'YOUR TURN', 'Press ▶ RESUME — then hammer the big button until the clock runs out.', () => !pauseActive(), paused);
+  act('play', null, 'GO!', 'Every press is points. Ten seconds.', () => tutScreen() === 'results-screen', { at: 'game', coach: 1 });
+  read('card', '#res-pts', 'THE CARD', 'Every round ends here, and the points are already banked to your profile. Nothing to press.', { at: 'results' });
+  read('rows', '#res-bd', 'THE BREAKDOWN', 'What you scored, and everything that multiplied it: stability, chaos, perks, medals, contracts.', { at: 'results', opt: 1 });
+  read('again', '#btn-again', 'PLAY AGAIN', 'Straight back in: same mission, same settings.', { at: 'results', opt: 1 });
+  read('share', '#btn-share-run', '👻 BEAT MY GHOST', 'Makes a link. Whoever opens it races this exact run, with your ghost on their board.', { at: 'results', opt: 1 });
+  read('clip', '#btn-clip', '🎬 CLIP', 'Saves the last seconds of the round as a video, when clips are switched on in Settings.', { at: 'results', opt: 1 });
+  read('rexp', '#btn-replay-export', '⏺ REPLAY CODE', 'Turns the run into a code anyone can paste into the replay decoder on the hub.', { at: 'results', opt: 1 });
+  read('postchal', '#btn-post-chal', '⚔️ POST CHALLENGE', 'Puts this score on the public Rival Challenges board for anyone to beat. It is public, so that one is yours to press.', { at: 'results', opt: 1 });
+  act('tohub', '#btn-hub', 'HOME', 'That was a whole round. Take us back to the hub.', hub, { at: 'results' });
+
+  // 6 · EVERY MODE ───────────────────────────────────────────────────────
+  ch = 6;
+  // On a desktop the rail is display:contents — it has no box — so the first banner stands in for it.
+  read('rail', () => { const r = tutId('mode-rail'); return tutVisible(r) ? r : tutId('cp-banner'); }, 'EVERY OTHER WAY TO PLAY',
+    () => tutVisible(tutId('mode-rail'))
+      ? 'The mode rail. It swipes sideways — I will slide it for you as we go.'
+      : 'The mode banners: everything that is more than one mission at a time. We will take them one by one.');
+  read('lane', '#cp-banner .lane-pick', 'CLASSIC · 3D · OPEN', 'Each banner has its own lane switch: the classic boards, their 3D versions, or open worlds. It only changes that one mode.', { opt: 1 });
+  act('camp', '#btn-campaign', '📖 THE CAMPAIGN', 'Twenty chapters against THE GLITCH. Open the map.', shown('campaign-overlay'));
+  read('camp-in', panel('campaign-overlay'), 'THE CHAPTER MAP', 'Each chapter is a mission with a target, worth up to three stars — and stars open the next act.',
+    { ov: 'campaign-overlay', open: '#btn-campaign' });
+  read('codex', '#btn-codex', '📜 THE CODEX', 'The story so far: an entry unlocks with every chapter you clear. Finish the campaign and a ⏱ SPEEDRUN door appears beside it.',
+    { ov: 'campaign-overlay', open: '#btn-campaign', opt: 1 });
+  read('speedrun', '#btn-speedrun', '⏱ SPEEDRUN', 'All twenty chapters back to back against one clock, with your best time kept for each lane.',
+    { ov: 'campaign-overlay', open: '#btn-campaign', opt: 1 });
+  act('arena', '#btn-mp-open', '⚔️ THE NETWORK ARENA', 'Live play against other operatives. Open the lobby — we are only looking.', () => tutScreen() === 'mp-screen', { when: tutLinked });
+  read('arena-off', '#mp-banner', '⚔️ THE NETWORK ARENA', 'Live duels, score races, droids and tournaments against other operatives. It needs the grid, so it opens once you are online.',
+    { when: () => !tutLinked(), opt: 1 });
+  read('mp-modes', '#mp-modes', 'PICK A FIGHT', 'Live duels and score races. The dial above sets the tier for rooms you host.', { at: 'mp', when: tutLinked });
+  read('mp-quick', '#btn-mp-quick', '⚡ QUICK MATCH', 'Finds an open room in that mode, or opens one and waits — a droid steps in if nobody comes. I will not press it: somebody real might answer.', { at: 'mp', when: tutLinked });
+  read('mp-bot', '#btn-mp-bot', '🤖 DROID DUEL', 'Practise against a droid at the level you pick.', { at: 'mp', when: tutLinked, opt: 1 });
+  read('mp-create', '#btn-mp-create', 'CREATE · JOIN', 'CREATE ROOM gives you a four-letter code to send a friend; they type it in the box beside JOIN.', { at: 'mp', when: tutLinked });
+  read('mp-spec', '#mp-spec-input', '👁 SPECTATE', 'Type a room’s code here to watch the match without playing.', { at: 'mp', when: tutLinked, opt: 1 });
+  read('mp-tourney', '.mp-tourney-card', '🏆 TOURNAMENTS', 'Eight seats, single elimination, droids in the empty chairs. Host one, or join with its six-character code; the champion keeps a skin nobody can buy.',
+    { at: 'mp', when: () => tutLinked() && typeof tourneyHost === 'function', opt: 1 });
+  act('mp-back', '#btn-mp-back', 'BACK OUT', 'That is the lobby. Back to the hub.', hub, { at: 'mp', when: tutLinked });
+  read('boss', '#br-banner', '👾 BOSS RUSH', 'Missions back to back with the chaos rising every stage, banked once at the end.', { opt: 1 });
+  act('glitch', '#btn-glitch', '🌀 GLITCH RUN', 'A branching run across your own unlocked missions, with relics that bend the rules. Take a look at the map.',
+    shown('glitch-overlay'), { opt: 1, when: () => typeof glitchOpen === 'function' && !tutId('btn-glitch')?.disabled });
+  read('glitch-in', panel('glitch-overlay'), 'CHOOSE A PATH', 'Six layers and a boss. Clear a node and take a relic; cash out between nodes, or lose the lot to one failure.',
+    { ov: 'glitch-overlay', open: '#btn-glitch', when: () => typeof glitchOpen === 'function' });
+  act('party', '#btn-party', '🎉 PARTY MODE', 'Pass-and-play on one device, two to eight players. Open the setup.', shown('party-overlay'), { opt: 1 });
+  read('party-in', panel('party-overlay'), 'ONE DEVICE, MANY HANDS', 'Name the players, pick the rounds, and pass the device round the room.', { ov: 'party-overlay', open: '#btn-party' });
+  act('lab', '#btn-lab', '🧱 THE BRICK LAB', 'Build your own levels. Open it.', shown('lab-overlay'), { opt: 1 });
+  read('lab-in', panel('lab-overlay'), 'BUILD · GALLERY', 'BUILD paints a level and lets you test it. GALLERY is everybody’s published levels, with a Level of the Day — and a level travels as a link.',
+    { ov: 'lab-overlay', open: '#btn-lab' });
+  read('daily', '#dh-banner', '📅 THE DAILY HACK', 'One seeded mission a day, the same for everyone, with a board of its own. Only your FIRST run of the day counts — so I am not spending it for you.', { opt: 1 });
+  read('endless', '#en-banner', '♾️ ENDLESS', () => tutId('btn-endless')?.disabled
+    ? 'Missions without end, faster every wave. It stays locked until you have a score on a mission to carry in.'
+    : 'Missions without end, faster every wave — pick one you have scored on and see how long you last.', { opt: 1 });
+  read('anomaly', '#an-banner', '🌒 THE WEEKLY ANOMALY', 'One mission a week under a fixed set of modifiers, with a weekly board.', { opt: 1 });
+
+  // 7 · THE LIVE GRID ────────────────────────────────────────────────────
+  ch = 7;
+  read('board', '#lb-panel', '🏆 THE LEADERBOARD', 'Every operative on the grid, live. Your row is marked.');
+  read('tabs', () => { const t = document.querySelector('.lb-tab'); return t && t.parentElement; }, 'FOUR BOARDS',
+    'All-time, this week’s season, only your rivals — and 🛡️ CREWS: up to six operatives under one tag, ranked together every week.', { opt: 1 });
+  act('pcard', () => document.querySelector('#lb-panel .lb-row[data-uid]'), 'PLAYER CARDS', 'Tap a row to open that operative’s card.', shown('pcard-overlay'), { opt: 1 });
+  read('pcard-in', panel('pcard-overlay'), 'AN OPERATIVE’S CARD', 'Rank, medals and bests. On someone else’s card: ☆ ADD AS RIVAL puts them on your Rivals tab, 💰 PLACE BOUNTY stakes credits on one of their scores, and a crew’s founder shows 🛡️ ASK TO JOIN. All three are public, so they are yours to press.',
+    { ov: 'pcard-overlay', open: '#lb-panel .lb-row[data-uid]' });
+  read('chal', '#chal-panel', '⚔️ RIVAL CHALLENGES', 'Scores posted from a results card for anyone to beat. Beat one and the board says so.', { opt: 1 });
+  read('bnty', '#bnty-panel', '💰 BOUNTIES', 'Credits staked on a score. HUNT one to play for it; beat the score and the purse is yours.', { opt: 1 });
+  read('chat', '#chat-panel', '💬 THE GRID TERMINAL', 'Live chat with everyone on the grid. What you send is public and carries your callsign — so the typing is yours.', { opt: 1 });
+  read('replay', '#replay-input', '⏺ THE REPLAY DECODER', 'Paste a replay code from any results card to watch that run back.', { opt: 1 });
+  read('badges', '#badge-shelf', '🎖 YOUR BADGES', 'What you have earned, on show.', { opt: 1 });
+
+  // 8 · THE BLACK MARKET ─────────────────────────────────────────────────
+  ch = 8;
+  act('mk-open', '#btn-market', '🛒 THE BLACK MARKET', 'Now the market. Open it.', () => tutScreen() === 'market-screen', { when: tutLinked });
+  read('mk-off', '#btn-market', '🛒 THE BLACK MARKET', 'Colours, cursors, skins, music, companions and power-ups, paid for in credits. It needs the grid, so it opens once you are online.',
+    { when: () => !tutLinked() });
+  read('mk-convert', '#panel-convert', '🔄 CONVERT', 'Trades points for credits and back, at the posted rate. Points are your rank — converting them moves you down the board. Think first.',
+    { at: 'market', when: tutLinked, opt: 1 });
+  read('mk-tabs', '.market-tabs', 'THE AISLES', 'Power-ups to use in a round; colours, cursors and skins to wear; music drives; exit states; worlds; companions — and a limited shelf while an event is on.',
+    { at: 'market', when: tutLinked });
+  act('mk-comp', '.market-tab[data-tab="companions"]', '🛸 COMPANIONS', 'Open the companions aisle.', () => tutVisible(tutId('panel-companions')),
+    { at: 'market', when: tutLinked, opt: 1 });
+  read('mk-comp-in', '#shop-companions', 'A DRONE OF YOUR OWN', 'A small follower that trails your marker and reacts to your big plays. It is only for show — it never changes a score.',
+    { at: 'market', when: tutLinked, opt: 1 });
+  act('mk-colors', '.market-tab[data-tab="colors"]', '🎨 COLOURS', 'Now the colours.', () => tutVisible(tutId('panel-colors')), { at: 'market', when: tutLinked });
+  read('mk-equip', () => { const g = tutId('shop-colors'); return g && g.firstElementChild; }, 'BUY, THEN EQUIP',
+    'A card says BUY until you own it, then EQUIP. The default set is free and already on. You start with 0 CR — the contracts on the hub fix that.',
+    { at: 'market', when: tutLinked, opt: 1 });
+  act('mk-back', '#btn-market-back', 'BACK OUT', 'Back to the hub.', hub, { at: 'market', when: tutLinked });
+
+  // 9 · SETTINGS ─────────────────────────────────────────────────────────
+  ch = 9;
+  const set = { ov: 'settings-overlay', open: '#btn-settings' };
+  act('set-open', '#btn-settings', '⚙️ LAST STOP', 'Open Settings.', shown('settings-overlay'));
+  read('set-mode', '#settings-overlay .mode-picker', '🎛️ RENDER MODE', '2D CLASSIC or 3D CYBERPUNK: the same arcade and the same boards, drawn two ways. It flips instantly.', set);
+  read('set-gfx', '#btn-gfx', 'GRAPHICS', 'Trade effects for frame rate.', Object.assign({ opt: 1 }, set));
+  read('set-clips', '#btn-clips', '🎬 CLIPS', 'Keeps the last seconds of every round ready to save from the results card.', Object.assign({ opt: 1 }, set));
+  read('set-haptics', '#btn-haptics', 'HAPTICS', 'Vibration on hits, where the device has it.', Object.assign({ opt: 1 }, set));
+  read('set-pad', '#btn-pad', '🎮 CONTROLLER', 'Gamepad support: the stick or d-pad moves, A acts, B goes back, START pauses.', Object.assign({ opt: 1 }, set));
+  read('set-tut', '#btn-tutorial', '🎓 THIS TOUR', 'RESUME brings me back where you left off; REPLAY starts me from the top.', Object.assign({ opt: 1 }, set));
+  read('set-install', '#btn-install', '📲 INSTALL', 'Puts the arcade on your home screen, and lets it start without a connection.', Object.assign({ opt: 1 }, set));
+  read('set-save', '#btn-save-acct', '💾 SAVE ACCOUNT', 'Turns this guest into a real account with an email or Google: the same progress, on any device. Worth doing before you ever press Exit.',
+    Object.assign({ opt: 1, when: () => !!(user && user.isGuest) }, set));
+  read('set-fb', '#btn-feedback', '✉️ FEEDBACK', 'Tell the owner what broke, or what you want next.', Object.assign({ opt: 1 }, set));
+  act('set-close', '#settings-close', 'CLOSE IT', 'Close Settings.', () => !tutShown('settings-overlay'), set);
+  read('bye', null, 'THE GRID IS YOURS', 'That is every switch in the building. Contracts pay credits, levels open missions, and the boards are live. Go and put your name on one, operative.');
+  return S;
+})();
+
+// ── STATE ────────────────────────────────────────────────────────────────
+// A saved account's server copy and this browser's copy, made to agree: done
+// wins, then the newer one. (ensureUserDefaults keeps unknown keys, so
+// user.tutorial is whatever the record held.)
+function tutAdopt(){
+  if(!user) return;
+  const loc = tutRead(user.uid), t = user.tutorial;
+  const srv = (t && typeof t === 'object' && typeof t.st === 'string') ? t : null;
+  if(!srv) return;
+  const newer = !loc || (srv.st === 'done' && loc.st !== 'done') || (loc.st !== 'done' && (+srv.at || 0) > (+loc.at || 0));
+  if(newer) tutWrite(user.uid, { v: TUT_V, st: ['run', 'skip', 'done'].includes(srv.st) ? srv.st : 'skip', s: String(srv.s || ''), at: +srv.at || 0 });
+}
+// Its own set(), for a saved account only; refused once, quiet for the session.
+function tutPush(rec){
+  if(!user || user.uid !== rec.uid || user.isGuest || isLocalSession() || tutDenied) return;
+  if(!db || offlineMode) return;
+  if(!auth || !auth.currentUser || auth.currentUser.uid !== user.uid) return;
+  const v = { st: rec.st, s: rec.s, at: rec.at };
+  user.tutorial = v;
+  db.ref('players/' + user.uid + '/tutorial').set(v)
+    .catch(e => { tutDenied = true; console.warn('Tutorial progress not stored (rules?):', e && e.code); });
+}
+function tutSave(st){
+  const T = tut;
+  if(!T) return;
+  const s = TUT_STEPS[T.i] || TUT_STEPS[0];
+  const rec = { v: TUT_V, st, s: s.id, at: Date.now() };
+  if(st === 'run' && Object.keys(T.keep).length) rec.keep = T.keep;
+  tutWrite(T.uid, rec);
+  if(st !== 'run' || s.ch !== T.ch){ T.ch = s.ch; tutPush({ uid: T.uid, st, s: s.id, at: rec.at }); }
+}
+// A claimed local profile changes its uid and keeps its tour.
+function tutMove(from, to){
+  if(!from || !to || from === to) return;
+  const st = tutRead(from);
+  if(st && !tutRead(to)) tutWrite(to, st);
+  try{ localStorage.removeItem(tutKey(from)); }catch(e){}
+  if(tut && tut.uid === from) tut.uid = to;
+  if(tutFresh === from) tutFresh = to;
+}
+// Exit: this device's copy of the profile goes, and its tour with it.
+function tutForget(){
+  const ids = [];
+  if(user && user.uid) ids.push(user.uid);
+  if(tut) ids.push(tut.uid);
+  try{ const c = lsGet(LS_PROFILE, null); if(c && c.uid) ids.push(c.uid); }catch(e){}
+  if(tut) tutClose('gone');
+  ids.forEach(u => { try{ localStorage.removeItem(tutKey(u)); }catch(e){} });
+}
+
+// ── WHAT THE TOUR CHANGED ────────────────────────────────────────────────
+function tutPutBack(keep, only){
+  let n = 0;
+  if(!keep) return 0;
+  if((!only || only === 'tier') && keep.tier){
+    if(currentDifficultyTier !== keep.tier){ try{ setDifficultyTier(keep.tier); n++; }catch(e){} }
+    delete keep.tier;
+  }
+  if((!only || only === 'chaos') && typeof keep.chaos === 'boolean'){
+    if(chaosOptIn !== keep.chaos){ try{ setChaosOptIn(keep.chaos); n++; }catch(e){} }
+    delete keep.chaos;
+  }
+  return n;
+}
+
+// ── START AND RESUME ─────────────────────────────────────────────────────
+// Called from enterHub() in place of the old maybeOnboard(). A hub entry while
+// the tour is already up (the guided round's way home, a flushed queue, an
+// upgrade) is nothing: the tour carries on from where it is.
+function tutMaybe(){
+  if(!tutId('tut-layer')) return TUT_REAL.maybe();       // an older cached index.html: its four cards
+  if(!user || tut) return;
+  if(typeof clPending === 'object' && clPending) return;  // a challenge link is its own tutorial (§ 22)
+  if(typeof labPending === 'object' && labPending) return;
+  const uid = user.uid;
+  tutAdopt();
+  const st = tutRead(uid);
+  let from;
+  if(st){
+    if(st.st !== 'run') return;                          // done, or put away: Settings brings it back
+    from = st.s || 'hello';
+  }else if(tutFresh === uid && !((user.gamesPlayed || 0) > 0)){
+    from = null;
+  }else return;
+  clearTimeout(tutTimer);
+  tutTimer = setTimeout(() => {
+    if(tut || !user || user.uid !== uid || tutScreen() !== 'hub-screen') return;
+    tutBegin(from);
+  }, 1000);
+}
+
+function tutBegin(fromId){
+  const layer = tutId('tut-layer');
+  if(tut || !user || !layer) return;
+  const old = tutRead(user.uid);
+  let i = fromId ? TUT_STEPS.findIndex(s => s.id === fromId) : 0;
+  if(i < 0) i = 0;
+  // A round cannot be walked back into: inside it, start the round again; on
+  // its card, carry on from the hub.
+  if(TUT_STEPS[i].at === 'game') i = TUT_STEPS.findIndex(s => s.id === 'run');
+  else while(TUT_STEPS[i] && TUT_STEPS[i].at === 'results') i++;
+  if(!TUT_STEPS[i]) i = 0;
+  tut = { uid: user.uid, i: -1, ch: fromId ? TUT_STEPS[i].ch : -1, tok: 0, keep: {}, busy: true, hit: false, miss: 0, key: '', scr: tutScreen(), raf: 0 };
+  // An earlier visit that ended mid-step (a reload, a closed tab) left its
+  // changes behind; put them back before asking for them again.
+  if(old && old.keep) tutPutBack(Object.assign({}, old.keep));
+  layer.classList.add('on');
+  layer.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('tut-on');
+  if(!fromId){ try{ statsEvent('_tut_start'); }catch(e){} }
+  else toast('🎓 Picking the tour back up — ' + TUT_CH[TUT_STEPS[i].ch] + '.', 2600);
+  tut.raf = TUT_RAF(tutFrame);
+  try{ backGuardSoon(); }catch(e){}
+  tutGo(i);
+}
+
+// ── THE ENGINE ───────────────────────────────────────────────────────────
+// Everything a step needs before it can be shown: no overlay that is not its
+// own, the right screen, its own overlay open. Done with the same buttons a
+// player would press, so every gate (offline, locked) applies as it stands.
+async function tutStage(s, live){
+  const want = s.at || 'hub';
+  for(let n = 0; n < 6; n++){
+    const top = TUT_REAL.top();
+    if(!top || top.id === s.ov) break;
+    closeOverlay(top.id);
+    await tutWait(260);                                  // the overlay's own fade (.22s): never a step over a ghost of the last
+    if(!live()) return false;
+    if(tutShown(top.id)) return false;                   // it will not close (mid-send): leave it be
+  }
+  let scr = tutScreen();
+  if(scr !== TUT_SCR[want]){
+    if(want === 'game' || want === 'results') return false;       // only playing gets there
+    if(scr !== 'hub-screen'){
+      const out = { 'market-screen': 'btn-market-back', 'mp-screen': 'btn-mp-back', 'results-screen': 'btn-hub' }[scr];
+      if(!out) return false;                             // a live round: the tour does not walk out of it
+      tutId(out)?.click();
+      await tutWait(420);
+      if(!live()) return false;
+    }
+    if(want !== 'hub'){
+      tutId(want === 'market' ? 'btn-market' : 'btn-mp-open')?.click();
+      await tutWait(420);
+      if(!live()) return false;
+    }
+    if(tutScreen() !== TUT_SCR[want]) return false;
+  }
+  if(s.ov && !tutShown(s.ov)){
+    if(!s.open) return false;
+    if(typeof s.open === 'function'){ try{ s.open(); }catch(e){} }
+    else{
+      const b = document.querySelector(s.open);
+      if(!b || b.disabled) return false;
+      b.click();
+    }
+    await tutWait(260);
+    if(!live()) return false;
+    if(!tutShown(s.ov)) return false;
+  }
+  return true;
+}
+
+async function tutGo(i){
+  const T = tut;
+  if(!T) return;
+  const tok = ++T.tok;
+  const live = () => tut === T && T.tok === tok;
+  const prev = TUT_STEPS[T.i];
+  if(prev && prev.leave){ try{ prev.leave(); }catch(e){} }
+  T.busy = true;
+  tutId('tut-card')?.classList.add('busy');
+  // Screens swap by dropping .active from one and adding it to the next 40 ms
+  // later, and each is its own scroll container with a transform: wait for the
+  // swap, then for the transition, before measuring anything in it.
+  for(let n = 0; n < 20 && !tutScreen(); n++){ await tutWait(40); if(!live()) return; }
+  if(tutScreen() !== T.scr){ T.scr = tutScreen(); await tutWait(360); if(!live()) return; }
+  for(; i < TUT_STEPS.length; i++){
+    const s = TUT_STEPS[i];
+    let ok = true;
+    try{ if(s.when && !s.when()) ok = false; }catch(e){ ok = false; }
+    if(!ok) continue;
+    const staged = await tutStage(s, live);
+    if(!live()) return;
+    if(!staged) continue;
+    if(tutScreen() !== T.scr){ T.scr = tutScreen(); await tutWait(360); if(!live()) return; }
+    try{ if(s.enter) s.enter(); }catch(e){ console.warn('[TUT] ' + s.id + ' enter failed:', e); }
+    if(s.t){
+      let el = tutEl(s);
+      for(let n = 0; !el && n < (s.opt ? 2 : 8); n++){ await tutWait(150); if(!live()) return; el = tutEl(s); }
+      if(!el){ try{ if(s.leave) s.leave(); }catch(e){} continue; }
+      try{ el.scrollIntoView({ block: 'center', inline: 'center', behavior: tutCalm() ? 'auto' : 'smooth' }); }catch(e){}
+    }
+    T.i = i; T.busy = false; T.hit = false; T.miss = 0; T.key = '';
+    tutSave('run');
+    tutCard(s);
+    tutPaint(s.t ? tutEl(s) : null, s);                  // now — the frame loop only has to FOLLOW it from here
+    return;
+  }
+  tutFinish();
+}
+function tutAdvance(){ if(tut && !tut.busy) tutGo(tut.i + 1); }
+
+// The card's words and buttons for a step.
+function tutCard(s){
+  const layer = tutId('tut-layer'), card = tutId('tut-card');
+  if(!layer || !card) return;
+  const pad = (typeof PAD === 'object' && PAD && PAD.live);
+  const isDo = !!s.do, last = TUT_STEPS.indexOf(s) === TUT_STEPS.length - 1;
+  layer.classList.toggle('coach', !!s.coach);
+  layer.classList.toggle('calm', tutCalm());
+  document.body.classList.toggle('tut-peek', !!s.peek);
+  tutId('tut-chap').textContent = (s.ch ? 'CHAPTER ' + s.ch + ' OF ' + (TUT_CH.length - 1) + ' · ' : '') + TUT_CH[s.ch];
+  tutId('tut-title').textContent = s.title;
+  let body = '';
+  try{ body = typeof s.body === 'function' ? s.body() : s.body; }catch(e){}
+  tutId('tut-body').textContent = body || '';
+  const hint = tutId('tut-hint');
+  hint.textContent = s.coach ? '' : isDo ? (pad ? '👉 YOUR MOVE — Ⓐ presses it for you' : '👉 YOUR MOVE — use the lit control') : '';
+  hint.hidden = !hint.textContent;
+  const show = (id, on) => { const b = tutId(id); if(b) b.hidden = !on; };
+  show('tut-next', !isDo);
+  show('tut-pass', isDo && !s.coach);
+  show('tut-doit', isDo && !s.coach && pad);
+  const next = tutId('tut-next');
+  if(next) next.textContent = last ? 'FINISH ✓' : (s.id === 'hello' ? 'SHOW ME →' : 'NEXT →');
+  const bar = tutId('tut-bar');
+  if(bar) bar.style.width = Math.round((TUT_STEPS.indexOf(s) + 1) / TUT_STEPS.length * 100) + '%';
+  card.classList.remove('busy');
+  card.scrollTop = 0;
+  // Focus: NEXT on an explain step, so Enter and a controller's A move on; on
+  // a "do" step the control itself (a keyboard can press it), or the card's
+  // own PRESS IT for a controller. Never during a live round — it has the keys.
+  if(s.coach) return;
+  try{
+    if(!isDo) next && next.focus({ preventScroll: true });
+    else if(pad) tutId('tut-doit')?.focus({ preventScroll: true });
+    else{ const el = tutEl(s); if(el && typeof el.focus === 'function') el.focus({ preventScroll: true }); }
+  }catch(e){}
+  snd('tab');
+}
+
+// Where the hole, the ring and the card go — measured again every frame.
+function tutPaint(el, s){
+  const T = tut, layer = tutId('tut-layer'), card = tutId('tut-card');
+  if(!T || !layer || !card) return;
+  const W = innerWidth, H = innerHeight;
+  let R = null;
+  if(el && !s.coach){
+    const r = el.getBoundingClientRect(), p = 6;
+    const x = Math.max(0, Math.round(r.left - p)), y = Math.max(0, Math.round(r.top - p));
+    const x2 = Math.min(W, Math.round(r.right + p)), y2 = Math.min(H, Math.round(r.bottom + p));
+    if(x2 - x > 2 && y2 - y > 2) R = { x, y, w: x2 - x, h: y2 - y };
+  }
+  const cw = card.offsetWidth, chh = card.offsetHeight;
+  const key = [W, H, cw, chh, s.id, R ? [R.x, R.y, R.w, R.h].join() : '-'].join('|');
+  if(key === T.key) return;
+  T.key = key;
+  const dim = tutId('tut-dim'), ring = tutId('tut-ring'), plug = tutId('tut-plug'), svg = tutId('tut-mask');
+  if(svg){ svg.setAttribute('width', W); svg.setAttribute('height', H); svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); }
+  if(dim) dim.setAttribute('d', 'M0 0H' + W + 'V' + H + 'H0Z' + (R ? 'M' + R.x + ' ' + R.y + 'h' + R.w + 'v' + R.h + 'h' + (-R.w) + 'Z' : ''));
+  const box = (b, on) => {
+    if(!b) return;
+    b.hidden = !on;
+    if(on){ b.style.transform = 'translate(' + R.x + 'px,' + R.y + 'px)'; b.style.width = R.w + 'px'; b.style.height = R.h + 'px'; }
+  };
+  box(ring, !!R);
+  box(plug, !!R && !s.do && !s.free);                    // lit, but not to be pressed
+  // The card: under the target if there is room, else over it, else beside
+  // it, else against the far edge. A strip under the header during a round.
+  const m = 10, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  let x, y;
+  if(s.coach){
+    const hdr = document.querySelector('#game-screen .g-hdr');
+    x = (W - cw) / 2;
+    y = hdr ? hdr.getBoundingClientRect().bottom + 6 : 64;
+  }else if(!R){
+    x = (W - cw) / 2; y = (H - chh) / 2;
+  }else{
+    const below = H - (R.y + R.h), above = R.y;
+    x = R.x + R.w / 2 - cw / 2;
+    if(below >= chh + m * 2) y = R.y + R.h + m;
+    else if(above >= chh + m * 2) y = R.y - chh - m;
+    else if(W - (R.x + R.w) >= cw + m * 2){ x = R.x + R.w + m; y = R.y; }
+    else if(R.x >= cw + m * 2){ x = R.x - cw - m; y = R.y; }
+    else y = (R.y + R.h / 2 > H / 2) ? m : H - chh - m;
+  }
+  card.style.transform = 'translate(' + Math.round(clamp(x, m, Math.max(m, W - cw - m))) + 'px,' + Math.round(clamp(y, m, Math.max(m, H - chh - m))) + 'px)';
+}
+
+function tutFrame(now){
+  const T = tut;
+  if(!T) return;
+  T.raf = TUT_RAF(tutFrame);
+  // Whoever was being shown round has gone: Exit, a logout, a switched account.
+  if(!user || user.uid !== T.uid || tutScreen() === 'auth-screen'){ tutClose('gone'); return; }
+  if(T.busy) return;
+  const s = TUT_STEPS[T.i];
+  if(!s) return;
+  if(s.do){
+    let ok = false;
+    try{ ok = !!s.do(); }catch(e){}
+    if(ok){ tutAdvance(); return; }
+  }
+  // The round the step belongs to is over and the player is home again.
+  if((s.at === 'game' || s.at === 'results') && tutScreen() === 'hub-screen'){ tutAdvance(); return; }
+  const el = s.t ? tutEl(s) : null;
+  if(s.t && !el){
+    if(!T.miss) T.miss = now;
+    if(now - T.miss > 1500){ tutAdvance(); return; }     // rebuilt is back within a frame; gone is gone
+  }else T.miss = 0;
+  tutPaint(el, s);
+}
+
+// ── ENDINGS ──────────────────────────────────────────────────────────────
+function tutClose(how){
+  const T = tut;
+  if(!T) return;
+  const s = TUT_STEPS[T.i];
+  if(s && s.leave){ try{ s.leave(); }catch(e){} }
+  tut = null;
+  T.tok++;
+  TUT_CAF(T.raf);
+  const layer = tutId('tut-layer');
+  if(layer){ layer.classList.remove('on', 'coach'); layer.setAttribute('aria-hidden', 'true'); }
+  document.body.classList.remove('tut-on', 'tut-peek');
+  const put = tutPutBack(T.keep);
+  try{ backGuardSoon(); }catch(e){}
+  try{ tutPaintSettings(); }catch(e){}
+  return put;                                            // how many dials went back: the caller's toast says so
+}
+// Put away, not thrown away: the step is kept and Settings offers RESUME.
+function tutSkip(how){
+  if(!tut) return;
+  tutSave('skip');
+  try{ statsEvent('_tut_skip'); }catch(e){}
+  try{ markOnboard(); }catch(e){}
+  const put = tutClose(how || 'skip');
+  snd('uiBack');
+  toast('🎓 Tour put away — pick it up any time: ⚙️ Settings → TUTORIAL.' + (put ? ' The dials are back the way you had them.' : ''), put ? 4800 : 3600);
+}
+function tutFinish(){
+  const T = tut;
+  if(!T) return;
+  T.i = TUT_STEPS.length - 1;
+  tutSave('done');
+  try{ statsEvent('_tut_done'); }catch(e){}
+  try{ markOnboard(); }catch(e){}
+  const put = tutClose('done');
+  snd('success');
+  toast('🎓 Tour complete — the grid is yours, operative.' + (put ? ' The dials are back the way you had them.' : ''), put ? 4800 : 3600);
+}
+
+// ── SETTINGS → TUTORIAL ──────────────────────────────────────────────────
+function tutPaintSettings(){
+  const b = tutId('btn-tutorial'), r = tutId('btn-tutorial-replay'), n = tutId('set-tut-note');
+  if(!b || !user || !tutId('tut-layer')) return;
+  const st = tutRead(user.uid);
+  const open = !!st && (st.st === 'run' || st.st === 'skip');
+  const i = open ? Math.max(0, TUT_STEPS.findIndex(s => s.id === st.s)) : 0;
+  b.textContent = open ? '▶ Resume Tutorial · ' + TUT_CH[TUT_STEPS[i].ch] : (st ? '↺ Replay Tutorial' : '🎓 Start Tutorial');
+  if(r){ r.hidden = !open; r.style.display = open ? '' : 'none'; }   // both: see the note on its markup
+  if(n) n.textContent = open
+    ? 'ARC stopped at “' + TUT_CH[TUT_STEPS[i].ch] + '”. Resume from there, or start again from the top.'
+    : 'ARC walks you through every control in the arcade, and one real round on CLICK FRENZY. A few minutes; skip whenever you like.';
+}
+function tutFromSettings(replay){
+  if(!tutId('tut-layer')) return TUT_REAL.start();       // an older cached index.html
+  if(!user) return;
+  if(tut) tutClose('again');
+  try{ closeSettings(true); }catch(e){}
+  clearTimeout(tutTimer);
+  const st = tutRead(user.uid);
+  const from = (!replay && st && (st.st === 'run' || st.st === 'skip')) ? (st.s || null) : null;
+  if(!from){ try{ localStorage.removeItem(tutKey(user.uid)); }catch(e){} }
+  setTimeout(() => { if(user && tutScreen() === 'hub-screen') tutBegin(from); }, 260);
+}
+
+// ── THE TAKE-OVERS ───────────────────────────────────────────────────────
+// Top-level functions, called by global name everywhere: reassigned here, with
+// the originals kept in TUT_REAL.
+maybeOnboard = function(){ tutMaybe(); };
+startOnboard = function(){ tutFromSettings(false); };
+paintSettings = function(){ const r = TUT_REAL.settings.apply(this, arguments); try{ tutPaintSettings(); }catch(e){} return r; };
+backGuardWanted = function(){ return !!tut || TUT_REAL.wanted(); };
+backAct = function(){ if(tut){ tutSkip('back'); return; } return TUT_REAL.act(); };
+// While the tour is up, "the overlay on top" is the tour: a controller walks
+// the card's buttons, A presses the focused one, B is the registered closer —
+// and the Escape handlers that ask "am I on top?" stand down. Not during a
+// live round: there the board has the controller.
+padTopOverlay = function(){
+  if(tut){ const s = TUT_STEPS[tut.i]; if(!(s && s.coach)) return tutId('tut-layer') || TUT_REAL.top(); }
+  return TUT_REAL.top();
+};
+registerOverlayCloser('tut-layer', () => tutSkip('pad'), true);
+
+tutId('tut-next')?.addEventListener('click', () => { const s = tut && TUT_STEPS[tut.i]; if(s && !s.do) tutAdvance(); });
+tutId('tut-pass')?.addEventListener('click', () => { const s = tut && TUT_STEPS[tut.i]; if(s && s.do) tutAdvance(); });
+tutId('tut-doit')?.addEventListener('click', () => { const s = tut && TUT_STEPS[tut.i]; const el = s && s.do && tutEl(s); if(el) el.click(); });
+tutId('tut-skip')?.addEventListener('click', () => tutSkip('button'));
+tutId('btn-tutorial-replay')?.addEventListener('click', () => tutFromSettings(true));
+// Escape belongs to the tour while it is up — first, and nobody else hears it.
+window.addEventListener('keydown', e => {
+  if(!tut || e.key !== 'Escape') return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  tutSkip('esc');
+}, true);
+// The dim takes the wheel; hand it to whatever is showing, so a mouse can
+// still look round the page behind a step.
+tutId('tut-layer')?.addEventListener('wheel', e => {
+  const sc = document.querySelector('.fb-overlay.show .fb-modal') || document.querySelector('.screen.active');
+  if(sc) sc.scrollBy(0, e.deltaY);
+}, { passive: true });
+addEventListener('resize', () => { if(tut) tut.key = ''; });
+addEventListener('orientationchange', () => { if(tut) tut.key = ''; });
