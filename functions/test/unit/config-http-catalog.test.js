@@ -67,6 +67,7 @@ test('catalogue: valid, nine SKUs, labels, and its validator catches mistakes', 
   assert.throws(bad({ amount: 1.5 }), /bad amount/);
   assert.throws(bad({ grants: ['col-x-patron'] }), /granted by two skus/);
   assert.throws(bad({ grants: ['col-pink'] }), /bad grant id/);
+  assert.throws(bad({ kind: 'exhibition', cat: 'powerups' }), /exhibition sku grants no item/);
   assert.throws(() => catalog.validate([catalog.SKUS[1]]), /supporter pass is missing/);
   for(const s of catalog.SKUS) for(const g of s.grants) assert.ok(g.length <= 40, 'fits equipped/$cat (≤ 40 chars)');
 });

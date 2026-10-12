@@ -55,6 +55,18 @@ test('Managed Payments: on, and none of the parameters it refuses', () => {
   }
 });
 
+// Non-negotiable 3: the hosted page only. With no ui_mode the provider's default is its own hosted page,
+// and the session comes back with a url to redirect to; nothing here could embed a payment form.
+test('hosted checkout only: exactly these parameters, and no ui_mode', () => {
+  const common = ['cancel_url', 'client_reference_id', 'consent_collection', 'custom_text', 'expires_at',
+                  'line_items', 'metadata', 'mode', 'payment_intent_data', 'success_url'];
+  const keys = a => Object.keys(buildSessionParams(a)).sort();
+  assert.deepEqual(keys(base), [...common, 'managed_payments'].sort());
+  assert.deepEqual(keys({ ...base, managed: false }), [...common, 'adaptive_pricing'].sort());
+  assert.deepEqual(keys({ ...base, emailVerified: true }), [...common, 'customer_email', 'managed_payments'].sort());
+  assert.deepEqual(Object.keys(buildSessionParams(base).payment_intent_data), ['metadata']);
+});
+
 test('without Managed Payments: Adaptive Pricing asked for, no managed flag', () => {
   const p = buildSessionParams({ ...base, managed: false });
   assert.deepEqual(p.adaptive_pricing, { enabled: true });
