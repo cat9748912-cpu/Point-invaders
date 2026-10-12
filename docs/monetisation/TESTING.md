@@ -138,6 +138,10 @@ and this description deliberately doesn't spell them out contiguously.
 
 ## Phase 1: server, rules, legal (2026-10-12)
 
+*This section records the first build, on Cloud Functions. At Gate 1 the server moved to a Cloudflare Worker:
+see [Phase 1, revised](#phase-1-revised-the-server-on-cloudflare-workers-gate-1-2026-10-12) below. The rules,
+service-worker and legal-page results here still stand.*
+
 Commits on `claude/stoic-cori-irbsqk`, in order:
 
 | Commit | What |
@@ -409,6 +413,146 @@ and the whole working tree:
 One problem was caught and fixed before committing: a fake signing secret in the tests was the webhook-secret
 prefix followed by a long word, which is exactly a real secret's shape, so the strict pattern rightly matched
 it. Every fake signing secret was renamed `test-signing-secret-*`.
+
+---
+
+## Phase 1, revised: the server on Cloudflare Workers (Gate 1, 2026-10-12)
+
+You couldn't use the Blaze plan, so D2 changed (DESIGN § 2, item 18). Commits: `bd360c1` (the port), `b8aead1`
+(the new tests), and the documentation commits that carry this section.
+
+### Facts checked before building
+
+| # | Fact | Verdict | How checked |
+|---|---|---|---|
+| E6 | Workers free plan: 100,000 requests a day; 10 ms CPU per request, not counting network waits; 50 outgoing calls per request; 128 MB; 3 MB per Worker | ✅ | Cloudflare's limits and pricing pages (web search, 2026-10-12) |
+| E7 | Realtime Database REST conditional writes: `X-Firebase-ETag: true` on a GET returns an `ETag`; a PUT with `if-match` gets **412** with the current value and ETag when it is stale; a missing node's ETag is `null_etag` | ✅ | Firebase REST reference; **execution** against the Database emulator: all four behaviours, plus server timestamps and multi-path PATCH |
+| E8 | REST authentication with a service account's OAuth token: `Authorization: Bearer <token>` is accepted, with the scopes `firebase.database` and `userinfo.email`; such a token bypasses the rules | ✅ | Firebase "Authenticate REST requests" (read 2026-10-12) |
+| E9 | IAM: `roles/firebasedatabase.admin` is the only Realtime Database role with `instances.update`. No separate data permission exists. | ✅ (reading) | Google Cloud IAM reference. That this role alone can read and write data is **confirmed only by your smoke test** (`/health` → `db: ok`, then the test event → 200). |
+| E10 | Google's JWK endpoint for securetoken publishes exactly the key ids of the documented x509 endpoint | ✅ | **execution:** `curl` of both, ids compared (4 = 4) |
+| E11 | `wrangler secret put` reads a piped value when stdin isn't a terminal, and trims trailing whitespace; for a Worker that doesn't exist yet it offers to create a draft | ✅ | reading wrangler 4.142.0's own source (`cli.js`) |
+| E12 | Workers Logs is included in the free plan (`[observability] enabled = true`) | ✅ | Cloudflare's Workers Logs page |
+| E13 | wrangler 4.142.0 (2026-09-27) needs Node ≥ 22; it bundles workerd 1.20260926.1; the lockfile also lists the Windows and macOS builds of workerd and esbuild, so `npm ci` works on your PC | ✅ | **execution:** `npm view`; the lockfile entries |
+| E14 | Cloudflare's local runtime runs here: WebCrypto RSA and HMAC, settings, and `fetch` to a local port | ✅ | **execution:** a throwaway Worker under `wrangler dev` |
+
+### Test runs (execution)
+
+| Suite | Command (in `worker/`) | Result |
+|---|---|---|
+| Unit | `npm test` | **67 / 67 pass** |
+| Emulator | `npm run test:emu` | **130 / 130 pass**: the 67, plus 60 cases against the Auth and Database emulators (checkout 22, webhook 26, rules 12), plus the 3 groups |
+| End to end | `npm run test:e2e` | **9 / 9 pass**: 8 cases plus the group, run against the real bundle in **workerd** via `wrangler dev`, the emulators, and a local stand-in for Stripe's API |
+| Bundle | `npx wrangler deploy --dry-run` | builds; **54.29 KiB** (15.28 KiB gzipped), against a 3 MB limit; bindings as in `wrangler.toml` |
+| Parity | `node scripts/catalog-parity.js` | exit 2, as before (Phase 2 adds the client's block) |
+| CPU | WebCrypto timings in Node 22 | signing the hourly Google token **0.72 ms**; importing the account key 0.11 ms; verifying an ID token 0.08 ms; importing one Google key 0.05 ms; HMAC of a 4 KB webhook 0.07 ms. A fresh isolate's first checkout needs about 1 ms of CPU for crypto, against the 10 ms allowance. Measured in Node, whose native crypto is comparable to workerd's; the local runtime doesn't enforce the CPU limit, so this is the closest available evidence. |
+
+<details><summary><strong>New unit tests</strong> (25)</summary>
+
+- **Stripe client** (`stripe.test.js`, 8):
+  - form encoding;
+  - a whole session round-tripped through the encoding;
+  - the key, the pinned version and idempotency keys;
+  - every call's address;
+  - error fields, with no retry on a 400;
+  - one retry on a network error or 5xx, with the same idempotency key, and none when the provider says not to;
+  - signatures: wrong secret, tampered body, too old, malformed, v0 only, no secret;
+  - **Stripe's own library**: its test header passes our check, and our signature passes its `constructEvent`.
+- **Service-account tokens** (`google.test.js`, 3):
+  - the assertion's header and claims, with its signature verified by the public key;
+  - reuse until 5 minutes before expiry;
+  - refusals that never echo the assertion.
+- **ID tokens** (`idtoken.test.js`, 5):
+  - a genuine token;
+  - every claim Firebase lists;
+  - a changed claim, another key, alg `none`, a missing kid, HS256, malformed input;
+  - key caching and rotation, with refetches limited to one a minute;
+  - emulator mode accepts only unsigned tokens, and still checks the claims.
+- **REST client** (`rtdb.test.js`, 5):
+  - addresses, the token header and silent writes;
+  - a compare-and-swap commit, and "leave it" writing nothing;
+  - 412 → recomputed on the server's value;
+  - endless contention gives up with `db_contention`;
+  - a refused token is `db_denied`.
+- **Entry point** (`worker.test.js`, 4):
+  - unconfigured: `/health` names what is missing, and everything else is 503;
+  - a key file that isn't a service account;
+  - emulator or fake-provider settings refused next to a live key;
+  - a configured Worker routes requests.
+- **HTTP helpers** (1, replacing the old `keep()` test): JSON answers that are never cached, and a preflight
+  with no body.
+
+</details>
+
+<details><summary><strong>Integration changes</strong></summary>
+
+- Checkout: "a disabled account → 401 (checkRevoked)" became "a token for another project, or an expired one →
+  401". `checkRevoked` was dropped (DESIGN § 2, item 18).
+- Webhook: the two Admin SDK transaction-trap cases became two compare-and-swap cases:
+  - **"a write that lands between the read and the write is not lost"**: a client whose first conditional write is
+    preceded by someone else's write. It is refused once (412) and re-run on the server's value, and both writes
+    end up in the node.
+  - **"concurrent deliveries for one player and item"**: four completions at once. All four orders land, the item
+    stays active, and three are flagged as duplicates.
+- Every database read and write in the tests now goes through the Worker's own REST client, with the emulator's
+  administrator token.
+
+</details>
+
+<details><summary><strong>End to end in workerd</strong> (8)</summary>
+
+- `/health`: test mode, and the database answers;
+- the CORS preflight from the site;
+- a guest token → 403, another origin → 403, an unknown sku → 400;
+- a saved account gets a hosted page. The request the stand-in Stripe received was checked:
+  - the key and the pinned API version;
+  - an idempotency key;
+  - the price, uid and metadata;
+  - Managed Payments on, and no Adaptive Pricing;
+  - the return URL, and no email locked in.
+
+  Asking again hands back the same page.
+- a correctly signed, oddly formatted webhook grants the pass and lights the badge, and its replay is a no-op;
+- a body changed after signing → 400, and nothing is written;
+- an unknown route → 404;
+- the Worker's log output holds no key, signing secret, ID token or email.
+
+</details>
+
+### The non-negotiables after the move
+
+Unchanged from the Phase 1 table: 2, 3, 4, 7, 8, 9 and 10. The rest:
+
+| # | What changed | Proof |
+|---|---|---|
+| 1 | Grants are written with an administrator's token over REST instead of the Admin SDK: the same privilege, and still only by the webhook handler | the rules tests (unchanged); every server write goes through `shop/…` in `ledger.js` |
+| 5 | Raw bytes come from `request.arrayBuffer()`; the HMAC is WebCrypto's | the unit tests, including the cross-check with Stripe's library; end to end in workerd (an oddly formatted body passes, a changed one is refused) |
+| 6 | The secrets are Cloudflare secrets. `.dev.vars*`, `.env*` and service-account key files (`neal-with-roblox-*.json`) are git-ignored. | `git check-ignore -v`; the log test end to end; the secret greps below |
+| 11 | An unconfigured Worker answers 503 and the game carries on; a refused database key shows on `/health` | `worker.test.js`; the troubleshooting rows in RUNBOOK |
+
+### Verified by reading only
+
+- That **Firebase Realtime Database Admin** alone lets a service account read and write data (E9). Your `/health`
+  and test event prove it; RUNBOOK troubleshooting covers `db: denied`.
+- That **Windows Command Prompt** pipes into `npx wrangler secret put` as a Mac terminal does. It should: npx
+  starts wrangler with inherited input, and wrangler reads piped input (E11). The runbook has a click-only fallback
+  for the webhook secret.
+- **Cloudflare's real runtime**, as opposed to its local copy (workerd), and Google's real token endpoint and
+  database. These are first exercised by your `/health` call and the Stripe test event.
+
+### The six open items, updated
+
+U5 (Blaze, other functions) is **resolved**: there is no Blaze plan and no Cloud Function. U4 and U6 are unchanged
+(Managed Payments review; live provider behaviour at Gates 2–3).
+
+### Commit hygiene
+
+Both greps ran on each commit's staged diff. The literal list matched only:
+- comments and prose naming key prefixes;
+- the `private_key` field names in `google.js` and its tests;
+- short fake keys: `sk_test_unit`, `rk_test_unit`, `rk_live_unit` and `sk_test_e2e`.
+
+The strict pattern found nothing (exit 1). The tests generate every RSA key at run time, so no key, real or fake,
+is stored in the repository.
 
 ---
 

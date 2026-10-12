@@ -1,6 +1,8 @@
 # 🔐 The Restricted shelf: direct payments for Point Invaders
 
-**Design: approved at Gate 0 (2026-10-12). Phase 1 (server, rules, legal drafts) built, awaiting Gate 1.**
+**Design: approved at Gate 0 (2026-10-12). Phase 1 (server, rules, legal drafts) built, awaiting Gate 1.
+At Gate 1 you couldn't use Firebase's Blaze plan, so the server moved from Cloud Functions to a Cloudflare
+Worker on the free plan (D2, § 2 item 18).**
 Version tag `v84`, new section `§ 46` (the next free numbers: `§ 45 · v80` is the last section,
 v81–v83 were fixes without sections, and § 41 was retired in v81).
 Audited against commit `94571c2` on branch `claude/stoic-cori-irbsqk`.
@@ -15,21 +17,21 @@ Companion files:
 ## 0. Summary
 
 Players pay real money on a **hosted checkout page** for **one-time, non-consumable unlocks** in a new
-**🔐 Restricted** aisle of the Black Market. A small server (one HTTPS Cloud Function) creates checkout
+**🔐 Restricted** aisle of the Black Market. A small server (one Cloudflare Worker) creates checkout
 sessions and receives the payment provider's webhooks. It is the **only writer** of entitlements, which live
 in a new top-level database node, `shop`, that clients can read but never write. The game reads entitlements
 with a live listener, mirrors them to `localStorage` for offline play, and draws owned items exactly like
 Credits-bought ones. Paid items never touch `credits`, `totalPoints`, `owned.*` or `powerups.*`.
 
 ```
- browser (app.js § 46)                      Cloud Function `shop` (asia-southeast1)         Stripe
+ browser (app.js § 46)                      Worker `point-invaders-shop` (Cloudflare)       Stripe
  ─────────────────────                      ───────────────────────────────────────         ──────
  BUY ─▶ POST /checkout  (Bearer ID token) ─▶ verify token · refuse guests · catalogue ─────▶ Checkout Session
         ◀── { url } ◀──────────────────────── rate limit · reuse open session ◀────────────  (hosted page)
  location.assign(url) ─────────────────────────────────────────────────────────────────────▶ customer pays
                                              POST /webhook (raw body, signed) ◀───────────── event
                                              verify · claim event id · transition order
-                                             ── Admin SDK ──▶ RTDB shop/ent, orders, pi, badge
+                                             ── REST, admin token ──▶ RTDB shop/ent, orders, pi, badge
  shop/ent/<uid>  .on('value') ◀───────────── (rules: owner may READ, nobody may WRITE)
  owns(sku) → shelf, equip, cosmetics; mirror pi_ent_v1 for offline
 ```
@@ -49,14 +51,14 @@ Managed Payments.
 | # | Decision | Brief | Agreed | Why |
 |---|----------|-------|----------------|-----|
 | D1 | Payment provider | *unfilled* | **Stripe Checkout with Managed Payments** (Link as merchant of record), business in Singapore. If Stripe's review declines Managed Payments, we stop and decide (RUNBOOK § 3). | The whole architecture in the brief is Stripe-shaped (lookup keys, sessions, test card). Managed Payments keeps that exact integration and moves VAT/GST in 80+ countries, fraud and disputes to Stripe. It lists **video games** as an eligible category. See § 8.2. |
-| D2 | Server runtime | *unfilled* | **Firebase Cloud Functions 2nd gen**, project `neal-with-roblox`, region `asia-southeast1`, **Node 24**. | Same project and region as the database; the Admin SDK gives real transactions; the emulator suite lets me test rules and handlers here. A Worker would need hand-rolled token verification and REST writes. Node 20 is decommissioned on 2026-10-30; see § 2, item 1. |
+| D2 | Server runtime | *unfilled* | Agreed at Gate 0: Firebase Cloud Functions 2nd gen. **Changed at Gate 1: a Cloudflare Worker on the free plan**, because you can't use Blaze, which Cloud Functions require. | No card and no monthly cost. The trade-offs are in § 2, item 18: the Admin SDK's work is now done over REST, and Cloudflare holds a key with full access to the database. |
 | D3 | Product model | One-time non-consumables only | **As written.** | |
 | D4 | v1 catalogue | *unfilled* | Supporter Pass, 6 Restricted cosmetics and 2 exhibition power-ups (**9 SKUs**, § 3). The pass ships **without** the Beacon companion (Q8); Beacon can follow later. | All data-only items that reuse existing renderers. |
 | D5 | Paid power-up rule | *A or B unfilled* | **Either A or B: the design satisfies both.** Paid power-ups only work in **Exhibition rounds**, which are off every board and pay nothing, from their first frame (§ 3.3). | Under B, any run whose points still reached `totalPoints` would turn money into Points. Excluding the whole run is the only reading of B that keeps non-negotiable 2. That is also exactly what A needs. |
 | D6 | Prices / currency | *unfilled* | USD base: pass $4.99, colours and cursor $1.99, skins $2.99, world $3.99, power-ups $2.99. **Tax-inclusive** prices; Adaptive Pricing on (always on under Managed Payments). | Tax-inclusive means a $4.99 tag is what a player in the EU, UK or AU pays, which their consumer law expects. |
 | D7 | Refund policy | *unfilled* | **14 days, no questions asked, on request**. A refund or chargeback removes the item; a dispute you win restores it. | Simple to explain and to operate. Under Managed Payments Stripe may refund within 60 days on its own, so revocation must be automatic either way. |
 | D8 | Minimum age | *unfilled* | **13+, with a parent or guardian's permission under 18**: a required checkbox in the purchase sheet, plus the provider's terms checkbox. | The Firebase project name (`neal-with-roblox`) hints at a young audience. See § 14, Q9. |
-| D9 | Who deploys | *unfilled* | **You deploy from your machine** with the Firebase CLI, following `RUNBOOK.md`. | This environment has no Firebase or Stripe credentials (checked by name only), and non-negotiable 8 forbids deploying without a gate anyway. |
+| D9 | Who deploys | *unfilled* | **You deploy from your machine** with Cloudflare's `wrangler`, following `RUNBOOK.md`. | This environment has no Firebase or Stripe credentials (checked by name only), and non-negotiable 8 forbids deploying without a gate anyway. |
 | D10 | Rollout | Beta flag on `main` in test mode, then live | **As written**, plus a server-side kill switch (`shop/cfg/open`) and a purge of test-mode grants at go-live (§ 5.5, § 12). | |
 
 ---
@@ -67,7 +69,7 @@ The brief's facts held on almost every point (see `TESTING.md`). These are the p
 the outside world, forced a different design. You accepted items 1–15 at Gate 0. Items 16 and 17 came up
 while building Phase 1.
 
-1. **Node 20 → Node 24.** Google decommissions the `nodejs20` runtime on **2026-10-30**, 18 days from now.
+1. *(Superseded by item 18: no Cloud Functions runtime is used now.)* **Node 20 → Node 24.** Google decommissions the `nodejs20` runtime on **2026-10-30**, 18 days from now.
    After that date a function on it can no longer be deployed or updated. `firebase-tools` 15.33 lists
    `nodejs24` as GA (deprecation 2028-04-30). `firebase-admin` 14 needs Node ≥ 22. The code also runs on
    Node 22, which is how the tests run here.
@@ -98,18 +100,18 @@ while building Phase 1.
    runs (`app.js:17130–17157`). D5 holds paid items to a stricter standard than anything sold for Credits today.
 6. **`shop/badge/<uid>` holds a timestamp ("supporter since"), not `true`.** It is still truthy, and it gives the
    Dossier its "Supporter since …" line for free.
-7. **A public-read kill switch, `shop/cfg/open`.** You flip it in the Firebase Console. The function then
+7. **A public-read kill switch, `shop/cfg/open`.** You flip it in the Firebase Console. The server then
    refuses new checkouts (503) and the shelf shows "closed". Owned items keep working. Rollback becomes a
    console click instead of a client deploy waiting on service-worker caches.
 8. **`customer_email` is pre-filled only when the token says `email_verified`.** Stripe makes a pre-filled email
    read-only. This game does not verify email/password addresses, so a typo would otherwise send the receipt
    to a stranger with no way to fix it. Google accounts are verified, so they keep the pre-fill.
-9. **`firebase.json` has no `database` deploy target.** Your rules live in the Console, and the code says the
-   full copy is kept at `_firebase/database.rules.json` "beside the project, not deployed"
-   (`app.js:51367`, `app.js:55839`). A `firebase deploy` from this repo must never overwrite them. The rules
-   tests load `database.rules.json` directly into the emulator instead.
+9. **`firebase.json` has no deploy targets at all**: it only configures the emulators the tests use. Your rules
+   live in the Console, and the code says the full copy is kept at `_firebase/database.rules.json` "beside the
+   project, not deployed" (`app.js:51367`, `app.js:55839`). A `firebase deploy` from this repo must never
+   overwrite them. The rules tests load `database.rules.json` directly into the emulator instead.
 10. **Everything merged to `main` is public.** `https://pointinvaders.com/README.md` is served raw today, which
-    shows that repository files are published as they are. `functions/`, `database.rules.json` and `docs/`
+    shows that repository files are published as they are. `worker/`, `database.rules.json` and `docs/`
     would be too. They contain no secrets by design, but a rules file and a runbook are a map for anyone
     probing. See § 14, Q3.
 11. **The service worker caches every navigation response as `./index.html`** (`sw.js:70–80`). That includes
@@ -134,9 +136,34 @@ while building Phase 1.
     tag whose URL comes from `PI_ASSET_FILES` (`app.js:24408`). A bump touches `sw.js` (CACHE + 3 stamps),
     `index.html` (2 stamps) **and** that one line of `app.js`. With the line missed, the precached chunk
     is never read.
-17. **`maxInstances: 10`, not 5.** A 256 MiB gen-2 function gets a fraction of a CPU and therefore handles
-    one request at a time. Ten instances keep a burst of checkouts and webhook retries from queueing, at no
-    cost while idle.
+17. *(Superseded by item 18: a Worker scales on its own.)* **`maxInstances: 10`, not 5.** A 256 MiB gen-2
+    function gets a fraction of a CPU and therefore handles one request at a time.
+18. **The server is a Cloudflare Worker, not a Cloud Function (Gate 1).** You couldn't use the Blaze plan, which
+    Cloud Functions require. Cloudflare's free plan needs no card and allows 100,000 requests a day, 10 ms of CPU
+    per request (time waiting on the network doesn't count) and 50 outgoing calls per request. The shop uses
+    well under all three. Neither the Admin SDK nor Stripe's Node library runs in a Worker, so `worker/src` does
+    their jobs itself:
+    - **Database:** the REST API with an administrator's access token, which bypasses the rules just as the
+      Admin SDK does. Transactions are compare-and-swap with ETags: a write that loses a race gets 412 and is
+      recomputed from the server's value. Proven against the emulator.
+    - **Database key:** a service account whose only role is **Firebase Realtime Database Admin**, kept as a
+      Cloudflare secret. The Worker signs a JWT with it and trades it at Google for a one-hour token.
+      **This is the main trade-off.** The key can read and write the whole database, including players'
+      Credits and Points, and it lives outside Google, so anyone who gets into your Cloudflare account could
+      take it. It is never in this repository or on a screen. Turn on two-factor sign-in at Cloudflare, and
+      delete and replace the key if it is ever exposed (RUNBOOK, Undo).
+    - **Who is asking:** Firebase ID tokens are checked by Firebase's documented recipe for servers without the
+      Admin SDK: the signature against Google's published keys, then aud, iss, sub, exp, iat and auth_time. uids
+      that couldn't be database keys are refused.
+    - **Dropped: `checkRevoked`.** The revocation check needs admin access to every player's sign-in record. Now
+      a disabled account's token can still open a checkout for at most an hour, and its holder pays for it.
+    - **Stripe:** the seven calls over `fetch`, with the API version pinned and idempotency keys on every POST.
+      Webhook signatures are checked with WebCrypto over the raw bytes, cross-checked against Stripe's own
+      library in both directions.
+    - **Non-negotiable 1, reworded:** "written only by the webhook handler with the Admin SDK" becomes "with an
+      administrator's token over the REST API". It is the same privilege and the same bypass of the rules, and
+      still only the webhook handler writes grants.
+    - **Non-negotiable 6:** the keys live in Cloudflare's secret store, "the provider's equivalent".
 
 ---
 
@@ -217,7 +244,8 @@ using the `perkDay` pattern (a UTC `dayKey()`), kept in the device mirror and no
 |---|---|---|
 | Browser (`app.js § 46`) | Showing the shelf; asking for a checkout; drawing owned items | Any unlock, price, uid or ownership claim |
 | Firebase Auth ID token | Who the caller is (`uid`, `sign_in_provider`, `email_verified`) | — |
-| Function `shop` | Turning a verified uid and a known SKU into a checkout session; applying signed provider events | — |
+| Worker `point-invaders-shop` | Turning a verified uid and a known SKU into a checkout session; applying signed provider events | — |
+| Service account key (a Cloudflare secret) | Administrator access to the Realtime Database, for the Worker only | anything else: its only role is Realtime Database Admin |
 | Stripe | Amounts, payment status, refunds, disputes (via signed webhooks) | — |
 | RTDB `shop/*` | The entitlement of record (admin-written only) | — |
 
@@ -228,7 +256,8 @@ from the provider by lookup key. Checkout metadata is written by the server and 
 
 ## 5. Data model: `shop/*`
 
-All writes go through the Admin SDK in the function, which bypasses rules. Clients get **read only** where
+All writes come from the Worker with an administrator's token over the REST API, which bypasses the rules as
+the Admin SDK would. Clients get **read only** where
 listed, **never write**. Times are server milliseconds. Stripe ids (`cs_…`, `pi_…`, `evt_…`) are valid RTDB keys.
 
 ```
@@ -275,8 +304,8 @@ leaves the order as it is.
   `checkout.session.completed` can never re-grant a refunded order.
 - **Partial refunds** (a goodwill refund on part of the amount) are logged and do **not** revoke. Only a full
   refund (`charge.refunded === true`) revokes.
-- **Concurrency:** the transition and the re-derivation of `s` happen in one RTDB transaction on
-  `ent/<uid>/<sku>`. Two events for the same player and SKU arriving at once (Stripe delivers concurrently)
+- **Concurrency:** the transition and the re-derivation of `s` happen in one compare-and-swap transaction on
+  `ent/<uid>/<sku>` (an ETag-conditioned write, recomputed on a 412). Two events for the same player and SKU arriving at once (Stripe delivers concurrently)
   cannot interleave. `orders` and `badge` are written after the transaction commits, from the committed value.
 
 ### 5.2 Badge
@@ -345,13 +374,14 @@ What your file settled:
 
 ## 7. Endpoint contracts
 
-One HTTPS function, **`shop`**, `invoker: public`, region `asia-southeast1`, Node 24, 256 MiB, timeout 30 s,
-`maxInstances: 10` (§ 2, item 17). Base URL (to be confirmed after your first deploy):
-`https://asia-southeast1-neal-with-roblox.cloudfunctions.net/shop`.
+One Cloudflare Worker, **`point-invaders-shop`**, on the free plan (§ 2, item 18). Base URL, set when you first
+deploy: `https://point-invaders-shop.<your-subdomain>.workers.dev`. Routes: `POST /checkout`, `POST /webhook`,
+`GET /health`. `/health` answers `{ok, live, db}`, or names any missing secret.
 
-Secrets come from `defineSecret`: `STRIPE_SECRET_KEY` (a **restricted key**, § 10) and
-`STRIPE_WEBHOOK_SECRET`. Params: `SHOP_SITE` (default `https://pointinvaders.com`), `SHOP_MANAGED_PAYMENTS`
-(bool), `SHOP_AUTO_REFUND_DUPES` (bool). Logs are structured (`firebase-functions/logger`) and never contain
+Secrets, set with `npx wrangler secret put`: `STRIPE_SECRET_KEY` (a **restricted key**, § 10),
+`STRIPE_WEBHOOK_SECRET` and `FIREBASE_SERVICE_ACCOUNT`. Settings (`[vars]` in `worker/wrangler.toml`): `SITE`,
+`PROJECT_ID`, `DATABASE_URL`, `MANAGED_PAYMENTS`, `AUTO_REFUND_DUPES`. Logs are one JSON object per line (Workers
+Logs) and never contain
 tokens, emails or full request bodies.
 
 ### 7.1 `POST /checkout`
@@ -363,7 +393,7 @@ Request: `Authorization: Bearer <Firebase ID token>`, `Content-Type: application
 | 1 | `OPTIONS` preflight: `Origin` must be `https://pointinvaders.com` or `https://cat9748912-cpu.github.io` (it redirects to the domain), or `http://localhost:*` / `http://127.0.0.1:*` **in test mode only**. Responds with `Vary: Origin`, methods `POST, OPTIONS`, headers `Authorization, Content-Type`, max-age 600. | 403 `origin` |
 | 2 | method is `POST` | 405 |
 | 3 | `shop/cfg/open !== false` | 503 `closed` |
-| 4 | `verifyIdToken(token, checkRevoked = true)` | 401 `auth` |
+| 4 | the ID token: signature against Google's keys, aud, iss, sub, exp, iat, auth_time (no revocation check, § 2, item 18) | 401 `auth` |
 | 5 | `decoded.firebase.sign_in_provider !== 'anonymous'` | 403 `guest` |
 | 6 | `sku` is in the server catalogue | 400 `bad_sku` |
 | 7 | `ent/<uid>/<sku>.s !== 'active'` | 409 `owned` |
@@ -396,8 +426,8 @@ Session parameters (the brief's list, adjusted for verified Stripe API facts):
 
 ### 7.2 `POST /webhook`
 
-Raw body (`req.rawBody`), `Stripe-Signature` header, `stripe.webhooks.constructEvent(rawBody, sig, secret)`
-with the default 5-minute tolerance. Bad signature → **400**. Handled, ignored or unmappable → **200**. Any
+The raw body bytes (`request.arrayBuffer()`) and the `Stripe-Signature` header, checked with an HMAC-SHA256 in
+WebCrypto using the provider's scheme and its default 5-minute tolerance. Bad signature → **400**. Handled, ignored or unmappable → **200**. Any
 database or provider failure → **500** (Stripe retries for up to 3 days).
 
 | Event | Condition | Order transition |
@@ -415,7 +445,7 @@ database or provider failure → **500** (Stripe retries for up to 3 days).
 | any other type, or `livemode` ≠ key mode, or no `metadata.v` (e.g. a Payment Link made in the Dashboard) | | 200, logged, nothing written |
 
 Charges and disputes map back through `pi/<payment_intent>`. If that row doesn't exist yet (a refund seen
-before the completion was processed), the function falls back to the PaymentIntent's own `metadata`
+before the completion was processed), the Worker falls back to the PaymentIntent's own `metadata`
 `{uid, sku}` and `checkout.sessions.list({ payment_intent })` to find the session. The order is then recorded
 straight away in its terminal state, so the late completion cannot grant it.
 
@@ -446,7 +476,7 @@ event then closes it. The item stays active through the first order the whole ti
 
 ### 8.1 Products and prices
 
-`scripts/seed-products.js` reads `functions/src/catalog.js`. For each SKU it creates or updates a **product**
+`scripts/seed-products.js` reads `worker/src/catalog.js`. For each SKU it creates or updates a **product**
 (name, description, `tax_code`, `metadata.pi_sku` and `pi_kind`) and a **price** (`unit_amount`, `currency: 'usd'`,
 `lookup_key = sku`, `transfer_lookup_key: true`, `tax_behavior: 'inclusive'`). A changed amount creates a new
 price and moves the lookup key, and the old price is archived. The mode comes from the key itself
@@ -481,7 +511,7 @@ secret.
 
 `scripts/create-webhook-endpoint.js` creates it with exactly that list, read from the code's own `HANDLED`
 set, on that API version. With `--apply` it prints the signing secret alone, with no newline, so it can be
-piped straight into `firebase functions:secrets:set` without appearing on screen (RUNBOOK § 6). It refuses a
+piped straight into `npx wrangler secret put STRIPE_WEBHOOK_SECRET` without appearing on screen (RUNBOOK § 6). It refuses a
 live key without `--live`, and refuses to touch an existing endpoint for the same URL unless given `--replace`,
 because an existing endpoint's secret can't be read back.
 
@@ -620,7 +650,7 @@ tour's `mk-tabs` step (`72823`), both flag-gated (the ARC line marked `opt:1`).
 
 ### 9.10 Service worker and stamps
 
-- `BYPASS` gains `cloudfunctions\.net|\.run\.app|stripe\.com` (Phase 2). POSTs already bypass, since `sw.js:64`
+- `BYPASS` gains `workers\.dev|stripe\.com` (Phase 2). POSTs already bypass, since `sw.js:64`
   skips non-GET; this covers any GET and documents the hosts.
 - Navigation caching **was fixed in Phase 1**: only a successful navigation to the arcade itself (the scope
   root or `index.html`, with any query) is stored as the offline shell (§ 2, item 11).
@@ -637,7 +667,8 @@ tour's `mk-tabs` step (`72823`), both flag-gated (the ARC line marked `opt:1`).
 
 | Threat | Control |
 |---|---|
-| A client forges an entitlement or badge | `shop/*` has no client write rule; only the Admin SDK writes. Rules tests prove it. |
+| A client forges an entitlement or badge | `shop/*` has no client write rule; only the Worker's admin token writes. Rules tests prove it. |
+| The database key leaks | Only one role (Realtime Database Admin); kept only as a Cloudflare secret, never in the repository or on screen; Cloudflare two-factor sign-in recommended; delete and replace the key in Google Cloud IAM if it is ever exposed (RUNBOOK, Undo). It still grants the whole database, which is the price of D2. |
 | Spoofed webhook | Signature check on the raw body with the endpoint secret, 400 otherwise |
 | Replayed webhook | `events/<id>` claim/done, plus monotonic order states |
 | Buying for someone else's uid | uid comes only from the verified token; the body is `{sku}` only |
@@ -646,8 +677,8 @@ tour's `mk-tabs` step (`72823`), both flag-gated (the ARC line marked `opt:1`).
 | CSRF | bearer token in a header, not a cookie; strict CORS allow-list |
 | Guest buys, then the record is deleted | anonymous providers get 403; buying needs a saved account (same uid after upgrade) |
 | Test and live mixing | separate keys, secrets and endpoints per mode; `lm` stored; livemode-mismatched events ignored; test grants purged at go-live |
-| Leaked secret key | Secret Manager only. `.gitignore` covers `functions/.env*`, service-account JSON, `*.local` and `node_modules`. Before every commit the diff is grepped for `sk_live`, `sk_test`, `rk_live`, `rk_test`, `whsec_` and `private_key`; each hit is read by hand, because these docs name the prefixes. A stricter pattern for real key shapes (`(sk\|rk\|pk)_(live\|test)_[0-9A-Za-z]{10,}`, `whsec_[0-9A-Za-z]{10,}`, and a PEM header `-----BEGIN [A-Z ]*PRIVATE KEY-----`) must come back empty. The function uses a **restricted key** (`rk_…`) limited to Checkout Sessions (write), Refunds (write), and Prices, Products, PaymentIntents and Charges (read). That covers the seven calls the code makes (`checkout.sessions` create/retrieve/list, `prices.list`, `refunds.create`, `paymentIntents.retrieve`, `charges.retrieve`). Products (read) isn't called directly and is kept as a margin. Disputes arrive inside the signed event, so no Disputes permission is needed. |
-| Cost blow-up | `maxInstances: 10`, a per-uid 10 s limit, small memory, a Blaze **budget alert** in the runbook |
+| Leaked secret key | Cloudflare's secret store only. `.gitignore` covers `.dev.vars*`, `.env*`, service-account JSON files, `*.local` and `node_modules`. Before every commit the diff is grepped for `sk_live`, `sk_test`, `rk_live`, `rk_test`, `whsec_` and `private_key`; each hit is read by hand, because these docs name the prefixes. A stricter pattern for real key shapes (`(sk\|rk\|pk)_(live\|test)_[0-9A-Za-z]{10,}`, `whsec_[0-9A-Za-z]{10,}`, and a PEM header `-----BEGIN [A-Z ]*PRIVATE KEY-----`) must come back empty. The function uses a **restricted key** (`rk_…`) limited to Checkout Sessions (write), Refunds (write), and Prices, Products, PaymentIntents and Charges (read). That covers the seven calls the code makes (`checkout.sessions` create/retrieve/list, `prices.list`, `refunds.create`, `paymentIntents.retrieve`, `charges.retrieve`). Products (read) isn't called directly and is kept as a margin. Disputes arrive inside the signed event, so no Disputes permission is needed. |
+| Cost blow-up | None possible: the free plan has hard limits and no card. Past 100,000 requests a day the Worker refuses until the next day; the game carries on, and Stripe retries webhooks for 3 days. Also a per-uid 10 s limit on new sessions. |
 | Supply chain | exact dependency versions and a committed `package-lock.json` |
 | Card data | never touches our pages (hosted checkout redirect; no Stripe.js), which is the lightest PCI scope: self-assessment SAQ A |
 
@@ -692,7 +723,7 @@ The go-live order:
 7. Merge.
 8. A real purchase and refund by you.
 
-Rollback is `shop/cfg/open = false` and then the flag; the function can keep running. `OPERATIONS.md` will
+Rollback is `shop/cfg/open = false` and then the flag; the Worker can keep running. `OPERATIONS.md` will
 cover adding a SKU, changing a price, handling a dispute and reconciling (a script that compares Stripe's paid
 sessions with `shop/orders` and repairs badges).
 
@@ -715,16 +746,16 @@ Node 20 decommission. All of them feed § 2. Of the **6 items only you or a live
 2. whether the `stats` rule accepts `_buy_*` keys: **resolved**, it does (emulator);
 3. whether any rule above `shop` grants access: **resolved**, none does (emulator);
 4. your business country: **Singapore**; Managed Payments eligibility still waits on Stripe's review;
-5. whether `neal-with-roblox` is on the Blaze plan, and whether it has other Cloud Functions: at your deploy
-   (RUNBOOK § 1);
+5. whether `neal-with-roblox` is on the Blaze plan: **resolved**. It isn't, and won't be; the server moved to
+   Cloudflare (§ 2, item 18);
 6. live Stripe behaviour: Managed Payments plus `consent_collection`, the iOS and Android installed-app
    returns. **One part is resolved:** a guest who saves an account gets a token whose `sign_in_provider` is
    `password`, so the server lets them buy (Auth emulator). The rest needs test keys or a device: Gate 2
    (your manual test-mode run) and Gate 3 (live).
 
-What ran here: the **Auth, Database and Functions emulators**, the handler unit tests (a fake Stripe client
-with real signature generation), the rules tests against your file, and Chromium for the service worker and
-the legal pages. Stripe's API can't be called without keys, so session creation is tested against a fake that
+What ran here: the **Auth and Database emulators**, the Worker's own bundle in **Cloudflare's local runtime
+(workerd)** against them, the handler unit tests (a fake Stripe client with real signature generation), the rules
+tests against your file, and Chromium for the service worker and the legal pages. Stripe's API can't be called without keys, so session creation is tested against a fake that
 asserts the exact parameters in § 7.1.
 
 ---
@@ -758,6 +789,6 @@ The answers are kept here, next to the questions they settle.
 | Phase | Builds | Verified by | Gate asks you for |
 |---|---|---|---|
 | **0** ✅ | `DESIGN.md`, `TESTING.md` | reading the code; npm/Java/Node checks; Stripe and Google docs | the answers in § 14 and the rules file: **received** |
-| **1** ✅ (this) | `functions/` (handlers, catalogue, tests), `database.rules.json`, `firebase.json`, `.firebaserc`, `.gitignore`, `scripts/seed-products.js`, `scripts/catalog-parity.js`, `scripts/create-webhook-endpoint.js`, `legal/*.html` drafts, `RUNBOOK.md`; moved forward from Phase 2: the `sw.js` navigation fix and the v84 stamps | 42 unit tests; 63 more against the Auth and Database emulators, your rules file included; 7 end-to-end tests of the deployable function in the Functions emulator; the service worker and legal pages in Chromium; secret greps | the RUNBOOK: Blaze, published rules, the deploy and its function URL, test-mode seeding, the webhook. Also the business name and effective date for the legal pages. |
+| **1** ✅ (this) | `worker/` (the Cloudflare Worker: handlers, catalogue, REST clients, tests; it was `functions/` until Gate 1), `database.rules.json`, `firebase.json`, `.firebaserc`, `.gitignore`, `scripts/seed-products.js`, `scripts/catalog-parity.js`, `scripts/create-webhook-endpoint.js`, `legal/*.html` drafts, `RUNBOOK.md`; moved forward from Phase 2: the `sw.js` navigation fix and the v84 stamps | 67 unit tests; 63 more against the Auth and Database emulators, your rules file included; 9 end-to-end tests of the real bundle in Cloudflare's local runtime; the service worker and legal pages in Chromium; secret greps | the RUNBOOK: published rules, a service-account key, the Worker deployed and its address, test-mode seeding, the webhook. Also the business name and effective date for the legal pages. |
 | **2** | `app.js § 46` and hooks, `index.html`, `style.css § 46`, `sw.js` `BYPASS` and the stamps (v84, or v85 if this branch has reached `main`; § 9.10) | Playwright against the Auth, Database and Functions emulators (buy-flow states, offline, guest, a flag-off screenshot diff of the market against `main`); reasoning where Stripe is needed | your manual test-mode run (test card `4242 4242 4242 4242`, refund in the Dashboard → item disappears) |
 | **3** | go-live checklist, rollback, `OPERATIONS.md`, `scripts/purge-test-grants.js`, reconcile script | dry runs against the emulator | live secrets, live seeding, the flag flip, a real purchase and refund |
