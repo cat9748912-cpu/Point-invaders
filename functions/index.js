@@ -27,8 +27,9 @@ const { createApp } = require('./src/app');
 
 const STRIPE_SECRET_KEY = defineSecret('STRIPE_SECRET_KEY');
 const STRIPE_WEBHOOK_SECRET = defineSecret('STRIPE_WEBHOOK_SECRET');
-// Plain parameters with defaults, so a deploy never stops to ask. Override one in
-// functions/.env.<project> (git-ignored) and redeploy.
+// Plain parameters with defaults. The first deploy asks for each one with its default
+// already filled in, and saves the answers in functions/.env.<project> (git-ignored), so
+// later deploys don't ask. Change a value there and redeploy.
 const SHOP_MANAGED_PAYMENTS = defineBoolean('SHOP_MANAGED_PAYMENTS', {
   default: true,
   description: 'Stripe Managed Payments (Link as merchant of record, handling VAT/GST). Off = you are the merchant.'

@@ -174,8 +174,17 @@ printf 'not-set-yet' | firebase functions:secrets:set STRIPE_WEBHOOK_SECRET --da
 firebase deploy --only functions:shop
 ```
 
-The first deploy takes a few minutes. It may ask to enable Cloud Functions, Cloud Build, Artifact
-Registry, Cloud Run and Secret Manager: answer **yes**. At the end it prints a line like:
+The first deploy takes a few minutes, and asks a few questions:
+
+- To enable Cloud Functions, Cloud Build, Artifact Registry, Cloud Run and Secret Manager: answer **yes**.
+- A value for each of the shop's three settings, `SHOP_MANAGED_PAYMENTS`, `SHOP_AUTO_REFUND_DUPES` and
+  `SHOP_SITE`, with the right default already filled in: press **Enter** three times. The answers are saved
+  in `functions/.env.neal-with-roblox`, which git ignores, so later deploys don't ask.
+- How many days to keep old container images: press **Enter** for the default (1). It keeps storage costs
+  near zero.
+- If it ever offers to **delete** a function, answer **no** and tell me.
+
+At the end it prints a line like:
 
 ```
 Function URL (shop(asia-southeast1)): https://shop-xxxxxxxxxx-as.a.run.app
