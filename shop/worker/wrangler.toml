@@ -1,0 +1,25 @@
+# ══════════════════════════════════════════════════════════════════════
+#  🔐 The Restricted shelf's server — Cloudflare Worker settings
+# ══════════════════════════════════════════════════════════════════════
+# Deployed from this folder with `npx wrangler deploy` (shop/docs/RUNBOOK.md).
+# Nothing here is secret. The three secrets are set with `npx wrangler secret put`
+# and live only in Cloudflare: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and
+# FIREBASE_SERVICE_ACCOUNT. Never add them below.
+name = "point-invaders-shop"
+main = "src/worker.mjs"
+compatibility_date = "2026-09-20"
+workers_dev = true
+preview_urls = false
+
+# Workers Logs: the shop's JSON log lines, kept for a few days (free plan).
+[observability]
+enabled = true
+
+[vars]
+SITE = "https://pointinvaders.com"
+PROJECT_ID = "neal-with-roblox"
+DATABASE_URL = "https://neal-with-roblox-default-rtdb.asia-southeast1.firebasedatabase.app"
+# Stripe Managed Payments: Link is the merchant of record and handles VAT/GST. "false" = you are the merchant.
+MANAGED_PAYMENTS = "true"
+# Refund a second payment for an item the player already owns.
+AUTO_REFUND_DUPES = "true"

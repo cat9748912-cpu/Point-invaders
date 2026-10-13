@@ -1,0 +1,23 @@
+# 🔐 The Restricted shop's server and tools (shop/). Its secrets live in Cloudflare's secret store and
+# never in this repository: anything that could hold one is ignored here, before it can be committed.
+.dev.vars*
+.env*
+*.local
+.runtimeconfig.json
+service-account*.json
+*-firebase-adminsdk-*.json
+neal-with-roblox-*.json
+*.pem
+
+# Dependencies, build output, emulator and CLI files.
+node_modules/
+.wrangler/
+.firebase/
+firebase-debug.log*
+database-debug.log*
+firestore-debug.log*
+ui-debug.log*
+pubsub-debug.log*
+# The browser test's copy of the Firebase SDK (fetched from gstatic on first run), and its screenshots.
+.vendor/
+test-results/
