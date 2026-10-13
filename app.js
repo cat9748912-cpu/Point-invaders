@@ -19795,6 +19795,11 @@ function paintSpectator(){
 function mpShowStage(name){
   document.querySelectorAll('.mp-stage').forEach(el => el.classList.remove('active'));
   document.getElementById('mp-stage-' + name)?.classList.add('active');
+  // v86 — 🏆 A tournament plays at its organiser's STABILITY (§ 44), set in its own lobby: the arena's dial over
+  // that stage set nothing it plays, and said "Sets the duels you open". Its duel picker goes with the stage.
+  const dial = document.getElementById('mp-diff-selector');
+  if(dial) dial.style.display = name === 'tourney' ? 'none' : '';
+  if(name !== 'tourney' && typeof tnPickClose === 'function') tnPickClose(true);
   // The stability panel spans both stages, but what it may SAY changes with
   // them — the pick stage is always your own dial, the room stage may be the
   // host's. Repainting here also unfreezes it on the way out of a round.
@@ -24514,7 +24519,7 @@ const PIA_MODELS = {
 // pictures. The renderer uploads them (TEXTURE SETS) and builds the mip chains.
 //   PI_ASSETS[name] = { v: 1, size: 2048, paintRef: 0.35, kappa: 1,
 //                       maps: { base: [mime, b64], nrm: [...], orm: [...], mask: [...], emis?: [...] } }
-const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=85' };                          // set name → chunk file (filled by the v62 splice)
+const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=86' };                          // set name → chunk file (filled by the v62 splice)
 const piAssetState = Object.create(null);           // set name → { blobs, meta, loading }
 function piAssetChunk(file){
   return new Promise((resolve, reject) => {
@@ -72241,6 +72246,7 @@ async function abortTourney(how, dead){
   const t = tourney;
   if(!t) return;
   tourney = null;
+  tnPickClose(true);                                           // v86 — its duel picker, if the organiser had it open
   clearInterval(t.timer);
   try{ t.ref.off('value', t.cb); }catch(e){}
   const d = t.data, live = d && d.status === 'live';
@@ -72548,7 +72554,13 @@ function tourneyRender(){
   const box = document.getElementById('tourney-body');
   if(!box) return;
   const t = tourney, d = t && t.data;
+  // v86 — the duel picker belongs to an organiser's open lobby: anything else closes it, and an open one is
+  // repainted so its ✔ follows the record.
+  if(tnPickOn){ if(!t || !t.org || !d || d.status !== 'lobby') tnPickClose(true); else tnPickPaint(); }
   if(!t || !d){ box.innerHTML = '<div class="lb-empty">Linking to the tournament…</div>'; return; }
+  // v86 — every snapshot rebuilds this, a setting's own included: the control that had the focus gets it back.
+  const fe = document.activeElement;
+  const refocus = (fe && box.contains(fe)) ? (fe.id ? '#' + fe.id : fe.dataset && fe.dataset.k ? '[data-k="' + fe.dataset.k + '"][data-v="' + fe.dataset.v + '"]' : '') : '';
   const name = k => { const S = tourneySeat(d, k); return S ? (S.bot ? '🤖 ' : '') + esc(S.name) + (S.uid === user.uid ? ' · YOU' : '') : '—'; };
   let html = '<div class="tn-head"><div class="tn-code">TOURNAMENT <b id="tn-code">' + esc(t.code) + '</b>' +
     '<button class="btn btn-secondary btn-sm" id="tn-copy" type="button">⧉ COPY</button></div>' +
@@ -72557,13 +72569,35 @@ function tourneyRender(){
   if(d.status === 'lobby'){
     html += '<div class="tn-seats">' + TOURNEY_SEATS.map((k, i) => '<div class="tn-seat' + (tourneySeat(d, k) ? ' on' : '') + '"><span>SEAT ' + (i + 1) + '</span><b>' + (tourneySeat(d, k) ? name(k) : 'OPEN') + '</b></div>').join('') + '</div>';
     if(t.org){
-      const opt = (v, cur, label) => '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(label) + '</option>';
+      // v86 — 🎛️ The organiser's settings, in the arena's own controls (style.css "§ 44 · v86"). They were five
+      // native <select>s, and the open list of a <select> is an OS window no stylesheet can paint: DUEL dropped
+      // twenty-nine rows in the system's colours over the lobby, its highlight barely readable. A segment per
+      // choice now, and the duel on a plate that opens the arena's duel cards (tnPickOpen) — the trade the
+      // party sheet made in § 19.
+      const Md = MP_MODES[d.mode] || MP_MODES[tourneyModes()[0]];
+      const tier = DIFFICULTY_TIERS[d.tier] ? d.tier : 'stable';
+      const owOk = owWorldsOk();
+      const seg = (k, v, on, label, title, off) => '<button class="lp-seg' + (on ? ' on' : '') + '" type="button" data-k="' + k + '" data-v="' + esc(v) + '"' +
+        ' aria-pressed="' + on + '"' + (title ? ' title="' + esc(title) + '"' : '') + (off ? ' disabled' : '') + '>' + label + '</button>';
+      const row = (label, inner) => '<div class="tn-row"><span class="tn-lbl">' + label + '</span>' + inner + '</div>';
       html += '<div class="tn-set">' +
-        '<label><span>DUEL</span><select class="input" id="tn-mode">' + tourneyModes().map(k => opt(k, d.mode, MP_MODES[k].name)).join('') + '</select></label>' +
-        '<label><span>STABILITY</span><select class="input" id="tn-tier">' + Object.keys(DIFFICULTY_TIERS).map(k => opt(k, d.tier, DIFFICULTY_TIERS[k].label)).join('') + '</select></label>' +
-        '<label><span>LANE</span><select class="input" id="tn-ow">' + opt('0', d.ow ? '1' : '0', 'Classic') + (owWorldsOk() ? opt('1', d.ow ? '1' : '0', 'Open world (races)') : '') + '</select></label>' +
-        '<label><span>DROIDS</span><select class="input" id="tn-droid">' + Object.keys(MP_BOT_LEVELS).map(k => opt(k, d.droid, MP_BOT_LEVELS[k].label)).join('') + '</select></label>' +
-        '<label><span>SEEDING</span><select class="input" id="tn-seed">' + opt('points', d.seeding, 'By total points') + opt('random', d.seeding, 'Random') + '</select></label></div>' +
+        row('DUEL', '<button class="tn-duel" id="tn-duel" type="button" aria-haspopup="dialog" data-kind="' + Md.kind + '">' +
+          '<span class="tn-duel-ico" aria-hidden="true">' + Md.icon + '</span>' +
+          '<span class="tn-duel-txt"><b>' + esc(Md.name) + '</b><em>' + (Md.kind === 'live' ? 'LIVE DUEL' : 'SCORE RACE') + ' · ' + esc(tnMeta(Md, tier)) + '</em></span>' +
+          '<span class="tn-duel-go">CHANGE</span></button>') +
+        row('STABILITY', '<div class="lane-pick tn-seg tn-tiers" role="group" aria-label="Stability">' + Object.keys(DIFFICULTY_TIERS).map(k =>
+          seg('tier', k, k === tier, DIFFICULTY_TIERS[k].icon + ' ' + (TN_TIER_SHORT[k] || DIFFICULTY_TIERS[k].label),
+              DIFFICULTY_TIERS[k].label + ' · ×' + DIFFICULTY_TIERS[k].pointMult.toFixed(1) + ' PTS')).join('') + '</div>') +
+        row('LANE', '<div class="lane-pick tn-seg' + (owOk ? '' : ' no-ow') + '" role="group" aria-label="Lane">' +
+          seg('ow', 'classic', !d.ow, '▶ CLASSIC') +
+          seg('ow', 'open', !!d.ow, '🌐 OPEN WORLD', owOk ? 'Score races are played in their open worlds; live duels stay classic.' : 'Open worlds need WebGL2 on this device.', !owOk) + '</div>') +
+        row('DROIDS', '<div class="mp-bot-lvls tn-droids" role="group" aria-label="Droids in the empty seats">' + Object.keys(MP_BOT_LEVELS).map(k =>
+          '<button class="mp-bot-lvl' + (k === d.droid ? ' on' : '') + '" type="button" data-k="droid" data-v="' + k + '" data-lvl="' + k + '" aria-pressed="' + (k === d.droid) + '">' +
+          esc(MP_BOT_LEVELS[k].label) + '</button>').join('') + '</div>') +
+        row('SEEDING', '<div class="lane-pick tn-seg" role="group" aria-label="Seeding">' +
+          seg('seeding', 'points', d.seeding !== 'random', '🏅 BY POINTS', 'The highest total points is seed 1.') +
+          seg('seeding', 'random', d.seeding === 'random', '🎲 RANDOM') + '</div>') +
+        '</div>' +
         '<button class="btn btn-primary btn-full" id="tn-start" type="button">🏆 START — DROIDS TAKE THE EMPTY SEATS</button>';
     }else html += '<div class="tn-note">Waiting for ' + esc(d.hostName || 'the organiser') + ' to start. Empty seats are filled by droids.</div>';
   }else{
@@ -72589,17 +72623,121 @@ function tourneyRender(){
   box.innerHTML = html;
   const on = (id, ev, fn) => document.getElementById(id)?.addEventListener(ev, fn);
   on('tn-copy', 'click', () => { try{ navigator.clipboard.writeText(t.code); toast('🏆 Code copied.', 1800); }catch(e){} });
-  on('tn-mode', 'change', e => tourneySet('mode', e.target.value));
-  on('tn-tier', 'change', e => tourneySet('tier', e.target.value));
-  on('tn-ow', 'change', e => tourneySet('ow', e.target.value === '1'));
-  on('tn-droid', 'change', e => tourneySet('droid', e.target.value));
-  on('tn-seed', 'change', e => tourneySet('seeding', e.target.value));
+  // v86 — a segment sets its own key; LANE's two are the `ow` flag.
+  box.querySelectorAll('.tn-set [data-k]').forEach(b => b.addEventListener('click', () => {
+    if(b.disabled || b.classList.contains('on')) return;
+    snd('click');
+    tourneySet(b.dataset.k, b.dataset.k === 'ow' ? b.dataset.v === 'open' : b.dataset.v);
+  }));
+  on('tn-duel', 'click', () => tnPickOpen());
   on('tn-start', 'click', tourneyStart);
   on('tn-leave', 'click', async () => { await abortTourney('leave'); if(mp) await mpLeaveRoom(); mpShowStage('pick'); renderMpModes(); snd('uiBack'); });
   box.querySelectorAll('.tn-watch').forEach(b => b.addEventListener('click', async () => {
     try{ await mpSpectateRoom(b.dataset.room); mpShowStage('watch'); }catch(e){ toast('👁 That match cannot be watched right now.', 2600); }
   }));
+  if(refocus && !tnPickOn){ try{ box.querySelector(refocus)?.focus({ preventScroll: true }); }catch(e){} }
 }
+
+// ── THE DUEL PICKER (v86) ────────────────────────────────────────────────
+// The DUEL plate opens this over the lobby: the arena's own duel cards (.mp-mode), the live duels and then the
+// score races, the tournament's duel marked ✔. The party picker's shape (§ 19): inert while closed, the arena
+// inert under it while open, and every way out — ✕, Escape, the backdrop, a gamepad's B — lands on the lobby.
+var TN_TIER_SHORT = { safe: 'SAFE', stable: 'STABLE', overclocked: 'OVERCLOCK', meltdown: 'MELTDOWN' };
+var tnPickOn = false;
+// A duel's one-line meta, as the plate and the picker print it: the cap at the TOURNAMENT's tier (the scaling
+// the arena's own cards do for its dial, mpMetaPts), without the "· HIGH SCORE WINS" every race repeats.
+function tnMeta(m, tier){
+  return mpMetaPts(m.meta || '', (DIFFICULTY_TIERS[tier] || DIFFICULTY_TIERS.stable).pointMult).replace(/\s*·\s*HIGH SCORE WINS$/i, '');
+}
+function tnPickOpen(){
+  const t = tourney, d = t && t.data, ov = document.getElementById('tnpick-overlay');
+  if(!ov || !t || !t.org || !d || d.status !== 'lobby') return;
+  tnPickOn = true;
+  tnPickPaint();
+  const arena = document.getElementById('mp-screen');
+  if(arena) arena.inert = true;
+  ov.inert = false;
+  ov.classList.add('show'); ov.setAttribute('aria-hidden', 'false');
+  snd('tab');
+  const modal = ov.querySelector('.fb-modal');
+  const cur = ov.querySelector('.tnp-card.sel') || ov.querySelector('.tnp-card');
+  if(cur){
+    cur.focus({ preventScroll: true });
+    // By layout offsets, as the party picker does: the modal is still sliding in.
+    if(modal) modal.scrollTop = Math.max(0, cur.offsetTop + cur.offsetHeight / 2 - modal.clientHeight / 2);
+  }
+}
+function tnPickPaint(){
+  const body = document.getElementById('tnpick-body'), d = tourney && tourney.data;
+  if(!body || !d) return;
+  const keep = document.activeElement && body.contains(document.activeElement) ? document.activeElement.dataset.mode : null;
+  const card = k => {
+    const m = MP_MODES[k], on = k === d.mode;
+    return '<button class="mp-mode tnp-card' + (on ? ' sel' : '') + '" type="button" data-mode="' + k + '" aria-pressed="' + on + '">' +
+      '<span class="mp-mode-kind ' + (m.kind === 'live' ? 'k-live' : 'k-race') + '">' + (m.kind === 'live' ? 'LIVE DUEL' : 'SCORE RACE') + '</span>' +
+      '<span class="mp-mode-icon" aria-hidden="true">' + m.icon + '</span>' +
+      '<span class="mp-mode-name">' + esc(m.name) + '</span>' +
+      '<span class="mp-mode-meta">' + esc(tnMeta(m, d.tier)) + '</span></button>';
+  };
+  const keys = tourneyModes();
+  const live = keys.filter(k => MP_MODES[k].kind === 'live'), race = keys.filter(k => MP_MODES[k].kind !== 'live');
+  body.innerHTML =
+    (live.length ? '<div class="tnp-sec">⚡ LIVE DUELS <em>one shared round, played over the wire</em></div><div class="mp-modes tnp-grid">' + live.map(card).join('') + '</div>' : '') +
+    (race.length ? '<div class="tnp-sec">🏁 SCORE RACES <em>two boards side by side · the higher score wins</em></div><div class="mp-modes tnp-grid">' + race.map(card).join('') + '</div>' : '');
+  body.querySelectorAll('.tnp-card').forEach(b => b.addEventListener('click', () => {
+    const k = b.dataset.mode, same = !tourney || !tourney.data || k === tourney.data.mode;
+    tnPickClose(true);
+    if(same) snd('uiBack');
+    else{ snd('success'); tourneySet('mode', k); }
+    document.getElementById('tn-duel')?.focus({ preventScroll: true });
+  }));
+  if(keep) body.querySelector('.tnp-card[data-mode="' + keep + '"]')?.focus({ preventScroll: true });
+}
+function tnPickClose(quiet){
+  const was = tnPickOn;
+  tnPickOn = false;
+  const ov = document.getElementById('tnpick-overlay'), arena = document.getElementById('mp-screen');
+  if(arena) arena.inert = false;
+  if(!ov || !ov.classList.contains('show')) return;
+  ov.classList.remove('show'); ov.setAttribute('aria-hidden', 'true');
+  ov.inert = true;
+  if(!quiet) snd('uiBack');
+  if(was && !quiet) document.getElementById('tn-duel')?.focus({ preventScroll: true });
+}
+// Keys while it is up: capture phase on window, ahead of every other dialog's Escape and any mission's
+// leftover window.onkeydown — the picker owns the keyboard, as the party picker does.
+window.addEventListener('keydown', e => {
+  if(!tnPickOn) return;
+  const ov = document.getElementById('tnpick-overlay');
+  if(!ov) return;
+  e.stopImmediatePropagation();
+  if(e.key === 'Escape'){ e.preventDefault(); if(!e.repeat) tnPickClose(); return; }
+  const a = document.activeElement;
+  if(e.key === 'Tab'){
+    const f = [...ov.querySelectorAll('button:not([disabled])')];
+    if(!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if(!ov.contains(a)){ e.preventDefault(); first.focus(); }
+    else if(e.shiftKey && a === first){ e.preventDefault(); last.focus(); }
+    else if(!e.shiftKey && a === last){ e.preventDefault(); first.focus(); }
+    return;
+  }
+  // Arrows walk the cards; up and down by the row, read off the laid-out grid the focused card sits in.
+  const cards = [...ov.querySelectorAll('.tnp-card')];
+  const k = cards.indexOf(a);
+  if(k < 0) return;
+  const cols = Math.max(1, getComputedStyle(a.parentElement).gridTemplateColumns.split(' ').filter(Boolean).length);
+  const to = { ArrowRight: k + 1, ArrowLeft: k - 1, ArrowDown: k + cols, ArrowUp: k - cols, Home: 0, End: cards.length - 1 }[e.key];
+  if(to == null) return;
+  e.preventDefault();
+  const c = cards[Math.max(0, Math.min(cards.length - 1, to))];
+  if(c && c !== a){ c.focus(); snd('hover'); }
+}, true);
+try{
+  document.getElementById('tnpick-close')?.addEventListener('click', () => tnPickClose());
+  document.getElementById('tnpick-overlay')?.addEventListener('click', e => { if(e.target.id === 'tnpick-overlay') tnPickClose(); });
+  if(typeof registerOverlayCloser === 'function') registerOverlayCloser('tnpick-overlay', () => tnPickClose(), true);
+}catch(e){ console.warn('Tournament duel picker failed to wire:', e); }
 
 // ── WIRING ──
 // v85 — What a refusal says. A Firebase error's message is the raw "PERMISSION_DENIED: Permission denied",

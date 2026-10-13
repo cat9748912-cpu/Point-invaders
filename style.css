@@ -6302,9 +6302,68 @@ body.mode-3d .lab-sw.on{box-shadow:0 1px 0 #0a8f9a,0 2px 0 #0a8f9a,0 3px 0 #0554
 .tn-seat.on{border-style:solid;border-color:rgba(0,245,255,.4)}
 .tn-seat span{font-family:var(--fd);font-size:.46rem;letter-spacing:.12em;color:var(--dim)}
 .tn-seat b{font-size:.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tn-set{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
-.tn-set label{display:flex;flex-direction:column;gap:4px}
-.tn-set span{font-family:var(--fd);font-size:.46rem;letter-spacing:.12em;color:var(--dim)}
+/* ── 🎛️ § 44 · v86 — THE ORGANISER'S SETTINGS ──
+   The arena's own controls, so nothing here opens an OS window: the lane switch's segments (.lane-pick,
+   .lp-seg) for STABILITY, LANE and SEEDING, the droid card's chips (.mp-bot-lvl) for DROIDS, and the duel on a
+   plate that opens the arena's duel cards (#tnpick-overlay). They were five native <select>s, whose open list
+   the system draws in its own colours — DUEL's was twenty-nine rows tall over the lobby. */
+.tn-set{display:flex;flex-direction:column;gap:12px;padding:14px 16px;border:1px solid rgba(255,215,0,.24);border-radius:var(--rl);
+  background:linear-gradient(160deg,rgba(255,215,0,.05),transparent 55%),var(--s1)}
+.tn-row{display:grid;grid-template-columns:104px minmax(0,1fr);align-items:center;gap:14px}
+.tn-lbl{font-family:var(--fd);font-size:.46rem;font-weight:700;letter-spacing:.14em;color:var(--dim)}
+.tn-seg{display:flex;width:100%;margin-top:0}
+.tn-seg .lp-seg{flex:1 1 0;min-width:0;padding:10px 8px;font-size:.56rem;text-align:center;overflow:hidden;text-overflow:ellipsis}
+.tn-seg .lp-seg:disabled{opacity:.4;cursor:not-allowed}
+/* STABILITY wears the dial's own colours: the tier a bracket is played at reads as that tier. */
+.tn-tiers .lp-seg.on[data-v="safe"]{color:#8fb8ff;background:rgba(59,130,246,.22);box-shadow:inset 0 0 14px rgba(59,130,246,.22)}
+.tn-tiers .lp-seg.on[data-v="stable"]{color:#00ff66;background:rgba(0,255,102,.13);box-shadow:inset 0 0 14px rgba(0,255,102,.18)}
+.tn-tiers .lp-seg.on[data-v="overclocked"]{color:#ffcc00;background:rgba(255,204,0,.13);box-shadow:inset 0 0 14px rgba(255,204,0,.18)}
+.tn-tiers .lp-seg.on[data-v="meltdown"]{color:#ff3355;background:rgba(255,0,51,.15);box-shadow:inset 0 0 14px rgba(255,0,51,.2)}
+.tn-droids{margin:0}
+.tn-droids .mp-bot-lvl{padding:10px 4px;font-size:.52rem}
+/* The duel: a plate you press to change it, as the party sheet's mission slots are (§ 19). Its edge is the
+   duel's kind — pink for a live duel, lime for a score race, the colours the duel cards label them in. */
+.tn-duel{--acc:var(--lime);display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:12px;width:100%;
+  padding:10px 14px 10px 12px;text-align:left;cursor:pointer;font:inherit;color:var(--text);
+  background:var(--s2);border:1px solid var(--border2);border-radius:var(--r);box-shadow:inset 3px 0 0 var(--acc);
+  transition:border-color .2s ease,transform .2s ease}
+.tn-duel[data-kind="live"]{--acc:var(--pink)}
+.tn-duel:hover{border-color:var(--cyan);transform:translateY(-1px)}
+.tn-duel:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.tn-duel > *{pointer-events:none}
+.tn-duel-ico{font-size:1.7rem;line-height:1;text-align:center}
+.tn-duel-txt{display:flex;flex-direction:column;gap:4px;min-width:0}
+.tn-duel-txt b,.tn-duel-txt em{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tn-duel-txt b{font-family:var(--fd);font-size:.62rem;letter-spacing:.08em;color:var(--cyan)}
+.tn-duel-txt em{font-style:normal;font-family:var(--fd);font-size:.42rem;letter-spacing:.1em;color:var(--dim)}
+.tn-duel-go{font-family:var(--fd);font-size:.44rem;font-weight:700;letter-spacing:.12em;color:var(--gold);
+  padding:5px 11px;border:1px solid rgba(255,215,0,.45);border-radius:999px;background:rgba(255,215,0,.06)}
+body.mode-3d .tn-duel{
+  --wall:#141a2c;--wallb:#070a14;
+  background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,0) 55%),var(--s1);
+  box-shadow:inset 3px 0 0 var(--acc),
+    0 1px 0 var(--wall),0 2px 0 var(--wall),0 3px 0 var(--wall),0 4px 0 var(--wallb),0 5px 0 var(--wallb),0 6px 0 var(--wallb),
+    0 14px 20px -10px rgba(0,0,0,.85),inset 0 1px 0 rgba(255,255,255,.13),inset 0 -1px 0 rgba(0,0,0,.5);
+  transition:transform .2s var(--pop-ease),box-shadow .2s var(--pop-ease),border-color .2s
+}
+body.mode-3d .tn-duel:hover{transform:translateY(-2px)}
+body.mode-3d .tn-duel:active{transform:translateY(4px);
+  box-shadow:inset 3px 0 0 var(--acc),0 1px 0 var(--wall),0 2px 0 var(--wallb),0 6px 10px -5px rgba(0,0,0,.8),inset 0 3px 8px rgba(0,0,0,.5)}
+/* The picker: the arena's duel cards, compact, the live duels and then the races. */
+.tnpick-tint .fb-modal{max-width:900px;border-color:rgba(255,215,0,.42);box-shadow:0 0 70px rgba(255,215,0,.12),inset 0 0 0 1px rgba(255,255,255,.03)}
+.tnpick-tint .fb-modal::before{background:linear-gradient(90deg,transparent,#ffd700,var(--cyan),transparent);box-shadow:0 0 12px #ffd700}
+.tnpick-tint .fb-title{background:linear-gradient(90deg,#ffd700,var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.tnpick-tint .fb-head{margin-bottom:18px}
+.tnp-sec{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px;margin:4px 0 10px;
+  font-family:var(--fd);font-size:.52rem;font-weight:700;letter-spacing:.14em;color:var(--text)}
+.tnp-sec em{font-style:normal;font-size:.44rem;font-weight:400;letter-spacing:.08em;color:var(--dim)}
+.tnp-grid{grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:10px;margin-bottom:18px}
+.tnp-grid:last-child{margin-bottom:0}
+.tnp-card{display:flex;flex-direction:column;align-items:center;width:100%;font:inherit;color:var(--text);padding:30px 12px 14px}
+.tnp-card > *{pointer-events:none}
+.tnp-card .mp-mode-icon{font-size:1.9rem;margin-bottom:8px}
+.tnp-card .mp-mode-name{display:block;margin-bottom:8px}
+.tnp-card:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
 .tn-note{font-size:.74rem;color:var(--dim)}
 .tn-mine{padding:10px 12px;border-radius:10px;border:1px solid rgba(57,255,20,.35);background:rgba(57,255,20,.06);font-family:var(--fd);font-size:.6rem;letter-spacing:.08em}
 .tn-mine.out{border-color:var(--border);background:var(--s1);color:var(--dim)}
@@ -6324,8 +6383,16 @@ body.mode-3d .lab-sw.on{box-shadow:0 1px 0 #0a8f9a,0 2px 0 #0a8f9a,0 3px 0 #0554
 @media (max-width:620px){
   .tn-seats{grid-template-columns:repeat(2,minmax(0,1fr))}
   .tn-bracket{grid-template-columns:1fr}
+  .tn-set{padding:12px}
+  .tn-row{grid-template-columns:1fr;gap:6px}
+  /* Four tiers on two rows: on one, OVERCLOCK and MELTDOWN were cut to an ellipsis. */
+  .tn-tiers{display:grid;grid-template-columns:1fr 1fr;border-radius:var(--r)}
+  .tn-tiers .lp-seg+.lp-seg{border-left:0}
+  .tn-tiers .lp-seg:nth-child(even){border-left:1px solid var(--border2)}
+  .tn-tiers .lp-seg:nth-child(n+3){border-top:1px solid var(--border2)}
+  .tnp-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 }
-@media (pointer:coarse){ .tn-body .btn, .tn-body select, .mp-tourney-join .btn, .mp-tourney-join .input{min-height:44px} }
+@media (pointer:coarse){ .tn-body .btn, .tn-body .lp-seg, .tn-body .mp-bot-lvl, .tn-duel, .mp-tourney-join .btn, .mp-tourney-join .input{min-height:44px} }
 
 /* ═══════════════════════════════════════
    § 45 · v80 — 🎓 THE FULL TOUR · the spotlight layer and ARC's card
