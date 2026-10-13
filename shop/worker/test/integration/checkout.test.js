@@ -235,12 +235,17 @@ test('checkout', { skip: SKIP, concurrency: false }, async t => {
     assert.ok(log.lines.some(l => l.level === 'error' && /no active price/.test(l.msg)));
   });
 
-  await t.test('the provider refuses → 502, and nothing is remembered as open', async () => {
+  await t.test('the provider refuses → 502, nothing is remembered as open, and the log says why (no address in it)', async () => {
     const u = await passwordUser();
-    const { call, stripe } = rig();
-    stripe.failNext('checkout.sessions.create');
+    const { call, stripe, log } = rig();
+    stripe.failNext('checkout.sessions.create', Object.assign(
+      new Error('You cannot use custom_text with Managed Payments. Contact buyer@example.com for help.'),
+      { type: 'invalid_request_error' }));
     assert.deepEqual((await call({ token: u.token })).body, { error: 'provider' });
     assert.equal((await A.db.get(`shop/rl/${u.uid}/o`)), null);
+    const line = log.lines.find(l => l.msg === 'checkout: session refused by provider');
+    assert.equal(line.data.type, 'invalid_request_error');
+    assert.equal(line.data.message, 'You cannot use custom_text with Managed Payments. Contact [email] for help.');
     // …and a failed price lookup is a 502 too (a later clock, past the rate limit).
     const r2 = rig({ now: () => Date.now() + 20_000 });
     r2.stripe.failNext('prices.list');

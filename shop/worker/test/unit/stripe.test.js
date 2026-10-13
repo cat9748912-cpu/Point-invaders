@@ -44,8 +44,14 @@ test('a whole checkout session survives the encoding: the provider decodes exact
   assert.equal(back['payment_intent_data[metadata][sku]'], 'col_aurora');
   assert.equal(back['consent_collection[terms_of_service]'], 'required');
   assert.equal(back['managed_payments[enabled]'], 'true');
-  assert.equal(back['custom_text[submit][message]'], params.custom_text.submit.message);
+  assert.ok(!Object.keys(back).some(k => k.startsWith('custom_text')), 'no custom_text with Managed Payments');
   assert.equal(back.expires_at, String(params.expires_at));
+  // Without Managed Payments our own wording goes too, encoded intact.
+  const other = buildSessionParams({ item: catalog.find('col_aurora'), price: { id: 'price_1' }, uid: 'u1', email: null,
+                                     emailVerified: false, site: 'https://pointinvaders.com', managed: false, now: 1_800_000_000_000 });
+  const back2 = Object.fromEntries(new URLSearchParams(formEncode(other)));
+  assert.equal(back2['custom_text[submit][message]'], other.custom_text.submit.message);
+  assert.equal(back2['adaptive_pricing[enabled]'], 'true');
 });
 
 test('requests: the key, the pinned API version, a query for GET, a form body and an idempotency key for POST', async () => {

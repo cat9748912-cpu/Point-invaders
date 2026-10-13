@@ -422,8 +422,8 @@ Session parameters (the brief's list, adjusted for verified Stripe API facts):
 | `success_url` | `<site>/?purchase=ok&sku=<sku>&sid={CHECKOUT_SESSION_ID}` | same |
 | `cancel_url` | `<site>/?purchase=cancel&sku=<sku>` | same |
 | `consent_collection.terms_of_service` | `required` (needs the Terms URL in Dashboard → Settings → Public details) | `required`: not on Stripe's forbidden list; to confirm in test mode |
-| `custom_text.terms_of_service_acceptance.message` | "I agree to the [Terms] and the [Refund policy]. I am 18 or older, or a parent or guardian has agreed to this purchase." (both linked to `<site>/legal/…`) | same |
-| `custom_text.submit.message` | "Unlocks <item> on your Point Invaders account straight away. A one-time purchase: it never becomes Points or Credits." | same |
+| `custom_text.terms_of_service_acceptance.message` | "I agree to the [Terms] and the [Refund policy]. I am 18 or older, or a parent or guardian has agreed to this purchase." (both linked to `<site>/legal/…`) | **omitted**: refused at Gate 2 ("You cannot use custom_text with Managed Payments."), though Stripe's list doesn't name it. The age line is in the game's purchase sheet instead, which can't be passed without ticking it. |
+| `custom_text.submit.message` | "Unlocks <item> on your Point Invaders account straight away. A one-time purchase: it never becomes Points or Credits." | **omitted** (same refusal); the purchase sheet says it |
 | `adaptive_pricing.enabled` | `true` (per D6) | **omitted**: always on, and passing it is refused |
 | `automatic_tax.enabled` | `true` only if Stripe Tax is set up | **omitted** (refused) |
 | `managed_payments.enabled` | — | `true` |
@@ -748,8 +748,8 @@ DATE⟧** (all three). Each page carries a DRAFT banner until they are filled in
 whole arcade, not only payments (§ 10).
 
 The EU/UK rule for digital content is that the 14-day withdrawal right ends at immediate delivery **only** if
-the buyer agreed to that. D7's 14-day goodwill refund makes this moot. The checkout consent text is worded so
-it stays valid if you ever tighten D7. These drafts are not legal advice; have them reviewed.
+the buyer agreed to that. D7's 14-day goodwill refund makes this moot. The checkout consent text (shown only
+without Managed Payments, § 7.1) is worded so it stays valid if you ever tighten D7. These drafts are not legal advice; have them reviewed.
 
 ---
 
