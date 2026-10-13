@@ -1,0 +1,261 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "players": {
+      ".read": true,
+      ".indexOn": ["totalPoints", "weekly/pts"],
+
+      "$uid": {
+        ".write": "auth != null && auth.uid === $uid",
+
+        ".validate": "newData.hasChildren(['username', 'totalPoints']) && (!newData.child('totalPoints').isNumber() || !data.child('totalPoints').isNumber() || newData.child('totalPoints').val() <= data.child('totalPoints').val() || (newData.child('lastScoreAt').val() === now && (!data.child('lastScoreAt').exists() || data.child('lastScoreAt').val() < now - 2500)))",
+
+        "username": {
+          ".validate": "newData.isString() && newData.val().length >= 2 && newData.val().length <= 20"
+        },
+
+        "totalPoints": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || newData.val() - data.val() <= 200000)"
+        },
+
+        "credits": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || newData.val() - data.val() <= 100000)"
+        },
+
+        "gamesPlayed": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || newData.val() - data.val() <= 1)"
+        },
+
+        "lastScoreAt": { ".validate": "newData.isNumber()" },
+
+        "createdAt": {
+          ".validate": "newData.isNumber() && (!data.exists() || newData.val() === data.val())"
+        },
+
+        "isGuest": { ".validate": "newData.isBoolean()" },
+
+        "highScores": {
+          "$gid": { ".validate": "newData.isNumber() && newData.val() >= 0" }
+        },
+
+        "achievements": {
+          "$aid": { ".validate": "newData.isNumber()" }
+        },
+
+        "history": {
+          "$gid": {
+            "$idx": { ".validate": "newData.isNumber() && newData.val() >= 0" }
+          }
+        },
+
+        "streak": {
+          "count": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000" },
+          "best":  { ".validate": "newData.isNumber() && newData.val() >= 0" },
+          "lastDay": { ".validate": "newData.isString() && newData.val().length === 10" },
+          "$other": { ".validate": false }
+        },
+
+        "weekly": {
+          "season": { ".validate": "newData.isString() && newData.val().length <= 10" },
+          "pts": { ".validate": "newData.isNumber() && newData.val() >= 0" },
+          "$other": { ".validate": false }
+        },
+
+        "friends": {
+          "$fid": { ".validate": "newData.isBoolean() || newData.isString()" }
+        },
+
+        "owned": {
+          "$cat": {
+            "$idx": { ".validate": "newData.isString() && newData.val().length <= 40" }
+          }
+        },
+
+        "equipped": {
+          "$cat": { ".validate": "newData.isString() && newData.val().length <= 40" }
+        },
+
+        "xp": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || newData.val() >= data.val())"
+        },
+
+        "level": {
+          ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 100000"
+        },
+
+        "perkSpent": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || newData.val() >= data.val())"
+        },
+
+        "perks": {
+          "$pid": { ".validate": "newData.isBoolean()" }
+        },
+
+        "powerups": {
+          "$pid": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 9" }
+        },
+
+        "daily": {
+          "day": { ".validate": "newData.isString() && newData.val().length === 10" },
+          "pts": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000" },
+          "gid": { ".validate": "newData.isString() && newData.val().length <= 20" },
+          "$other": { ".validate": false }
+        },
+
+        "$other": { ".validate": true }
+      }
+    },
+
+    "rooms": {
+      ".read": "auth != null",
+      ".indexOn": ["open"],
+
+      "$code": {
+        ".write": "auth != null",
+        ".validate": "$code.length === 4"
+      }
+    },
+
+    "live": {
+      ".read": "auth != null",
+      "$code": {
+        ".write": "auth != null",
+        ".validate": "$code.length === 4"
+      }
+    },
+
+    "daily": {
+      ".read": "auth != null",
+
+      "$day": {
+        ".indexOn": "pts",
+        ".validate": "$day.length === 10",
+
+        "$uid": {
+          ".write": "auth != null && auth.uid === $uid && !data.exists()",
+          ".validate": "newData.hasChildren(['name', 'pts', 'gid'])",
+
+          "name": { ".validate": "newData.isString() && newData.val().length <= 20" },
+          "pts":  { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000" },
+          "gid":  { ".validate": "newData.isString() && newData.val().length <= 20" },
+          "at":   { ".validate": "newData.val() === now" },
+          "$other": { ".validate": false }
+        }
+      }
+    },
+
+    "chat": {
+      ".read": "auth != null",
+
+      "$msg": {
+        ".write": "auth != null && !data.exists()",
+        ".validate": "newData.hasChildren(['uid', 'name', 'text', 'at'])",
+
+        "uid":  { ".validate": "newData.val() === auth.uid" },
+        "name": { ".validate": "newData.isString() && newData.val().length <= 20" },
+        "text": { ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 140" },
+        "at":   { ".validate": "newData.val() === now" },
+        "$other": { ".validate": false }
+      }
+    },
+
+    "feedback": {
+      ".read": false,
+      "$id": {
+        ".write": "auth != null && !data.exists()",
+        ".validate": "newData.hasChildren(['message'])",
+        "message":  { ".validate": "newData.isString() && newData.val().length <= 1000" },
+        "username": { ".validate": "newData.isString() && newData.val().length <= 20" },
+        "$other": { ".validate": true }
+      }
+    },
+
+    "stats": {
+      ".read": true,
+      "m": {
+        "$gid": {
+          ".validate": "$gid.length <= 16 && $gid.matches(/^[a-z0-9]+$/)",
+          "secs": {
+            ".write": "auth != null && newData.exists()",
+            ".validate": "newData.isNumber() && newData.val() >= (data.exists() ? data.val() : 0) && newData.val() <= (data.exists() ? data.val() : 0) + 900"
+          },
+          "$k": {
+            ".write": "auth != null && newData.exists()",
+            ".validate": "$k.length <= 8 && $k.matches(/^[a-z0-9]+$/) && newData.isNumber() && newData.val() === (data.exists() ? data.val() : 0) + 1"
+          }
+        }
+      },
+      "d": {
+        "$day": {
+          ".validate": "$day.matches(/^20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/)",
+          "$k": {
+            ".write": "auth != null && newData.exists()",
+            ".validate": "$k.length <= 16 && $k.matches(/^[a-z0-9_]+$/) && newData.isNumber() && newData.val() === (data.exists() ? data.val() : 0) + 1"
+          }
+        }
+      }
+    },
+
+    "lab": {
+      ".read": true,
+      "d": {
+        ".indexOn": ["t"],
+        "$id": {
+          ".write": "auth != null && ((!data.exists() && newData.child('u').val() === auth.uid && newData.parent().parent().child('w/' + auth.uid).val() === now) || (data.exists() && !newData.exists() && data.child('u').val() === auth.uid))",
+          ".validate": "newData.hasChildren(['g', 'c', 'n', 'b', 'u', 't']) && newData.child('g').isString() && newData.child('g').val().matches(/^[a-z0-9]+$/) && newData.child('g').val().length <= 16 && newData.child('c').isString() && newData.child('c').val().beginsWith('PIL1.') && newData.child('c').val().length <= 2400 && newData.child('n').isString() && newData.child('n').val().length <= 32 && newData.child('b').isString() && newData.child('b').val().length <= 24 && newData.child('t').val() === now",
+          "$other": { ".validate": "$other.matches(/^(g|c|n|b|u|t)$/)" }
+        }
+      },
+      "w": {
+        "$uid": {
+          ".write": "auth != null && auth.uid === $uid",
+          ".validate": "newData.val() === now && (!data.exists() || data.val() < now - 60000)"
+        }
+      },
+      "l": {
+        "$id": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid && (!newData.exists() || root.child('lab/d/' + $id).exists())",
+            ".validate": "newData.val() === true"
+          }
+        }
+      },
+      "p": {
+        "$id": {
+          ".write": "auth != null && root.child('lab/d/' + $id).exists()",
+          ".validate": "newData.isNumber() && newData.val() === (data.exists() ? data.val() : 0) + 1"
+        }
+      },
+      "f": {
+        "$id": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid && !data.exists()",
+            ".validate": "newData.val() === true"
+          }
+        }
+      },
+      "day": {
+        "$day": {
+          ".write": "auth != null && !data.exists()",
+          ".validate": "$day.matches(/^20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) && newData.isString() && root.child('lab/d/' + newData.val()).exists()"
+        }
+      }
+    },
+
+    "shop": {
+      "cfg":    { ".read": true,  ".write": false },
+      "badge":  { ".read": true,  ".write": false },
+      "ent": {
+        "$uid": { ".read": "auth != null && auth.uid === $uid", ".write": false }
+      },
+      "orders": {
+        "$uid": { ".read": "auth != null && auth.uid === $uid", ".write": false }
+      },
+      "events": { ".read": false, ".write": false },
+      "pi":     { ".read": false, ".write": false },
+      "rl":     { ".read": false, ".write": false }
+    }
+  }
+}
