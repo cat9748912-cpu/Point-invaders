@@ -761,4 +761,28 @@ naming `docs/monetisation/…` (in `app.js`, the legal pages, the Worker and the
 **The merge.** `main` was still at `94571c2`, an ancestor of the branch, so the merge brought `main` level with
 the branch and conflicted with nothing.
 
+## Gate 2: your first test purchase (2026-10-13)
+
+You finished Stripe's Managed Payments setup in the sandbox (category: Video Games, downloaded, non-subscription,
+with permanent rights) and pressed CONTINUE on the live site with `?shop=beta`.
+
+- **What happened:** the sheet said "📡 Couldn't reach checkout. Nothing was charged." The Worker's log (your
+  screenshot) said `checkout: session refused by provider`, `invalid_request_error`, for `pass_supporter`, with no
+  code or parameter. Stripe's request log (Workbench → Logs) gave the reason: **"You cannot use custom_text with
+  Managed Payments."**
+- **What it proves on the way:** the live site reached the Worker; the Worker verified your sign-in, found your
+  account wasn't a guest, and found the seeded price. Only the session itself was refused.
+- **Why it slipped through:** `custom_text` is not on Stripe's published list of parameters Managed Payments
+  refuses (re-read 2026-10-13), so it was sent. Two other projects report the same error. Open item U6 is
+  partly resolved: `custom_text` is refused; `consent_collection` still goes, and your next run confirms it.
+- **The fix** (`shop/worker/src/session.js`): with Managed Payments the session carries no `custom_text`. Without
+  it, our two lines still go. The age line is in the game's sheet either way. And
+  `shop/worker/src/checkout.js` now logs the provider's own message with a refusal (any email address in it
+  replaced by `[email]`), so the next one is readable straight from Cloudflare's log.
+- **Tests (execution):** unit 67/67, emulator 130/130, end to end in workerd 9/9, browser 18/18. The managed session's exact
+  parameters, its encoding, and the request the real bundle sends all exclude `custom_text`, and the
+  emulator suite checks the logged reason and that an address in it is removed. Putting `custom_text` back makes
+  three unit tests fail. The bundle builds (54.66 KiB).
+- **To do on your side:** deploy the updated Worker (RUNBOOK, "Updating the Worker"), then try again.
+
 ## Phase 3: go-live (not started)

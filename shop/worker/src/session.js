@@ -7,8 +7,13 @@
 // Two shapes. With Managed Payments (Stripe, through Link, is the merchant of
 // record and handles VAT/GST), the provider REFUSES `adaptive_pricing` (it is
 // always on), `automatic_tax`, `payment_method_types`, `invoice_creation`, the
-// statement descriptors and `receipt_email`, so none of them is ever sent.
-// Without it, Adaptive Pricing is asked for explicitly.
+// statement descriptors and `receipt_email`, so none of them is ever sent. It
+// refuses `custom_text` too ("You cannot use custom_text with Managed Payments.",
+// the sandbox, Gate 2), although Stripe's published list doesn't name it, so our
+// own two lines on its page go only into the other shape. The terms checkbox
+// (`consent_collection`) stays in both, and the age line D8 asks for is also in
+// the game's purchase sheet, which can't be passed without ticking it.
+// Without Managed Payments, Adaptive Pricing is asked for explicitly.
 //
 // What the buyer cannot change: the price (resolved by lookup key on the
 // server), the uid (from their verified token) and the metadata. The metadata
@@ -42,16 +47,6 @@ function buildSessionParams({ item, price, uid, email, emailVerified, site, mana
     success_url: `${site}/?purchase=ok&sku=${sku}&sid={CHECKOUT_SESSION_ID}`,
     cancel_url: `${site}/?purchase=cancel&sku=${sku}`,
     consent_collection: { terms_of_service: 'required' },
-    custom_text: {
-      terms_of_service_acceptance: {
-        message: `I agree to the [Terms](${site}/legal/terms.html) and the [Refund policy](${site}/legal/refunds.html). ` +
-                 `I am 18 or older, or a parent or guardian has agreed to this purchase.`
-      },
-      submit: {
-        message: `Unlocks ${item.name} on your Point Invaders account straight away. ` +
-                 `A one-time purchase: it never becomes Points or Credits.`
-      }
-    },
     expires_at: Math.floor(now / 1000) + SESSION_TTL_S
   };
   // Pre-filled emails are read-only on the checkout page. Only a VERIFIED address is
@@ -59,8 +54,25 @@ function buildSessionParams({ item, price, uid, email, emailVerified, site, mana
   // would send the receipt to a stranger with no way to correct it.
   if(email && emailVerified) p.customer_email = email;
   if(managed) p.managed_payments = { enabled: true };
-  else p.adaptive_pricing = { enabled: true };
+  else{
+    p.adaptive_pricing = { enabled: true };
+    p.custom_text = customText(item, site);
+  }
   return p;
+}
+
+/** Our wording on the provider's page: the consent line and the line by the pay button. Not with Managed Payments. */
+function customText(item, site){
+  return {
+    terms_of_service_acceptance: {
+      message: `I agree to the [Terms](${site}/legal/terms.html) and the [Refund policy](${site}/legal/refunds.html). ` +
+               `I am 18 or older, or a parent or guardian has agreed to this purchase.`
+    },
+    submit: {
+      message: `Unlocks ${item.name} on your Point Invaders account straight away. ` +
+               `A one-time purchase: it never becomes Points or Credits.`
+    }
+  };
 }
 
 module.exports = { buildSessionParams };

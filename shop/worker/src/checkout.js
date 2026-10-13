@@ -15,6 +15,10 @@ const { json, empty, cors } = require('./http');
 const { buildSessionParams } = require('./session');
 const { REUSE_MIN_MS, returnSite } = require('./config');
 
+/** The provider's own words for a refusal, for the log: the reason a person can act on. An address it might
+ *  quote back is taken out, as the log never holds one. */
+const said = e => (e && e.message) ? String(e.message).replace(/[^\s@"'<>]+@[^\s@"'<>]+/g, '[email]').slice(0, 300) : undefined;
+
 /** The body is `{"sku":"…"}`; anything much bigger isn't a real request. */
 const MAX_BODY = 2048;
 
@@ -80,7 +84,7 @@ async function handleCheckout(request, deps){
     const list = await stripe.prices.list({ lookup_keys: [item.lookupKey], active: true, limit: 1 });
     price = list && list.data && list.data[0];
   }catch(e){
-    log.error('checkout: price lookup failed', { sku: item.sku, code: e && e.code, status: e && e.statusCode });
+    log.error('checkout: price lookup failed', { sku: item.sku, code: e && e.code, status: e && e.statusCode, message: said(e) });
     return reply(502, { error: 'provider' });
   }
   if(!price){
@@ -101,7 +105,8 @@ async function handleCheckout(request, deps){
   try{
     session = await stripe.checkout.sessions.create(params);
   }catch(e){
-    log.error('checkout: session refused by provider', { sku: item.sku, code: e && e.code, type: e && e.type, param: e && e.param });
+    log.error('checkout: session refused by provider', { sku: item.sku, code: e && e.code, type: e && e.type, param: e && e.param,
+                                                         message: said(e) });
     return reply(502, { error: 'provider' });
   }
   await ledger.setOpen(uid, item.sku, { id: session.id, exp: session.expires_at || params.expires_at });

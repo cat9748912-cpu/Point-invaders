@@ -309,6 +309,23 @@ minutes, and you don't need Command Prompt unless step 3 sends you there.
 
 ---
 
+## Updating the Worker
+
+When a fix changes the server, Cloudflare needs the new copy. Your keys stay where they are.
+
+1. Download the new code as a ZIP (I'll give you the link), unzip it, and open the inner folder → `shop` →
+   `worker`. Click the address bar, type `cmd`, and press Enter.
+2. Run:
+   ```
+   npm ci --omit=dev
+   npx wrangler deploy
+   ```
+   The second command ends with your Worker's address. That's it: the secrets you set in steps 5 and 6 carry
+   over.
+3. Check `https://point-invaders-shop.pointinvaders.workers.dev/health` still says `"ok":true`.
+
+---
+
 ## Troubleshooting
 
 | What you see | Why | Fix |
@@ -323,6 +340,7 @@ minutes, and you don't need Command Prompt unless step 3 sends you there.
 | webhook → `{"ignored":"mode"}` | a live key with a test endpoint, or the reverse | use the same mode for both |
 | a checkout later says `unpriced` | products not seeded in this mode | step 4 |
 | step 9: no 🔐 Restricted tab | the shop isn't switched on in this browser, or the page is the old version | open `https://pointinvaders.com/?shop=beta` again, and reload once |
+| step 9: "📡 Couldn't reach checkout. Nothing was charged." | the Worker or Stripe refused | Cloudflare → **Workers & Pages** → `point-invaders-shop` → **Logs**: the newest `checkout:` line's `message` says why. Older Workers don't log it: Stripe → **Workbench → Logs** → the newest failed `POST /v1/checkout/sessions`. |
 | step 9: the aisle says *"Your purchases can't be read from here right now"* | the database rules from step 1 aren't published | step 1, then reload |
 | step 9: "Still processing…" after paying, for more than a minute | Stripe's notification isn't reaching the Worker | Stripe → **Workbench → Webhooks** → your endpoint: the latest delivery should say 200. Then ⚙️ Settings → **🔄 RESTORE PURCHASES**. |
 

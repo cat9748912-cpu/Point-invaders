@@ -27,8 +27,9 @@ test('return URLs: the site, the sku, and the provider template left unencoded',
   assert.equal(p.cancel_url, 'https://pointinvaders.com/?purchase=cancel&sku=col_aurora');
 });
 
-test('terms are required, and the consent text links the terms and refund policy and states the age rule', () => {
-  const p = buildSessionParams(base);
+test('terms are required in both shapes; without Managed Payments our consent text links the policies and states the age rule', () => {
+  assert.deepEqual(buildSessionParams(base).consent_collection, { terms_of_service: 'required' });
+  const p = buildSessionParams({ ...base, managed: false });
   assert.deepEqual(p.consent_collection, { terms_of_service: 'required' });
   const msg = p.custom_text.terms_of_service_acceptance.message;
   assert.match(msg, /\[Terms\]\(https:\/\/pointinvaders\.com\/legal\/terms\.html\)/);
@@ -46,8 +47,9 @@ test('expires 35 minutes out (the provider minimum is 30)', () => {
 test('Managed Payments: on, and none of the parameters it refuses', () => {
   const p = buildSessionParams(base);
   assert.deepEqual(p.managed_payments, { enabled: true });
+  // custom_text is not on Stripe's list, but the sandbox refused it at Gate 2: "You cannot use custom_text with Managed Payments."
   for(const k of ['adaptive_pricing', 'automatic_tax', 'payment_method_types', 'invoice_creation', 'tax_id_collection',
-                  'excluded_payment_method_types', 'payment_method_configuration', 'shipping_address_collection']){
+                  'excluded_payment_method_types', 'payment_method_configuration', 'shipping_address_collection', 'custom_text']){
     assert.ok(!(k in p), `${k} must not be sent with Managed Payments`);
   }
   for(const k of ['statement_descriptor', 'statement_descriptor_suffix', 'receipt_email', 'shipping']){
@@ -58,11 +60,11 @@ test('Managed Payments: on, and none of the parameters it refuses', () => {
 // Non-negotiable 3: the hosted page only. With no ui_mode the provider's default is its own hosted page,
 // and the session comes back with a url to redirect to; nothing here could embed a payment form.
 test('hosted checkout only: exactly these parameters, and no ui_mode', () => {
-  const common = ['cancel_url', 'client_reference_id', 'consent_collection', 'custom_text', 'expires_at',
+  const common = ['cancel_url', 'client_reference_id', 'consent_collection', 'expires_at',
                   'line_items', 'metadata', 'mode', 'payment_intent_data', 'success_url'];
   const keys = a => Object.keys(buildSessionParams(a)).sort();
   assert.deepEqual(keys(base), [...common, 'managed_payments'].sort());
-  assert.deepEqual(keys({ ...base, managed: false }), [...common, 'adaptive_pricing'].sort());
+  assert.deepEqual(keys({ ...base, managed: false }), [...common, 'adaptive_pricing', 'custom_text'].sort());
   assert.deepEqual(keys({ ...base, emailVerified: true }), [...common, 'customer_email', 'managed_payments'].sort());
   assert.deepEqual(Object.keys(buildSessionParams(base).payment_intent_data), ['metadata']);
 });

@@ -150,6 +150,8 @@ test('the Worker, end to end', { skip: SKIP, concurrency: false, timeout: 240_00
     assert.equal(call.form.get('metadata[uid]'), u.uid);
     assert.equal(call.form.get('managed_payments[enabled]'), 'true');
     assert.equal(call.form.get('adaptive_pricing[enabled]'), null);
+    assert.equal(call.form.get('consent_collection[terms_of_service]'), 'required');
+    assert.ok(![...call.form.keys()].some(k => k.startsWith('custom_text')), 'Managed Payments refuses custom_text (Gate 2)');
     assert.equal(call.form.get('success_url'), `${SITE}/?purchase=ok&sku=col_aurora&sid={CHECKOUT_SESSION_ID}`);
     assert.equal(call.form.get('customer_email'), null, 'an unverified email is not locked in');
     assert.equal(await A.db.get(`shop/rl/${u.uid}/o/col_aurora/id`), j.id);
