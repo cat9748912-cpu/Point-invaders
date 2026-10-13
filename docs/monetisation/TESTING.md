@@ -584,6 +584,149 @@ is stored in the repository.
 
 ---
 
-## Phase 2: client (not started)
+## Phase 2: the client (`app.js § 46 · v84`, 2026-10-13)
+
+The 🔐 Restricted aisle in the game, built on the Worker you deployed at Gate 1. What changed:
+
+- **`app.js`**: a new section at the end, `§ 46 · v84 — 🔐 THE RESTRICTED AISLE`, in § 45's take-over pattern
+  (top-level functions reassigned, the originals kept in `SHOP_REAL`), plus **two one-line edits**:
+  `applyLoadout` (a paid item `findItem()` returned is owned) and `renderPlayerCard` (a paid skin only on your own
+  card). The client catalogue sits between the `@shop-catalogue` markers.
+- **`index.html`**: the tab (hidden), the aisle's panel, the purchase sheet `#sku-overlay`, the exhibition card
+  `#exhib-overlay`, the hub's exhibition strip (hidden), Settings → 🔐 PURCHASES (hidden), and the auth-screen
+  banner `#buy-auth` (hidden).
+- **`style.css`**: a new `§ 46` at the end.
+- **`sw.js`**: `BYPASS` gains `workers\.dev|stripe\.com`.
+- **No version bump.** `main` is still at v83, so v84 has never reached a device (DESIGN § 9.10).
+- **`worker/test/browser/`**: a Playwright suite (below), with `playwright` 1.56.1 as a dev dependency.
+
+Commits: `292a466` (the client), `733a985` (the browser tests), and the documentation commit that carries this
+section.
+
+### Facts checked before building
+
+| # | Fact | Verdict | How checked |
+|---|---|---|---|
+| F1 | Managed Payments must be **activated in the Dashboard** (Settings → Managed Payments), with its terms accepted, before a session can use it. Sandbox purchases work once it is, but receipts aren't emailed automatically. Whether a sandbox can be activated before Stripe's review isn't stated. | ✅ (reading) | docs.stripe.com/payments/managed-payments/set-up (read 2026-10-13). Hence the Gate 2 fallback below. |
+| F2 | `wrangler deploy --var KEY:VALUE` exists in 4.142.0 and overrides a `[vars]` value for that deploy | ✅ | **execution:** `--help`; a dry run with `--var MANAGED_PAYMENTS:false` lists the binding |
+| F3 | Playwright 1.56.1 drives the Chromium build installed here (1194). `page.route` can't see requests a service worker makes, so the suite blocks the service worker. | ✅ | **execution**; Playwright's docs |
+| F4 | The 9.23.0 compat SDK sets `globalThis.firebase = …` when it loads, so an init script can wrap `initializeApp` to point the page at the emulators without touching `app.js` | ✅ | the SDK file read; **execution** (the suite) |
+| F5 | When the database's websocket is unavailable, the SDK falls back to long polling through `<script>` tags from the database host | ✅ | **observed by execution** (the suite's script audit lists them) |
+
+### Test runs (execution)
+
+| Suite | Command (in `worker/`) | Result |
+|---|---|---|
+| Browser | `npm run test:browser` | **18 / 18 pass**: 17 cases plus the group, about 2½ minutes |
+| Unit | `npm test` | **67 / 67 pass**. One Phase 1 case changed: parity now expects the client's block (exit 0) instead of its absence (exit 2), and checks the skus come in the same order. |
+| Emulator | `npm run test:emu` | **130 / 130 pass** |
+| End to end | `npm run test:e2e` | **9 / 9 pass** |
+| Parity | `node scripts/catalog-parity.js` | **exit 0**: 9 SKUs agree on name, kind, shelf, price label and items unlocked |
+
+**How the browser suite runs** (`worker/test/browser/harness.js`): this repository served as it is on a local
+port; Chromium with the production Firebase SDK (9.23.0, fetched once from gstatic and kept in the git-ignored
+`.vendor/`), pointed at the Auth and Database emulators by an init script; your real rules file (with the `shop`
+block) loaded into the emulator; the Worker's own bundle in **workerd** (`wrangler dev`) behind the Worker's real
+address; a stand-in for Stripe's API behind the Worker; and a one-line page standing in for Stripe's checkout.
+"Paying" is the test sending the signed webhook Stripe would send. Anything else off the machine is refused.
+
+<details><summary><strong>The 17 browser cases</strong></summary>
+
+1. **Flag off.** `main`'s files (from `git archive origin/main`) and this branch, side by side: the market's
+   visible tabs sit in the same cells, pixel for pixel, and every shelf carries the same cards with the same text.
+   With the flag off there is no Restricted tab, no exhibition strip, no Purchases section, and no request to the
+   Worker. A paid colour the device *believes* is owned and equipped is still drawn as the default.
+   *(Pixel screenshots were not compared: the background is animated. Positions and card text were.)*
+2. **A guest** (`?shop=beta`, which leaves the address bar at once) sees all nine items in catalogue order, each
+   saying SIGN IN TO BUY. Pressing one shows "Purchases need a saved account" and opens Save Account. No sheet,
+   no request.
+3. **A phone** (390 × 844, touch): the Restricted tab takes a full row, and nothing is wider than the screen.
+4. **A local profile** (no connection at the first visit) and **a saved account that goes offline**: both refused
+   at the button, with the right sentence on the aisle and in the toast. No request.
+5. **Buying.** The sheet shows the item, $1.99, one-time, tax included, and "Stripe's secure checkout page".
+   CONTINUE stays disabled until the age box is ticked. The sheet has no input but that checkbox, and no iframe.
+   CONTINUE → the page lands on the checkout URL. The Worker received exactly one POST, `{"sku":"col_aurora"}`
+   with a Bearer token. The stand-in Stripe saw the right uid, price and return address. `_buy_open` and
+   `_buy_start` were counted.
+6. **Paying.** The signed webhook grants the item. The return address (`?purchase=ok&sku=…&sid=…`) leaves the
+   address bar at once. "Confirming…" → **"✅ Aurora unlocked — thank you!"**, the pending marker is cleared and
+   `_buy_ok` is counted. EQUIP turns the whole interface mint (`--cyan` = `#7dffc8`) and writes only
+   `equipped/colors`. The colours shelf shows it too, owned. **Credits, points and `owned` are unchanged.**
+7. **The mirror.** The same browser storage, offline and with no Firebase reachable: the boot fallback opens the
+   saved profile, and the owned colour is still drawn.
+8. **A refund** (`charge.refunded`): the listener puts the default colour back within seconds, the card says BUY
+   again, the server says `revoked`, and Settings → Purchases shows the order as REFUNDED with its `pi_…`
+   reference.
+9. **Restore.** The live listener stopped, a grant made behind its back: the page doesn't know it. Restore
+   Purchases → "Restored 1 item." and it is owned again; the Settings badge reads "1 OWNED".
+10. **The Supporter Pass.** The ◆ appears beside the buyer's name on the all-time board, and the player card says
+    "◆ SUPPORTER · since …". Their own card wears their paid skin (🦊). **Another player** sees the ◆ (public) but
+    the default skin (🤖) on the buyer's card: a paid skin on someone else's record isn't vouched for.
+11. **Exhibition rounds.** With both toys bought and Aegis armed, the hub shows the EXHIBITION strip. The next
+    CLICK FRENZY round opens with the EXHIBITION banner and title. The arming is used up. The dock shows ⚓ +10s and
+    AEGIS, not the Credits kit. `survivedFatal()` absorbs while a Credits shield in the kit stays at 1, and
+    `powerConsume` refuses. ⚓ adds 10 held seconds to the clock. 12 clicks end on the exhibition card: **96, NOT
+    BANKED**. totalPoints, credits, xp, level, gamesPlayed, history, highScores, weekly, mbest, daily, streak and
+    achievements are all unchanged in the database. The play counter rose by one. PLAY AGAIN (EXHIBITION) arms
+    exactly one more round; after a quit, the next round is ordinary, and it pays.
+12. **The kill switch** (`shop/cfg/open = false`): the open aisle turns to CLOSED within seconds and says so, while
+    owned items still work. The Worker answers a direct checkout with 503 `closed`. Removing the node reopens it.
+13. **The Worker unreachable:** "📡 Couldn't reach checkout. Nothing was charged." No purchase is waited for,
+    CONTINUE can be tried again, and a round still plays.
+14. **The rules without the `shop` block:** the aisle says purchases can't be read from here, an unreadable kill
+    switch counts as open, no page error, and a round still plays.
+15. **The way back.** A cancel → "Checkout cancelled. Nothing was charged.", the marker is cleared and
+    `_buy_cancel` is counted. A return to a browser nobody is signed in to shows "PAYMENT RECEIVED".
+16. **No provider script, no card field.** Every script any page loaded in the run was the site's own, the
+    Firebase SDK, or the database's long-poll fallback. `index.html` and the legal pages carry no Stripe script and
+    no card-field autocomplete. The service worker's `BYPASS` matches the Worker and Stripe hosts, and not the
+    site's own files.
+17. **No uncaught page error** in any page of the run.
+
+</details>
+
+### The non-negotiables, on the client side
+
+| # | Proof |
+|---|---|
+| 1 | The page has no write to `shop/*`. The rules deny one anyway (Phase 1 rules tests). In the suite, every grant appears only after the signed webhook (cases 6, 8–11). |
+| 2 | Case 6 (Credits, points, `owned` unchanged by a purchase); case 11 (every banked field unchanged by an exhibition); `handleShopAction` refuses `buy` for any paid id; paid items live in `SKU_ITEMS`, which no Credits loop reads (reading, below). |
+| 3 | Case 16; case 5 (no field but the age box); `location.assign` only to `*.stripe.com` (`SHOP_PAY_RE`). |
+| 4 | Cases 2 and 4: guest, local and offline are refused before any request. The server refuses an anonymous token too (Phase 1). |
+| 9 | Case 1 (flag off equals `main`); one new `§ 46 · v84` section in each file; no framework or bundler; the stamps stay v84 (`main` is v83). |
+| 10 | Case 11 (D5: exhibition only). |
+| 11 | Cases 1, 7, 12, 13, 14 and 4: the fail-safe matrix (DESIGN § 9.9), row by row. |
+
+### Verified by reading only
+
+- **Every `findItem()` call but one draws the local player's own items:** cosmetics, cursor, skin badge, exit
+  state, music drive, world tint and look, companion, loadouts, power-ups. The one exception, `renderPlayerCard`, now
+  passes `creditsOnly` for someone else's record.
+- **The loops over `SHOP_ITEMS`** (`featuredIds`, the `getRarity` bands, `grantRandomConsumable`, `crewColors`,
+  `renderEventShelf`) can't see paid items, which live in `SKU_ITEMS`.
+- **An exhibition round's anonymous telemetry:** `statsRoundStart/End` count it as a grid round, the same as any
+  round, and `play.modes.exhib` counts it separately. These are play counters, not boards (DESIGN § 3.3 allows them).
+- **The clip recorder** still records an exhibition round. Its button lives on the results card, which an
+  exhibition never reaches, so the clip is never offered.
+- **The 3D interface** was rendered once: the aisle and the sheet, screenshots checked by eye. It isn't in the
+  suite.
+- **Gamepad B and BACK** close the sheet through its registered closer, the path every overlay uses. Not executed.
+
+### Not verified yet (your Gate 2 run, then Gate 3)
+
+- Stripe's real hosted page in your sandbox, including whether Managed Payments can be switched on there before
+  the review (F1);
+- the real webhook writing to the real database, which is the first proof that the Worker can **write**;
+- whether your live rules have the `shop` block (the aisle says so if they don't: case 14);
+- a refund from the Dashboard;
+- the installed-app return paths on Android and iPhone. These need the code on the real site, so they come with
+  the beta after a merge.
+
+### Commit hygiene (Phase 2)
+
+Both greps ran on each commit's staged diff: `292a466` (the client), `733a985` (the browser tests) and the
+documentation commit that carries this section. Neither the literal list nor the strict pattern matched anything
+in any of them (strict exit 1). The browser suite takes the e2e suite's
+fake key and signing secret from the git-ignored `worker/.dev.vars`; neither is written in any file.
 
 ## Phase 3: go-live (not started)

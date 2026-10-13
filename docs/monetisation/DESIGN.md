@@ -1,8 +1,9 @@
 # 🔐 The Restricted shelf: direct payments for Point Invaders
 
-**Design: approved at Gate 0 (2026-10-12). Phase 1 (server, rules, legal drafts) built, awaiting Gate 1.
-At Gate 1 you couldn't use Firebase's Blaze plan, so the server moved from Cloud Functions to a Cloudflare
-Worker on the free plan (D2, § 2 item 18).**
+**Design: approved at Gate 0 (2026-10-12). Phase 1 (server, rules, legal drafts) built; at Gate 1 you couldn't
+use Firebase's Blaze plan, so the server moved from Cloud Functions to a Cloudflare Worker on the free plan
+(D2, § 2 item 18), which you deployed. Phase 2 (the client, § 9) built and tested in Chromium (2026-10-13),
+awaiting Gate 2. Where the build differs from § 9, § 9.11 says so.**
 Version tag `v84`, new section `§ 46` (the next free numbers: `§ 45 · v80` is the last section,
 v81–v83 were fixes without sections, and § 41 was retired in v81).
 Audited against commit `94571c2` on branch `claude/stoic-cori-irbsqk`.
@@ -661,6 +662,42 @@ tour's `mk-tabs` step (`72823`), both flag-gated (the ARC line marked `opt:1`).
   `§ 46 · v85`. Otherwise it stays v84, because no device has cached v84 yet.
 - No new SDK scripts. Calls use plain `fetch` and the ID token, so `VENDOR` is unchanged.
 
+### 9.11 As built (Phase 2): where the code differs from this section
+
+The code wins; these are the differences, each smaller than the design it replaces.
+
+- **Names.** The flag is a variable, `shopFlag`, settled once at load by `shopBoot()`, not a `shopOn()` function.
+  `shopOpen()`, `owns()`, `entSync()`, `SHOP_SKUS` and `SKU_ITEMS` are as designed. The toys' card data is
+  `SKU_TOYS`.
+- **No paid companion in v1**, so `SKU_ITEMS` has no companions shelf and `cmpKnown`/`cmpState` are untouched. A
+  comment in § 46 says what a paid companion would need first.
+- **The cursor's animated tier** comes from the `getRarity()` take-over (a paid item's own `tier`), not from a line
+  in `applyEquippedCosmetics`.
+- **Another player's card.** `findItem()` takes a third argument, `creditsOnly`, which the original ignores.
+  `renderPlayerCard` passes it for someone else's record, so their paid skin is not drawn: the rules keep what they
+  own private, and an `equipped` value is anyone's to write. This is the one-line edit in that function. The other
+  is `applyLoadout`.
+- **No logout hook.** An auth-state listener detaches the entitlement listener when the account changes. The
+  mirror `pi_ent_v1` is removed together with the profile mirror, in `forgetLocalProfile`. A saved account's mirror
+  outlives sign-out on purpose (THE CACHED LOGIN), and the entitlement copy is keyed to its uid.
+- **No `loadLeaderboard` hook.** `lbRows` and `laneRow` ask for the badge read (at most once a minute) and mark rows
+  when it lands. The player card shows "◆ SUPPORTER · since …", as the Terms promise.
+- **The return banner** for a browser nobody is signed in to has its own element, `#buy-auth`, beside the
+  challenge link's `#cl-auth`, so neither section paints over the other.
+- **The pending marker carries the uid**, so another account on the same device never sees "unlocked".
+  `_buy_ok` is counted where the "unlocked" toast fires.
+- **Exhibition rounds.** "Plain" is judged by calling `bntyArm()` and reading `bntyRound.ok`: § 42's own predicate,
+  not a copy that could drift. The tour and the old onboarding run are excluded too. A pause-menu RESTART stays an
+  exhibition. The banner reuses the chaos banner's slot. The anchor holds the clock through `_clockSkip` on missions
+  without a clock door. `PLAY_MODES.exhib` is added only where the aisle is on, so the dossier is unchanged
+  elsewhere.
+- **Refused reads** (the rules not pasted yet) of `shop/ent`, `shop/cfg` and `shop/badge` are not retried on every
+  hub visit. Restore asks again.
+- **Settings → Purchases** shows each order's PaymentIntent id (`pi_…`) as its reference, which can be searched for
+  directly in Stripe's Dashboard.
+- **Not built** (both optional in § 9.8): the Dossier line and the tour's ARC line.
+- **Version:** v84, unchanged, because `main` is still at v83 (§ 9.10).
+
 ---
 
 ## 10. Security and privacy
@@ -758,6 +795,10 @@ What ran here: the **Auth and Database emulators**, the Worker's own bundle in *
 tests against your file, and Chromium for the service worker and the legal pages. Stripe's API can't be called without keys, so session creation is tested against a fake that
 asserts the exact parameters in § 7.1.
 
+**Phase 2** added the game itself to that: **17 browser cases in Chromium** drive the real page against the same
+emulators and the Worker in workerd. They cover every gate and state in § 9.3–9.7 and every row of the fail-safe
+matrix (§ 9.9). They also show the market with the flag off is what `main` draws (TESTING.md, Phase 2).
+
 ---
 
 ## 14. Open questions: answered at Gate 0
@@ -789,6 +830,6 @@ The answers are kept here, next to the questions they settle.
 | Phase | Builds | Verified by | Gate asks you for |
 |---|---|---|---|
 | **0** ✅ | `DESIGN.md`, `TESTING.md` | reading the code; npm/Java/Node checks; Stripe and Google docs | the answers in § 14 and the rules file: **received** |
-| **1** ✅ (this) | `worker/` (the Cloudflare Worker: handlers, catalogue, REST clients, tests; it was `functions/` until Gate 1), `database.rules.json`, `firebase.json`, `.firebaserc`, `.gitignore`, `scripts/seed-products.js`, `scripts/catalog-parity.js`, `scripts/create-webhook-endpoint.js`, `legal/*.html` drafts, `RUNBOOK.md`; moved forward from Phase 2: the `sw.js` navigation fix and the v84 stamps | 67 unit tests; 63 more against the Auth and Database emulators, your rules file included; 9 end-to-end tests of the real bundle in Cloudflare's local runtime; the service worker and legal pages in Chromium; secret greps | the RUNBOOK: published rules, a service-account key, the Worker deployed and its address, test-mode seeding, the webhook. Also the business name and effective date for the legal pages. |
-| **2** | `app.js § 46` and hooks, `index.html`, `style.css § 46`, `sw.js` `BYPASS` and the stamps (v84, or v85 if this branch has reached `main`; § 9.10) | Playwright against the Auth, Database and Functions emulators (buy-flow states, offline, guest, a flag-off screenshot diff of the market against `main`); reasoning where Stripe is needed | your manual test-mode run (test card `4242 4242 4242 4242`, refund in the Dashboard → item disappears) |
+| **1** ✅ | `worker/` (the Cloudflare Worker: handlers, catalogue, REST clients, tests; it was `functions/` until Gate 1), `database.rules.json`, `firebase.json`, `.firebaserc`, `.gitignore`, `scripts/seed-products.js`, `scripts/catalog-parity.js`, `scripts/create-webhook-endpoint.js`, `legal/*.html` drafts, `RUNBOOK.md`; moved forward from Phase 2: the `sw.js` navigation fix and the v84 stamps | 67 unit tests; 63 more against the Auth and Database emulators, your rules file included; 9 end-to-end tests of the real bundle in Cloudflare's local runtime; the service worker and legal pages in Chromium; secret greps | the RUNBOOK: published rules, a service-account key, the Worker deployed and its address, test-mode seeding, the webhook. Also the business name and effective date for the legal pages. |
+| **2** ✅ | `app.js § 46` and two one-line edits, `index.html`, `style.css § 46`, `sw.js` `BYPASS`; still v84 (§ 9.10, § 9.11) | 17 Playwright cases in Chromium against the Auth and Database emulators and the Worker in workerd: every buy-flow state, the way back, refunds, Restore, the ◆, exhibitions, the fail-safe matrix, a phone layout, and a flag-off comparison of the market against `main` (layout and card text; the background is animated, so not pixels). Plus the 67 / 130 / 9 suites and parity. | your manual test-mode run (RUNBOOK § 9: test card `4242 4242 4242 4242`, a refund in the Dashboard → the item disappears), and whether to merge for the beta |
 | **3** | go-live checklist, rollback, `OPERATIONS.md`, `scripts/purge-test-grants.js`, reconcile script | dry runs against the emulator | live secrets, live seeding, the flag flip, a real purchase and refund |

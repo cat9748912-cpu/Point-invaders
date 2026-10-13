@@ -1,6 +1,8 @@
 # Runbook: putting the Restricted shelf's server online
 
-**Gate 1. Everything here is Stripe TEST mode.** Live mode is Phase 3 and has its own checklist.
+**Gates 1 and 2. Everything here is Stripe TEST mode.** Live mode is Phase 3 and has its own checklist.
+Steps 0–8 put the server online (Gate 1, done). **Step 9 is Gate 2:** trying the game's 🔐 Restricted aisle with
+Stripe's test card.
 The server is a **Cloudflare Worker on the free plan**: no card and no Firebase Blaze plan. You run these steps
 on your own computer; nothing in this repository can deploy by itself.
 
@@ -248,6 +250,69 @@ Never send a key, the signing secret, the JSON key file, or a screenshot that sh
 
 ---
 
+## 9. Gate 2: buy something with Stripe's test card
+
+This runs the new game on **your own computer**, against your Worker and Stripe's sandbox. **Nothing is
+charged**: a sandbox only takes test cards. It uses your **real** Firebase database, so sign in with your own
+account (a new account would appear on the leaderboard). About 15 minutes.
+
+1. **Get the new version.** Download the ZIP again from the link in step 0 and unzip it. Open the inner folder:
+   the one with `index.html` in it, not `worker`. Click the address bar, type `cmd`, and press Enter.
+2. **Start the game on your computer:**
+   ```
+   npx http-server -p 8080 -c-1
+   ```
+   The first time, it asks `Ok to proceed? (y)`: type `y` and press Enter. It shows `Available on:` and some
+   addresses. **Leave this window open** while you test.
+3. **Open the game with the shop switched on.** In Chrome or Edge, go to:
+   ```
+   http://localhost:8080/?shop=beta
+   ```
+   Use `localhost`, not `127.0.0.1`. The `?shop=beta` part switches the aisle on for this browser only; the
+   address bar drops it straight away. Sign in with your account.
+4. **Find the aisle.** Hub → **🛒 Black Market** → **🔐 Restricted** (the last tab). You should see nine items,
+   each with a price.
+5. **Buy one.** Press **BUY · $1.99** on **Aurora**, tick the age box, and press **CONTINUE · $1.99**. You should land on
+   Stripe's checkout page, marked as a test or sandbox.
+   - **"📡 Couldn't reach checkout. Nothing was charged."** instead? Managed Payments is probably not switched
+     on in your sandbox. In Stripe, still in the sandbox: **Settings → Managed Payments**. Switch it on and
+     accept its terms if the page lets you, then press CONTINUE again. If it can't be switched on yet (the
+     review), open Command Prompt in the **`worker` folder you deployed from at Gate 1** and run:
+     ```
+     npx wrangler deploy --var MANAGED_PAYMENTS:false
+     ```
+     Your sandbox checkout then runs without Managed Payments (no tax line) while you test. Put it back after
+     Gate 2 with `npx wrangler deploy` in the same folder.
+6. **Pay with the test card.** Card number `4242 4242 4242 4242`, any future date (`12/34`), any three digits,
+   any name. If it asks for an email or a phone number, use your own. Press **Pay**.
+7. **Come back.** Stripe sends you back to the game. You should see **"🔐 Confirming your purchase…"**, then,
+   within a few seconds, **"✅ Aurora unlocked — thank you!"**. In the Black Market, Aurora now says **🔐 OWNED**.
+   Press **EQUIP**: the whole game turns mint green.
+8. **The receipt in the game.** ⚙️ Settings → **🔐 PURCHASES**: the order shows **✅ PAID**, with a reference
+   starting `pi_`.
+9. **Refund it.** In Stripe (sandbox): **Transactions** → the $1.99 payment → **Refund payment** → the full
+   amount → **Refund**. Within a few seconds the game's colour goes back to cyan, Aurora says **BUY** again,
+   and Settings → Purchases says **↩️ REFUNDED**.
+10. **If you have time** (all optional):
+    - **The Supporter Pass:** buy it the same way. A gold ◆ appears beside your name on the leaderboard (allow a
+      minute), and the **Patron** colour unlocks.
+    - **An exhibition:** buy **Aegis Field**, then press **🎟️ ARM FOR NEXT ROUND** on its card and play any
+      mission from the grid. The round says **EXHIBITION**; crashes are absorbed; at the end a card shows your
+      score **NOT BANKED**. Your points, credits and XP don't move.
+    - **Cancelling:** press BUY → CONTINUE, then on Stripe's page press the back arrow (←). The game says
+      **"Checkout cancelled. Nothing was charged."**
+11. **When you're done,** close the Command Prompt window from step 2.
+
+**Send me:**
+1. Did Stripe's page open at step 5, and did you need the `MANAGED_PAYMENTS:false` line?
+2. Did "unlocked" appear at step 7, and did the refund take the colour away at step 9?
+3. Anything that looked wrong. A screenshot is fine, as long as it shows no key.
+4. Whether you want the **beta on the real site**: that means merging this branch to `main` (see the last
+   section). Players see nothing unless they open the site with `?shop=beta`, and only test cards work until
+   Phase 3. It's also the only way to try the phone apps' way back from Stripe.
+
+---
+
 ## Troubleshooting
 
 | What you see | Why | Fix |
@@ -261,6 +326,10 @@ Never send a key, the signing secret, the JSON key file, or a screenshot that sh
 | webhook deliveries → **400** | the signing secret doesn't match the endpoint | step 6 again (or roll the secret in Stripe and `secret put` it) |
 | webhook → `{"ignored":"mode"}` | a live key with a test endpoint, or the reverse | use the same mode for both |
 | a checkout later says `unpriced` | products not seeded in this mode | step 4 |
+| step 9: no 🔐 Restricted tab | the shop isn't switched on in this browser | open `http://localhost:8080/?shop=beta` again |
+| step 9: the aisle says *"Your purchases can't be read from here right now"* | the database rules from step 1 aren't published | step 1, then reload |
+| step 9: "Still processing…" after paying, for more than a minute | Stripe's notification isn't reaching the Worker | Stripe → **Workbench → Webhooks** → your endpoint: the latest delivery should say 200. Then ⚙️ Settings → **🔄 RESTORE PURCHASES**. |
+| step 9: `EADDRINUSE` at step 2 | something else uses port 8080 | `npx http-server -p 8081 -c-1`, and use `:8081` in the address |
 
 ## Undo
 
@@ -281,12 +350,14 @@ days.
 
 ## About merging this branch to `main`
 
-Merging now is **safe for players**. The arcade is unchanged apart from the service-worker fix (v84), which keeps
-the new `legal/` pages and any 404 out of the offline copy of the game. Merging would also:
+Merging is the **beta** (D10), and it is **safe for players**: with the flag off, the arcade draws exactly what
+`main` draws today (TESTING.md, Phase 2, case 1). The aisle appears only in a browser that opened the site with
+`?shop=beta`, and only Stripe's test cards work until Phase 3 switches to live keys. Merging also:
 
-- publish the three **draft** legal pages, each with a DRAFT banner. Do this if Stripe's review asks to see your
-  terms, refund policy and privacy policy.
-- make `worker/`, `scripts/`, `docs/` and the rules file readable at `pointinvaders.com/…`, as agreed at Gate 0.
+- ships v84 to every player: the service-worker fix, which keeps the new `legal/` pages and any 404 out of the
+  offline copy of the game, and the aisle's code, switched off;
+- publishes the three **draft** legal pages, each with a DRAFT banner (Stripe's review may want to see them);
+- makes `worker/`, `scripts/`, `docs/` and the rules file readable at `pointinvaders.com/…`, as agreed at Gate 0.
   None of them contains a secret.
 
-If nothing needs the pages live yet, waiting for Gate 2 is just as good. If you do merge now, Phase 2 moves to v85.
+Your call, after step 9. I can open the pull request if you'd like.
