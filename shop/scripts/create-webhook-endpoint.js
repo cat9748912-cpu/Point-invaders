@@ -10,7 +10,7 @@
 // The endpoint's signing secret is shown only once, when it is created. With
 // --apply this prints that secret ALONE on stdout, with no newline, so it can
 // go straight into the Worker's secrets without ever appearing on screen. From
-// the worker/ folder, with a key that may create webhook endpoints set as
+// the shop/worker folder, with a key that may create webhook endpoints set as
 // STRIPE_SECRET_KEY:
 //
 //   node ../scripts/create-webhook-endpoint.js https://…workers.dev/webhook            # DRY RUN: says what it would do

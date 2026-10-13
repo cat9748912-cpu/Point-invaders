@@ -17,7 +17,7 @@
 // (transfer_lookup_key), and the old one is archived. Buyers with a checkout
 // page already open finish at the old price; everyone after sees the new one.
 //
-// Usage (from the repository root, or from worker/ as ../scripts/…, after `npm ci` in worker/):
+// Usage (from shop/, or from shop/worker as ../scripts/…, after `npm ci` in shop/worker):
 //   read -rs STRIPE_SECRET_KEY && export STRIPE_SECRET_KEY        # macOS/Linux: paste the key; not echoed, not in history
 //   set /p STRIPE_SECRET_KEY=Paste the key:                       # Windows Command Prompt (shown while pasted, not saved)
 //   node scripts/seed-products.js                  # DRY RUN: prints what it would do, changes nothing

@@ -3,7 +3,8 @@
 **Design: approved at Gate 0 (2026-10-12). Phase 1 (server, rules, legal drafts) built; at Gate 1 you couldn't
 use Firebase's Blaze plan, so the server moved from Cloud Functions to a Cloudflare Worker on the free plan
 (D2, § 2 item 18), which you deployed. Phase 2 (the client, § 9) built and tested in Chromium (2026-10-13),
-awaiting Gate 2. Where the build differs from § 9, § 9.11 says so.**
+and merged into `main` the same day at your request: a beta with the aisle switched off. Gate 2's manual run is
+still to come. Where the build differs from § 9, § 9.11 says so.**
 Version tag `v84`, new section `§ 46` (the next free numbers: `§ 45 · v80` is the last section,
 v81–v83 were fixes without sections, and § 41 was retired in v81).
 Audited against commit `94571c2` on branch `claude/stoic-cori-irbsqk`.
@@ -12,6 +13,10 @@ Companion files:
 - [`TESTING.md`](TESTING.md): for every fact in the brief and every test run, how it was checked and what
   was found.
 - [`RUNBOOK.md`](RUNBOOK.md): the deploy steps.
+
+**Paths.** Since 2026-10-13 everything for the shop is in the repository's `shop/` folder, so `worker/…`,
+`scripts/…`, `database.rules.json` and `firebase.json` below are inside `shop/`. The game's own files
+(`app.js`, `index.html`, `style.css`, `sw.js`, `legal/`) are at the top of the repository, as before.
 
 ---
 

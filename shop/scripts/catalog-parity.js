@@ -24,8 +24,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const ROOT = path.join(__dirname, '..');
-const catalog = require(path.join(ROOT, 'worker', 'src', 'catalog.js'));
+const SHOP = path.join(__dirname, '..');                  // shop/
+const ROOT = path.join(SHOP, '..');                       // the repository, where the game's app.js lives
+const catalog = require(path.join(SHOP, 'worker', 'src', 'catalog.js'));
 
 const BEGIN = '// @shop-catalogue:begin', END = '// @shop-catalogue:end';
 

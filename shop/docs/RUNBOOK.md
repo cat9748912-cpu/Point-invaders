@@ -6,6 +6,11 @@ Stripe's test card.
 The server is a **Cloudflare Worker on the free plan**: no card and no Firebase Blaze plan. You run these steps
 on your own computer; nothing in this repository can deploy by itself.
 
+**Where things are (since 2026-10-13).** Everything for the shop is in the repository's **`shop`** folder: the
+server (`shop/worker`), the scripts (`shop/scripts`), these documents (`shop/docs`) and the rules file. The game
+itself stays at the top. If you downloaded the code before this date, your copy has `worker` at the top instead;
+it still works for every command below.
+
 Allow about 45 minutes. Each step says what you should see. The commands are for **Windows Command Prompt**; where
 a Mac or Linux terminal needs something different, that is given too.
 
@@ -21,14 +26,12 @@ a Mac or Linux terminal needs something different, that is given too.
 - **A Stripe account** for your Singapore business ([dashboard.stripe.com](https://dashboard.stripe.com)).
 - **Owner access** to the Firebase project `neal-with-roblox`. The free Spark plan is fine.
 
-**Get the code.** Open
-[the branch on GitHub](https://github.com/cat9748912-cpu/Point-invaders/tree/claude/stoic-cori-irbsqk), click the
-green **Code** button, then **Download ZIP**, and unzip it. If you downloaded it before the server moved to
-Cloudflare, download it again: the server is now in a folder called `worker`.
+**Get the code.** Open [the repository on GitHub](https://github.com/cat9748912-cpu/Point-invaders), click the
+green **Code** button, then **Download ZIP**, and unzip it.
 
 **Open Command Prompt in the right place.** In File Explorer, open the unzipped folder, then the folder of the same
-name inside it (you should see `worker`, `scripts` and `docs`). Click the address bar, type `cmd`, and press
-Enter. Then:
+name inside it, then **`shop`** (you should see `worker`, `scripts` and `docs`). Click the address bar, type
+`cmd`, and press Enter. Then:
 
 ```
 cd worker
@@ -36,7 +39,7 @@ npm ci --omit=dev
 ```
 
 That downloads Cloudflare's tool (wrangler) and Stripe's library, which the setup scripts use, in a minute or two.
-Warnings are fine. **Every command below runs in this `worker` folder.**
+Warnings are fine. **Every command below runs in this `worker` folder** (`shop\worker`).
 
 *Optional: run the tests yourself.* Run `npm ci` without `--omit=dev`, then `npm test` (67 tests). The emulator
 suites `npm run test:emu` (130) and `npm run test:e2e` (9) also need Java 21 and `npm install -g firebase-tools`.
@@ -49,7 +52,7 @@ suites `npm run test:emu` (130) and `npm run test:e2e` (9) also need Java 21 and
 
 1. Firebase console → **Realtime Database** → **Rules**.
 2. **If you've changed your rules there since you pasted them to me, stop and tell me first.**
-3. Open `database.rules.json` (in the unzipped folder) with **Notepad**, then press **Ctrl+A** and **Ctrl+C**.
+3. Open `database.rules.json` (in the `shop` folder) with **Notepad**, then press **Ctrl+A** and **Ctrl+C**.
 4. In the Rules editor press **Ctrl+A**, then **Ctrl+V**, then click **Publish**.
 5. Paste the same text into your own master copy, `_firebase/database.rules.json`, and save it.
 
@@ -252,28 +255,21 @@ Never send a key, the signing secret, the JSON key file, or a screenshot that sh
 
 ## 9. Gate 2: buy something with Stripe's test card
 
-This runs the new game on **your own computer**, against your Worker and Stripe's sandbox. **Nothing is
-charged**: a sandbox only takes test cards. It uses your **real** Firebase database, so sign in with your own
-account (a new account would appear on the leaderboard). About 15 minutes.
+The game on **pointinvaders.com** has the 🔐 Restricted aisle since 2026-10-13, switched off for everyone. This
+switches it on for your browser and buys something with your Worker and Stripe's sandbox. **Nothing is charged**:
+a sandbox only takes test cards. It uses your **real** database, so sign in with your own account. About 15
+minutes, and you don't need Command Prompt unless step 3 sends you there.
 
-1. **Get the new version.** Download the ZIP again from the link in step 0 and unzip it. Open the inner folder:
-   the one with `index.html` in it, not `worker`. Click the address bar, type `cmd`, and press Enter.
-2. **Start the game on your computer:**
+1. **Open the game with the shop switched on.** In Chrome or Edge, go to:
    ```
-   npx http-server -p 8080 -c-1
+   https://pointinvaders.com/?shop=beta
    ```
-   The first time, it asks `Ok to proceed? (y)`: type `y` and press Enter. It shows `Available on:` and some
-   addresses. **Leave this window open** while you test.
-3. **Open the game with the shop switched on.** In Chrome or Edge, go to:
-   ```
-   http://localhost:8080/?shop=beta
-   ```
-   Use `localhost`, not `127.0.0.1`. The `?shop=beta` part switches the aisle on for this browser only; the
-   address bar drops it straight away. Sign in with your account.
-4. **Find the aisle.** Hub → **🛒 Black Market** → **🔐 Restricted** (the last tab). You should see nine items,
-   each with a price.
-5. **Buy one.** Press **BUY · $1.99** on **Aurora**, tick the age box, and press **CONTINUE · $1.99**. You should land on
-   Stripe's checkout page, marked as a test or sandbox.
+   The `?shop=beta` part switches the aisle on for this browser only; the address bar drops it straight away.
+   (`?shop=off` switches it off again.) Sign in with your account.
+2. **Find the aisle.** Hub → **🛒 Black Market** → **🔐 Restricted** (the last tab). You should see nine items,
+   each with a price. No such tab? Reload the page once: the new version can take a minute to arrive.
+3. **Buy one.** Press **BUY · $1.99** on **Aurora**, tick the age box, and press **CONTINUE · $1.99**. You should
+   land on Stripe's checkout page, marked as a test or sandbox.
    - **"📡 Couldn't reach checkout. Nothing was charged."** instead? Managed Payments is probably not switched
      on in your sandbox. In Stripe, still in the sandbox: **Settings → Managed Payments**. Switch it on and
      accept its terms if the page lets you, then press CONTINUE again. If it can't be switched on yet (the
@@ -283,17 +279,17 @@ account (a new account would appear on the leaderboard). About 15 minutes.
      ```
      Your sandbox checkout then runs without Managed Payments (no tax line) while you test. Put it back after
      Gate 2 with `npx wrangler deploy` in the same folder.
-6. **Pay with the test card.** Card number `4242 4242 4242 4242`, any future date (`12/34`), any three digits,
+4. **Pay with the test card.** Card number `4242 4242 4242 4242`, any future date (`12/34`), any three digits,
    any name. If it asks for an email or a phone number, use your own. Press **Pay**.
-7. **Come back.** Stripe sends you back to the game. You should see **"🔐 Confirming your purchase…"**, then,
+5. **Come back.** Stripe sends you back to the game. You should see **"🔐 Confirming your purchase…"**, then,
    within a few seconds, **"✅ Aurora unlocked — thank you!"**. In the Black Market, Aurora now says **🔐 OWNED**.
    Press **EQUIP**: the whole game turns mint green.
-8. **The receipt in the game.** ⚙️ Settings → **🔐 PURCHASES**: the order shows **✅ PAID**, with a reference
+6. **The receipt in the game.** ⚙️ Settings → **🔐 PURCHASES**: the order shows **✅ PAID**, with a reference
    starting `pi_`.
-9. **Refund it.** In Stripe (sandbox): **Transactions** → the $1.99 payment → **Refund payment** → the full
+7. **Refund it.** In Stripe (sandbox): **Transactions** → the $1.99 payment → **Refund payment** → the full
    amount → **Refund**. Within a few seconds the game's colour goes back to cyan, Aurora says **BUY** again,
    and Settings → Purchases says **↩️ REFUNDED**.
-10. **If you have time** (all optional):
+8. **If you have time** (all optional):
     - **The Supporter Pass:** buy it the same way. A gold ◆ appears beside your name on the leaderboard (allow a
       minute), and the **Patron** colour unlocks.
     - **An exhibition:** buy **Aegis Field**, then press **🎟️ ARM FOR NEXT ROUND** on its card and play any
@@ -301,15 +297,15 @@ account (a new account would appear on the leaderboard). About 15 minutes.
       score **NOT BANKED**. Your points, credits and XP don't move.
     - **Cancelling:** press BUY → CONTINUE, then on Stripe's page press the back arrow (←). The game says
       **"Checkout cancelled. Nothing was charged."**
-11. **When you're done,** close the Command Prompt window from step 2.
+    - **Your phone:** open `https://pointinvaders.com/?shop=beta` on it and buy something cheap. If the game is
+      on your home screen, try it from there too: that is the "installed app" way back from Stripe, which only a
+      real phone can test.
 
 **Send me:**
-1. Did Stripe's page open at step 5, and did you need the `MANAGED_PAYMENTS:false` line?
-2. Did "unlocked" appear at step 7, and did the refund take the colour away at step 9?
-3. Anything that looked wrong. A screenshot is fine, as long as it shows no key.
-4. Whether you want the **beta on the real site**: that means merging this branch to `main` (see the last
-   section). Players see nothing unless they open the site with `?shop=beta`, and only test cards work until
-   Phase 3. It's also the only way to try the phone apps' way back from Stripe.
+1. Did Stripe's page open at step 3, and did you need the `MANAGED_PAYMENTS:false` line?
+2. Did "unlocked" appear at step 5, and did the refund take the colour away at step 7?
+3. If you tried your phone: which phone, from the browser or the home screen, and did "unlocked" appear?
+4. Anything that looked wrong. A screenshot is fine, as long as it shows no key.
 
 ---
 
@@ -326,10 +322,9 @@ account (a new account would appear on the leaderboard). About 15 minutes.
 | webhook deliveries → **400** | the signing secret doesn't match the endpoint | step 6 again (or roll the secret in Stripe and `secret put` it) |
 | webhook → `{"ignored":"mode"}` | a live key with a test endpoint, or the reverse | use the same mode for both |
 | a checkout later says `unpriced` | products not seeded in this mode | step 4 |
-| step 9: no 🔐 Restricted tab | the shop isn't switched on in this browser | open `http://localhost:8080/?shop=beta` again |
+| step 9: no 🔐 Restricted tab | the shop isn't switched on in this browser, or the page is the old version | open `https://pointinvaders.com/?shop=beta` again, and reload once |
 | step 9: the aisle says *"Your purchases can't be read from here right now"* | the database rules from step 1 aren't published | step 1, then reload |
 | step 9: "Still processing…" after paying, for more than a minute | Stripe's notification isn't reaching the Worker | Stripe → **Workbench → Webhooks** → your endpoint: the latest delivery should say 200. Then ⚙️ Settings → **🔄 RESTORE PURCHASES**. |
-| step 9: `EADDRINUSE` at step 2 | something else uses port 8080 | `npx http-server -p 8081 -c-1`, and use `:8081` in the address |
 
 ## Undo
 
@@ -348,16 +343,14 @@ the free Spark plan. Stripe charges per sale, nothing else. If the daily limit w
 stop answering until the next day and the game would carry on without it; Stripe retries its webhooks for three
 days.
 
-## About merging this branch to `main`
+## The beta on the real site
 
-Merging is the **beta** (D10), and it is **safe for players**: with the flag off, the arcade draws exactly what
-`main` draws today (TESTING.md, Phase 2, case 1). The aisle appears only in a browser that opened the site with
-`?shop=beta`, and only Stripe's test cards work until Phase 3 switches to live keys. Merging also:
+The branch was merged into `main` on **2026-10-13**, so pointinvaders.com runs v84: the service-worker fix, and
+the 🔐 Restricted aisle, **switched off**. Players see what they saw before. The aisle appears only in a
+browser that opened the site with `?shop=beta`, and only Stripe's test cards work until Phase 3 switches to live
+keys (and sets `SHOP_LIVE` in `app.js`).
 
-- ships v84 to every player: the service-worker fix, which keeps the new `legal/` pages and any 404 out of the
-  offline copy of the game, and the aisle's code, switched off;
-- publishes the three **draft** legal pages, each with a DRAFT banner (Stripe's review may want to see them);
-- makes `worker/`, `scripts/`, `docs/` and the rules file readable at `pointinvaders.com/…`, as agreed at Gate 0.
-  None of them contains a secret.
-
-Your call, after step 9. I can open the pull request if you'd like.
+- The three **draft** legal pages are public now, each with its DRAFT banner, at `pointinvaders.com/legal/…`.
+- `shop/` (the server's code, the scripts, these documents and the rules file) is readable at
+  `pointinvaders.com/shop/…`, as agreed at Gate 0. None of it contains a secret.
+- **To close the shop at any time:** the kill switch in **Undo** above. Owned items keep working.

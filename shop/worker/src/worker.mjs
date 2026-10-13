@@ -7,8 +7,8 @@
 //   GET  /health     { ok, live, db } for the runbook's smoke test
 //
 // It is the only writer of entitlements (shop/* in the Realtime Database). The
-// design, the data model and the reasons are in docs/monetisation/DESIGN.md;
-// the deploy steps are in docs/monetisation/RUNBOOK.md.
+// design, the data model and the reasons are in shop/docs/DESIGN.md;
+// the deploy steps are in shop/docs/RUNBOOK.md.
 //
 // Secrets (`npx wrangler secret put <NAME>`, never in this repository):
 //   STRIPE_SECRET_KEY         a restricted key (rk_test_… / rk_live_…); its prefix

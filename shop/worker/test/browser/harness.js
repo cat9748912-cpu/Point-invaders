@@ -22,7 +22,8 @@ const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 const { DB_HOST, AUTH_HOST, PROJECT } = require('../helpers/emu');
 
-const ROOT = path.join(__dirname, '..', '..', '..');
+const ROOT = path.join(__dirname, '..', '..', '..', '..');          // the repository: the site lives at its top
+const SHOP_DIR = path.join(__dirname, '..', '..', '..');              // shop/: the rules file
 const WORKER_DIR = path.join(__dirname, '..', '..');
 const VENDOR_DIR = path.join(__dirname, '.vendor');
 const SDK = '9.23.0';
@@ -134,11 +135,11 @@ async function startWorker(providerPort){
 
 /** The database rules this repository keeps (the Console's, plus the `shop` block), on the page's namespace. */
 async function putRules(rules){
-  const text = rules ? JSON.stringify(rules) : fs.readFileSync(path.join(ROOT, 'database.rules.json'), 'utf8');
+  const text = rules ? JSON.stringify(rules) : fs.readFileSync(path.join(SHOP_DIR, 'database.rules.json'), 'utf8');
   const r = await fetch(`http://${DB_HOST}/.settings/rules.json?ns=${NS}`, { method: 'PUT', body: text, headers: { Authorization: 'Bearer owner' } });
   if(!r.ok) throw new Error(`rules refused: ${r.status} ${await r.text()}`);
 }
-function repoRules(){ return JSON.parse(fs.readFileSync(path.join(ROOT, 'database.rules.json'), 'utf8')); }
+function repoRules(){ return JSON.parse(fs.readFileSync(path.join(SHOP_DIR, 'database.rules.json'), 'utf8')); }
 
 /**
  * A fresh browser context on the site, with the page's outside world wired as above.

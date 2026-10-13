@@ -73276,7 +73276,7 @@ addEventListener('orientationchange', () => { if(tut) tut.key = ''; });
 // earned. This aisle sells a handful of one-time unlocks for real money, and
 // every part of the money happens somewhere else:
 //
-//  · THE SERVER (worker/, a Cloudflare Worker) is the only thing that grants.
+//  · THE SERVER (shop/worker, a Cloudflare Worker) is the only thing that grants.
 //    This page sends it { sku } and the player's ID token and is handed a URL
 //    on the payment provider's own site — location.assign(), and the card is
 //    typed THERE. No card field and no provider script on any page of ours.
@@ -73306,8 +73306,8 @@ addEventListener('orientationchange', () => { if(tut) tut.key = ''; });
 // leave the address bar at once, the way clBoot() and labBoot() take theirs.
 // shopOpen() = the flag AND the kill switch: it closes BUYING only.
 //
-// THE CATALOGUE. SHOP_SKUS is a copy of worker/src/catalog.js between two
-// marker lines that scripts/catalog-parity.js reads: every sku's name, kind,
+// THE CATALOGUE. SHOP_SKUS is a copy of shop/worker/src/catalog.js between two
+// marker lines that shop/scripts/catalog-parity.js reads: every sku's name, kind,
 // shelf, price label and what it unlocks must agree with the server's, or the
 // script fails. The price here is a LABEL — the provider charges what the
 // server looks up, by sku, and nothing this page says can change it.

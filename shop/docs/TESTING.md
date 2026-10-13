@@ -7,6 +7,9 @@ verification **by reading** (the code or a document was read).
 Legend: ✅ holds · ⚠️ holds, with a difference the design accounts for · ❓ cannot be confirmed from here
 (who confirms it, and when, is given).
 
+**Paths.** Since 2026-10-13 everything for the shop is in the repository's `shop/` folder: `worker/…`,
+`scripts/…` and the rules file named below are inside it. The game's files are at the top of the repository.
+
 ---
 
 ## Phase 0: audit (2026-10-12, commit `94571c2`)
@@ -728,5 +731,34 @@ Both greps ran on each commit's staged diff: `292a466` (the client), `733a985` (
 documentation commit that carries this section. Neither the literal list nor the strict pattern matched anything
 in any of them (strict exit 1). The browser suite takes the e2e suite's
 fake key and signing secret from the git-ignored `worker/.dev.vars`; neither is written in any file.
+
+## Tidy-up and merge (2026-10-13)
+
+You asked to merge and to organise the files.
+
+**The tidy-up.** Everything the shop added that isn't the website moved into one folder, `shop/`, with `git mv`
+(history kept): `worker/`, `scripts/`, `docs/monetisation/` (now `shop/docs/`), `database.rules.json`,
+`firebase.json` and `.firebaserc`. The top of the repository went from 18 entries to 13: the game's own 10,
+plus `.gitignore`, `legal/` and `shop/`. The website files can't move, because GitHub Pages serves them from
+the top, and players' service workers know them by those addresses. `legal/` stays too: Stripe's public details
+and the checkout's consent text link to `pointinvaders.com/legal/…`. New: `shop/README.md`, a map of the
+folder, and a "Repository layout" section in the top-level `README.md`.
+
+Paths fixed for the move: the parity script and the unit test read the game's `app.js` one level further up,
+and the browser harness serves the site from the repository's top and loads the rules from `shop/`. Comments
+naming `docs/monetisation/…` (in `app.js`, the legal pages, the Worker and the scripts) now name `shop/…`.
+`firebase emulators:exec`, run in `shop/worker`, finds `shop/firebase.json` by looking upward.
+
+| Check after the move (execution, in `shop/worker`) | Result |
+|---|---|
+| `node ../scripts/catalog-parity.js` | exit 0, 9 SKUs agree |
+| `npm test` | **67 / 67** |
+| `npm run test:emu` | **130 / 130** |
+| `npm run test:e2e` | **9 / 9** |
+| `npm run test:browser` | **18 / 18** |
+| secret greps on the staged diff | the literal list matched one comment naming key prefixes (`rk_test_… / rk_live_…` in `worker.mjs`); the strict pattern matched nothing |
+
+**The merge.** `main` was still at `94571c2`, an ancestor of the branch, so the merge brought `main` level with
+the branch and conflicted with nothing.
 
 ## Phase 3: go-live (not started)

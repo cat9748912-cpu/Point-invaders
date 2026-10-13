@@ -1,5 +1,5 @@
 'use strict';
-// Writes worker/.dev.vars, where `wrangler dev` reads a Worker's secrets for a
+// Writes shop/worker/.dev.vars, where `wrangler dev` reads a Worker's secrets for a
 // local run: the two the Worker needs against the emulators, with throwaway
 // values. The file is git-ignored (`.dev.vars*`), the key is a test-mode
 // placeholder that no provider would accept, and the webhook secret is only ever
