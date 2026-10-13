@@ -1808,6 +1808,10 @@ function gRelease(){
 let roundClockAdd = null;
 let _clockSkip = 0;
 function registerRoundClock(fn){ roundClockAdd = typeof fn === 'function' ? fn : null; }
+// v85 — Set by a mission whose #g-time counts UP — the seconds you have lasted (Cyber Runner, in 2D, in 3D and
+// in its open world). There is no countdown there to add time to: the dilator used to be spent on it anyway,
+// and "held" the count for three ticks, which only made the run read shorter. Round-scoped like the two above.
+let roundClockUp = false;
 
 // Runs a mission's start() with the clock capture installed. Every path that
 // starts a mission goes through here: prepGame (so solo rounds, Boss Rush and
@@ -1815,6 +1819,7 @@ function registerRoundClock(fn){ roundClockAdd = typeof fn === 'function' ? fn :
 function runMissionStart(fn){
   roundClockAdd = null;
   _clockSkip = 0;
+  roundClockUp = false;
   const real = window.setInterval;
   window.setInterval = function(f, ms, ...rest){
     // Only intervals in the clock band are candidates. Anything faster is a
@@ -1868,6 +1873,7 @@ function stopGame(){
   try{ if(typeof spdStop === 'function') spdStop(); }catch(e){}       // v74 — ⏱️ § 39
   roundClockAdd = null;
   _clockSkip = 0;
+  roundClockUp = false;
   // ⏱️ A countdown still running belongs to the round being torn down — see countdown().
   cancelCountdown();
   // 📊 Still open here means nothing closed it with a result: a quit (§ 23).
@@ -2971,7 +2977,8 @@ const countdown=cb=>{
   clearTimeout(cdTimer);
   const gen=++cdGen;
   ov.classList.add('show');let n=3;
-  const tick=()=>{if(gen!==cdGen)return;nm.className='';nm.textContent=n>0?n:'GO!';void nm.offsetWidth;nm.className='cd-pop';snd(n>0?'countdown':'go');if(n<=0)cdTimer=setTimeout(()=>{if(gen!==cdGen)return;cdTimer=null;ov.classList.remove('show');cb()},700);else{n--;cdTimer=setTimeout(tick,1000)}};
+  chaosBannerPlace();          // v85 — 🌀 the modifier is read on the countdown, not through it (see chaosBannerPlace)
+  const tick=()=>{if(gen!==cdGen)return;nm.className='';nm.textContent=n>0?n:'GO!';void nm.offsetWidth;nm.className='cd-pop';snd(n>0?'countdown':'go');if(n<=0)cdTimer=setTimeout(()=>{if(gen!==cdGen)return;cdTimer=null;ov.classList.remove('show');chaosBannerPlace();cb()},700);else{n--;cdTimer=setTimeout(tick,1000)}};
   tick();
 };
 function cancelCountdown(){
@@ -3221,6 +3228,9 @@ function ensureUserDefaults(raw){
     // Consumables, keyed by shop id → count remaining. A number rather than a
     // list: two Time Dilators are not distinguishable from each other.
     powerups:     { ...(raw.powerups || {}) },
+    // v85 — 🎒 …and the part of each count past the ninth, which only Deep Pockets can hold. The database
+    // holds powerups/<id> to 0…9, so the rest lives here (see kitPatch). powerHeld() adds the two.
+    pockets:      { ...(raw.pockets || {}) },
     // The player's own best on today's seeded run. `day` is the UTC key it was
     // set on, which is the whole reset mechanism — a stale key reads as no run.
     daily:        { day: null, pts: 0, gid: null, ...(raw.daily || {}) }
@@ -4414,11 +4424,15 @@ function showResultsCard(gid,pts,bd,opts){
   const chalRes = opts.internal ? null : settleChallenge(gid, pts, rawTop);
   const chalMult = chalRes ? chalRes.mult : 1;
   const multPts = Math.round(pts * (opts.noBonus ? 1 : tier.pointMult) * perkMult * chaosMult * chipMult * echoMult * chalMult);
+  // v85 — What this round's own bonuses multiplied the tier's award by. saveScore() clamps to the mission's
+  // cap at the best tier TIMES this (maxAwardFor), so the chaos payout and the chip are banked, not just shown.
+  const bonusMult = perkMult * chaosMult * chipMult * echoMult * chalMult;
   // v72 — ⟳ The prestige bonus (§ 37): +2% a reboot to +10%, as its own share with its own row. It lifts
   // an award UP TO maxAwardFor() — the clamp saveScore() applies anyway — and never past it.
   let prGain = 0;
-  try{ if(typeof prBonusPts === 'function') prGain = prBonusPts(gid, opts, multPts) || 0; }catch(e){ prGain = 0; }
-  const finalPts = multPts + prGain;
+  try{ if(typeof prBonusPts === 'function') prGain = prBonusPts(gid, opts, multPts, bonusMult) || 0; }catch(e){ prGain = 0; }
+  // …and the card never shows more than that clamp lets through, so the card and the bank always agree.
+  const finalPts = Math.min(multPts + prGain, maxAwardFor(gid, bonusMult));
   // ♾️ The cap a run is measured against. Ordinarily the mission's own, but an
   // ENDLESS run has no finish line to be a fraction of — it rides the same
   // uncapped lane CYBER ARENA has always used, generalised into one option
@@ -4541,6 +4555,7 @@ function showResultsCard(gid,pts,bd,opts){
   // captured here and travels with it rather than being read back.
   saveScore(gid, finalPts, {
     tier: tier.key,
+    mult: bonusMult,                     // v85 — the clamp's share for this round's own bonuses (maxAwardFor)
     duelWin: !!opts.duelWin,
     botLevel: opts.botLevel || null,
     perfect: !!opts.perfect,
@@ -4620,16 +4635,29 @@ function showResultsCard(gid,pts,bd,opts){
 }
 
 // The highest single award a mission can legitimately pay: its cap times the
-// best tier multiplier. Anything above that never came from a played round.
+// best tier multiplier, times `mult` — what the round's OWN bonuses multiplied
+// it by on top of the tier (showResultsCard's bonusMult). Anything above that
+// never came from a played round.
+// v85 — `mult` is new. The clamp predates the chaos payout and the Overclock
+// Chip, so it threw both away whenever the tier alone already reached the cap:
+// a POINT SURGE on Meltdown printed "Chaos Payout ×2.00" on the card and banked
+// none of it, and the chip's +30% went the same way. MAX_BONUS_MULT bounds
+// what a card can claim (chaos ×2.6 · chip ×1.3 · perk ×1.08 · Echo ×1.1 ·
+// takedown ×1.15 ≈ ×4.6), and no award ever passes the largest one a single
+// write could already carry (Cyber Arena's at Meltdown) — the database rule
+// lets totalPoints rise by at most 200000 a write.
 const MAX_TIER_MULT = Math.max(...Object.values(DIFFICULTY_TIERS).map(t => t.pointMult));
-function maxAwardFor(gid){
-  return Math.ceil((META[gid] ? META[gid].maxPts : 2000) * MAX_TIER_MULT);
+const MAX_BONUS_MULT = 5;
+function maxAwardFor(gid, mult){
+  const bonus = Math.max(1, Math.min(MAX_BONUS_MULT, +mult || 1));
+  const ceiling = Math.ceil(Math.max(...Object.values(META).map(m => +m.maxPts || 0)) * MAX_TIER_MULT);
+  return Math.min(ceiling, Math.ceil((META[gid] ? META[gid].maxPts : 2000) * MAX_TIER_MULT * bonus));
 }
 
 async function saveScore(gid,pts,ctx){
   if(!user) return;
   ctx = ctx || {};
-  const award = Math.max(0, Math.min(parseInt(pts || 0) || 0, maxAwardFor(gid)));
+  const award = Math.max(0, Math.min(parseInt(pts || 0) || 0, maxAwardFor(gid, ctx.mult)));
 
   // 📈 XP is earned by PLAYING, so it is granted here — the one call every
   // finished round makes — rather than inside recordRun(), which never runs on
@@ -6419,10 +6447,11 @@ async function handleShopAction(act, cat, id){
       const held = powerHeld(id);
       if(held >= stackCapFor(item)){ snd('deny'); toast('⚠️ Kit is full.'); return }
       user.credits -= price;
-      user.powerups[id] = held + 1;
-      await saveProfilePatch({ credits:user.credits, ['powerups/'+id]: user.powerups[id] });
+      // v85 — 🎒 the count goes up in two keys (kitPatch): one write carrying a tenth under `powerups` was
+      // refused whole by the rules, credits and all, and a Deep Pockets purchase was gone on the next load.
+      await saveProfilePatch(kitPatch(id, held + 1, { credits:user.credits }));
       snd('purchase');
-      toast(`✅ ${item.emoji} ${item.name} stocked — ${user.powerups[id]} in kit`);
+      toast(`✅ ${item.emoji} ${item.name} stocked — ${powerHeld(id)} in kit`);
       paintPowerKit();
       paintPowerDock();
     } else {
@@ -10698,6 +10727,7 @@ function startRunner(){
   };
 
   gTimer=setInterval(()=>{ if(!isOver){ elapsed++; document.getElementById('g-time').textContent=elapsed; } },1000);
+  roundClockUp=true;                           // v85 — the seconds lasted: nothing for a Time Dilator to add to
 
   // Every row leaves at least one clean lane, so no arrangement is unwinnable.
   // Spacing is measured in DISTANCE, not frames — the gap between rows stays
@@ -16396,17 +16426,26 @@ const chaosLabel = list => (list || chaos.lastStack || [])
 // are filled from the whole stack rather than one entry, because a Meltdown
 // round that armed two and announced one would be lying to the player about
 // what it was doing.
-function chaosAnnounce(mod){
+// v85 — `quiet` relabels the banner in place as the chip it already is, with no fanfare: a modifier going away
+// mid-round (🧯 CHAOS DAMPENER) used to blow the banner back up to full size for three seconds, which pushed
+// the board down under the player's thumb and up again, and replayed the windfall toast over the dampener's.
+function chaosAnnounce(mod, quiet){
   const el = document.getElementById('chaos-banner');
   if(!el) return;
   clearTimeout(chaos.bannerTimer);
   const list = !mod ? [] : (Array.isArray(mod) ? mod.filter(Boolean) : [mod]);
-  if(!list.length){ el.style.display = 'none'; el.className = ''; chaosRerollBtn(null); return; }
+  if(!list.length){ el.style.display = 'none'; el.className = ''; chaosRerollBtn(null); chaosBannerPlace(); return; }
   const allBoon = list.every(c => c.kind === 'boon');
   document.getElementById('chaos-icon').textContent = list.map(c => c.icon).join('');
   document.getElementById('chaos-name').textContent = list.map(c => c.name).join('  +  ');
   document.getElementById('chaos-desc').textContent = list.map(c => c.desc).join(' ');
   el.style.display = 'flex';
+  if(quiet){
+    el.className = 'chip' + (allBoon ? ' chaos-boon' : ' chaos-hazard');
+    el.classList.toggle('chaos-heat', !!((Array.isArray(mod) && mod.heat) || 0));
+    chaosRerollBtn(null);
+    return;
+  }
   // A boon has to LOOK different from the first glance, or the player reads the
   // banner as bad news and plays the round defensively for nothing.
   el.className = 'big' + (allBoon ? ' chaos-boon' : ' chaos-hazard');
@@ -16422,7 +16461,41 @@ function chaosAnnounce(mod){
   // Shrinks to a chip rather than disappearing: mid-round is exactly when a
   // player looks up wondering why the controls feel wrong.
   chaos.bannerTimer = setTimeout(() => el.classList.replace('big', 'chip'), 3200);
+  chaosBannerPlace();
 }
+
+// v85 — 🌀 THE BANNER RIDES THE COUNTDOWN. The banner goes up just before the 3-2-1 so the modifier is read
+// BEFORE the round it changes, and that full-size moment is the only one in which Signal Filter's REROLL is
+// live. But the countdown overlay (#cd-ov) is a body-level layer over every screen, 85% black and blurred, and
+// each screen is a stacking context of its own, so no z-index could lift the banner out from under it: it was
+// read through the blur, the REROLL under it took no clicks, and by the time the overlay lifted the banner had
+// shrunk to the chip, which hides the button. So while the overlay is up the banner is moved INTO it, under
+// the number, and put back where it lives — as the chip — the moment the overlay comes down, before the round
+// lays its board out. Both countdowns call this at each edge; the observer below catches every other way
+// the overlay comes down (a cancelled countdown, a duel torn down mid-count).
+var chaosBannerHome = null;
+function chaosBannerPlace(){
+  const el = document.getElementById('chaos-banner'), ov = document.getElementById('cd-ov');
+  if(!el || !ov) return;
+  if(!chaosBannerHome && el.parentNode !== ov){
+    chaosBannerHome = document.createComment(' chaos banner ');
+    el.parentNode.insertBefore(chaosBannerHome, el);
+  }
+  const up = ov.classList.contains('show') && el.style.display !== 'none';
+  if(up){ if(el.parentNode !== ov) ov.appendChild(el); return; }
+  if(el.parentNode === ov && chaosBannerHome && chaosBannerHome.parentNode){
+    chaosBannerHome.parentNode.insertBefore(el, chaosBannerHome);
+    // The round is about to start: the chip it plays under, now — not up to three seconds into it, which is
+    // where a late REROLL's own timer would have shrunk it, moving the board under the player.
+    if(el.classList.contains('big')){ clearTimeout(chaos.bannerTimer); el.classList.replace('big', 'chip'); }
+  }
+}
+try{
+  const ov = document.getElementById('cd-ov');
+  if(ov && typeof MutationObserver === 'function'){
+    new MutationObserver(() => chaosBannerPlace()).observe(ov, { attributes: true, attributeFilter: ['class'] });
+  }
+}catch(e){ console.warn('Chaos banner placement not wired:', e); }
 
 // 🌳 Signal Filter. The reroll is a control on the BANNER rather than a button
 // somewhere in the hub, because the only moment the choice is live is the one
@@ -16590,7 +16663,7 @@ function chaosDampen(){
   // and stops pretending the handicaps were endured.
   chaos.stack = chaos.lastStack = (chaos.stack || []).filter(c => c.kind !== 'hazard');
   chaos.active = chaos.last = chaos.stack[0] || null;
-  chaosAnnounce(chaos.stack.length ? chaos.stack : null);
+  chaosAnnounce(chaos.stack.length ? chaos.stack : null, true);   // v85 — quietly, as the chip (see chaosAnnounce)
   return hazards.length;
 }
 
@@ -17095,8 +17168,7 @@ function perkDailyGrant(){
   // leaving perkDay unwritten means it is offered again on the next visit,
   // once something has been spent.
   if(item && held >= stackCapFor(item)){ user.perkDay = null; return; }
-  user.powerups['pu-dilator'] = held + 1;
-  saveProfilePatch({ perkDay: today, ['powerups/pu-dilator']: user.powerups['pu-dilator'] });
+  saveProfilePatch(kitPatch('pu-dilator', held + 1, { perkDay: today }));   // v85 — past nine too (kitPatch)
   snd('purchase');
   toast(`⏳ CHRONO RESERVE — a Time Dilator has been added to your kit`, 3000);
   paintPowerKit();
@@ -17154,18 +17226,38 @@ async function buyPerk(id){
 //   🧯 CHAOS DAMPENER is pressed and reaches back into the modifier engine —
 //                     see chaosDampen(), which is written to be reversible for
 //                     exactly this reason.
-const powerHeld = id => (user && user.powerups && +user.powerups[id]) || 0;
+const powerHeld = id => ((user && user.powerups && +user.powerups[id]) || 0) + ((user && user.pockets && +user.pockets[id]) || 0);
+
+// v85 — 🎒 THE KIT AS THE DATABASE KEEPS IT. The rules hold players/<uid>/powerups/<id> to a number from 0 to 9
+// — the shelf's own stack — and a refusal takes the WHOLE update with it, the credits it was bought with
+// included. So with Deep Pockets (eighteen of each) every consumable past the ninth, bought, granted by Chrono
+// Reserve, a Supply Drop or the contracts, was refused by the server and gone on the next load. A count is
+// written in two parts: the first nine under `powerups` (what the rules take, and all an older client reads)
+// and the rest under `pockets`, a key of its own that the rules' players/$uid/$other accepts. Sets the count
+// on `user` and adds the two keys to `patch` (returned, for saveProfilePatch).
+const KIT_RULE_MAX = 9;
+function kitPatch(id, n, patch){
+  n = Math.max(0, Math.floor(+n || 0));
+  const base = Math.min(KIT_RULE_MAX, n), extra = n - base;
+  user.powerups = user.powerups || {};
+  user.pockets = user.pockets || {};
+  user.powerups[id] = base;
+  if(extra) user.pockets[id] = extra; else delete user.pockets[id];
+  patch = patch || {};
+  patch['powerups/' + id] = base;
+  patch['pockets/' + id] = extra || null;
+  return patch;
+}
 
 // Spends one, if there is one. Returns whether it fired, so a caller can use it
 // directly as the condition on a crash.
 function powerConsume(id, label){
   if(spdOn()) return false;                 // v74 — ⏱️ nothing is spent in a speedrun, the shield included (§ 39)
   if(powerHeld(id) <= 0) return false;
-  user.powerups[id] = powerHeld(id) - 1;
-  saveProfilePatch({ ['powerups/' + id]: user.powerups[id] });
+  saveProfilePatch(kitPatch(id, powerHeld(id) - 1));
   const item = findItem('powerups', id);
   snd('shield');
-  toast(`${item ? item.emoji : '⚡'} ${label || (item && item.name) || 'POWER-UP SPENT'} · ${user.powerups[id]} left`, 2200);
+  toast(`${item ? item.emoji : '⚡'} ${label || (item && item.name) || 'POWER-UP SPENT'} · ${powerHeld(id)} left`, 2200);
   flashPowerDock(id);
   paintPowerDock();
   return true;
@@ -17187,8 +17279,7 @@ function grantRandomConsumable(){
   const pool = SHOP_ITEMS.powerups.filter(i => powerHeld(i.id) < stackCapFor(i));
   if(!pool.length){ toast('📦 SUPPLY DROP REFUSED — kit is full', 2600); return null; }
   const item = pool[Math.floor(Math.random() * pool.length)];
-  user.powerups[item.id] = powerHeld(item.id) + 1;
-  saveProfilePatch({ ['powerups/' + item.id]: user.powerups[item.id] });
+  saveProfilePatch(kitPatch(item.id, powerHeld(item.id) + 1));             // v85 — past nine too (kitPatch)
   snd('purchase');
   toast(`📦 SUPPLY DROP — ${item.emoji} ${item.name} added to your kit`, 3000);
   paintPowerKit();
@@ -17264,9 +17355,17 @@ function usePowerUp(id){
   const secs = parseClockText(raw);
   // Nothing to dilate: Flappy and Cyber Arena run on ∞, and a game between
   // rounds shows a dash. Refusing costs nothing; spending on nothing costs 5 CR.
-  if(secs == null){
+  // v85 — …and nor does a clock that counts UP (Cyber Runner's seconds lasted, see roundClockUp).
+  if(secs == null || roundClockUp){
     snd('deny');
-    toast('⏳ No clock to dilate on this mission.', 2400);
+    toast('⏳ No countdown to dilate on this mission.', 2400);
+    return;
+  }
+  // v85 — A clock that has reached zero has already ended the round (its card is on the way): there is
+  // nothing left to add the seconds to, and the dilator used to be spent on it all the same.
+  if(secs <= 0){
+    snd('deny');
+    toast('⏳ Too late — the clock has run out.', 2200);
     return;
   }
   if(!powerConsume('pu-dilator', `+${TIME_DILATOR_SECONDS}s DILATED`)) return;
@@ -19146,8 +19245,12 @@ const MP_KINDS = {
 // Ambiguous glyphs are left out: nobody reads a room code back correctly when
 // it can contain O/0 or I/1.
 const MP_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const mpMakeCode = () => Array.from({length:4}, () =>
-  MP_CODE_CHARS[Math.floor(Math.random()*MP_CODE_CHARS.length)]).join('');
+// v85 — never a leading T: four characters starting with T name a 🏆 tournament (§ 44), which shares this
+// node and its four-character rule.
+const mpMakeCode = () => Array.from({length:4}, (_, i) => {
+  const pool = i ? MP_CODE_CHARS : MP_CODE_CHARS.replace('T', '');
+  return pool[Math.floor(Math.random()*pool.length)];
+}).join('');
 
 const MP_ERR = {
   BAD_CODE:   'A room code is four letters or digits.',
@@ -19159,6 +19262,7 @@ const MP_ERR = {
   // player and the join is refused. Say so, or it reads as a broken join.
   OWN_ROOM:   'That room is already yours — a second tab of the same browser is the same account. Use a different browser, or a private window, for the second player.',
   CODE_BUSY:  'The grid is congested — try again in a moment.',
+  TOURNEY:    'That is a tournament code — join it from the 🏆 TOURNAMENT card.',   // v85 — § 44
   OFFLINE:    'Network link is down — check your connection.',
   NO_DB:      'Realtime Database unavailable — multiplayer is offline.',
   DENIED:     'Database rules are blocking /rooms and /live — see the DATABASE RULES note in the Network Arena section of app.js.'
@@ -19320,6 +19424,9 @@ async function mpJoinRoom(rawCode){
   const snap = await ref.once('value');
   if(!snap.exists()) throw new Error('NO_ROOM');
   const r = snap.val() || {};
+  // v85 — 🏆 A tournament's own record shares this node and its four-character codes (§ 44): it is not a
+  // room anybody sits down in.
+  if(r.tourney) throw new Error('TOURNEY');
   if(r.host === user.uid) throw new Error('OWN_ROOM');
   if((r.status || 'waiting') !== 'waiting') throw new Error('IN_PROGRESS');
   // v79 — 🏆 A tournament match's room (§ 44) is for its two seeded players and nobody else. (Joining
@@ -19607,6 +19714,7 @@ async function mpSpectateRoom(rawCode){
   if(!/^[A-Z0-9]{4}$/.test(code)) throw new Error('BAD_CODE');
   const snap = await db.ref('rooms/' + code).once('value');
   if(!snap.exists()) throw new Error('NO_ROOM');
+  if((snap.val() || {}).tourney) throw new Error('TOURNEY');     // v85 — a bracket, not a duel (§ 44)
 
   mpStopSpectating();
   spec = {
@@ -20053,11 +20161,12 @@ async function mpConnect(btn, work, local){
 function mpCountdown(startAt, go){
   const ov = document.getElementById('cd-ov'), nm = document.getElementById('cd-num');
   ov.classList.add('show');
+  chaosBannerPlace();          // v85 — 🌀 the room's modifier, readable on the countdown (see chaosBannerPlace)
   let shown = null;
   const tick = () => {
-    if(!mp || !mp.inRound){ ov.classList.remove('show'); return; }
+    if(!mp || !mp.inRound){ ov.classList.remove('show'); chaosBannerPlace(); return; }
     const left = startAt - netNow();
-    if(left <= 0){ ov.classList.remove('show'); go(); return; }
+    if(left <= 0){ ov.classList.remove('show'); chaosBannerPlace(); go(); return; }
     const label = left <= 350 ? 'GO!' : String(Math.max(1, Math.min(3, Math.ceil((left-350)/1000))));
     if(label !== shown){
       shown = label;
@@ -24405,7 +24514,7 @@ const PIA_MODELS = {
 // pictures. The renderer uploads them (TEXTURE SETS) and builds the mip chains.
 //   PI_ASSETS[name] = { v: 1, size: 2048, paintRef: 0.35, kappa: 1,
 //                       maps: { base: [mime, b64], nrm: [...], orm: [...], mask: [...], emis?: [...] } }
-const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=84' };                          // set name → chunk file (filled by the v62 splice)
+const PI_ASSET_FILES = { ship62: 'assets/ship62.js?v=85' };                          // set name → chunk file (filled by the v62 splice)
 const piAssetState = Object.create(null);           // set name → { blobs, meta, loading }
 function piAssetChunk(file){
   return new Promise((resolve, reject) => {
@@ -36654,6 +36763,7 @@ P.games.runner = function(){
   });
 
   gTimer = setInterval(() => { if(!over){ elapsed++; document.getElementById('g-time').textContent = elapsed; } }, 1000);
+  roundClockUp = true;                         // v85 — counts up, as in 2D: no countdown for a Time Dilator
 
   // 🧱 A BRICK LAB track (§ 25) — the rows the 2D build reads, the same order.
   const TRACK = (typeof labTrack === 'function') ? labTrack() : null;
@@ -44883,9 +44993,9 @@ function captureLoadout(name){
 
 // The consumable the player holds most of, as a sensible default "lead".
 function loadoutLead(){
-  const held = (user && user.powerups) || {};
   let best = null, n = 0;
-  for(const k in held) if((held[k] || 0) > n){ n = held[k]; best = k; }
+  // v85 — powerHeld(), not user.powerups: past nine a count is two keys (kitPatch).
+  for(const it of SHOP_ITEMS.powerups){ const h = powerHeld(it.id); if(h > n){ n = h; best = it.id; } }
   return best;
 }
 
@@ -59239,6 +59349,7 @@ function owFreeClock(kind, isOver){
   let secs = 0;
   if(el) el.textContent = kind === 'up' ? '0' : '∞';
   if(kind === 'up') gTimer = setInterval(() => { if(isOver && isOver()) return; secs++; if(el) el.textContent = secs; }, 1000);
+  if(kind === 'up' && typeof roundClockUp !== 'undefined') roundClockUp = true;   // v85 — no countdown to dilate
   return { get left(){ return Infinity; }, get secs(){ return secs; }, add(){} };
 }
 
@@ -69804,10 +69915,11 @@ function prBonusRate(gid, opts){
   return Math.min(PR_CAP, n * PR_STEP);
 }
 // What the bonus adds to `base` (the award with every other multiplier in): up to the clamp, never past it.
-function prBonusPts(gid, opts, base){
+// `mult` is the round's own bonuses (v85 — see maxAwardFor), which the clamp makes room for.
+function prBonusPts(gid, opts, base, mult){
   const rate = prBonusRate(gid, opts);
   if(!rate || !(base > 0)) return 0;
-  return Math.max(0, Math.min(Math.round(base * (1 + rate)), maxAwardFor(gid)) - base);
+  return Math.max(0, Math.min(Math.round(base * (1 + rate)), maxAwardFor(gid, mult)) - base);
 }
 function prBonusRow(gid, opts, gain){
   const rate = prBonusRate(gid, opts);
@@ -71969,11 +72081,14 @@ try{
 // the UNCHANGED duel engines, with empty seats filled by droids.
 //
 //  · THE REGISTRY is one record under the existing `rooms` node (no new
-//    top-level node, no rules change): rooms/<TCODE>, where TCODE is 'T' + five
-//    characters. Six characters is on purpose: join-by-code and spectate accept
-//    exactly four (/^[A-Z0-9]{4}$/), and Quick Match only lists rooms with
-//    open:true — which a tournament never sets — so it can be found by none of
-//    them.
+//    top-level node, no rules change): rooms/<TCODE>, where TCODE is 'T' + three
+//    characters. v85: FOUR characters, because the database's rule for rooms is
+//    `$code.length === 4` — the six-character codes v79 shipped with were
+//    refused outright (PERMISSION_DENIED on every Host). A 'T' code is never a
+//    duel room's (mpMakeCode() does not start one with T), and join-by-code and
+//    spectate refuse a tournament record by its `tourney` flag, not its length;
+//    Quick Match only lists rooms with open:true — which a tournament never
+//    sets — so it can be found by none of them.
 //  · SEATS s0…s7 are claimed one LEAF at a time by transaction, the way arena
 //    seats are, so eight arrivals at once cannot share a chair. A closed tab
 //    frees its seat (onDisconnect) while the lobby is open; once the bracket
@@ -72010,7 +72125,7 @@ try{
 //    achievement `tourney-win` reads that skin on the next finished round.
 
 var tourney = null;                   // { code, ref, org, seat, data, playing, timer, … } — null outside one
-var TOURNEY_CODE = /^T[A-Z0-9]{5}$/;
+var TOURNEY_CODE = /^T[A-Z0-9]{3}$/;        // v85 — four characters: the rooms rule (see THE REGISTRY above)
 var TOURNEY_SEATS = ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7'];
 var TOURNEY_PAIRS = [[0, 7], [3, 4], [1, 6], [2, 5]];          // seeds 1v8 · 4v5 · 2v7 · 3v6
 var TOURNEY_FEEDS = { s0: ['q0', 'q1'], s1: ['q2', 'q3'], f: ['s0', 's1'] };
@@ -72060,7 +72175,7 @@ async function tourneyHost(){
   if(mp) await mpLeaveRoom();
   let code = '';
   for(let i = 0; i < 8; i++){
-    const c = 'T' + Array.from({ length: 5 }, () => MP_CODE_CHARS[Math.floor(Math.random() * MP_CODE_CHARS.length)]).join('');
+    const c = 'T' + Array.from({ length: 3 }, () => MP_CODE_CHARS[Math.floor(Math.random() * MP_CODE_CHARS.length)]).join('');
     if(!(await db.ref('rooms/' + c).once('value')).exists()){ code = c; break; }
   }
   if(!code) throw new Error('CODE_BUSY');
@@ -72085,7 +72200,7 @@ async function tourneyJoin(raw){
   const why = tourneyRefusal();
   if(why) throw new Error(why);
   const code = String(raw || '').trim().toUpperCase();
-  if(!TOURNEY_CODE.test(code)) throw new Error('That is not a tournament code — they are six characters and start with T.');
+  if(!TOURNEY_CODE.test(code)) throw new Error('That is not a tournament code — they are four characters and start with T.');
   const ref = db.ref('rooms/' + code);
   const snap = await ref.once('value');
   const d = snap.val();
@@ -72487,20 +72602,27 @@ function tourneyRender(){
 }
 
 // ── WIRING ──
+// v85 — What a refusal says. A Firebase error's message is the raw "PERMISSION_DENIED: Permission denied",
+// which is all v79 ever showed (every Host, under the rooms rule — see THE REGISTRY); this names it.
+function tourneyErrText(err, fallback){
+  const code = String((err && (err.code || err.message)) || '');
+  if(/permission[_ ]denied/i.test(code)) return 'The grid refused the tournament record — the database rules for /rooms are blocking it.';
+  return MP_ERR[err && err.message] || (err && err.message) || fallback;
+}
 try{
   setInterval(tourneyNudge, 1000);
   document.getElementById('btn-tourney-host')?.addEventListener('click', async e => {
     const b = e.currentTarget; b.disabled = true;
     try{ await tourneyHost(); snd('success'); }
-    catch(err){ snd('deny'); toast('🏆 ' + (MP_ERR[err && err.message] || (err && err.message) || 'Could not open a tournament.'), 3600); }
+    catch(err){ console.warn('Tournament host failed:', err); snd('deny'); toast('🏆 ' + tourneyErrText(err, 'Could not open a tournament.'), 3600); }
     b.disabled = false;
   });
   const tj = document.getElementById('tourney-code');
-  tj?.addEventListener('input', () => { tj.value = tj.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6); });
+  tj?.addEventListener('input', () => { tj.value = tj.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4); });
   document.getElementById('btn-tourney-join')?.addEventListener('click', async e => {
     const b = e.currentTarget; b.disabled = true;
     try{ await tourneyJoin(tj ? tj.value : ''); snd('success'); }
-    catch(err){ snd('deny'); toast('🏆 ' + (MP_ERR[err && err.message] || (err && err.message) || 'Could not join.'), 3600); }
+    catch(err){ console.warn('Tournament join failed:', err); snd('deny'); toast('🏆 ' + tourneyErrText(err, 'Could not join.'), 3600); }
     b.disabled = false;
   });
 }catch(e){ console.warn('Tournaments failed to wire:', e); }
@@ -72779,7 +72901,7 @@ const TUT_STEPS = (function(){
   read('mp-bot', '#btn-mp-bot', '🤖 DROID DUEL', 'Practise against a droid at the level you pick.', { at: 'mp', when: tutLinked, opt: 1 });
   read('mp-create', '#btn-mp-create', 'CREATE · JOIN', 'CREATE ROOM gives you a four-letter code to send a friend; they type it in the box beside JOIN.', { at: 'mp', when: tutLinked });
   read('mp-spec', '#mp-spec-input', '👁 SPECTATE', 'Type a room’s code here to watch the match without playing.', { at: 'mp', when: tutLinked, opt: 1 });
-  read('mp-tourney', '.mp-tourney-card', '🏆 TOURNAMENTS', 'Eight seats, single elimination, droids in the empty chairs. Host one, or join with its six-character code; the champion keeps a skin nobody can buy.',
+  read('mp-tourney', '.mp-tourney-card', '🏆 TOURNAMENTS', 'Eight seats, single elimination, droids in the empty chairs. Host one, or join with its four-character T code; the champion keeps a skin nobody can buy.',
     { at: 'mp', when: () => tutLinked() && typeof tourneyHost === 'function', opt: 1 });
   act('mp-back', '#btn-mp-back', 'BACK OUT', 'That is the lobby. Back to the hub.', hub, { at: 'mp', when: tutLinked });
   read('boss', '#br-banner', '👾 BOSS RUSH', 'Missions back to back with the chaos rising every stage, banked once at the end.', { opt: 1 });
@@ -74128,6 +74250,9 @@ function exhibBanner(){
   clearTimeout(chaos.bannerTimer);
   chaos.bannerTimer = setTimeout(() => el.classList.replace('big', 'chip'), 3200);
   toast('🎟️ EXHIBITION — nothing is banked this round', 3000);
+  // v85 — …and it rides the 3-2-1 the way the chaos banner now does (chaosBannerPlace): painted after
+  // prepGame() has put the countdown up, it would otherwise sit under the overlay's blur until GO.
+  try{ if(typeof chaosBannerPlace === 'function') chaosBannerPlace(); }catch(e){}
 }
 function exhibPaintHub(){
   const row = document.getElementById('exhib-selector');

@@ -947,6 +947,10 @@ html.is-offline #results-screen{padding-bottom:calc(64px + env(safe-area-inset-b
 /* Countdown Overlay */
 #cd-ov{position:fixed;inset:0;background:rgba(2,2,8,.85);backdrop-filter:blur(10px);z-index:999;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .3s ease}
 #cd-ov.show{opacity:1;pointer-events:all}
+/* v85 — 🌀 The chaos banner rides the countdown (chaosBannerPlace in app.js): it sat under this overlay, read
+   through the blur, with Signal Filter's REROLL unclickable. In here it sits under the number, full size. */
+#cd-ov{flex-direction:column;padding:0 16px}
+#cd-ov #chaos-banner{margin:26px auto 0;width:100%;max-width:660px;box-sizing:border-box;position:relative;z-index:1}
 #cd-num{font-family:var(--fd);font-size:7rem;font-weight:900;color:#fff}
 .cd-pop{animation:cdPop .6s ease forwards}
 @keyframes cdPop{0%{transform:scale(.4);opacity:0}20%{opacity:1}100%{transform:scale(1.4);opacity:0}}
