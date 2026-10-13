@@ -110,6 +110,9 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
          the sign-in choice, so the visitor knows why they are here. Painted
          by paintClAuth() in app.js (§ 22). -->
     <div class="cl-auth" id="cl-auth" style="display:none" role="status"></div>
+    <!-- 🔐 v84 · Back from a checkout in a browser nobody is signed in to (an installed iPhone app's checkout
+         returns in Safari): what happened, in the same slot. Painted by shopPaintAuth() (§ 46). -->
+    <div class="cl-auth buy-auth" id="buy-auth" style="display:none" role="status"></div>
 
     <!-- ── RENDER MODE ──
          Picked before any account exists, so the choice lives in localStorage
@@ -214,6 +217,13 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <span class="diff-label">🔥 HEAT</span>
     <button class="heat-open" id="btn-heat" type="button" aria-haspopup="dialog">OFF · SET HEAT</button>
     <span class="chaos-note" id="heat-note">Pick your own hazards — more heat, more pay, and a heat record on every mission.</span>
+  </div>
+  <!-- 🎟️ v84 · EXHIBITION (§ 46) — shown only while one is armed from the 🔐 Restricted aisle: the next
+       plain mission round is played with the paid toys and pays nothing. Painted by exhibPaintHub(). -->
+  <div class="heat-selector exhib-selector armed" id="exhib-selector" hidden>
+    <span class="diff-label">🎟️ EXHIBITION</span>
+    <button class="heat-open" id="btn-exhib" type="button">ARMED · TAP TO DISARM</button>
+    <span class="chaos-note" id="exhib-note">Your next mission round is an exhibition. It pays nothing and is on no board.</span>
   </div>
   <!-- 📈 OPERATIVE RAIL — the profile's level, its XP bar, and the two doors
        into what that level bought. Sits under the stability dial because it is
@@ -871,6 +881,9 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <button class="market-tab" data-tab="companions">🛸 Companions</button>
     <!-- 🎃 SEASONAL STOCK — shown only while an event runs (renderEventShelf). -->
     <button class="market-tab market-tab-event" data-tab="event" id="market-tab-event" hidden>🎃 Limited</button>
+    <!-- 🔐 v84 · THE RESTRICTED AISLE (§ 46) — real-money items. Hidden unless the shop is on for this
+         device (shopFlag); the grid skips a hidden tab, so with it off this row is exactly what it was. -->
+    <button class="market-tab market-tab-shop" data-tab="restricted" id="market-tab-restricted" hidden>🔐 Restricted</button>
     <!-- 🎒 No loadout door here: it pushed this row onto a second line. Loadouts
          are reached from the hub's loadout rail (MANAGE) only. -->
   </div>
@@ -918,6 +931,21 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
     <div class="market-panel" id="panel-event">
       <div class="ev-shelf-note" id="ev-shelf-note"></div>
       <div class="shop-grid" id="shop-event"></div>
+    </div>
+    <!-- 🔐 v84 · The aisle: the pass, the paid cosmetics and the two exhibition toys, painted by
+         skuPaintAisle(). Each paid item also sits at the end of its own category shelf. -->
+    <div class="market-panel" id="panel-restricted">
+      <div class="ev-shelf-note sku-note">
+        <div>🔐 <b>THE RESTRICTED AISLE.</b> One-time purchases with real money, paid on Stripe's secure checkout page. They never become Points or Credits, and never change a score on any board.</div>
+        <div class="sku-why" id="sku-why" hidden></div>
+      </div>
+      <div class="shop-grid" id="shop-restricted"></div>
+      <div class="sku-legal">
+        <a href="legal/terms.html" target="_blank" rel="noopener">Terms</a> ·
+        <a href="legal/refunds.html" target="_blank" rel="noopener">Refunds</a> ·
+        <a href="legal/privacy.html" target="_blank" rel="noopener">Privacy</a> ·
+        Help: <a href="mailto:cat9748912@gmail.com">cat9748912@gmail.com</a>
+      </div>
     </div>
   </div>
 </div>
@@ -1231,6 +1259,37 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <div class="fb-sub" id="bnty-sub">—</div>
     </div>
     <div id="bnty-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     🔐 THE PURCHASE SHEET (v84, § 46) — what the item is, what it costs,
+     where it is paid, the age line and the policies, before the player is
+     sent to the payment provider's own page. No payment field of any kind
+     lives here: CONTINUE asks the server for a checkout and goes there.
+     Static shell; skuSheet() paints the body. -->
+<div class="fb-overlay sku-tint" id="sku-overlay" aria-hidden="true">
+  <div class="fb-modal sku-modal" role="dialog" aria-modal="true" aria-labelledby="sku-heading">
+    <button class="fb-close" id="sku-close" aria-label="Close purchase">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="sku-heading">🔐 RESTRICTED</div>
+      <div class="fb-sub" id="sku-sub">—</div>
+    </div>
+    <div id="sku-body"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     🎟️ EXHIBITION (v84, § 46) — the card an exhibition round ends on, in
+     place of the results card: the score, NOT banked. Painted by exhibCard(). -->
+<div class="fb-overlay sku-tint" id="exhib-overlay" aria-hidden="true">
+  <div class="fb-modal sku-modal" role="dialog" aria-modal="true" aria-labelledby="exhib-heading">
+    <button class="fb-close" id="exhib-close" aria-label="Close exhibition result">✕</button>
+    <div class="fb-head">
+      <div class="fb-title" id="exhib-heading">🎟️ EXHIBITION</div>
+      <div class="fb-sub">Played for the fun of it · nothing banked</div>
+    </div>
+    <div id="exhib-body"></div>
   </div>
 </div>
 
@@ -1659,6 +1718,17 @@ try{ if(localStorage.getItem('pi_render_mode') === '3d') document.body.classList
       <p class="set-note" id="set-acct-note"></p>
       <ol class="set-steps" id="set-acct-steps"></ol>
       <button class="btn btn-save-acct btn-full" id="btn-save-acct" style="display:none">💾 Save Account</button>
+    </section>
+
+    <!-- ── 🔐 PURCHASES ── (v84, § 46) Shown only where the Restricted aisle
+         is on. What this account owns, its orders, and Restore. Painted by
+         shopPaintSettings(); the orders are read when this panel opens. -->
+    <section class="set-sec" aria-labelledby="set-shop-h" id="set-shop" hidden>
+      <div class="set-sec-h"><span id="set-shop-h">🔐 PURCHASES</span><em class="set-state" id="set-shop-state"></em></div>
+      <p class="set-note" id="set-shop-note"></p>
+      <div class="sku-orders" id="set-shop-orders"></div>
+      <button class="btn btn-secondary btn-full" id="btn-shop-restore" type="button">🔄 Restore Purchases</button>
+      <p class="set-note sku-set-legal">Refunds within 14 days, no questions asked: <a href="mailto:cat9748912@gmail.com">cat9748912@gmail.com</a> · <a href="legal/terms.html" target="_blank" rel="noopener">Terms</a> · <a href="legal/refunds.html" target="_blank" rel="noopener">Refunds</a> · <a href="legal/privacy.html" target="_blank" rel="noopener">Privacy</a></p>
     </section>
 
     <!-- ── 💬 FEEDBACK ── -->

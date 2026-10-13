@@ -6449,3 +6449,93 @@ body.tut-peek #pause-overlay{opacity:0 !important;pointer-events:none !important
 #cmp-fx.cmp-still[data-look="4"] > .cmp-o3,html.reduced-motion .cmp-prev[data-look="4"] > .cmp-o3{translate:calc(var(--u)*4) calc(var(--u)*7)}
 #cmp-fx.cmp-still[data-look="5"] > .cmp-o2,#cmp-fx.cmp-still[data-look="5"] > .cmp-o3,
 html.reduced-motion .cmp-prev[data-look="5"] > .cmp-o2,html.reduced-motion .cmp-prev[data-look="5"] > .cmp-o3{display:none}
+
+/* ═══════════════════════════════════════
+   § 46 · v84 — 🔐 THE RESTRICTED AISLE · the tab, the cards, the purchase sheet, exhibitions
+   ═══════════════════════════════════════ */
+/* Real money wears violet and gold, so it is never mistaken for a 💎 price.
+   The tab: the tenth of a 5 + 5 row; while the event tab is also out it takes
+   a row of its own (11 would leave an orphan), and on a phone it always does,
+   like the event tab. Hidden, the grid skips it and the row is what it was. */
+.market-tab-shop{color:#d9c2ff!important;border-color:rgba(168,85,247,.55)!important}
+.market-tab-shop.active{background:rgba(168,85,247,.22)!important;border-color:#c9a7ff!important;color:#fff!important;box-shadow:0 0 18px rgba(168,85,247,.4)}
+.market-tabs.has-event .market-tab-shop{grid-column:1 / -1}
+@media (max-width:700px){ .market-tab-shop{grid-column:1 / -1} }
+
+.sku-note{border-color:rgba(168,85,247,.6);background:rgba(168,85,247,.07);color:#e4d6ff;display:flex;flex-direction:column;gap:8px}
+.sku-note b{color:#fff}
+.sku-why{color:var(--gold)}
+.sku-why[hidden]{display:none}
+.sku-legal{margin-top:16px;font-size:.78rem;color:var(--dim);text-align:center}
+.sku-legal a,.sku-links a,.sku-set-legal a{color:#d9c2ff}
+
+.shop-card.sku-card{border-color:rgba(168,85,247,.5);background:linear-gradient(180deg,rgba(168,85,247,.1),rgba(255,215,0,.025))}
+.shop-card.sku-card.equipped{border-color:var(--gold)}
+.sku-badge{
+  display:inline-block;margin-bottom:8px;padding:2px 10px;border-radius:20px;
+  font-family:var(--fd);font-size:.46rem;font-weight:900;letter-spacing:.14em;
+  color:#d9c2ff;border:1px solid rgba(168,85,247,.6);background:rgba(168,85,247,.12)
+}
+.sku-btn{width:100%}
+.btn.sku-buy{background:linear-gradient(135deg,#ffe27a,#ffb347);color:#1a1200;box-shadow:0 0 18px rgba(255,200,80,.25)}
+.btn.sku-buy:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 0 30px rgba(255,200,80,.45)}
+.btn.sku-buy:disabled{opacity:.55;cursor:default;filter:saturate(.4)}
+body.mode-3d .btn.sku-buy{--wall:#8a6b00;--wallb:#453600;color:#1a1200}
+.sku-diamond{color:var(--gold);text-shadow:0 0 18px rgba(255,215,0,.6);font-family:var(--fd);font-weight:900}
+
+/* ◆ SUPPORTER — beside a name on the boards, and a line on the player card. */
+.lb-sup{font-style:normal;margin-left:5px;color:var(--gold);text-shadow:0 0 8px rgba(255,215,0,.55);font-size:.9em}
+.pc-sup{margin-top:5px;font-family:var(--fd);font-size:.52rem;font-weight:900;letter-spacing:.14em;color:var(--gold)}
+
+/* The purchase sheet and the exhibition card share one shell. */
+.sku-tint .fb-modal{max-width:480px;border-color:rgba(168,85,247,.5);box-shadow:0 0 70px rgba(168,85,247,.16),inset 0 0 0 1px rgba(255,255,255,.03)}
+.sku-tint .fb-modal::before{background:linear-gradient(90deg,transparent,var(--gold),transparent);box-shadow:0 0 12px var(--gold)}
+.sku-tint .fb-title{background:linear-gradient(90deg,var(--gold),#d9c2ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+#sku-body,#exhib-body{display:flex;flex-direction:column;gap:12px}
+.sku-what{display:flex;align-items:center;gap:14px;font-size:.92rem;line-height:1.4}
+.sku-pv{flex:none;display:flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:14px;font-size:2rem;background:var(--s2);border:1px solid var(--border)}
+.sku-pv.sku-sw{border-radius:50%;border:2px solid rgba(255,255,255,.2)}
+.sku-pv.sku-sky{font-size:1.5rem}
+.sku-facts{margin:0;padding-left:18px;display:grid;gap:5px;font-size:.84rem;line-height:1.4;color:var(--dim)}
+.sku-facts b{color:var(--text)}
+.sku-age{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:10px;border:1px solid rgba(255,215,0,.35);background:rgba(255,215,0,.05);font-size:.84rem;line-height:1.4;cursor:pointer}
+.sku-age input{flex:none;width:20px;height:20px;margin:1px 0 0;accent-color:var(--gold);cursor:pointer}
+.sku-links{font-size:.8rem;text-align:center}
+.sku-acts,.xh-acts{display:flex;flex-wrap:wrap;gap:8px}
+.sku-acts .btn,.xh-acts .btn{flex:1 1 150px;min-height:44px}
+.sku-err{min-height:1em;font-size:.8rem;color:var(--gold);text-align:center}
+.sku-err:empty{display:none}
+
+/* ⚙️ Settings → Purchases: one line per order. */
+.sku-orders{display:grid;gap:6px;margin:0 0 12px}
+.sku-orders:empty{display:none}
+.sku-ord{display:grid;grid-template-columns:auto 1fr auto;gap:2px 10px;align-items:baseline;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--s2);font-size:.8rem}
+.sku-ord b{font-family:var(--fd);font-size:.56rem;letter-spacing:.08em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sku-ord-d{color:var(--dim)}
+.sku-ord-a{font-variant-numeric:tabular-nums}
+.sku-ord-s{grid-column:1 / 3;font-style:normal;font-family:var(--fd);font-size:.46rem;letter-spacing:.12em;color:var(--dim)}
+.sku-ord-s.s-paid{color:var(--lime)}
+.sku-ord-s.s-pending{color:var(--gold)}
+.sku-ord-ref{grid-column:3;justify-self:end;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.5;font-size:.66rem;color:var(--dimmer);user-select:all}
+.sku-ord-none{font-size:.8rem;color:var(--dim)}
+.sku-set-legal{margin:12px 0 0;font-size:.76rem}
+@media (pointer:coarse){ .sku-buy,.sku-btn,#btn-shop-restore{min-height:44px} }
+
+/* 🎟️ EXHIBITION — the hub strip (heat's shape, a ticket's colours), the round's
+   banner, the dock's two toys and the card it ends on. */
+.exhib-selector{--heat:#c9a7ff}
+.exhib-selector[hidden]{display:none}
+#chaos-banner.chaos-exhib{
+  border-color:rgba(201,167,255,.6);
+  background:linear-gradient(100deg,rgba(168,85,247,.16),rgba(255,215,0,.08));
+  box-shadow:0 0 26px rgba(168,85,247,.25)
+}
+#chaos-banner.chaos-exhib .chaos-name{color:#d9c2ff}
+#chaos-banner.chaos-exhib .chaos-icon{filter:drop-shadow(0 0 10px rgba(201,167,255,.8))}
+.pu-btn.pu-exhib{border-color:rgba(201,167,255,.55);background:rgba(168,85,247,.12)}
+.pu-btn.pu-exhib:hover:not(:disabled){box-shadow:0 0 18px rgba(201,167,255,.35);background:rgba(168,85,247,.2)}
+.xh-score{display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px;border-radius:12px;border:1px dashed rgba(201,167,255,.5);background:rgba(168,85,247,.07)}
+.xh-score b{font-family:var(--fd);font-size:2rem;font-weight:900;color:#d9c2ff;font-variant-numeric:tabular-nums}
+.xh-score span{font-family:var(--fd);font-size:.5rem;letter-spacing:.18em;color:var(--dim)}
+.xh-toys{text-align:center;font-family:var(--fd);font-size:.6rem;letter-spacing:.1em}
+.xh-note{margin:0;font-size:.84rem;line-height:1.45;color:var(--dim);text-align:center}

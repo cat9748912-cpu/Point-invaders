@@ -57,7 +57,10 @@ self.addEventListener('activate', e => {
 // Live traffic only. A stale leaderboard or a replayed auth token is worse than
 // being offline, so none of this is ever cached. Note the RTDB host is
 // *.firebasedatabase.app for this project, not the older firebaseio.com.
-const BYPASS = /firebaseio\.com|firebasedatabase\.app|identitytoolkit|securetoken|google-analytics/;
+// v84 — 🔐 …and the purchase server (a Cloudflare Worker on workers.dev) and the
+// payment provider (§ 46). Their calls are POSTs, which pass untouched anyway;
+// this keeps any GET to them off the cache too, and says where they are.
+const BYPASS = /firebaseio\.com|firebasedatabase\.app|identitytoolkit|securetoken|google-analytics|workers\.dev|stripe\.com/;
 
 self.addEventListener('fetch', e => {
   const req = e.request;

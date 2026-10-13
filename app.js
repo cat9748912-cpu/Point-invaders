@@ -44902,7 +44902,7 @@ function applyLoadout(i){
     if(!item) return;
     // Only equip what is actually owned. A loadout saved before a cosmetic was
     // sold back must not silently equip something the player no longer has.
-    const owned = item.default || (user.owned[s] || []).includes(want);
+    const owned = item.default || (user.owned[s] || []).includes(want) || !!item.sku;   // v84 — 🔐 findItem() returns a paid item only while it is owned (§ 46)
     if(!owned) return;
     if(user.equipped[s] === want) return;
     user.equipped[s] = want;
@@ -47955,7 +47955,7 @@ function renderPlayerCard(rec){
   const body = document.getElementById('pcard-body');
   if(!body) return;
   const isMe = !!(user && rec.uid === user.uid);
-  const skin = findItem('skins', rec.equipped && rec.equipped.skins) || SHOP_ITEMS.skins[0];
+  const skin = findItem('skins', rec.equipped && rec.equipped.skins, !isMe) || SHOP_ITEMS.skins[0];   // v84 — 🔐 a paid skin only on your own card (§ 46)
   const lvl = xpShown(isMe ? user : rec).level;       // v72 — the level since their last reboot (§ 37)
   const season = seasonKey();
   const weekly = (rec.weekly && rec.weekly.season === season) ? (+rec.weekly.pts || 0) : 0;
@@ -73268,3 +73268,1009 @@ tutId('tut-layer')?.addEventListener('wheel', e => {
 }, { passive: true });
 addEventListener('resize', () => { if(tut) tut.key = ''; });
 addEventListener('orientationchange', () => { if(tut) tut.key = ''; });
+
+// ══════════════════════════════════════════════════════════════════════
+//  § 46 · v84 — 🔐 THE RESTRICTED AISLE · real money, a hosted checkout
+// ══════════════════════════════════════════════════════════════════════
+// Everything in the Black Market is bought with Credits, and Credits are
+// earned. This aisle sells a handful of one-time unlocks for real money, and
+// every part of the money happens somewhere else:
+//
+//  · THE SERVER (worker/, a Cloudflare Worker) is the only thing that grants.
+//    This page sends it { sku } and the player's ID token and is handed a URL
+//    on the payment provider's own site — location.assign(), and the card is
+//    typed THERE. No card field and no provider script on any page of ours.
+//    When the provider says "paid", the server writes shop/ent/<uid>/<sku>;
+//    the rules let a player READ their own node and nobody write any of it.
+//  · OWNERSHIP IS READ HERE, NEVER WRITTEN: a live listener on that node
+//    (entSync), mirrored as pi_ent_v1 so an owned colour does not flash the
+//    default on boot and still draws offline. owns(sku) is the one question.
+//  · PAID ITEMS ARE NOT IN SHOP_ITEMS. They live in SKU_ITEMS below, so the
+//    loops that walk the Credits table — the featured rotation, the rarity
+//    bands, Supply Drop, the crew palette — cannot see them, now or later.
+//    findItem() is taught to return one only while it is OWNED and the aisle
+//    is on, so every place that draws an equipped item falls back to the
+//    default by itself when it is not owned, has been refunded, or the flag is
+//    off. Equipping stays the ordinary equipped/<cat> write: equipping is not
+//    owning, and another player's card never vouches for a paid item.
+//  · MONEY NEVER BECOMES POINTS. Nothing here writes credits, totalPoints,
+//    owned/* or powerups/*. The two paid power-ups work only in an EXHIBITION
+//    round (below), which pays nothing and is on no board.
+//  · FAIL SAFE. With the flag off, the server unreachable, the read refused
+//    (rules not pasted yet) or the kill switch (shop/cfg/open) closed, the
+//    arcade plays exactly as it did: the aisle is hidden or says why, owned
+//    items draw from the mirror, and nothing in a round waits on any of it.
+//
+// THE FLAG. shopFlag = SHOP_API is set AND (SHOP_LIVE, or this device opted in
+// with ?shop=beta — ?shop=off opts it out again), settled once at load. Both
+// leave the address bar at once, the way clBoot() and labBoot() take theirs.
+// shopOpen() = the flag AND the kill switch: it closes BUYING only.
+//
+// THE CATALOGUE. SHOP_SKUS is a copy of worker/src/catalog.js between two
+// marker lines that scripts/catalog-parity.js reads: every sku's name, kind,
+// shelf, price label and what it unlocks must agree with the server's, or the
+// script fails. The price here is a LABEL — the provider charges what the
+// server looks up, by sku, and nothing this page says can change it.
+//
+// BUYING. BUY → the gates (a saved account, online, not owned, the aisle open)
+// → the purchase sheet (#sku-overlay: what it is, the price, the age line D8
+// asks for, the policies) → CONTINUE → POST /checkout → the provider's page.
+// The way back is ?purchase=ok|cancel&sku=…&sid=…: shopBoot() files it in
+// sessionStorage and cleans the address; the hub says "confirming…", and the
+// LISTENER says "unlocked" when the grant lands — whether or not a way back
+// was ever seen. That is what makes an installed app work, whatever its
+// platform does with the provider's page (pi_buy_pending, 24 hours).
+//
+// EXHIBITION ROUNDS (D5). Aegis Field and Chrono Anchor do nothing in an
+// ordinary round. Armed from their card, the NEXT plain mission-grid round —
+// bntyArm()'s own test: no duel, rush, endless, daily, anomaly, challenge,
+// glitch run, speedrun, party, lab, campaign, tournament or open world — is
+// played as an exhibition: no chaos or heat, no ghost, the Credits kit hidden
+// and never spent, and its result taken at showResults() by vsResultTap (the
+// door Brick Lab uses) before the results card, saveScore() or recordRun()
+// could bank a thing. One round only; PLAY AGAIN (EXHIBITION) arms the next.
+//
+// ⚠️ A paid COMPANION would also need cmpKnown() and cmpState() taught about
+// it: § 38 resets a companion it does not know and writes the reset back. None
+// is sold yet, so SKU_ITEMS has no companions shelf.
+const SHOP_API  = 'https://point-invaders-shop.pointinvaders.workers.dev';
+const SHOP_LIVE = false;                   // Gate 3 turns this on; until then ?shop=beta opts a device in
+const SHOP_LS_BETA = 'pi_shop_beta', SHOP_LS_ENT = 'pi_ent_v1', SHOP_LS_PEND = 'pi_buy_pending', SHOP_SS_RET = 'pi_buy_ret';
+const SHOP_WAIT = 15000;                   // a cold start, the provider and a phone's network, end to end
+const SHOP_PEND_MS = 24 * 3600 * 1000;
+const SHOP_PAY_RE = /^https:\/\/([a-z0-9-]+\.)*stripe\.com\//;   // where a checkout may send the player
+const ANCHOR_S = 10;
+
+// The client's copy of the server catalogue — parity-checked, see above. A
+// literal and nothing else: the script evaluates this block on its own.
+// @shop-catalogue:begin
+const SHOP_SKUS = [
+  { sku:'pass_supporter', name:'Supporter Pass', kind:'pass',       cat:null,       price:'$4.99', grants:['col-x-patron'] },
+  { sku:'col_aurora',     name:'Aurora',         kind:'cosmetic',   cat:'colors',   price:'$1.99', grants:['col-x-aurora'] },
+  { sku:'col_ultra',      name:'Ultraviolet',    kind:'cosmetic',   cat:'colors',   price:'$1.99', grants:['col-x-ultra'] },
+  { sku:'cur_comet',      name:'Comet',          kind:'cosmetic',   cat:'cursors',  price:'$1.99', grants:['cur-x-comet'] },
+  { sku:'skin_kitsune',   name:'Neon Kitsune',   kind:'cosmetic',   cat:'skins',    price:'$2.99', grants:['skin-x-kitsune'] },
+  { sku:'skin_unicorn',   name:'Glitch Unicorn', kind:'cosmetic',   cat:'skins',    price:'$2.99', grants:['skin-x-unicorn'] },
+  { sku:'wld_polar',      name:'Polar Night',    kind:'cosmetic',   cat:'worlds',   price:'$3.99', grants:['wld-x-polar'] },
+  { sku:'pu_aegis',       name:'Aegis Field',    kind:'exhibition', cat:'powerups', price:'$2.99', grants:[] },
+  { sku:'pu_anchor',      name:'Chrono Anchor',  kind:'exhibition', cat:'powerups', price:'$2.99', grants:[] }
+];
+// @shop-catalogue:end
+
+// What the paid items ARE, in the shape each shelf already draws. `sku` is
+// what owns them; the ids carry `-x-` so they can never meet a Credits item.
+// No `price`: there is no Credits price, and getRarity() is told so below.
+const SKU_ITEMS = {
+  colors: [
+    { id:'col-x-patron', sku:'pass_supporter', name:'Patron',      color:'#ffe9a8', desc:'Comes with the ◆ Supporter Pass.' },
+    { id:'col-x-aurora', sku:'col_aurora',     name:'Aurora',      color:'#7dffc8' },
+    { id:'col-x-ultra',  sku:'col_ultra',      name:'Ultraviolet', color:'#6e5bff' }
+  ],
+  // `tier` is the animated pointer applyEquippedCosmetics() draws for an epic cursor.
+  cursors: [
+    { id:'cur-x-comet', sku:'cur_comet', name:'Comet', emoji:'☄️', tier:'epic' }
+  ],
+  skins: [
+    { id:'skin-x-kitsune', sku:'skin_kitsune', name:'Neon Kitsune',   emoji:'🦊' },
+    { id:'skin-x-unicorn', sku:'skin_unicorn', name:'Glitch Unicorn', emoji:'🦄' }
+  ],
+  // A tint and no `look`: the house city under an aurora sky (§ 20).
+  worlds: [
+    { id:'wld-x-polar', sku:'wld_polar', name:'Polar Night', emoji:'🌌',
+      sky:['#020814', '#1fd6a0', '#0b1a3a'],
+      desc:'An aurora over the rain city — green fire across a polar night. Every 3D mission and open world.',
+      tint:{ zenith:'#020814', horizon:'#3fffc2', fog:'#0a1a2a', sun:'#b6f0ff', amount: 0.75, horizonAmount: 0.5, saturation: 1.05 } }
+  ]
+};
+// The two exhibition toys. Not items: nothing is equipped, only armed.
+const SKU_TOYS = {
+  pu_aegis:  { emoji:'💠', desc:'In an Exhibition round, every fatal hit is absorbed.' },
+  pu_anchor: { emoji:'⚓', desc:'In an Exhibition round, ⚓ +10s puts ten seconds on the clock, as often as you like.' }
+};
+const SHOP_STATES = { paid:'✅ PAID', pending:'⏳ PENDING', failed:'✖ FAILED', refunded:'↩️ REFUNDED',
+                      disputed:'⚠️ DISPUTED', lost:'✖ CHARGED BACK' };
+
+var shopFlag = false;           // settled once at load by shopBoot()
+var ENT = { uid: null, items: {}, live: false, ref: null, cb: null, denied: null, warned: false };   // denied: the uid refused
+var SHOP_CFG = { open: true, ref: null, off: false };
+var SUP = { at: 0, map: {}, busy: false, off: false, card: null };
+var shopOrders = null;          // { uid, list, err } — the last read of shop/orders/<uid>
+var skuFor = null, skuBusy = false, shopRetTimer = 0;
+var exhibArmed = false;         // the next plain round is an exhibition — one round only
+var exhibRound = null;          // { gid, aegis, anchor } while one is being played
+var exhibLast = null, exhibSaid = 0;
+
+// The functions this section takes over, as they were (§ 45's wrappers included).
+const SHOP_REAL = { find: findItem, rarity: getRarity, market: openMarket, render: renderShop, act: handleShopAction,
+                    settings: paintSettings, rows: lbRows, lane: laneRow, card: renderPlayerCard, hub: enterHub,
+                    forget: forgetLocalProfile, prep: prepGame, fatal: survivedFatal, consume: powerConsume,
+                    dock: paintPowerDock };
+
+function shopOpen(){ return shopFlag && SHOP_CFG.open !== false; }
+const skuOf = sku => SHOP_SKUS.find(s => s.sku === sku) || null;
+// The paid item a shelf holds under this id, owned or not.
+function skuItem(cat, id){ const l = SKU_ITEMS[cat]; return (l && l.find(i => i.id === id)) || null; }
+function shopDate(ms){
+  try{ return new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }); }
+  catch(e){ return new Date(ms).toISOString().slice(0, 10); }
+}
+// An order's amount is in the currency's minor unit — except the currencies that have none.
+function shopMoney(amount, cur){
+  const c = String(cur || 'usd').toUpperCase(), zero = /^(BIF|CLP|DJF|GNF|JPY|KMF|KRW|MGA|PYG|RWF|UGX|VND|VUV|XAF|XOF|XPF)$/.test(c);
+  const v = (+amount || 0) / (zero ? 1 : 100);
+  try{ return v.toLocaleString(undefined, { style: 'currency', currency: c }); }catch(e){ return c + ' ' + v.toFixed(zero ? 0 : 2); }
+}
+
+// ── OWNERSHIP ────────────────────────────────────────────────────────────
+// What this device last heard, for whoever is playing now. The server's copy
+// replaces it the moment the listener answers.
+function entLoad(){
+  ENT.uid = user ? user.uid : null;
+  ENT.items = {}; ENT.live = false;
+  const rec = lsGet(SHOP_LS_ENT, null);
+  if(ENT.uid && rec && rec.uid === ENT.uid) ENT.items = entClean(rec.items);
+}
+// Only what the shelf needs, and only skus this build knows: { sku: { s, at } }.
+function entClean(v){
+  const out = {};
+  if(!v || typeof v !== 'object') return out;
+  SHOP_SKUS.forEach(s => {
+    const e = v[s.sku];
+    if(e && typeof e === 'object' && typeof e.s === 'string') out[s.sku] = { s: e.s, at: +e.at || 0 };
+  });
+  return out;
+}
+function owns(sku){
+  if(!shopFlag || !user) return false;
+  if(ENT.uid !== user.uid) entLoad();
+  const e = ENT.items[sku];
+  return !!(e && e.s === 'active');
+}
+
+// The live copy, attached once per uid from enterHub() for any session Firebase
+// is signed in as. A guest reads an empty node, and saving the account keeps
+// the uid, so the upgrade changes nothing here. A refused read (the rules not
+// pasted yet) keeps the mirror and says so once.
+function entSync(){
+  if(!shopFlag || !user || !db || !auth || isLocalSession()) return;
+  const cu = auth.currentUser;
+  if(!cu || cu.uid !== user.uid) return;                 // an offline resume: the mirror serves
+  if(ENT.ref && ENT.uid === user.uid) return;
+  if(ENT.denied === user.uid) return;                    // refused once: Restore asks again, not every hub visit
+  entStop();
+  if(ENT.uid !== user.uid) entLoad();
+  const uid = user.uid, ref = db.ref('shop/ent/' + uid);
+  const cb = snap => {
+    if(ENT.ref !== ref || !user || user.uid !== uid) return;
+    ENT.items = entClean(snap.val());
+    ENT.live = true; ENT.denied = null;
+    lsSet(SHOP_LS_ENT, { uid, at: Date.now(), items: ENT.items });
+    entChanged();
+  };
+  ENT.ref = ref; ENT.cb = cb;
+  ref.on('value', cb, err => {
+    if(ENT.ref !== ref) return;
+    ENT.ref = null; ENT.cb = null; ENT.denied = uid;
+    if(!ENT.warned){ ENT.warned = true; console.warn('Purchases unreadable (rules?):', err && err.code); }
+    skuRepaint();
+  });
+}
+function entStop(){
+  if(ENT.ref){ try{ ENT.ref.off('value', ENT.cb); }catch(e){} }
+  ENT.ref = null; ENT.cb = null;
+}
+// Something owned changed: what is drawn, the shelves, and a purchase being waited for.
+function entChanged(){
+  try{ applyEquippedCosmetics(); }catch(e){ console.warn(e); }
+  skuRepaint();
+  exhibPaintHub();
+  shopPendingCheck();
+}
+
+// The kill switch: public, written only in the Console. Missing or unreadable
+// is OPEN — the server asks it again on every checkout either way — and an
+// unreadable one is not asked again this visit.
+function shopCfgSync(){
+  if(SHOP_CFG.ref || SHOP_CFG.off || !shopFlag || !db) return;
+  const ref = db.ref('shop/cfg/open');
+  SHOP_CFG.ref = ref;
+  ref.on('value', snap => {
+    const was = SHOP_CFG.open;
+    SHOP_CFG.open = snap.val() !== false;
+    if(was !== SHOP_CFG.open) skuRepaint();
+  }, () => { SHOP_CFG.ref = null; SHOP_CFG.off = true; });
+}
+
+// ── THE TAKE-OVERS: OWNED ITEMS DRAW LIKE ANY OTHER ─────────────────────
+// `creditsOnly` (a third argument the original ignores) is for another
+// player's record: the rules keep what they own private, so a paid id there
+// resolves to nothing and the default is drawn.
+findItem = function(cat, id, creditsOnly){
+  const it = SHOP_REAL.find(cat, id);
+  if(it || creditsOnly || !shopFlag) return it;
+  const p = skuItem(cat, id);
+  return (p && owns(p.sku)) ? p : undefined;
+};
+// A paid item has no Credits price to be banded by; its tier is its own.
+getRarity = function(cat, item){
+  if(item && item.sku) return item.tier || null;
+  return SHOP_REAL.rarity.apply(this, arguments);
+};
+
+// ── ◆ SUPPORTER ──────────────────────────────────────────────────────────
+// One read of shop/badge (public; only the server writes it), kept a minute:
+// { uid: supporter-since ms }. A failed read shows no marks and changes nothing;
+// a REFUSED one (the rules not pasted yet) is not tried again this visit.
+function supHas(uid){ return shopFlag && !!uid && Object.prototype.hasOwnProperty.call(SUP.map, uid) && +SUP.map[uid] > 0; }
+const supChip = () => '<em class="lb-sup" title="Supporter">◆</em>';
+function supEl(){ const e = document.createElement('em'); e.className = 'lb-sup'; e.title = 'Supporter'; e.textContent = '◆'; return e; }
+function supRefresh(){
+  if(!shopFlag || !db || offlineMode || SUP.busy || SUP.off || Date.now() - SUP.at < 60000) return;
+  SUP.busy = true;
+  withTimeout(db.ref('shop/badge').once('value'), NET_WAIT)
+    .then(snap => { const v = snap.val(); SUP.map = (v && typeof v === 'object') ? v : {}; })
+    .catch(e => {
+      if(e && !e.isOffline){ SUP.off = true; console.warn('Supporter marks unreadable (rules?):', e.code || e.message); }
+    })
+    .then(() => { SUP.at = Date.now(); SUP.busy = false; supDecorate(document); });
+}
+// Every board row on the page that names a player: the mark after the name,
+// or taken away again (a refunded pass loses it).
+function supDecorate(root){
+  if(!root || !root.querySelectorAll) return;
+  root.querySelectorAll('.lb-row[data-uid] > .lb-name').forEach(n => {
+    const has = n.querySelector('.lb-sup');
+    if(supHas(n.parentElement.dataset.uid)){ if(!has) n.insertBefore(supEl(), n.firstChild ? n.firstChild.nextSibling : null); }
+    else if(has) has.remove();
+  });
+  supCard();
+}
+// The open player card: "◆ SUPPORTER · since …" under the name (the Terms promise the date).
+function supCard(){
+  const head = document.getElementById('pcard-heading');
+  const was = document.getElementById('pc-sup');
+  const since = SUP.card && supHas(SUP.card) ? +SUP.map[SUP.card] : 0;
+  if(!head || !since){ if(was) was.remove(); return; }
+  if(was) return;
+  const d = document.createElement('div');
+  d.className = 'pc-sup'; d.id = 'pc-sup';
+  d.textContent = '◆ SUPPORTER · since ' + shopDate(since);
+  head.insertAdjacentElement('afterend', d);
+}
+
+lbRows = function(panel){
+  const r = SHOP_REAL.rows.apply(this, arguments);
+  try{ if(shopFlag){ supDecorate(panel); supRefresh(); } }catch(e){}
+  return r;
+};
+laneRow = function(r, rank, isMe){
+  const h = SHOP_REAL.lane.apply(this, arguments);
+  try{
+    if(!shopFlag) return h;
+    supRefresh();
+    const uid = (r && r.uid) || (isMe && user ? user.uid : null);
+    if(!supHas(uid)) return h;
+    const open = '<span class="lb-name">', at = h.indexOf(open), nm = esc((r && r.name) || 'Operative');
+    if(at < 0 || h.substr(at + open.length, nm.length) !== nm) return h;
+    const cut = at + open.length + nm.length;
+    return h.slice(0, cut) + supChip() + h.slice(cut);
+  }catch(e){ return h; }
+};
+renderPlayerCard = function(rec){
+  SUP.card = (rec && rec.uid) || null;
+  const r = SHOP_REAL.card.apply(this, arguments);
+  try{ if(shopFlag){ supCard(); supRefresh(); } }catch(e){}
+  return r;
+};
+
+// ── THE AISLE ────────────────────────────────────────────────────────────
+openMarket = function(){
+  const r = SHOP_REAL.market.apply(this, arguments);
+  try{ shopCfgSync(); entSync(); skuPaintTab(); skuPaintAisle(); }catch(e){ console.warn('Restricted aisle failed to paint:', e); }
+  return r;
+};
+// Each category shelf ends with its paid items, locked or owned.
+renderShop = function(cat){
+  const r = SHOP_REAL.render.apply(this, arguments);
+  try{ if(shopFlag) skuShelf(cat); }catch(e){ console.warn('Restricted shelf failed:', e); }
+  return r;
+};
+handleShopAction = async function(act, cat, id){
+  if(act === 'buy' && skuItem(cat, id)) return;          // a paid item is never bought with Credits
+  const r = await SHOP_REAL.act.apply(this, arguments);
+  try{ if(shopFlag) skuPaintAisle(); }catch(e){}
+  return r;
+};
+
+function skuPaintTab(){
+  const tab = document.getElementById('market-tab-restricted');
+  if(!tab) return;
+  tab.hidden = !shopFlag;
+  if(tab.parentElement) tab.parentElement.classList.toggle('has-shop', shopFlag);
+  if(!shopFlag && tab.classList.contains('active')) switchMarketTab('convert');
+}
+function skuShelf(cat){
+  const grid = document.getElementById('shop-' + cat);
+  if(!grid) return;
+  if(cat === 'powerups') SHOP_SKUS.filter(s => s.kind === 'exhibition' && SKU_TOYS[s.sku]).forEach(s => grid.appendChild(skuToyCard(s)));
+  else (SKU_ITEMS[cat] || []).forEach(it => grid.appendChild(skuItemCard(cat, it)));
+}
+// The pass first, then every cosmetic and both toys, in catalogue order.
+function skuPaintAisle(){
+  const grid = document.getElementById('shop-restricted');
+  if(!grid) return;
+  grid.innerHTML = '';
+  skuPaintNote();
+  if(!shopFlag || !user) return;
+  grid.appendChild(skuPassCard());
+  SHOP_SKUS.forEach(s => {
+    if(s.kind === 'cosmetic'){ const it = (SKU_ITEMS[s.cat] || []).find(i => i.sku === s.sku); if(it) grid.appendChild(skuItemCard(s.cat, it, true)); }
+    else if(s.kind === 'exhibition' && SKU_TOYS[s.sku]) grid.appendChild(skuToyCard(s));
+  });
+}
+function skuPaintNote(){
+  const n = document.getElementById('sku-why');
+  if(!n) return;
+  const why = shopFlag && user ? skuWhy() : '';
+  n.textContent = why;
+  n.hidden = !why;
+}
+// One sentence for the state this device is in, or ''.
+function skuWhy(){
+  if(!shopOpen()) return '🔒 The aisle is closed right now. Everything you own keeps working.';
+  if(isLocalSession()) return '💾 This profile lives on this device only. Save it online (⚙️ Settings) to buy.';
+  if(user.isGuest) return '💾 Guests can look around. Buying needs a saved account — save yours (⚙️ Settings) and everything you have comes with it.';
+  if(offlineMode || !navigator.onLine) return '📴 Offline: buying needs a connection. What you own still works.';
+  if(ENT.denied === user.uid) return '⚠️ Your purchases can\'t be read from here right now. They are safe on your account — ⚙️ Settings → Restore Purchases tries again.';
+  return '';
+}
+// The listener, the kill switch and a sign-in can all change what the cards say.
+function skuRepaint(){
+  try{
+    if(document.getElementById('market-screen')?.classList.contains('active')){
+      Object.keys(SKU_ITEMS).concat('powerups').forEach(c => renderShop(c));
+      skuPaintTab();
+      skuPaintAisle();
+    }
+    if(typeof settingsOpen === 'function' && settingsOpen()) shopPaintSettings();
+  }catch(e){ console.warn('Restricted aisle repaint failed:', e); }
+}
+
+// A paid cosmetic on the shelf's own card — its swatch, sky or emoji, its
+// EQUIPPED tag — wearing the aisle's badge and a real-money button instead of
+// a rarity and a 💎 price. On the aisle, among the pass and the toys, each one
+// also says what it is.
+function skuItemCard(cat, item, aisle){
+  const s = skuOf(item.sku), own = owns(item.sku);
+  const card = shopCardEl(cat, item);
+  if(aisle && !item.desc){
+    const d = document.createElement('div');
+    d.className = 'shop-desc';
+    d.textContent = skuWhat(s);
+    card.querySelector('.shop-name')?.after(d);
+  }
+  card.classList.remove('rarity-rare', 'rarity-epic', 'rarity-legendary', 'featured');
+  card.classList.add('sku-card');
+  card.querySelector('.rarity-badge')?.remove();
+  card.querySelector('.shop-feat')?.remove();
+  if(!own){ card.classList.remove('equipped'); card.querySelector('.shop-tag')?.remove(); }
+  const tag = document.createElement('div');
+  tag.className = 'sku-badge';
+  tag.textContent = own ? '🔐 OWNED' : '🔐 RESTRICTED';
+  card.insertBefore(tag, card.querySelector('.shop-name'));
+  const btn = own ? skuEquipBtn(cat, item) : skuBuyBtn(s);
+  const old = card.querySelector('.shop-btn');
+  if(old) old.replaceWith(btn); else card.appendChild(btn);
+  return card;
+}
+function skuPassCard(){
+  const s = skuOf('pass_supporter'), own = owns(s.sku);
+  const since = own && ENT.items[s.sku] ? +ENT.items[s.sku].at : 0;
+  const card = document.createElement('div');
+  card.className = 'shop-card sku-card sku-pass' + (own ? ' equipped' : '');
+  card.innerHTML =
+    `<div class="shop-emoji sku-diamond">◆</div><div class="sku-badge">${own ? '🔐 OWNED' : '🔐 RESTRICTED'}</div>` +
+    `<div class="shop-name">${esc(s.name)}</div>` +
+    `<div class="shop-desc">The ◆ SUPPORTER mark beside your name on every board and player card, and the Patron colour. Thank you for keeping the arcade running.</div>` +
+    (own ? `<div class="shop-tag">◆ SUPPORTER${since ? ' · SINCE ' + esc(shopDate(since).toUpperCase()) : ''}</div>` : '');
+  if(own){
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn btn-secondary btn-sm sku-btn'; b.disabled = true; b.textContent = '✓ Thank You';
+    card.appendChild(b);
+  }else card.appendChild(skuBuyBtn(s));
+  return card;
+}
+function skuToyCard(s){
+  const t = SKU_TOYS[s.sku], own = owns(s.sku);
+  const card = document.createElement('div');
+  card.className = 'shop-card sku-card sku-toy' + (own && exhibArmed ? ' equipped' : '');
+  card.innerHTML =
+    `<div class="shop-emoji">${t.emoji}</div><div class="sku-badge">${own ? '🎟️ OWNED · EXHIBITION' : '🎟️ EXHIBITION ONLY'}</div>` +
+    `<div class="shop-name">${esc(s.name)}</div>` +
+    `<div class="shop-desc">${esc(t.desc)} Exhibition rounds pay nothing and are on no board.</div>`;
+  if(own){
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn btn-sm sku-btn ' + (exhibArmed ? 'btn-secondary' : 'btn-primary');
+    b.textContent = exhibArmed ? '🎟️ Armed · Tap To Disarm' : '🎟️ Arm For Next Round';
+    b.onclick = () => exhibToggle();
+    card.appendChild(b);
+  }else card.appendChild(skuBuyBtn(s));
+  return card;
+}
+function skuBuyBtn(s){
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'btn btn-sm sku-btn sku-buy';
+  b.dataset.sku = s.sku;
+  if(!shopOpen()){ b.disabled = true; b.textContent = '🔒 Closed'; }
+  else if(user && (user.isGuest || isLocalSession())) b.textContent = '💾 Sign In To Buy';
+  else b.textContent = 'Buy · ' + s.price;
+  b.onclick = () => shopBuy(s.sku);
+  return b;
+}
+function skuEquipBtn(cat, item){
+  const on = !!(user && user.equipped && user.equipped[cat] === item.id);
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'btn btn-sm sku-btn ' + (on ? 'btn-secondary' : 'btn-primary');
+  b.textContent = on ? 'Unequip' : 'Equip';
+  b.onclick = () => handleShopAction(on ? 'unequip' : 'equip', cat, item.id);
+  return b;
+}
+
+// ── BUYING ───────────────────────────────────────────────────────────────
+// Every gate is asked at the button and again at CONTINUE: the market can be
+// opened offline (the event banner's door), and the kill switch can close
+// while the sheet is up. The SERVER asks them all again — these are manners.
+function shopGate(){
+  if(!shopFlag || !user) return 'off';
+  if(isLocalSession()) return 'local';
+  if(offlineMode || !navigator.onLine || !db || !auth) return 'offline';
+  const cu = auth.currentUser;
+  if(!cu || cu.uid !== user.uid) return 'offline';
+  if(cu.isAnonymous) return 'guest';
+  if(!shopOpen()) return 'closed';
+  return '';
+}
+function shopRefuse(why){
+  if(why === 'off') return;
+  snd('deny');
+  if(why === 'local') toast('💾 Save your progress online first (⚙️ Settings), then you can buy.', 3600);
+  else if(why === 'offline') toast('📴 Purchases need a connection.', 3000);
+  else if(why === 'closed') toast('🔒 The Restricted aisle is closed right now.', 3000);
+  else if(why === 'guest'){
+    // The same uid afterwards: everything the guest has comes with them.
+    toast('💾 Purchases need a saved account — save this one and everything you have comes with it.', 4200);
+    closeOverlay('sku-overlay');
+    if(typeof window.openSaveAccount === 'function') setTimeout(() => window.openSaveAccount(), 260);
+  }
+}
+function shopBuy(sku){
+  const s = skuOf(sku);
+  if(!s) return;
+  const why = shopGate();
+  if(why){ shopRefuse(why); return; }
+  if(owns(sku)){ toast('✅ Already yours.', 2200); return; }
+  skuFor = s.sku;
+  openOverlay('sku-overlay', skuSheet);
+  try{ statsEvent('_buy_open'); }catch(e){}
+}
+
+// The purchase sheet: what it is, what it costs, where it is paid, the age
+// line (D8), the policies — and CONTINUE, which stays dark until the box is ticked.
+function skuSheet(){
+  const s = skuOf(skuFor), body = document.getElementById('sku-body');
+  if(!s || !body) return;
+  document.getElementById('sku-heading').textContent = '🔐 ' + s.name.toUpperCase();
+  document.getElementById('sku-sub').textContent = s.price + ' · one-time purchase · tax included';
+  body.innerHTML =
+    `<div class="sku-what">${skuPreview(s)}<div>${esc(skuWhat(s))}</div></div>` +
+    `<ul class="sku-facts">` +
+      `<li>Unlocks on <b>this saved account</b>, on every device you sign in on.</li>` +
+      `<li>Paid on <b>Stripe's secure checkout page</b> — your card details never reach Point Invaders.</li>` +
+      `<li>Never becomes Points or Credits, and never changes a score on any board.</li>` +
+      `<li>Changed your mind? A refund within 14 days, no questions asked.</li>` +
+    `</ul>` +
+    `<label class="sku-age"><input type="checkbox" id="sku-age"><span>I am 18 or older — or I am 13 to 17 and a parent or guardian has said yes to this purchase.</span></label>` +
+    `<div class="sku-links"><a href="legal/terms.html" target="_blank" rel="noopener">Terms</a> · ` +
+      `<a href="legal/refunds.html" target="_blank" rel="noopener">Refunds</a> · ` +
+      `<a href="legal/privacy.html" target="_blank" rel="noopener">Privacy</a></div>` +
+    `<div class="sku-acts"><button class="btn btn-secondary" id="sku-cancel" type="button">Cancel</button>` +
+      `<button class="btn sku-buy" id="sku-go" type="button" disabled>Continue · ${esc(s.price)}</button></div>` +
+    `<div class="sku-err" id="sku-err" role="status" aria-live="polite"></div>`;
+  const age = document.getElementById('sku-age'), go = document.getElementById('sku-go');
+  age.onchange = () => { if(!skuBusy) go.disabled = !age.checked; };
+  document.getElementById('sku-cancel').onclick = () => closeOverlay('sku-overlay');
+  go.onclick = () => skuCheckout(s);
+}
+function skuPreview(s){
+  if(s.kind === 'pass') return '<span class="sku-pv sku-diamond">◆</span>';
+  if(s.kind === 'exhibition') return '<span class="sku-pv">' + SKU_TOYS[s.sku].emoji + '</span>';
+  const it = (SKU_ITEMS[s.cat] || []).find(i => i.sku === s.sku);
+  if(!it) return '';
+  if(it.color) return '<span class="sku-pv sku-sw" style="background:' + it.color + ';box-shadow:0 0 18px ' + it.color + '"></span>';
+  if(it.sky) return '<span class="sku-pv sku-sky" style="background:linear-gradient(180deg,' + it.sky[0] + ',' + it.sky[1] + ' 70%,' + it.sky[2] + ')">' + it.emoji + '</span>';
+  return '<span class="sku-pv">' + it.emoji + '</span>';
+}
+function skuWhat(s){
+  if(s.kind === 'pass') return 'The ◆ SUPPORTER mark beside your name on every board and player card, with the date you joined, and the Patron colour.';
+  if(s.kind === 'exhibition') return SKU_TOYS[s.sku].desc + ' It does nothing in an ordinary round: an Exhibition round pays nothing and is on no board.';
+  return { colors: 'An exclusive colour for your whole interface.', cursors: 'An exclusive animated cursor.',
+           skins: 'An exclusive player skin.', worlds: 'An exclusive world theme: an aurora sky over every 3D mission and open world.' }[s.cat] || '';
+}
+// Closing the sheet takes the intent with it: an answer that arrives after
+// that does not carry the player off to a checkout they walked away from.
+function skuClose(){
+  skuFor = null;
+  const ov = document.getElementById('sku-overlay');
+  if(ov){ ov.classList.remove('show'); ov.setAttribute('aria-hidden', 'true'); }
+}
+
+async function skuCheckout(s){
+  if(skuBusy) return;
+  const why = shopGate();
+  if(why){ shopRefuse(why); return; }
+  const go = document.getElementById('sku-go'), err = document.getElementById('sku-err'), age = document.getElementById('sku-age');
+  if(!age || !age.checked){ snd('deny'); return; }
+  skuBusy = true;
+  if(go){ go.disabled = true; go.textContent = 'Opening checkout…'; }
+  if(err) err.textContent = '';
+  const uid = user.uid;
+  lsSet(SHOP_LS_PEND, { sku: s.sku, uid, at: Date.now() });
+  let status = 0, body = null;
+  try{
+    const token = await withTimeout(auth.currentUser.getIdToken(true), SHOP_WAIT);
+    const res = await shopPost('checkout', { sku: s.sku }, token);
+    status = res.status; body = res.body;
+  }catch(e){ console.warn('Checkout unreachable:', e && (e.code || e.message)); }
+  skuBusy = false;
+  if(!user || user.uid !== uid) return;
+  const still = skuFor === s.sku && !!document.getElementById('sku-overlay')?.classList.contains('show');
+  if(status === 200 && body && typeof body.url === 'string' && SHOP_PAY_RE.test(body.url)){
+    if(!still){ shopPendClear(); return; }
+    try{ statsEvent('_buy_start'); }catch(e){}
+    if(go) go.textContent = 'Taking you to checkout…';
+    location.assign(body.url);
+    return;
+  }
+  const code = body && body.error;
+  if(status === 409){
+    // Already paid for (or paid a moment ago, its notification still on the way):
+    // read the account again; the listener says "unlocked" when it is there.
+    closeOverlay('sku-overlay');
+    toast('✅ Already yours — unlocking…', 3000);
+    shopRestore(true);
+    return;
+  }
+  shopPendClear();
+  if(status === 403 && code === 'guest'){ shopRefuse('guest'); return; }
+  let msg;
+  if(status === 429) msg = '⏳ One moment — try again in a few seconds.';
+  else if(status === 503 && code === 'closed'){ msg = '🔒 The Restricted aisle is closed right now.'; SHOP_CFG.open = false; }
+  else if(status === 401) msg = '🔑 Your sign-in needs refreshing: sign out and back in, then try again. Nothing was charged.';
+  else msg = '📡 Couldn\'t reach checkout. Nothing was charged.';
+  snd('deny');
+  if(err) err.textContent = msg;
+  if(!still) toast(msg, 3400);
+  if(go){ go.disabled = !age.checked; go.textContent = 'Continue · ' + s.price; }
+  if(code === 'closed'){ if(go) go.disabled = true; skuRepaint(); }
+}
+// fetch with a deadline. CORS: the server allows this site's origin only.
+async function shopPost(route, payload, token){
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  const t = setTimeout(() => { try{ if(ctl) ctl.abort(); }catch(e){} }, SHOP_WAIT);
+  try{
+    const r = await fetch(SHOP_API + '/' + route, {
+      method: 'POST', mode: 'cors', credentials: 'omit', cache: 'no-store',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload), signal: ctl ? ctl.signal : undefined
+    });
+    let body = null;
+    try{ body = await r.json(); }catch(e){ body = null; }
+    return { status: r.status, body };
+  }finally{ clearTimeout(t); }
+}
+
+// ── THE WAY BACK ─────────────────────────────────────────────────────────
+// At load: the flag, and the provider sending the player home. Filed for the
+// hub and out of the address bar at once — a copied link must not carry an
+// order reference, and a reload must not say "confirming" twice.
+function shopBoot(){
+  let q = null;
+  try{ q = new URLSearchParams(location.search); }catch(e){ q = null; }
+  if(q){
+    const f = q.get('shop'), p = q.get('purchase'), sku = q.get('sku') || '', sid = q.get('sid') || '';
+    try{
+      if(f === 'beta') localStorage.setItem(SHOP_LS_BETA, '1');
+      else if(f === 'off') localStorage.removeItem(SHOP_LS_BETA);
+    }catch(e){}
+    if((p === 'ok' || p === 'cancel') && skuOf(sku)){
+      try{ sessionStorage.setItem(SHOP_SS_RET, JSON.stringify({ p, sku, sid: /^cs_[A-Za-z0-9_]{1,250}$/.test(sid) ? sid : '', at: Date.now() })); }catch(e){}
+    }
+    if(f !== null || p !== null){
+      try{
+        const u = new URL(location.href);
+        ['shop', 'purchase', 'sku', 'sid'].forEach(k => u.searchParams.delete(k));
+        history.replaceState(history.state, '', u.pathname + u.search + u.hash);
+      }catch(e){}
+    }
+  }
+  let beta = false;
+  try{ beta = localStorage.getItem(SHOP_LS_BETA) === '1'; }catch(e){}
+  shopFlag = !!SHOP_API && (SHOP_LIVE || beta);
+  shopPaintAuth();
+}
+function shopRet(){ try{ return JSON.parse(sessionStorage.getItem(SHOP_SS_RET) || 'null'); }catch(e){ return null; } }
+// A return can land in a browser nobody is signed in to — an installed
+// iPhone app's checkout comes back in Safari, whose storage is its own. It
+// says what happened, in the slot the challenge links use.
+function shopPaintAuth(){
+  const el = document.getElementById('buy-auth');
+  if(!el) return;
+  const r = (!user && SHOP_API) ? shopRet() : null;
+  if(!r || r.p !== 'ok'){ el.style.display = 'none'; el.textContent = ''; return; }
+  el.innerHTML = '<div class="cl-auth-top">✅ PAYMENT RECEIVED — THANK YOU</div>' +
+    '<div class="cl-auth-sub">Go back to Point Invaders: your item is waiting on your account. Playing here instead? Sign in and it appears in a few seconds.</div>';
+  el.style.display = '';
+}
+function shopPending(){
+  const p = lsGet(SHOP_LS_PEND, null);
+  if(!p) return null;
+  if(typeof p.sku !== 'string' || !(Date.now() - (+p.at || 0) < SHOP_PEND_MS)){ shopPendClear(); return null; }
+  return p;
+}
+function shopPendClear(){ try{ localStorage.removeItem(SHOP_LS_PEND); }catch(e){} }
+// THE real "unlocked": whenever what is owned changes and the purchase this
+// device is waiting for is in it.
+function shopPendingCheck(){
+  const p = shopPending();
+  if(!p || !user || p.uid !== user.uid || !owns(p.sku)) return;
+  shopPendClear();
+  clearTimeout(shopRetTimer);
+  const s = skuOf(p.sku);
+  snd('purchase');
+  toast('✅ ' + (s ? s.name : 'Your purchase') + ' unlocked — thank you!', 3800);
+  try{ statsEvent('_buy_ok'); }catch(e){}
+}
+// From the hub, once somebody is signed in.
+function shopReturn(){
+  const r = shopRet();
+  if(!r) return;
+  try{ sessionStorage.removeItem(SHOP_SS_RET); }catch(e){}
+  shopPaintAuth();
+  const s = skuOf(r.sku);
+  if(!s || !shopFlag || !user) return;
+  if(r.p === 'cancel'){
+    const p = shopPending();
+    if(p && p.sku === s.sku) shopPendClear();
+    try{ statsEvent('_buy_cancel'); }catch(e){}
+    toast('Checkout cancelled. Nothing was charged.', 3200);
+    return;
+  }
+  lsSet(SHOP_LS_PEND, { sku: s.sku, uid: user.uid, at: Date.now() });
+  if(owns(s.sku)){ shopPendingCheck(); return; }
+  toast('🔐 Confirming your purchase…', 3000);
+  clearTimeout(shopRetTimer);
+  shopRetTimer = setTimeout(() => {
+    const p = shopPending();
+    if(!p || p.sku !== s.sku || !user || owns(s.sku)) return;
+    toast('⏳ Still processing — ' + s.name + ' will appear on its own, or use ⚙️ Settings → Restore Purchases.' +
+          (r.sid ? ' Ref …' + r.sid.slice(-6) : ''), 6500);
+  }, 20000);
+}
+
+// ── ⚙️ SETTINGS → 🔐 PURCHASES ───────────────────────────────────────────
+async function shopRestore(quiet){
+  if(!shopFlag || !user || !db || !auth || isLocalSession()) return;
+  const cu = auth.currentUser;
+  if(!cu || cu.uid !== user.uid || offlineMode){ if(!quiet) toast('📴 Restoring needs a connection.', 2600); return; }
+  const uid = user.uid;
+  try{
+    const snap = await withTimeout(db.ref('shop/ent/' + uid).once('value'), NET_WAIT);
+    if(!user || user.uid !== uid) return;
+    ENT.uid = uid; ENT.items = entClean(snap.val()); ENT.live = true; ENT.denied = null;
+    lsSet(SHOP_LS_ENT, { uid, at: Date.now(), items: ENT.items });
+    entChanged();
+    if(!ENT.ref) entSync();
+    const n = SHOP_SKUS.filter(s => owns(s.sku)).length;
+    if(!quiet){ snd(n ? 'success' : 'tab'); toast(n ? '🔄 Restored ' + n + ' item' + (n === 1 ? '' : 's') + '.' : '🔄 No purchases on this account.', 2800); }
+  }catch(e){
+    console.warn('Restore failed:', e && (e.code || e.message));
+    if(!quiet){ snd('deny'); toast(e && e.isOffline ? '📴 No answer from the grid — try again in a moment.' : '⚠️ Purchases couldn\'t be read right now.', 3200); }
+  }
+  if(typeof settingsOpen === 'function' && settingsOpen()) shopOrdersLoad();
+}
+async function shopOrdersLoad(){
+  if(!shopFlag || !user || !db || offlineMode || isLocalSession() || user.isGuest){ shopPaintSettings(); return; }
+  const uid = user.uid;
+  try{
+    const snap = await withTimeout(db.ref('shop/orders/' + uid).once('value'), NET_WAIT);
+    const v = snap.val() || {};
+    shopOrders = { uid, list: Object.keys(v).map(k => Object.assign({ sid: k }, v[k])).filter(o => skuOf(o.sku))
+                                .sort((a, b) => (+b.at || 0) - (+a.at || 0)) };
+  }catch(e){ shopOrders = { uid, list: [], err: true }; }
+  if(user && user.uid === uid) shopPaintSettings();
+}
+function shopPaintSettings(){
+  const sec = document.getElementById('set-shop');
+  if(!sec) return;
+  sec.hidden = !shopFlag || !user;
+  if(sec.hidden) return;
+  const note = document.getElementById('set-shop-note'), list = document.getElementById('set-shop-orders');
+  const btn = document.getElementById('btn-shop-restore'), st = document.getElementById('set-shop-state');
+  const n = SHOP_SKUS.filter(s => owns(s.sku)).length;
+  if(st){ st.className = 'set-state' + (n ? ' ok' : ''); st.textContent = n ? n + ' OWNED' : ''; }
+  if(isLocalSession() || user.isGuest){
+    if(note) note.textContent = 'Purchases belong to a saved account. Save this profile (above) to buy from the 🔐 Restricted aisle.';
+    if(list) list.innerHTML = '';
+    if(btn){ btn.hidden = true; btn.style.display = 'none'; }
+    return;
+  }
+  if(btn){ btn.hidden = false; btn.style.display = ''; }
+  if(note) note.textContent = 'Items from the 🔐 Restricted aisle belong to your account and follow it to every device. Missing one? Restore checks again.';
+  if(!list) return;
+  const o = (shopOrders && shopOrders.uid === user.uid) ? shopOrders : null;
+  list.innerHTML = !o ? '' : o.err ? '<div class="sku-ord-none">Your orders couldn\'t be read right now.</div>'
+    : !o.list.length ? '<div class="sku-ord-none">No orders on this account yet.</div>'
+    : o.list.slice(0, 20).map(x =>
+        `<div class="sku-ord"><span class="sku-ord-d">${esc(x.at ? shopDate(+x.at) : '—')}</span>` +
+        `<b>${esc(skuOf(x.sku).name)}</b><span class="sku-ord-a">${esc(shopMoney(x.amount, x.currency))}</span>` +
+        `<em class="sku-ord-s s-${esc(String(x.s || ''))}">${esc(SHOP_STATES[x.s] || String(x.s || '').toUpperCase())}${x.d ? ' · DUPLICATE' : ''}</em>` +
+        `<code class="sku-ord-ref" title="Order reference — quote it if you write to us">${esc(String(x.pi || x.sid))}</code></div>`).join('');
+}
+paintSettings = function(){
+  const r = SHOP_REAL.settings.apply(this, arguments);
+  try{ shopPaintSettings(); }catch(e){}
+  return r;
+};
+
+// ── 🎟️ EXHIBITION ROUNDS ────────────────────────────────────────────────
+function exhibToys(){ return { aegis: owns('pu_aegis'), anchor: owns('pu_anchor') }; }
+function exhibAny(){ const t = exhibToys(); return t.aegis || t.anchor; }
+function exhibToggle(){
+  if(!exhibAny()){ exhibArmed = false; snd('deny'); return; }
+  exhibArmed = !exhibArmed;
+  snd(exhibArmed ? 'equip' : 'uiBack');
+  toast(exhibArmed ? '🎟️ EXHIBITION ARMED — your next mission round is played with your toys, and pays nothing.'
+                   : '🎟️ Exhibition disarmed.', exhibArmed ? 3600 : 2000);
+  exhibPaintHub();
+  skuRepaint();
+}
+// prepGame(): may THIS round be an exhibition? The same test a bounty uses —
+// bntyArm() judges it, and prepGame() asks it again straight after, so asking
+// first changes nothing — and never under the tour or another mode's tap.
+function exhibCan(gid){
+  if(!shopFlag || !user || !SOLO_START[gid] || !exhibAny()) return false;
+  if(vsResultTap && vsResultTap !== exhibTap) return false;
+  if((typeof tutOn === 'function' && tutOn()) || onboardRunning) return false;
+  try{ bntyArm(gid); return !!(bntyRound && bntyRound.ok); }catch(e){ return false; }
+}
+function exhibClear(){
+  exhibRound = null;
+  if(vsResultTap === exhibTap) vsResultTap = null;
+}
+// The result, taken before the results card: stop the round (the tap
+// short-circuits showResults, so its loop is still running), bank NOTHING,
+// and show the exhibition's own card over the hub.
+function exhibTap(gid, pts){
+  const run = exhibRound;
+  if(!run || gid !== run.gid) return false;
+  stopGame();
+  setControls(null);
+  document.getElementById('game-screen').classList.remove('canvas-game');
+  exhibClear();
+  // 📊 § 34: counted like a lab run — it has no card to be counted on.
+  try{ if(typeof playCount === 'function') playCount('exhib'); }catch(e){}
+  exhibLast = { gid, pts: Math.max(0, Math.round(+pts || 0)), aegis: run.aegis, anchor: run.anchor };
+  snd('results');
+  enterHub();
+  openOverlay('exhib-overlay', exhibCard);
+  return true;
+}
+function exhibCard(){
+  const r = exhibLast, m = r && META[r.gid], body = document.getElementById('exhib-body');
+  if(!r || !m || !body) return;
+  document.getElementById('exhib-heading').textContent = '🎟️ EXHIBITION · ' + m.name;
+  const toys = [r.aegis ? '💠 Aegis Field' : '', r.anchor ? '⚓ Chrono Anchor' : ''].filter(Boolean).join(' · ');
+  body.innerHTML =
+    `<div class="xh-score"><b>${r.pts.toLocaleString()}</b><span>PTS · NOT BANKED</span></div>` +
+    (toys ? `<div class="xh-toys">${esc(toys)}</div>` : '') +
+    `<p class="xh-note">An exhibition pays no points, credits or XP, and is on no board — that is what keeps money out of the scores.</p>` +
+    `<div class="xh-acts"><button class="btn btn-secondary" id="xh-hub" type="button">Hub</button>` +
+    `<button class="btn btn-primary" id="xh-again" type="button">🎟️ Play Again (Exhibition)</button></div>`;
+  document.getElementById('xh-hub').onclick = () => closeOverlay('exhib-overlay');
+  document.getElementById('xh-again').onclick = () => exhibAgain(r.gid);
+}
+function exhibAgain(gid){
+  closeOverlay('exhib-overlay');
+  if(!user || !META[gid] || !exhibAny()) return;
+  if(typeof missionUnlocked === 'function' && !missionUnlocked(gid)) return;
+  exhibArmed = true;
+  curGame = gid;
+  snd('success');
+  document.getElementById('g-title').textContent = META[gid].name;
+  showScreen('game-screen');
+  prepGame(gid);
+}
+// The round opens on the chaos banner's slot, saying what it is, and shrinks
+// to a chip — the same beat the chaos banner has.
+function exhibBanner(){
+  const el = document.getElementById('chaos-banner');
+  if(!el || !exhibRound) return;
+  const x = exhibRound;
+  document.getElementById('chaos-icon').textContent = '🎟️';
+  document.getElementById('chaos-name').textContent = 'EXHIBITION · ' + [x.aegis ? '💠 AEGIS' : '', x.anchor ? '⚓ ANCHOR' : ''].filter(Boolean).join(' + ');
+  document.getElementById('chaos-desc').textContent = 'Nothing is banked this round: no points, credits or XP, and no board.' +
+    (x.aegis ? ' Every fatal hit is absorbed.' : '') + (x.anchor ? ' ⚓ +10s adds ten seconds, as often as you like.' : '');
+  el.style.display = 'flex';
+  el.className = 'big chaos-exhib';
+  clearTimeout(chaos.bannerTimer);
+  chaos.bannerTimer = setTimeout(() => el.classList.replace('big', 'chip'), 3200);
+  toast('🎟️ EXHIBITION — nothing is banked this round', 3000);
+}
+function exhibPaintHub(){
+  const row = document.getElementById('exhib-selector');
+  if(exhibArmed && !exhibAny()) exhibArmed = false;
+  if(!row) return;
+  row.hidden = !(shopFlag && exhibArmed);
+  if(row.hidden) return;
+  const t = exhibToys(), note = document.getElementById('exhib-note');
+  if(note) note.textContent = 'Your next mission round is an exhibition with ' +
+    [t.aegis ? '💠 Aegis Field' : '', t.anchor ? '⚓ Chrono Anchor' : ''].filter(Boolean).join(' and ') + '. It pays nothing and is on no board.';
+}
+// ⚓ The Time Dilator's own clock door (§ the power-ups), with nothing spent.
+function exhibAnchor(){
+  if(!exhibRound || !exhibRound.anchor) return;
+  if(!document.getElementById('game-screen')?.classList.contains('active')) return;
+  const el = document.getElementById('g-time');
+  const raw = el ? el.textContent.trim() : '';
+  const secs = parseClockText(raw);
+  if(secs == null){ snd('deny'); toast('⚓ No clock to anchor on this mission.', 2200); return; }
+  const next = secs + ANCHOR_S;
+  if(roundClockAdd){
+    try{ roundClockAdd(ANCHOR_S); }catch(e){ console.warn('Clock hook failed:', e); }
+    el.textContent = raw.includes(':') ? fmtTime(next) : String(next);
+  }else _clockSkip += ANCHOR_S;
+  const bar = document.getElementById('prog-fill');
+  if(bar){ const pct = parseFloat(bar.style.width) || 0; bar.style.width = Math.min(100, pct * (next / Math.max(1, secs))) + '%'; }
+  snd('powerup');
+  const b = document.querySelector('.pu-btn[data-xh="anchor"]');
+  if(b){ b.classList.remove('fired'); void b.offsetWidth; b.classList.add('fired'); }
+  document.querySelector('.g-area')?.classList.add('dilated');
+  setTimeout(() => document.querySelector('.g-area')?.classList.remove('dilated'), 700);
+}
+
+// The round itself. `mod === undefined` is a plain launch (a duel, a rush, an
+// anomaly… pass their own); null in its place means no chaos roll and no heat.
+// A RESTART from the pause menu is the same exhibition again.
+prepGame = function(gid, mod){
+  const again = !!(exhibRound && exhibRound.gid === gid);
+  exhibClear();
+  let xh = false;
+  try{ xh = mod === undefined && (exhibArmed || again) && exhibCan(gid); }catch(e){ xh = false; }
+  if(!xh) return SHOP_REAL.prep.apply(this, arguments);
+  exhibArmed = false;
+  const t = exhibToys();
+  exhibRound = { gid, aegis: t.aegis, anchor: t.anchor };
+  vsResultTap = exhibTap;
+  const r = SHOP_REAL.prep.call(this, gid, null);
+  try{
+    if(typeof bntyDisarm === 'function') bntyDisarm();       // § 42: nothing is collected in a round that pays nothing
+    exhibBanner();
+    exhibPaintHub();
+    const tt = document.getElementById('g-title');
+    if(tt && META[gid]) tt.textContent = '🎟️ ' + META[gid].name + ' · EXHIBITION';
+  }catch(e){ console.warn('Exhibition banner failed:', e); }
+  return r;
+};
+// 💠 Aegis absorbs every fatal hit — and in an exhibition nothing from the
+// Credits kit is spent, with or without it (the rule a lab run has).
+survivedFatal = function(){
+  if(exhibRound){
+    if(!exhibRound.aegis) return false;
+    const now = Date.now();
+    if(now - exhibSaid > 1500){ exhibSaid = now; snd('shield'); toast('💠 AEGIS ABSORBED', 1400); }
+    return true;
+  }
+  return SHOP_REAL.fatal.apply(this, arguments);
+};
+powerConsume = function(){
+  if(exhibRound) return false;
+  return SHOP_REAL.consume.apply(this, arguments);
+};
+// The dock: the toys instead of the Credits kit.
+paintPowerDock = function(){
+  if(!exhibRound) return SHOP_REAL.dock.apply(this, arguments);
+  const dock = document.getElementById('pu-dock');
+  if(!dock || !user || mp) return;
+  const x = exhibRound, btns = [];
+  if(x.anchor) btns.push(`<button class="pu-btn pu-exhib" data-xh="anchor" type="button" title="Chrono Anchor — +${ANCHOR_S} seconds, as often as you like. Exhibition only.">` +
+                         `<span class="pu-emoji">⚓</span><span class="pu-label">+${ANCHOR_S}s</span><span class="pu-count">∞</span></button>`);
+  if(x.aegis) btns.push(`<button class="pu-btn pu-exhib passive" type="button" disabled title="Aegis Field — every fatal hit is absorbed. Exhibition only.">` +
+                        `<span class="pu-emoji">💠</span><span class="pu-label">AEGIS</span><span class="pu-count">ON</span></button>`);
+  if(!btns.length){ dock.style.display = 'none'; dock.innerHTML = ''; return; }
+  dock.style.display = 'flex';
+  dock.innerHTML = btns.join('');
+  const a = dock.querySelector('[data-xh="anchor"]');
+  if(a) a.onclick = () => exhibAnchor();
+};
+
+// ── THE HUB, SIGNING OUT, FORGETTING ─────────────────────────────────────
+enterHub = function(){
+  exhibClear();                                  // a round walked away from is over
+  const r = SHOP_REAL.hub.apply(this, arguments);
+  try{
+    if(user && shopFlag){ shopCfgSync(); entSync(); shopReturn(); shopPendingCheck(); }
+    else if(user){ try{ sessionStorage.removeItem(SHOP_SS_RET); }catch(e){} }   // a way back the aisle is off for
+    shopPaintAuth();
+    exhibPaintHub();
+  }catch(e){ console.warn('Restricted aisle hub step failed:', e); }
+  return r;
+};
+// The entitlement copy is this device's copy of the profile too: it goes when
+// the profile does (a guest exited, a local profile wiped). A saved account
+// signing out keeps it, as it keeps its mirror (THE CACHED LOGIN).
+forgetLocalProfile = function(){
+  const r = SHOP_REAL.forget.apply(this, arguments);
+  try{
+    localStorage.removeItem(SHOP_LS_ENT);
+    localStorage.removeItem(SHOP_LS_PEND);
+  }catch(e){}
+  entStop();
+  ENT.uid = null; ENT.items = {}; ENT.live = false;
+  exhibArmed = false;
+  return r;
+};
+
+// ── WIRING ──
+try{
+  shopBoot();
+  // 📊 § 34: one line per mode — and only where the aisle is, so the dossier is unchanged everywhere else.
+  if(shopFlag && typeof PLAY_MODES === 'object' && PLAY_MODES) PLAY_MODES.exhib = '🎟️ Exhibitions';
+  // 👻 § 36: an exhibition records and races no ghost.
+  GHOST_SKIP = (function(prev){ return function(gid){ return !!exhibRound || (typeof prev === 'function' && !!prev(gid)); }; })(GHOST_SKIP);
+  registerOverlayCloser('sku-overlay', skuClose);
+  document.getElementById('sku-close')?.addEventListener('click', () => closeOverlay('sku-overlay'));
+  document.getElementById('sku-overlay')?.addEventListener('click', e => { if(e.target.id === 'sku-overlay') closeOverlay('sku-overlay'); });
+  document.getElementById('exhib-close')?.addEventListener('click', () => closeOverlay('exhib-overlay'));
+  document.getElementById('exhib-overlay')?.addEventListener('click', e => { if(e.target.id === 'exhib-overlay') closeOverlay('exhib-overlay'); });
+  document.getElementById('btn-exhib')?.addEventListener('click', () => exhibToggle());
+  document.getElementById('btn-shop-restore')?.addEventListener('click', () => shopRestore(false));
+  // The orders are read when Settings OPENS, not on every repaint (refreshClaimUi repaints it on each hub entry).
+  document.getElementById('btn-settings')?.addEventListener('click', () => setTimeout(() => {
+    if(typeof settingsOpen === 'function' && settingsOpen()) shopOrdersLoad();
+  }, 0));
+  // Escape closes either sheet when it is the one on top — the same "topmost" BACK and B use.
+  document.addEventListener('keydown', e => {
+    if(e.key !== 'Escape') return;
+    ['sku-overlay', 'exhib-overlay'].forEach(id => {
+      const ov = document.getElementById(id);
+      if(!ov || !ov.classList.contains('show')) return;
+      if(typeof padTopOverlay === 'function' && padTopOverlay() !== ov) return;
+      closeOverlay(id);
+    });
+  });
+  // Signed out, or somebody else signed in: the listener belonged to the last one.
+  if(auth) auth.onAuthStateChanged(u => { if(!u || u.uid !== ENT.uid) entStop(); });
+}catch(e){ console.warn('Restricted aisle failed to wire:', e); }
