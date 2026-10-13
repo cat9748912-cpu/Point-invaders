@@ -18,3 +18,6 @@ database-debug.log*
 firestore-debug.log*
 ui-debug.log*
 pubsub-debug.log*
+# The browser test's copy of the Firebase SDK (fetched from gstatic on first run), and its screenshots.
+.vendor/
+test-results/

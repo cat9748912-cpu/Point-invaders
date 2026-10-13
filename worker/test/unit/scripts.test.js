@@ -153,9 +153,12 @@ test('parity: the CLI exits 0 / 1 / 2, and the block runs in an empty sandbox', 
   assert.throws(() => parity.readClient(`${parity.BEGIN}\nprocess.exit(3); const SHOP_SKUS = [];\n${parity.END}`), /process is not defined/);
 });
 
-test('parity: today\'s app.js has no client catalogue yet (Phase 2 adds it)', () => {
+test('parity: today\'s app.js carries the client catalogue (§ 46), and it agrees with the server\'s', () => {
   const quiet = { log(){}, error(){} };
-  assert.equal(parity.main([], quiet), 2);
+  assert.equal(parity.main([], quiet), 0);
+  const client = parity.readClient(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'app.js'), 'utf8'));
+  // Array.from: the block was evaluated in its own realm, and deepEqual compares prototypes.
+  assert.deepEqual(Array.from(client, s => s.sku), catalog.SKUS.map(s => s.sku), 'the same skus, in the same order');
 });
 
 // ── webhook endpoint ──────────────────────────────────────────────────────

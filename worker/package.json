@@ -9,7 +9,8 @@
     "deploy": "wrangler deploy",
     "test": "node --test \"test/unit/**/*.test.js\"",
     "test:emu": "firebase emulators:exec --only auth,database --project demo-pi-shop \"node --test --test-concurrency=1 \\\"test/unit/**/*.test.js\\\" \\\"test/integration/**/*.test.js\\\"\"",
-    "test:e2e": "node test/e2e/secrets.js && firebase emulators:exec --only auth,database --project demo-pi-shop \"node --test --test-concurrency=1 \\\"test/e2e/**/*.test.js\\\"\""
+    "test:e2e": "node test/e2e/secrets.js && firebase emulators:exec --only auth,database --project demo-pi-shop \"node --test --test-concurrency=1 \\\"test/e2e/**/*.test.js\\\"\"",
+    "test:browser": "node test/e2e/secrets.js && firebase emulators:exec --only auth,database --project demo-pi-shop \"node --test --test-concurrency=1 \\\"test/browser/**/*.test.js\\\"\""
   },
   "dependencies": {
     "stripe": "23.0.0",
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "5.0.2",
-    "firebase": "12.19.0"
+    "firebase": "12.19.0",
+    "playwright": "1.56.1"
   }
 }
