@@ -6610,3 +6610,297 @@ body.mode-3d .btn.sku-buy{--wall:#8a6b00;--wallb:#453600;color:#1a1200}
 .xh-score span{font-family:var(--fd);font-size:.5rem;letter-spacing:.18em;color:var(--dim)}
 .xh-toys{text-align:center;font-family:var(--fd);font-size:.6rem;letter-spacing:.1em}
 .xh-note{margin:0;font-size:.84rem;line-height:1.45;color:var(--dim);text-align:center}
+
+/* <<FH:BEGIN>> */
+/* ══════════════════════════════════════════════════════════════════════
+   🛸 FLIGHT DECK — the 3D hub you fly (v88, app.js § 47)
+   ══════════════════════════════════════════════════════════════════════
+   In 3D the hub is a full-bleed WebGL view (#hs-stage holds the borrowed
+   #gl-canvas) with a holographic HUD over it. Everything is scoped to
+   body.hub-fly (the deck's layout is in force) or to #hub-space itself, so 2D
+   CLASSIC and the 3D list hub are untouched. The list hub's own panels are
+   MOVED into #hs-top and the drawer panes while the deck flies; the rules
+   under "ADOPTED" refit them to a narrow panel without changing what they are.
+
+   ⚠️ NO backdrop-filter ANYWHERE IN HERE. Every panel of the HUD sits over a
+   WebGL canvas that redraws every frame, so a blurred backdrop is a blur of a
+   moving full-screen layer, recomputed by the compositor each frame: measured
+   on an HD 520, the deck fell from 17 fps to 2.5 with the glass blurred. The
+   panels are dark, near-opaque glass instead, and read the same.
+
+   Stacking inside #hub-space: stage 0 · input 1 · fx 2 · labels 3 · hint 4 ·
+   where 5 · top / rail / map / touch 6 · dock 7 · panels 8. All of it sits in
+   #hub-screen (z 10), so every .fb-overlay (z 2000+), the countdown, the toast
+   and the tour layer stay above it.                                          */
+#hub-space{display:none}
+body.hub-fly #hub-screen{padding:0 !important;overflow:hidden;justify-content:flex-start}
+body.hub-fly #hub-screen > :not(#hub-space){display:none !important}
+body.hub-fly #hub-space{
+  display:block;position:absolute;inset:0;overflow:hidden;
+  background:radial-gradient(ellipse at 50% 40%,#0a0820 0%,#02030a 70%);
+  --hs-glass:rgba(5,10,24,.72);--hs-edge:rgba(120,220,255,.24);--hs-ink:#e9f8ff;
+  font-family:var(--fb);color:var(--hs-ink)
+}
+body.hub-fly #hub-space[hidden]{display:none}
+/* The 2D field of white dots behind the screens, the DOM companion and the
+   seasonal bats would all sit over real space: the 3D view has its own stars,
+   flies the companion beside the ship, and tints its light for the event. */
+body.hs-live #bg-canvas{visibility:hidden}
+body.hs-live #cmp-fx,body.hs-live #ev-deco{display:none !important}
+
+#hs-stage{position:absolute;inset:0;z-index:0}
+#hub-space #gl-canvas{position:absolute;left:0;top:0;border:0;border-radius:0;pointer-events:none;background:#02030a}
+#hs-input{position:absolute;inset:0;z-index:1;touch-action:none;cursor:grab;-webkit-user-select:none;user-select:none}
+#hs-input.grabbing{cursor:grabbing}
+#hs-fx{position:absolute;inset:0;width:100%;height:100%;z-index:2;pointer-events:none}
+#hs-labels{position:absolute;inset:0;z-index:3;pointer-events:none;overflow:hidden}
+
+/* ── LABELS ── a pill over every destination; click it to fly there. Moved
+   every frame with transform only, so a frame costs no layout. */
+.hs-lbl{
+  position:absolute;left:0;top:0;pointer-events:auto;cursor:pointer;
+  display:flex;align-items:center;gap:6px;white-space:nowrap;
+  margin:0;padding:4px 10px 4px 6px;border-radius:999px;
+  font-family:var(--fd);font-size:.62rem;font-weight:700;letter-spacing:.08em;color:var(--hs-ink);
+  background:rgba(4,10,22,.66);border:1px solid color-mix(in srgb,var(--acc,#00f5ff) 55%,transparent);
+  box-shadow:0 0 12px color-mix(in srgb,var(--acc,#00f5ff) 30%,transparent);
+  /* Centred over its point with `translate`, which commutes with the per-frame
+     translate3d in `transform`. Never `scale` here: it would multiply the
+     per-frame offset too and throw the label across the screen. */
+  translate:-50% -100%;transition:background .15s,box-shadow .15s,padding .15s;will-change:transform
+}
+/* ⚠️ The `display:flex` above outranks the browser's own [hidden]{display:none}:
+   without this rule a label the placer leaves out stays on screen, frozen at
+   the spot, distance and fade it had when it was last placed. */
+.hs-lbl[hidden]{display:none}
+.hs-lbl:hover{background:rgba(8,20,40,.9)}
+.hs-lbl-i{font-size:.9rem;line-height:1}
+.hs-lbl-n{text-shadow:0 0 8px color-mix(in srgb,var(--acc,#00f5ff) 70%,transparent)}
+.hs-lbl-d{font-family:var(--fb);font-weight:600;font-size:.62rem;letter-spacing:.02em;opacity:.65}
+.hs-lbl.hs-station{padding:7px 14px 7px 9px;font-size:.78rem;border-width:2px;letter-spacing:.14em}
+.hs-lbl.hs-station .hs-lbl-i{font-size:1.15rem}
+.hs-lbl.far{padding:3px 5px;gap:0}
+.hs-lbl.far .hs-lbl-n,.hs-lbl.far .hs-lbl-d{display:none}
+/* A station near enough for its 3D sign to read keeps a nameplate under it:
+   its icon and how far it is. */
+.hs-lbl.hs-station.far{padding:5px 12px 5px 8px;gap:7px;translate:-50% 0}
+.hs-lbl.hs-station.far .hs-lbl-d{display:inline;font-size:.7rem;opacity:.85}
+
+/* The first flight after an update compiles the renderer's shaders: a quiet
+   beacon in the middle of the dark until they land. */
+#hub-space.hs-warming::after{
+  content:'';position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px 0 0 -27px;z-index:2;border-radius:50%;
+  border:3px solid rgba(0,245,255,.15);border-top-color:#00f5ff;box-shadow:0 0 22px rgba(0,245,255,.35);
+  animation:hsSpin 1s linear infinite;pointer-events:none
+}
+@keyframes hsSpin{to{transform:rotate(360deg)}}
+.hs-lbl.focus{background:color-mix(in srgb,var(--acc,#00f5ff) 26%,rgba(4,10,22,.9));box-shadow:0 0 22px color-mix(in srgb,var(--acc,#00f5ff) 60%,transparent);padding-left:9px;padding-right:13px}
+.hs-lbl.auto{outline:2px dashed color-mix(in srgb,var(--acc,#00f5ff) 80%,#fff);outline-offset:2px}
+.hs-lbl.locked{filter:saturate(.25) brightness(.85)}
+.hs-lbl.locked .hs-lbl-n::after{content:' 🔒'}
+.hs-lbl.fav .hs-lbl-n::before{content:'★ ';color:var(--gold)}
+
+/* ── TOP BAR ── the list hub's own bar (name, PTS, CR, market, sound,
+   fullscreen, settings, exit), adopted, on a band of glass. */
+#hs-top{position:absolute;left:10px;right:10px;top:8px;z-index:6;pointer-events:none}
+body.hub-fly #hs-top .hub-bar{
+  pointer-events:auto;max-width:none;width:100%;margin:0;
+  background:linear-gradient(180deg,rgba(4,9,22,.86),rgba(4,9,22,.62)) !important;
+  border:1px solid var(--hs-edge) !important;border-radius:14px;
+  box-shadow:0 8px 28px rgba(0,0,0,.45),inset 0 1px 0 rgba(160,240,255,.12) !important
+}
+body.hub-fly #hs-top .hub-bar::after{content:'🛸 FLIGHT DECK'}
+
+/* ── WHERE YOU ARE ── one line under the bar; also the live region. */
+#hs-where{
+  position:absolute;left:50%;top:calc(var(--hs-top-h,70px) + 14px);z-index:5;translate:-50% 0;pointer-events:none;
+  font-family:var(--fd);font-size:.72rem;font-weight:700;letter-spacing:.26em;white-space:nowrap;
+  color:#bff6ff;text-shadow:0 0 12px rgba(0,245,255,.75),0 0 2px #000;
+  max-width:calc(100% - 40px);overflow:hidden;text-overflow:ellipsis
+}
+#hs-where.flash{animation:hsFlash .9s ease}
+@keyframes hsFlash{0%{opacity:0;letter-spacing:.5em}100%{opacity:1;letter-spacing:.26em}}
+
+/* ── THE RAIL ── the deck's own doors, down the left edge. */
+#hs-rail{position:absolute;left:10px;top:calc(var(--hs-top-h,70px) + 18px);z-index:6;display:flex;flex-direction:column;gap:8px}
+#hub-space .hs-rb{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:62px;padding:8px 6px}
+#hub-space .hs-rb b{font-size:1.15rem;line-height:1;font-weight:400}
+#hub-space .hs-rb span{font-family:var(--fd);font-size:.52rem;letter-spacing:.14em}
+
+/* ── THE CARD ── what pops up when you are near. */
+#hs-dock{
+  position:absolute;left:50%;bottom:calc(30px + var(--hs-bottom,0px));z-index:7;translate:-50% 0;
+  width:min(600px,calc(100% - 24px));padding:14px 16px 12px;border-radius:16px;
+  background:linear-gradient(160deg,rgba(6,14,30,.9),rgba(4,8,20,.8));
+  border:1px solid color-mix(in srgb,var(--acc,#00f5ff) 55%,transparent);
+  box-shadow:0 0 0 1px rgba(255,255,255,.03),0 14px 40px rgba(0,0,0,.55),0 0 34px color-mix(in srgb,var(--acc,#00f5ff) 22%,transparent);
+  animation:hsPop .26s cubic-bezier(.2,.9,.3,1.2)
+}
+#hs-dock[hidden]{display:none}
+/* The command deck opens over the card's corner: the card waits until it closes. */
+body.hs-drawer-open #hs-dock{display:none}
+#hs-dock::before{
+  content:'';position:absolute;left:14px;right:14px;top:-1px;height:2px;border-radius:2px;
+  background:linear-gradient(90deg,transparent,var(--acc,#00f5ff),transparent);opacity:.9
+}
+@keyframes hsPop{0%{opacity:0;transform:translateY(14px) scale(.96)}100%{opacity:1;transform:none}}
+/* On a wide screen the card sits bottom-right, clear of the ship the chase
+   camera holds at the bottom of the middle of the view. */
+@media (min-width:1100px){
+  #hs-dock{left:auto;right:14px;bottom:calc(14px + var(--hs-bottom,0px));translate:none;width:min(520px,calc(100% - 260px))}
+}
+.hs-dk-head{display:flex;align-items:flex-start;gap:12px}
+.hs-dk-ico{font-size:2.1rem;line-height:1;filter:drop-shadow(0 0 10px color-mix(in srgb,var(--acc,#00f5ff) 60%,transparent))}
+.hs-dk-tx{flex:1;min-width:0}
+.hs-dk-title{font-family:var(--fd);font-weight:900;font-size:1rem;letter-spacing:.1em;color:#fff;
+  text-shadow:0 0 14px color-mix(in srgb,var(--acc,#00f5ff) 80%,transparent)}
+.hs-dk-chip{margin-left:8px;padding:2px 8px;border-radius:999px;font-size:.55rem;letter-spacing:.14em;vertical-align:middle;
+  color:var(--acc,#00f5ff);border:1px solid color-mix(in srgb,var(--acc,#00f5ff) 60%,transparent)}
+.hs-dk-sub{margin-top:4px;font-size:.92rem;line-height:1.35;color:rgba(233,248,255,.82)}
+.hs-dk-facts{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.hs-fact{font-family:var(--fd);font-size:.56rem;font-weight:700;letter-spacing:.1em;padding:4px 9px;border-radius:999px;
+  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);color:rgba(233,248,255,.9)}
+.hs-fact.hs-lock{color:#ffb4a0;border-color:rgba(255,120,90,.45)}
+.hs-dk-acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px}
+.hs-dk-key{margin-left:auto;font-family:var(--fd);font-size:.52rem;letter-spacing:.14em;color:rgba(233,248,255,.55);
+  padding:3px 7px;border:1px solid rgba(255,255,255,.18);border-radius:6px}
+.hs-dk-lane{display:inline-flex;margin-top:10px;border:1px solid rgba(255,255,255,.14);border-radius:10px;overflow:hidden}
+.hs-seg{font-family:var(--fd);font-size:.56rem;font-weight:700;letter-spacing:.1em;padding:6px 10px;cursor:pointer;
+  background:transparent;color:rgba(233,248,255,.7);border:0;border-right:1px solid rgba(255,255,255,.1)}
+.hs-seg:last-child{border-right:0}
+.hs-seg.on{background:color-mix(in srgb,var(--acc,#00f5ff) 24%,transparent);color:#fff}
+.hs-seg:focus-visible{outline:2px solid var(--acc,#00f5ff);outline-offset:-2px}
+.hs-dk-prog{height:6px;margin-top:10px;border-radius:4px;background:rgba(255,255,255,.08);overflow:hidden}
+.hs-dk-prog i{display:block;height:100%;background:linear-gradient(90deg,var(--acc,#ff8a1a),#ffe2a8)}
+
+.hs-x{flex:none;width:30px;height:30px;border-radius:8px;cursor:pointer;font-size:.85rem;line-height:1;
+  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.16);color:rgba(233,248,255,.8)}
+.hs-x:hover{background:rgba(255,255,255,.12);color:#fff}
+.hs-x:focus-visible,.hs-lbl:focus-visible,.hs-row-go:focus-visible,.hs-row-run:focus-visible,.hs-chip:focus-visible,.hs-tab:focus-visible{outline:2px solid #00f5ff;outline-offset:2px}
+
+/* ── THE MAP ── */
+#hs-mapbox{
+  position:absolute;left:10px;bottom:calc(10px + var(--hs-bottom,0px));z-index:6;width:196px;height:132px;padding:6px;border-radius:14px;
+  background:var(--hs-glass);
+  border:1px solid var(--hs-edge);box-shadow:0 8px 24px rgba(0,0,0,.4)
+}
+#hs-map{display:block;width:100%;height:100%;cursor:crosshair}
+
+/* ── THE HINT ── the controls for the device in hand. */
+#hs-hint{
+  position:absolute;left:50%;bottom:calc(8px + var(--hs-bottom,0px));z-index:4;translate:-50% 0;pointer-events:none;white-space:nowrap;
+  font-family:var(--fd);font-size:.5rem;letter-spacing:.14em;color:rgba(200,240,255,.58);
+  max-width:calc(100% - 440px);overflow:hidden;text-overflow:ellipsis
+}
+body.hub-fly #hub-space:has(#hs-dock:not([hidden])) #hs-hint{opacity:0}
+
+/* ── TOUCH ── the left-thumb stick and the climb/boost buttons, only while
+   a finger is what is flying. */
+#hs-touch{position:absolute;inset:0;z-index:6;pointer-events:none;display:none}
+body.hs-touchmode #hs-touch{display:block}
+.hs-stick{position:absolute;left:0;top:0;width:0;height:0;opacity:0;transition:opacity .15s}
+.hs-stick.on{opacity:1}
+.hs-stick::before{content:'';position:absolute;left:-58px;top:-58px;width:116px;height:116px;border-radius:50%;
+  border:2px solid rgba(0,245,255,.55);box-shadow:0 0 16px rgba(0,245,255,.35);background:rgba(0,245,255,.05)}
+.hs-stick i{position:absolute;left:-22px;top:-22px;width:44px;height:44px;border-radius:50%;
+  background:radial-gradient(circle at 40% 35%,rgba(180,250,255,.7),rgba(0,245,255,.25));box-shadow:0 0 14px rgba(0,245,255,.6)}
+.hs-tbtn{position:absolute;pointer-events:auto;touch-action:none;border-radius:50%;
+  font-family:var(--fd);font-weight:700;font-size:.6rem;letter-spacing:.1em;color:#dff8ff;
+  background:rgba(4,12,26,.62);border:2px solid rgba(0,245,255,.5);box-shadow:0 0 14px rgba(0,245,255,.25)}
+.hs-tbtn.on{background:rgba(0,245,255,.28)}
+.hs-t-boost{right:18px;bottom:calc(40px + var(--hs-bottom,0px));width:78px;height:78px}
+.hs-t-up{right:108px;bottom:calc(86px + var(--hs-bottom,0px));width:52px;height:52px;font-size:.9rem}
+.hs-t-down{right:108px;bottom:calc(26px + var(--hs-bottom,0px));width:52px;height:52px;font-size:.9rem}
+/* With a card up, the buttons stand on top of it. */
+body.hub-fly #hub-space:has(#hs-dock:not([hidden])) .hs-t-boost{bottom:calc(var(--hs-dock-h,150px) + 34px + var(--hs-bottom,0px))}
+body.hub-fly #hub-space:has(#hs-dock:not([hidden])) .hs-t-up{bottom:calc(var(--hs-dock-h,150px) + 80px + var(--hs-bottom,0px))}
+body.hub-fly #hub-space:has(#hs-dock:not([hidden])) .hs-t-down{bottom:calc(var(--hs-dock-h,150px) + 20px + var(--hs-bottom,0px))}
+body.hs-touchmode #hs-dock{bottom:calc(12px + var(--hs-bottom,0px))}
+
+/* ── PANELS ── the navigator on the left, the command deck on the right. */
+.hs-panel{
+  position:absolute;top:calc(var(--hs-top-h,70px) + 14px);bottom:calc(10px + var(--hs-bottom,0px));z-index:8;width:min(400px,calc(100% - 20px));
+  display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:16px;
+  background:linear-gradient(170deg,rgba(6,13,28,.94),rgba(4,8,20,.9));
+  border:1px solid var(--hs-edge);box-shadow:0 18px 50px rgba(0,0,0,.6);
+  animation:hsSlide .22s ease
+}
+.hs-panel[hidden]{display:none}
+.hs-nav{left:84px}
+.hs-drawer{right:10px;width:min(460px,calc(100% - 20px))}
+@keyframes hsSlide{0%{opacity:0;transform:translateY(10px)}100%{opacity:1;transform:none}}
+.hs-ph{display:flex;align-items:center;gap:8px}
+.hs-pt{flex:1;font-family:var(--fd);font-weight:900;font-size:.8rem;letter-spacing:.18em;color:#bff6ff}
+.hs-search{width:100%;margin:0}
+.hs-chips{display:flex;flex-wrap:wrap;gap:6px}
+.hs-chip{font-family:var(--fd);font-size:.55rem;font-weight:700;letter-spacing:.08em;padding:5px 10px;border-radius:999px;cursor:pointer;
+  background:rgba(255,255,255,.04);color:rgba(233,248,255,.75);border:1px solid rgba(255,255,255,.14)}
+.hs-chip.on{color:#001018;background:#7ff7ff;border-color:#7ff7ff}
+.hs-list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding-right:2px}
+.hs-lh{margin:8px 2px 2px;font-family:var(--fd);font-size:.55rem;font-weight:700;letter-spacing:.2em;color:var(--cyan)}
+.hs-row{display:flex;gap:4px;align-items:stretch}
+.hs-row-go{flex:1;min-width:0;display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;cursor:pointer;text-align:left;
+  background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-left:3px solid var(--acc,#00f5ff);color:var(--hs-ink)}
+.hs-row-go:hover{background:rgba(255,255,255,.08)}
+.hs-row-i{font-size:1.1rem;line-height:1}
+.hs-row-n{flex:1;min-width:0;font-family:var(--fd);font-size:.66rem;font-weight:700;letter-spacing:.08em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hs-row-m{font-size:.8rem;opacity:.85;white-space:nowrap}
+.hs-row-run{flex:none;width:40px;border-radius:10px;cursor:pointer;font-size:.8rem;
+  background:color-mix(in srgb,var(--acc,#00f5ff) 18%,rgba(255,255,255,.03));border:1px solid color-mix(in srgb,var(--acc,#00f5ff) 45%,transparent);color:#fff}
+.hs-row-run:disabled{opacity:.35;cursor:not-allowed}
+.hs-row.locked .hs-row-go{opacity:.6}
+.hs-empty{padding:18px;text-align:center;color:rgba(233,248,255,.6)}
+.hs-tabs{flex:1;display:flex;gap:6px}
+.hs-tab{flex:1;font-family:var(--fd);font-size:.6rem;font-weight:700;letter-spacing:.1em;padding:8px 6px;border-radius:10px;cursor:pointer;
+  background:rgba(255,255,255,.04);color:rgba(233,248,255,.7);border:1px solid rgba(255,255,255,.12)}
+.hs-tab.on{background:rgba(0,245,255,.16);color:#fff;border-color:rgba(0,245,255,.55)}
+.hs-pane{flex:1;min-height:0;overflow-y:auto;padding:2px 2px 6px}
+.hs-pane[hidden]{display:none}
+
+/* ── ADOPTED ── the list hub's panels, refitted to a panel ~430px wide. They
+   keep every class and id they had; only their outer box changes here. */
+body.hub-fly .hs-pane > *{max-width:none !important;width:auto !important;margin:0 0 12px !important}
+body.hub-fly .hs-pane .xp-rail{gap:10px;padding:10px 12px}
+body.hub-fly .hs-pane .xp-rail .xp-track{flex:1 1 100%;order:3}
+body.hub-fly .hs-pane .diff-btns{flex-wrap:wrap;justify-content:center}
+body.hub-fly .hs-pane .chaos-selector,body.hub-fly .hs-pane .heat-selector{flex-wrap:wrap}
+body.hub-fly .hs-pane .lb-panel{max-height:none}
+body.hub-fly .hs-pane .sec-label{margin:14px 0 8px}
+body.hub-fly .hs-pane > div > .sec-label:first-child{margin-top:2px}
+
+/* ── PHONES ── the bar on two compact rows, the deck's rail as a row of icons
+   under it and the map beside them, so the bottom of the screen belongs to the
+   thumb: the stick on the left, BOOST and climb on the right, and the card. */
+@media (max-width:760px){
+  body.hub-fly #hs-top{left:6px;right:6px;top:6px}
+  body.hub-fly #hs-top .hub-bar{padding:6px 8px;gap:6px;border-radius:12px}
+  body.hub-fly #hs-top .hub-logo-sm,body.hub-fly #hs-top .hub-bar::after{display:none}
+  body.hub-fly #hs-top .hub-right{gap:5px;justify-content:center;row-gap:6px}
+  body.hub-fly #hs-top .hub-right .btn{padding:6px 8px}
+  #hs-rail{flex-direction:row;left:6px;top:calc(var(--hs-top-h,92px) + 8px);gap:6px}
+  #hub-space .hs-rb{min-width:44px;padding:6px 4px}
+  #hub-space .hs-rb span{display:none}
+  #hs-mapbox{left:auto;right:6px;bottom:auto;top:calc(var(--hs-top-h,92px) + 8px);width:112px;height:76px;padding:4px;border-radius:10px}
+  #hs-where{top:calc(var(--hs-top-h,92px) + 92px);font-size:.58rem;letter-spacing:.16em}
+  #hs-hint{display:none}
+  .hs-panel{top:auto;bottom:var(--hs-bottom,0px);left:0;right:0;width:100%;max-height:72%;border-radius:18px 18px 0 0}
+  .hs-drawer{width:100%}
+  #hs-dock{bottom:calc(8px + var(--hs-bottom,0px));padding:12px}
+  .hs-dk-title{font-size:.86rem}
+  .hs-dk-sub{font-size:.84rem}
+  .hs-t-boost{right:14px;bottom:calc(26px + var(--hs-bottom,0px));width:74px;height:74px}
+  .hs-t-up{right:100px;bottom:calc(66px + var(--hs-bottom,0px));width:50px;height:50px}
+  .hs-t-down{right:100px;bottom:calc(10px + var(--hs-bottom,0px));width:50px;height:50px}
+  /* With a card up, the buttons stand on top of it. */
+  body.hub-fly #hub-space:has(#hs-dock:not([hidden])) .hs-t-boost{bottom:calc(var(--hs-dock-h,150px) + 22px + var(--hs-bottom,0px))}
+  body.hub-fly #hub-space:has(#hs-dock:not([hidden])) .hs-t-up{bottom:calc(var(--hs-dock-h,150px) + 62px + var(--hs-bottom,0px))}
+  body.hub-fly #hub-space:has(#hs-dock:not([hidden])) .hs-t-down{bottom:calc(var(--hs-dock-h,150px) + 8px + var(--hs-bottom,0px))}
+}
+/* The arcade's own REDUCE MOTION switch (VFX, html.reduced-motion) as well as
+   the system's: no pop, no slide, no flash. The spinner keeps turning — it is
+   the only sign the deck is still loading. */
+@media (prefers-reduced-motion:reduce){
+  #hs-dock,.hs-panel,#hs-where.flash{animation:none}
+}
+html.reduced-motion #hs-dock,html.reduced-motion .hs-panel,html.reduced-motion #hs-where.flash{animation:none}
+/* <<FH:END>> */
