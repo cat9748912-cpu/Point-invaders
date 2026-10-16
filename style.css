@@ -6633,10 +6633,10 @@ body.mode-3d .btn.sku-buy{--wall:#8a6b00;--wallb:#453600;color:#1a1200}
    #hub-screen (z 10), so every .fb-overlay (z 2000+), the countdown, the toast
    and the tour layer stay above it.                                          */
 #hub-space{display:none}
-body.hub-fly #hub-screen{padding:0 !important;overflow:hidden;justify-content:flex-start}
+body.hub-fly #hub-screen{padding:0 !important;overflow:hidden;overflow:clip;justify-content:flex-start}
 body.hub-fly #hub-screen > :not(#hub-space){display:none !important}
 body.hub-fly #hub-space{
-  display:block;position:absolute;inset:0;overflow:hidden;
+  display:block;position:absolute;inset:0;overflow:hidden;overflow:clip;
   background:radial-gradient(ellipse at 50% 40%,#0a0820 0%,#02030a 70%);
   --hs-glass:rgba(5,10,24,.72);--hs-edge:rgba(120,220,255,.24);--hs-ink:#e9f8ff;
   font-family:var(--fb);color:var(--hs-ink)
@@ -6653,7 +6653,7 @@ body.hs-live #cmp-fx,body.hs-live #ev-deco{display:none !important}
 #hs-input{position:absolute;inset:0;z-index:1;touch-action:none;cursor:grab;-webkit-user-select:none;user-select:none}
 #hs-input.grabbing{cursor:grabbing}
 #hs-fx{position:absolute;inset:0;width:100%;height:100%;z-index:2;pointer-events:none}
-#hs-labels{position:absolute;inset:0;z-index:3;pointer-events:none;overflow:hidden}
+#hs-labels{position:absolute;inset:0;z-index:3;pointer-events:none;overflow:hidden;overflow:clip}
 
 /* ── LABELS ── a pill over every destination; click it to fly there. Moved
    every frame with transform only, so a frame costs no layout. */
@@ -6903,4 +6903,26 @@ body.hub-fly .hs-pane > div > .sec-label:first-child{margin-top:2px}
   #hs-dock,.hs-panel,#hs-where.flash{animation:none}
 }
 html.reduced-motion #hs-dock,html.reduced-motion .hs-panel,html.reduced-motion #hs-where.flash{animation:none}
+
+/* ── 🎓 v90 · FLIGHT TRAINING rides the tour's layer (§ 45) ──
+   Its flying steps are the coach strip, under the status line: no dim, the
+   deck flies underneath, and — unlike a round's strip — SKIP STEP can be
+   pressed (not every player has the keys a step asks for).
+   ⚠️ The deck's containers CLIP rather than hide (above): overflow:hidden still
+   scrolls programmatically, and the tour's scrollIntoView on a label shifted
+   the whole label layer off its anchors. */
+.tut-layer.deck.coach #tut-pass{pointer-events:auto;margin:0}
+.tut-layer.deck.coach .tut-btns{gap:6px}
+/* A phone: two buttons beside the words left them a column three words wide —
+   the strip stacks instead, words across, buttons under them. */
+@media (max-width:560px){
+  .tut-layer.deck.coach .tut-card{grid-template-columns:1fr}
+  .tut-layer.deck.coach .tut-btns{grid-column:1;grid-row:auto;margin-top:6px}
+}
+#hub-space .hs-train{margin-left:auto;font-size:.95rem}
+/* What the tour lights over a station (spotStation): an empty box. Toggled with
+   `hidden` — and nothing else sets its display, so the [hidden] rule holds. */
+#hs-spot{position:absolute;left:0;top:0;z-index:2;pointer-events:none}
+#hs-spot[hidden]{display:none}
+#hub-space .hs-train + .hs-x{margin-left:0}
 /* <<FH:END>> */

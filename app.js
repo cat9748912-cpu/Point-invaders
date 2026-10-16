@@ -73074,9 +73074,9 @@ const tutLive = () => tutScreen() === 'game-screen' && !tutId('cd-ov')?.classLis
 const tutClickCard = () => document.querySelector('.games-grid .game-card[data-game="click"]');
 function tutOn(){ return !!tut; }
 
-function tutRead(uid){
+function tutRead(uid, key){
   try{
-    const r = JSON.parse(localStorage.getItem(tutKey(uid)) || 'null');
+    const r = JSON.parse(localStorage.getItem((key || tutKey)(uid)) || 'null');
     return (r && typeof r === 'object' && typeof r.st === 'string') ? r : null;
   }catch(e){ return null; }
 }
@@ -73315,6 +73315,9 @@ const TUT_STEPS = (function(){
   act('set-open', '#btn-settings', '⚙️ LAST STOP', 'Open Settings.', shown('settings-overlay'));
   read('set-mode', '#settings-overlay .mode-picker', '🎛️ RENDER MODE', '2D CLASSIC or 3D CYBERPUNK: the same arcade and the same boards, drawn two ways. It flips instantly.', set);
   read('set-gfx', '#btn-gfx', 'GRAPHICS', 'Trade effects for frame rate.', Object.assign({ opt: 1 }, set));
+  read('set-fly', '#set-fly', '🛸 3D HUB', () => 'In 3D the hub can be a place you fly: the FLIGHT DECK. This switch picks it or the classic list, and FLIGHT TRAINING teaches you to fly it.' +
+      ((typeof fhWanted === 'function' && fhWanted()) ? ' Once this tour is over, I will give you that lesson too.' : ' Switch it on whenever you like.'),
+    Object.assign({ opt: 1 }, set));                                                                       // v90
   read('set-clips', '#btn-clips', '🎬 CLIPS', 'Keeps the last seconds of every round ready to save from the results card.', Object.assign({ opt: 1 }, set));
   read('set-haptics', '#btn-haptics', 'HAPTICS', 'Vibration on hits, where the device has it.', Object.assign({ opt: 1 }, set));
   read('set-pad', '#btn-pad', '🎮 CONTROLLER', 'Gamepad support: the stick or d-pad moves, A acts, B goes back, START pauses.', Object.assign({ opt: 1 }, set));
@@ -73327,6 +73330,29 @@ const TUT_STEPS = (function(){
   read('bye', null, 'THE GRID IS YOURS', 'That is every switch in the building. Contracts pay credits, levels open missions, and the boards are live. Go and put your name on one, operative.');
   return S;
 })();
+
+// ── v90 · ONE ENGINE, TWO TOURS ──────────────────────────────────────────
+// The Flight Deck (§ 47) brings a short tour of its own, FLIGHT TRAINING, and
+// registers it here at load. Same layer, card, spotlight, controller and back
+// handling; its own steps, chapters and saved place. The few ways it differs
+// are fields: `push` (a minute of flying lessons keeps its place in this
+// browser only — no database rule for it), `alive` (it lives on the deck: when
+// the deck lands it stops where it is and picks up at the next take-off),
+// `coachY` (its flying steps put the strip under the deck's status line, not a
+// round's header), `coachPass` (a flying step can be passed — not every player
+// has the keys it asks for), `paint` (its own Settings button), and the words.
+const TUT_TOURS = {
+  tour: { steps: TUT_STEPS, ch: TUT_CH, key: tutKey, push: true, alive: null, coachY: null, coachPass: false, paint: null,
+          skip: 'SKIP TOUR', resumed: '🎓 Picking the tour back up — ',
+          skipped: '🎓 Tour put away — pick it up any time: ⚙️ Settings → TUTORIAL.',
+          done: '🎓 Tour complete — the grid is yours, operative.',
+          away: '', ev: ['_tut_start', '_tut_skip', '_tut_done'] }
+};
+const tutL = () => TUT_TOURS[(tut && tut.kind) || 'tour'] || TUT_TOURS.tour;
+function tutKind(){ return tut ? tut.kind : null; }
+// A tour is up AND its step on show is a flying one (a coach strip, no dim):
+// what the Flight Deck asks before it hands the player its controls.
+function tutCoaching(){ if(!tut || tut.busy) return false; const s = tutL().steps[tut.i]; return !!(s && s.coach); }
 
 // ── STATE ────────────────────────────────────────────────────────────────
 // A saved account's server copy and this browser's copy, made to agree: done
@@ -73353,18 +73379,21 @@ function tutPush(rec){
 function tutSave(st){
   const T = tut;
   if(!T) return;
-  const s = TUT_STEPS[T.i] || TUT_STEPS[0];
+  const L = tutL();
+  const s = L.steps[T.i] || L.steps[0];
   const rec = { v: TUT_V, st, s: s.id, at: Date.now() };
   if(st === 'run' && Object.keys(T.keep).length) rec.keep = T.keep;
-  tutWrite(T.uid, rec);
-  if(st !== 'run' || s.ch !== T.ch){ T.ch = s.ch; tutPush({ uid: T.uid, st, s: s.id, at: rec.at }); }
+  try{ localStorage.setItem(L.key(T.uid), JSON.stringify(rec)); }catch(e){}
+  if(st !== 'run' || s.ch !== T.ch){ T.ch = s.ch; if(L.push) tutPush({ uid: T.uid, st, s: s.id, at: rec.at }); }
 }
 // A claimed local profile changes its uid and keeps its tour.
 function tutMove(from, to){
   if(!from || !to || from === to) return;
-  const st = tutRead(from);
-  if(st && !tutRead(to)) tutWrite(to, st);
-  try{ localStorage.removeItem(tutKey(from)); }catch(e){}
+  for(const k in TUT_TOURS){
+    const key = TUT_TOURS[k].key, st = tutRead(from, key);
+    if(st && !tutRead(to, key)){ try{ localStorage.setItem(key(to), JSON.stringify(st)); }catch(e){} }
+    try{ localStorage.removeItem(key(from)); }catch(e){}
+  }
   if(tut && tut.uid === from) tut.uid = to;
   if(tutFresh === from) tutFresh = to;
 }
@@ -73375,7 +73404,7 @@ function tutForget(){
   if(tut) ids.push(tut.uid);
   try{ const c = lsGet(LS_PROFILE, null); if(c && c.uid) ids.push(c.uid); }catch(e){}
   if(tut) tutClose('gone');
-  ids.forEach(u => { try{ localStorage.removeItem(tutKey(u)); }catch(e){} });
+  ids.forEach(u => { for(const k in TUT_TOURS){ try{ localStorage.removeItem(TUT_TOURS[k].key(u)); }catch(e){} } });
 }
 
 // ── WHAT THE TOUR CHANGED ────────────────────────────────────────────────
@@ -73414,31 +73443,40 @@ function tutMaybe(){
   }else return;
   clearTimeout(tutTimer);
   tutTimer = setTimeout(() => {
+    // 🛸 v90 · Back to 0 when it fires: "a start is pending" is how the Flight
+    // Deck reads it (§ 47 stays grounded for the tour), and a spent handle kept
+    // it grounded until a reload — every new 3D player's first session.
+    tutTimer = 0;
     if(tut || !user || user.uid !== uid || tutScreen() !== 'hub-screen') return;
     tutBegin(from);
   }, 1000);
 }
 
-function tutBegin(fromId){
+function tutBegin(fromId, kind){
+  kind = (kind && TUT_TOURS[kind]) ? kind : 'tour';
+  const L = TUT_TOURS[kind], ST = L.steps;
   const layer = tutId('tut-layer');
   if(tut || !user || !layer) return;
-  const old = tutRead(user.uid);
-  let i = fromId ? TUT_STEPS.findIndex(s => s.id === fromId) : 0;
+  const old = tutRead(user.uid, L.key);
+  let i = fromId ? ST.findIndex(s => s.id === fromId) : 0;
   if(i < 0) i = 0;
   // A round cannot be walked back into: inside it, start the round again; on
   // its card, carry on from the hub.
-  if(TUT_STEPS[i].at === 'game') i = TUT_STEPS.findIndex(s => s.id === 'run');
-  else while(TUT_STEPS[i] && TUT_STEPS[i].at === 'results') i++;
-  if(!TUT_STEPS[i]) i = 0;
-  tut = { uid: user.uid, i: -1, ch: fromId ? TUT_STEPS[i].ch : -1, tok: 0, keep: {}, busy: true, hit: false, miss: 0, key: '', scr: tutScreen(), raf: 0 };
+  if(ST[i].at === 'game') i = ST.findIndex(s => s.id === 'run');
+  else while(ST[i] && ST[i].at === 'results') i++;
+  if(!ST[i]) i = 0;
+  tut = { kind, uid: user.uid, i: -1, ch: fromId ? ST[i].ch : -1, tok: 0, keep: {}, busy: true, hit: false, miss: 0, key: '', scr: tutScreen(), raf: 0 };
   // An earlier visit that ended mid-step (a reload, a closed tab) left its
   // changes behind; put them back before asking for them again.
   if(old && old.keep) tutPutBack(Object.assign({}, old.keep));
   layer.classList.add('on');
+  layer.classList.toggle('deck', kind === 'deck');
   layer.setAttribute('aria-hidden', 'false');
   document.body.classList.add('tut-on');
-  if(!fromId){ try{ statsEvent('_tut_start'); }catch(e){} }
-  else toast('🎓 Picking the tour back up — ' + TUT_CH[TUT_STEPS[i].ch] + '.', 2600);
+  const sk = tutId('tut-skip');
+  if(sk) sk.textContent = L.skip;
+  if(!fromId){ try{ statsEvent(L.ev[0]); }catch(e){} }
+  else toast(L.resumed + L.ch[ST[i].ch] + '.', 2600);
   tut.raf = TUT_RAF(tutFrame);
   try{ backGuardSoon(); }catch(e){}
   tutGo(i);
@@ -73495,7 +73533,8 @@ async function tutGo(i){
   if(!T) return;
   const tok = ++T.tok;
   const live = () => tut === T && T.tok === tok;
-  const prev = TUT_STEPS[T.i];
+  const ST = tutL().steps;
+  const prev = ST[T.i];
   if(prev && prev.leave){ try{ prev.leave(); }catch(e){} }
   T.busy = true;
   tutId('tut-card')?.classList.add('busy');
@@ -73504,8 +73543,8 @@ async function tutGo(i){
   // swap, then for the transition, before measuring anything in it.
   for(let n = 0; n < 20 && !tutScreen(); n++){ await tutWait(40); if(!live()) return; }
   if(tutScreen() !== T.scr){ T.scr = tutScreen(); await tutWait(360); if(!live()) return; }
-  for(; i < TUT_STEPS.length; i++){
-    const s = TUT_STEPS[i];
+  for(; i < ST.length; i++){
+    const s = ST[i];
     let ok = true;
     try{ if(s.when && !s.when()) ok = false; }catch(e){ ok = false; }
     if(!ok) continue;
@@ -73535,11 +73574,12 @@ function tutCard(s){
   const layer = tutId('tut-layer'), card = tutId('tut-card');
   if(!layer || !card) return;
   const pad = (typeof PAD === 'object' && PAD && PAD.live);
-  const isDo = !!s.do, last = TUT_STEPS.indexOf(s) === TUT_STEPS.length - 1;
+  const L = tutL(), ST = L.steps;
+  const isDo = !!s.do, last = ST.indexOf(s) === ST.length - 1;
   layer.classList.toggle('coach', !!s.coach);
   layer.classList.toggle('calm', tutCalm());
   document.body.classList.toggle('tut-peek', !!s.peek);
-  tutId('tut-chap').textContent = (s.ch ? 'CHAPTER ' + s.ch + ' OF ' + (TUT_CH.length - 1) + ' · ' : '') + TUT_CH[s.ch];
+  tutId('tut-chap').textContent = (s.ch ? 'CHAPTER ' + s.ch + ' OF ' + (L.ch.length - 1) + ' · ' : '') + L.ch[s.ch];
   tutId('tut-title').textContent = s.title;
   let body = '';
   try{ body = typeof s.body === 'function' ? s.body() : s.body; }catch(e){}
@@ -73549,12 +73589,12 @@ function tutCard(s){
   hint.hidden = !hint.textContent;
   const show = (id, on) => { const b = tutId(id); if(b) b.hidden = !on; };
   show('tut-next', !isDo);
-  show('tut-pass', isDo && !s.coach);
+  show('tut-pass', isDo && (!s.coach || L.coachPass));
   show('tut-doit', isDo && !s.coach && pad);
   const next = tutId('tut-next');
-  if(next) next.textContent = last ? 'FINISH ✓' : (s.id === 'hello' ? 'SHOW ME →' : 'NEXT →');
+  if(next) next.textContent = last ? 'FINISH ✓' : (ST.indexOf(s) === 0 ? 'SHOW ME →' : 'NEXT →');
   const bar = tutId('tut-bar');
-  if(bar) bar.style.width = Math.round((TUT_STEPS.indexOf(s) + 1) / TUT_STEPS.length * 100) + '%';
+  if(bar) bar.style.width = Math.round((ST.indexOf(s) + 1) / ST.length * 100) + '%';
   card.classList.remove('busy');
   card.scrollTop = 0;
   // Focus: NEXT on an explain step, so Enter and a controller's A move on; on
@@ -73600,9 +73640,9 @@ function tutPaint(el, s){
   const m = 10, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   let x, y;
   if(s.coach){
-    const hdr = document.querySelector('#game-screen .g-hdr');
+    const hdr = document.querySelector('#game-screen .g-hdr'), cy = tutL().coachY;
     x = (W - cw) / 2;
-    y = hdr ? hdr.getBoundingClientRect().bottom + 6 : 64;
+    y = cy ? cy() : hdr ? hdr.getBoundingClientRect().bottom + 6 : 64;
   }else if(!R){
     x = (W - cw) / 2; y = (H - chh) / 2;
   }else{
@@ -73623,8 +73663,12 @@ function tutFrame(now){
   T.raf = TUT_RAF(tutFrame);
   // Whoever was being shown round has gone: Exit, a logout, a switched account.
   if(!user || user.uid !== T.uid || tutScreen() === 'auth-screen'){ tutClose('gone'); return; }
+  const L = tutL();
+  // A tour that lives somewhere (the Flight Deck's) and it has gone: stop where
+  // it is; it picks up again from this step the next time it can.
+  if(L.alive && !L.alive()){ tutAway(); return; }
   if(T.busy) return;
-  const s = TUT_STEPS[T.i];
+  const s = L.steps[T.i];
   if(!s) return;
   if(s.do){
     let ok = false;
@@ -73645,39 +73689,51 @@ function tutFrame(now){
 function tutClose(how){
   const T = tut;
   if(!T) return;
-  const s = TUT_STEPS[T.i];
+  const L = tutL(), s = L.steps[T.i];
   if(s && s.leave){ try{ s.leave(); }catch(e){} }
   tut = null;
   T.tok++;
   TUT_CAF(T.raf);
   const layer = tutId('tut-layer');
-  if(layer){ layer.classList.remove('on', 'coach'); layer.setAttribute('aria-hidden', 'true'); }
+  if(layer){ layer.classList.remove('on', 'coach', 'deck'); layer.setAttribute('aria-hidden', 'true'); }
   document.body.classList.remove('tut-on', 'tut-peek');
   const put = tutPutBack(T.keep);
   try{ backGuardSoon(); }catch(e){}
   try{ tutPaintSettings(); }catch(e){}
+  if(L.paint){ try{ L.paint(); }catch(e){} }
   return put;                                            // how many dials went back: the caller's toast says so
+}
+// The place the tour lives has gone (the deck landed for a round): kept as it
+// is — still 'run', at this step — to pick up the next time it can.
+function tutAway(){
+  if(!tut) return;
+  const msg = tutL().away;
+  tutSave('run');
+  tutClose('away');
+  if(msg) toast(msg, 3000);
 }
 // Put away, not thrown away: the step is kept and Settings offers RESUME.
 function tutSkip(how){
   if(!tut) return;
+  const L = tutL(), main = tut.kind === 'tour';
   tutSave('skip');
-  try{ statsEvent('_tut_skip'); }catch(e){}
-  try{ markOnboard(); }catch(e){}
+  try{ statsEvent(L.ev[1]); }catch(e){}
+  if(main){ try{ markOnboard(); }catch(e){} }
   const put = tutClose(how || 'skip');
   snd('uiBack');
-  toast('🎓 Tour put away — pick it up any time: ⚙️ Settings → TUTORIAL.' + (put ? ' The dials are back the way you had them.' : ''), put ? 4800 : 3600);
+  toast(L.skipped + (put ? ' The dials are back the way you had them.' : ''), put ? 4800 : 3600);
 }
 function tutFinish(){
   const T = tut;
   if(!T) return;
-  T.i = TUT_STEPS.length - 1;
+  const L = tutL(), main = T.kind === 'tour';
+  T.i = L.steps.length - 1;
   tutSave('done');
-  try{ statsEvent('_tut_done'); }catch(e){}
-  try{ markOnboard(); }catch(e){}
+  try{ statsEvent(L.ev[2]); }catch(e){}
+  if(main){ try{ markOnboard(); }catch(e){} }
   const put = tutClose('done');
   snd('success');
-  toast('🎓 Tour complete — the grid is yours, operative.' + (put ? ' The dials are back the way you had them.' : ''), put ? 4800 : 3600);
+  toast(L.done + (put ? ' The dials are back the way you had them.' : ''), put ? 4800 : 3600);
 }
 
 // ── SETTINGS → TUTORIAL ──────────────────────────────────────────────────
@@ -73699,6 +73755,7 @@ function tutFromSettings(replay){
   if(tut) tutClose('again');
   try{ closeSettings(true); }catch(e){}
   clearTimeout(tutTimer);
+  tutTimer = 0;
   const st = tutRead(user.uid);
   const from = (!replay && st && (st.st === 'run' || st.st === 'skip')) ? (st.s || null) : null;
   if(!from){ try{ localStorage.removeItem(tutKey(user.uid)); }catch(e){} }
@@ -73718,14 +73775,14 @@ backAct = function(){ if(tut){ tutSkip('back'); return; } return TUT_REAL.act();
 // and the Escape handlers that ask "am I on top?" stand down. Not during a
 // live round: there the board has the controller.
 padTopOverlay = function(){
-  if(tut){ const s = TUT_STEPS[tut.i]; if(!(s && s.coach)) return tutId('tut-layer') || TUT_REAL.top(); }
+  if(tut){ const s = tutL().steps[tut.i]; if(!(s && s.coach)) return tutId('tut-layer') || TUT_REAL.top(); }
   return TUT_REAL.top();
 };
 registerOverlayCloser('tut-layer', () => tutSkip('pad'), true);
 
-tutId('tut-next')?.addEventListener('click', () => { const s = tut && TUT_STEPS[tut.i]; if(s && !s.do) tutAdvance(); });
-tutId('tut-pass')?.addEventListener('click', () => { const s = tut && TUT_STEPS[tut.i]; if(s && s.do) tutAdvance(); });
-tutId('tut-doit')?.addEventListener('click', () => { const s = tut && TUT_STEPS[tut.i]; const el = s && s.do && tutEl(s); if(el) el.click(); });
+tutId('tut-next')?.addEventListener('click', () => { const s = tut && tutL().steps[tut.i]; if(s && !s.do) tutAdvance(); });
+tutId('tut-pass')?.addEventListener('click', () => { const s = tut && tutL().steps[tut.i]; if(s && s.do) tutAdvance(); });
+tutId('tut-doit')?.addEventListener('click', () => { const s = tut && tutL().steps[tut.i]; const el = s && s.do && tutEl(s); if(el) el.click(); });
 tutId('tut-skip')?.addEventListener('click', () => tutSkip('button'));
 tutId('btn-tutorial-replay')?.addEventListener('click', () => tutFromSettings(true));
 // Escape belongs to the tour while it is up — first, and nobody else hears it.
@@ -75211,19 +75268,28 @@ let drag = null, stick = null, hold = { boost: false, up: false, down: false };
 let adopted = [], navOpen = false, drawerOpen = false, drawerTab = 'pilot', announced = '', announceAt = 0;
 const padPrev = Object.create(null);
 
+// The arcade's tour (§ 45) grounds the deck — it spotlights the list hub — but
+// the deck's own FLIGHT TRAINING runs on it: the deck keeps flying underneath.
+const trainingOn = () => typeof tutKind === 'function' && tutKind() === 'deck';
 function eligible(){
   if(typeof user === 'undefined' || !user) return false;
   if(!(P.supported && P.supported())) return false;
   if(!(P.wanted && P.wanted() === '3d')) return false;
   if(!fhWanted()) return false;
-  try{ if(typeof tutOn === 'function' && tutOn()) return false; }catch(e){}
+  try{ if(typeof tutOn === 'function' && tutOn() && !trainingOn()) return false; }catch(e){}
   try{ if(typeof tutTimer !== 'undefined' && tutTimer) return false; }catch(e){}
   return true;
 }
 const activeScreen = () => (document.querySelector('.screen.active') || {}).id || '';
 function overlayUp(){
   return !!document.querySelector('.fb-overlay.show') || !!document.querySelector('#cd-ov.show') ||
-         (typeof tutOn === 'function' && tutOn());
+         (typeof tutOn === 'function' && tutOn() && !trainingOn());
+}
+// The deck's own keys, stick and pad: not while anything is over it — and not
+// while a training step is pointing at something, when ENTER is its NEXT and
+// not the card behind it. A flying step (a coach strip) hands them back.
+function inputHeld(){
+  return overlayUp() || (trainingOn() && !(typeof tutCoaching === 'function' && tutCoaching()));
 }
 const panelUp = () => navOpen || drawerOpen;
 function typingIn(t){ return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable); }
@@ -75246,6 +75312,7 @@ function buildDom(){
     '<div class="hs-input" id="hs-input" aria-hidden="true"></div>' +
     '<canvas class="hs-fx" id="hs-fx" aria-hidden="true"></canvas>' +
     '<div class="hs-labels" id="hs-labels" aria-hidden="true"></div>' +
+    '<div class="hs-spot" id="hs-spot" aria-hidden="true" hidden></div>' +
     '<div class="hs-top" id="hs-top"></div>' +
     '<div class="hs-where" id="hs-where" role="status" aria-live="polite"></div>' +
     '<nav class="hs-rail" id="hs-rail" aria-label="Flight deck">' +
@@ -75265,7 +75332,7 @@ function buildDom(){
       '<button class="hs-tbtn hs-t-down" id="hs-t-down" type="button" tabindex="-1">▼</button>' +
     '</div>' +
     '<section class="hs-panel hs-nav" id="hs-nav" hidden aria-label="Navigator">' +
-      '<div class="hs-ph"><div class="hs-pt">🧭 NAVIGATOR</div><button class="hs-x" id="hs-nav-x" type="button" aria-label="Close the navigator">✕</button></div>' +
+      '<div class="hs-ph"><div class="hs-pt">🧭 NAVIGATOR</div><button class="hs-x hs-train" id="hs-nav-train" type="button" aria-label="Flight training" title="Flight training — how to fly the deck">🎓</button><button class="hs-x" id="hs-nav-x" type="button" aria-label="Close the navigator">✕</button></div>' +
       '<input class="input hs-search" id="hs-search" type="search" placeholder="Find a mission or a mode…" autocomplete="off" spellcheck="false" aria-label="Find a destination">' +
       '<div class="hs-chips" id="hs-chips" role="group" aria-label="Filter missions"></div>' +
       '<div class="hs-list" id="hs-list"></div>' +
@@ -75504,7 +75571,7 @@ function onControl(t){
   return !!(t && t !== document.body && t.closest && t.closest('button, a, input, select, textarea, [role="button"], [role="tab"]'));
 }
 window.addEventListener('keydown', e => {
-  if(!running || !e.isTrusted || overlayUp()) return;
+  if(!running || !e.isTrusted || inputHeld()) return;
   // Escape puts the deck's own panels away even from inside the navigator's
   // search box; every other key typed into a field is the field's.
   if(e.key === 'Escape' && (!typingIn(e.target) || (e.target.closest && e.target.closest('#hub-space .hs-panel')))){
@@ -75568,7 +75635,7 @@ function padRead(){
   return o;
 }
 function padOwns(){
-  if(!running || activeScreen() !== 'hub-screen' || overlayUp() || panelUp()) return false;
+  if(!running || activeScreen() !== 'hub-screen' || inputHeld() || panelUp()) return false;
   if(typingIn(document.activeElement)) return false;
   return !(typeof padEnabled !== 'undefined' && !padEnabled);
 }
@@ -76925,6 +76992,7 @@ function wireDom(){
   $('hs-b-grid')?.addEventListener('click', () => toggleDrawer('grid'));
   $('hs-b-home')?.addEventListener('click', () => goHome());
   $('hs-nav-x')?.addEventListener('click', () => closePanels());
+  $('hs-nav-train')?.addEventListener('click', () => trainNow());
   $('hs-drawer-x')?.addEventListener('click', () => closePanels());
   $('hs-search')?.addEventListener('input', () => paintNav());
   ['pilot', 'rules', 'grid'].forEach(t => $('hs-tab-' + t)?.addEventListener('click', () => { setTab(t); snd('tab'); }));
@@ -77073,6 +77141,8 @@ function frameBody(dt, now){
   // update) or the sky is baking, the frames are neither — judged on those it
   // shed four steps of detail in the first seconds and kept them all session.
   if(R0 && !R0.pendingProfile && R0.profile === R0.wantedProfile && R0.spaceReady) P.hubSample();
+  // 🎓 Flight training: looked for once a second once the intro has landed.
+  if(now - trainAt > 1000){ trainAt = now; if(cam.intro === 0) trainingMaybe(); }
   return true;
 }
 
@@ -77109,6 +77179,171 @@ function onResize(){
 window.addEventListener('resize', () => { if(running) onResize(); });
 
 // ══════════════════════════════════════════════
+//  🎓 FLIGHT TRAINING (v90)
+// ══════════════════════════════════════════════
+// ARC's lesson in flying the deck, on the arcade's own tour engine (§ 45) as a
+// second tour: its layer, card, spotlight, controller and back handling. It runs
+// ON the deck, which keeps flying underneath. A flying step is a strip under the
+// status line with no dim, and hands the player the keys, stick and pad
+// (inputHeld); every other step is the spotlight as the tour draws it — the
+// control lit, the rest dimmed and held, ENTER on its NEXT.
+//
+// WHO GETS IT: everyone who flies the deck, once — at the first take-off after
+// the arcade's own tour is done or put away, so a new 3D player goes straight
+// from one into the other. Its place is kept per profile, in this browser
+// (pi_fhtut_<uid>). ⚙️ Settings → 3D HUB and the 🎓 in the navigator bring it
+// back. Launching a mission is never pressed for the player; one launched
+// mid-lesson pauses it, and the next take-off picks it up where it stopped.
+const TRAIN_CH = ['FLIGHT TRAINING', 'FLYING', 'GETTING ABOUT', 'THE MISSIONS', 'EVERY MODE', 'YOUR CONSOLE'];
+const trainKey = uid => 'pi_fhtut_' + uid;
+let trainAt = 0, mark = null;
+// The words for the controls the player is actually using.
+const byDev = o => () => o[device === 'touch' ? 'touch' : device === 'pad' ? 'pad' : 'keys'];
+const dockUp = () => { const d = $('hs-dock'); return !!d && !d.hidden; };
+const labelOf = key => () => { const d = DM[key]; return d && d.lbl && !d.lbl.hidden ? d.lbl : null; };
+// The tour's stand-in for something in 3D (§ 45 can only light an element): an
+// empty box laid over a station — its sign, its body and its nameplate — and
+// measured again every frame the tour asks for it, so the ring follows the
+// station as the camera moves. Null when the station is not on screen.
+const SPOT_W = { solo: 1.6, events: 1.35 };         // the sign's half-width, in body radii
+function spotStation(key){
+  const d = DM[key], n = $('hs-spot');
+  if(!d || !n || d.kind !== 'station') return null;
+  const S = ST[d.id];
+  const top = proj(V.add(d.at, [0, S.signY + 16, 0])), bot = proj(V.add(d.at, [0, S.plate - 14, 0])), mid = proj(d.at);
+  if(!mid.on || !top.on || !bot.on){ n.hidden = true; return null; }
+  const hw = S.body * (SPOT_W[d.id] || 1.4) * view.H / (2 * mid.z * view.th);
+  const x0 = Math.max(4, mid.x - hw), x1 = Math.min(view.W - 4, mid.x + hw);
+  const y0 = Math.max(4, Math.min(top.y, bot.y)), y1 = Math.min(view.H - 4, Math.max(top.y, bot.y));
+  if(x1 - x0 < 8 || y1 - y0 < 8){ n.hidden = true; return null; }
+  n.hidden = false;
+  n.style.transform = 'translate(' + x0.toFixed(1) + 'px,' + y0.toFixed(1) + 'px)';
+  n.style.width = (x1 - x0).toFixed(1) + 'px';
+  n.style.height = (y1 - y0).toFixed(1) + 'px';
+  return n;
+}
+const spotOff = () => { const n = $('hs-spot'); if(n) n.hidden = true; };
+const TRAIN = (function(){
+  const S = [];
+  let ch = 0;
+  const read = (id, t, title, body, x) => { S.push(Object.assign({ id, ch, t, title, body }, x || {})); };
+  const act = (id, t, title, body, done, x) => { S.push(Object.assign({ id, ch, t, title, body, do: done }, x || {})); };
+  // A flying step: the strip, the deck's controls in hand, measured from where the ship was when it began.
+  const fly = (id, title, body, done) => act(id, null, title, body, () => !!mark && done(), { coach: 1, enter: () => { mark = { p: ship.p.slice(), yaw: ship.yaw, boost: false }; } });
+
+  read('fh-hello', null, 'FLIGHT TRAINING',
+    'In 3D the hub is a place you fly. That is your Neon Nebula interceptor, and every mission and every mode in the arcade is out here somewhere. One minute of flying lessons and you will know your way round. SKIP whenever you like — ⚙️ Settings → 3D HUB, or the 🎓 in the navigator, brings me back.');
+
+  ch = 1;
+  fly('fh-fly', 'FLY', byDev({ keys: 'Hold W (or ↑) to fly forward.',
+                               touch: 'Put your left thumb down low on the left of the screen, and push it up.',
+                               pad: 'Push the left stick forward — or squeeze RT.' }),
+      () => Math.hypot(ship.p[0] - mark.p[0], ship.p[2] - mark.p[2]) > 35);
+  fly('fh-turn', 'TURN', byDev({ keys: 'A and D (or ← →) turn you. Dragging across the screen turns you too.',
+                                 touch: 'Push the same thumb left or right.',
+                                 pad: 'The left stick turns you; the right stick looks around.' }),
+      () => Math.abs(wrapAng(ship.yaw - mark.yaw)) > 0.6);
+  fly('fh-lift', 'CLIMB · SINK', byDev({ keys: 'E climbs, Q sinks.', touch: '▲ climbs, ▼ sinks.', pad: 'D-pad ▲ climbs, ▼ sinks.' }),
+      () => Math.abs(ship.p[1] - mark.p[1]) > 5);
+  fly('fh-boost', 'BOOST', byDev({ keys: 'Fly forward and hold SHIFT for a burst of speed. SPACE is the brake.',
+                                   touch: 'Fly forward and hold BOOST.',
+                                   pad: 'Fly forward and hold RB. LT is the brake.' }),
+      () => (mark.boost = mark.boost || ship.boostK > 0.6));
+
+  ch = 2;
+  act('fh-home', '#hs-b-home', 'HOME', byDev({ keys: 'Wherever you end up, HOME flies you back to the start. Press it — and from now on, H does the same.',
+                                               touch: 'Wherever you end up, HOME flies you back to the start. Tap it.',
+                                               pad: 'Wherever you end up, HOME flies you back to the start. Press it.' }),
+      () => !!auto && !!auto.home);
+  act('fh-homing', null, 'AUTOPILOT', 'The autopilot has the stick: it flies you home and turns you to face the stations. Any flying control takes it back.',
+      () => !auto, { coach: 1 });
+  read('fh-solo', () => spotStation('s:solo') || labelOf('s:solo')(), 'SOLO MISSIONS',
+    'On your right: every mission in the arcade flies out of this station.', { opt: 1, leave: spotOff });
+  read('fh-arena', () => spotStation('s:events') || labelOf('s:events')(), 'THE EVENTS ARENA',
+    'On your left: every other way to play. When either one is out of sight, an arrow at the edge of the screen points the way.', { opt: 1, leave: spotOff });
+  act('fh-click', labelOf('s:solo'), 'CLICK TO FLY', byDev({ keys: 'Every label is a destination: click one and the autopilot takes you there. Click SOLO MISSIONS.',
+                                                             touch: 'Every label is a destination: tap one and the autopilot takes you there. Tap SOLO MISSIONS.',
+                                                             pad: 'Every label is a destination: pick one and the autopilot takes you there. Pick SOLO MISSIONS.' }),
+      () => (!!auto && auto.d === DM['s:solo']) || focus === DM['s:solo'], { opt: 1 });
+  act('fh-arrive', null, 'ON APPROACH', 'Hands off — the autopilot is bringing you in. Fly close to anything and its card pops up.',
+      () => focus === DM['s:solo'] && dockUp(), { coach: 1 });
+
+  ch = 3;
+  read('fh-card', '#hs-dock', 'THE CARD', byDev({ keys: 'Everything out here has one. ENTER presses its first button and ESC puts it away — it comes back when you fly close again.',
+                                                  touch: 'Everything out here has one. ✕ puts it away — it comes back when you fly close again.',
+                                                  pad: 'Everything out here has one. Ⓐ presses its first button and Ⓑ puts it away.' }));
+  act('fh-deploy', '#hs-dock .hs-dk-go', 'DEPLOY', 'Press DEPLOY and every mission flies out of the station.',
+      () => !!SEC.solo.open, { when: () => !SEC.solo.open });
+  read('fh-beacons', null, 'THE BEACONS', 'Every mission is a beacon now — its hologram turning over it, its name on a label. A locked one shows the level that opens it.');
+  fly('fh-visit', 'VISIT ONE', byDev({ keys: 'Fly to any beacon — or click its label.', touch: 'Fly to any beacon — or tap its label.', pad: 'Fly to any beacon.' }),
+      () => !!focus && focus.kind === 'mission' && dockUp());
+  read('fh-mcard', '#hs-dock', 'A MISSION’S CARD',
+    '▶ PLAY launches the mission on its board, 🌐 OPEN WORLD as a free-roam world, ⓘ BRIEFING shows its rules first, and ★ pins it to your favourites. Launching is yours to do — I will not press it for you.');
+
+  ch = 4;
+  read('fh-events', () => spotStation('s:events') || $('hs-mapbox'), 'EVERY MODE',
+    'In the Events arena: the Campaign, the Network Arena, Boss Rush, Glitch Run, Party Mode, the Brick Lab, the Daily Hack, Endless and the Weekly Anomaly — each one a gate. DEPLOY the arena like the station, then fly up to a gate for its card.',
+    { leave: spotOff });
+
+  ch = 5;
+  act('fh-nav', '#hs-b-nav', '🧭 THE NAVIGATOR', byDev({ keys: 'Every destination in one list. Open it.', touch: 'Every destination in one list. Open it.',
+                                                       pad: 'Every destination in one list — Ⓧ opens it any time. Open it now.' }),
+      () => navOpen);
+  read('fh-nav-in', '#hs-nav', 'FIND ANYTHING', byDev({ keys: 'Type to search. A row flies you there, and its ▶ launches it straight away. N opens this list whenever you are flying — and the 🎓 up here brings me back.',
+                                                       touch: 'Search, or scroll. A row flies you there, and its ▶ launches it straight away. The 🎓 up here brings me back.',
+                                                       pad: 'A row flies you there, and its ▶ launches it straight away. Ⓧ opens this list whenever you are flying, and the 🎓 up here brings me back.' }),
+    // Its own list, open: a lesson picked up here (the navigator's 🎓 closes it) still shows it.
+    { enter: () => { if(!navOpen) toggleNav(true); }, leave: () => closePanels(true) });
+  read('fh-console', '#hs-rail', 'YOUR CONSOLE', byDev({ keys: 'PILOT holds your level, perks, loadouts and contracts; RULES your stability, chaos and heat; GRID the boards, rivals, bounties and the terminal. Everything from the list hub is in these drawers.',
+                                                        touch: 'PILOT holds your level, perks, loadouts and contracts; RULES your stability, chaos and heat; GRID the boards, rivals, bounties and the terminal. Everything from the list hub is in these drawers.',
+                                                        pad: 'PILOT holds your level, perks, loadouts and contracts; RULES your stability, chaos and heat; GRID the boards, rivals, bounties and the terminal — Ⓨ opens them. Everything from the list hub is in these drawers.' }));
+  read('fh-map', '#hs-mapbox', 'THE MAP', byDev({ keys: 'The whole hub from above, north up: both stations, everything deployed, and you. Click a point and you fly there.',
+                                                 touch: 'The whole hub from above, north up: both stations, everything deployed, and you. Tap a point and you fly there.',
+                                                 pad: 'The whole hub from above, north up: both stations, everything deployed, and you.' }));
+  read('fh-settings', '#btn-settings', '⚙️ SETTINGS', 'Graphics, the controller — and 3D HUB, which swaps the Flight Deck for the classic list and brings this training back.');
+  read('fh-bye', null, 'CLEARED FOR FLIGHT', 'That is the Flight Deck. Your points, the Black Market and Exit stay up on the bar. Fly safe, operative.');
+  return S;
+})();
+if(typeof TUT_TOURS === 'object' && TUT_TOURS){
+  TUT_TOURS.deck = {
+    steps: TRAIN, ch: TRAIN_CH, key: trainKey, push: false, coachPass: true,
+    alive: () => running && activeScreen() === 'hub-screen',
+    coachY: () => { const n = $('hs-where'), r = n && n.getBoundingClientRect(); return r && r.height ? r.bottom + 8 : 120; },
+    paint: () => paintSetting(),
+    skip: 'SKIP TRAINING', resumed: '🎓 Back to flight training — ',
+    skipped: '🎓 Training put away — ⚙️ Settings → 3D HUB, or the 🎓 in the navigator, picks it up again.',
+    done: '🎓 Flight training complete — cleared for flight, operative.',
+    away: '🎓 Flight training paused — it picks up where it stopped when you fly again.',
+    ev: ['_fhtut_start', '_fhtut_skip', '_fhtut_done']
+  };
+}
+function trainRead(){ try{ return user && typeof tutRead === 'function' ? tutRead(user.uid, trainKey) : null; }catch(e){ return null; } }
+// Whether this profile has the training to come, and the deck is ready for it.
+function trainingMaybe(){
+  if(!running || !user || typeof tutBegin !== 'function' || !TUT_TOURS.deck) return;
+  if((typeof tutOn === 'function' && tutOn()) || (typeof tutTimer !== 'undefined' && tutTimer)) return;
+  if(overlayUp() || panelUp() || cam.intro > 0) return;
+  const main = typeof tutRead === 'function' ? tutRead(user.uid) : null;
+  if(main && main.st === 'run') return;                // the arcade's own tour picks up first (and grounds the deck)
+  const st = trainRead();
+  if(st && st.st !== 'run') return;                    // done, or put away: Settings and the navigator bring it back
+  tutBegin(st ? st.s : null, 'deck');
+}
+// Asked for: from where it stopped if it never finished, else from the top.
+function trainNow(){
+  if(!user || typeof tutBegin !== 'function' || !TUT_TOURS.deck) return false;
+  if(typeof tutOn === 'function' && tutOn()) return false;
+  if(!running) sync();
+  if(!running) return false;
+  closePanels(true);
+  const st = trainRead();
+  const from = st && (st.st === 'run' || st.st === 'skip') ? st.s : null;
+  if(!from){ try{ localStorage.removeItem(trainKey(user.uid)); }catch(e){} }
+  tutBegin(from, 'deck');
+  return true;
+}
+
+// ══════════════════════════════════════════════
 //  ⚙️ SETTINGS → 🛸 3D HUB
 // ══════════════════════════════════════════════
 // A per-device switch, like the render mode and the graphics profile: the
@@ -77124,7 +77359,8 @@ function buildSetting(){
   sec.setAttribute('aria-labelledby', 'set-fly-h');
   sec.innerHTML = '<div class="set-sec-h"><span id="set-fly-h">🛸 3D HUB</span><em class="set-state" id="set-fly-state"></em></div>' +
                   '<p class="set-note" id="set-fly-note"></p>' +
-                  '<button class="btn btn-secondary btn-full inp-toggle" id="btn-hub-fly" type="button" aria-pressed="true"></button>';
+                  '<button class="btn btn-secondary btn-full inp-toggle" id="btn-hub-fly" type="button" aria-pressed="true"></button>' +
+                  '<button class="btn btn-secondary btn-full" id="btn-hub-train" type="button"></button>';
   modal.insertBefore(sec, gfx || null);
   $('btn-hub-fly').addEventListener('click', () => {
     const on = !fhWanted();
@@ -77132,6 +77368,11 @@ function buildSetting(){
     snd('toggle');
     toast(on ? '🛸 FLIGHT DECK — in 3D the hub is space you fly through' : '☰ LIST HUB — the classic cards, in 3D', 2600);
     sync();
+  });
+  $('btn-hub-train').addEventListener('click', () => {
+    try{ closeSettings(true); }catch(e){}
+    snd('tab');
+    setTimeout(() => { if(!trainNow()) toast('🎓 Flight training runs in the Flight Deck — switch it on above, in 3D.', 3000); }, 320);
   });
   paintSetting();
 }
@@ -77147,6 +77388,13 @@ function paintSetting(){
   b.setAttribute('aria-pressed', String(on));
   b.disabled = !ok;
   if(st) st.textContent = !ok ? 'N/A' : on ? (d3 ? 'FLYING' : 'IN 3D') : 'LIST';
+  const tb = $('btn-hub-train');
+  if(tb){
+    const t = trainRead(), open = !!t && (t.st === 'run' || t.st === 'skip');
+    tb.textContent = open ? '▶ RESUME FLIGHT TRAINING' : t ? '↺ FLIGHT TRAINING AGAIN' : '🎓 FLIGHT TRAINING';
+    tb.disabled = !(on && ok && d3);
+    tb.title = tb.disabled ? 'Switch the Flight Deck on, in 3D, to train' : 'ARC teaches you to fly the deck: a minute, skip whenever you like';
+  }
   if(note) note.textContent = !ok ? 'Needs WebGL2 — this browser shows the list hub.'
     : d3 ? 'The hub as a piece of space you fly through as your ship: SOLO MISSIONS to the right, EVENTS to the left — fly up to anything and its card pops up. Off shows the classic list of cards. Stored on this device.'
          : 'Applies in 3D mode, where the hub becomes a piece of space you fly through as your ship. Pick 3D CYBERPUNK above to try it.';
@@ -77162,7 +77410,8 @@ FH = {
   // For tests and support: where everything is, and what the deck is doing.
   get state(){ return { running, layout, ship: { p: ship.p.slice(), yaw: ship.yaw, speed: ship.speed }, focus: focus ? focus.key : null,
                         auto: auto ? (auto.home ? 'home' : auto.d && auto.d.key) : null, open: { solo: SEC.solo.open, events: SEC.events.open },
-                        dests: D.length, intro: cam.intro, world: worldBuilt, look: w ? w.spaceLook || null : null, set: !!owSet, zoom: cam.zoom }; },
+                        dests: D.length, intro: cam.intro, world: worldBuilt, look: w ? w.spaceLook || null : null, set: !!owSet, zoom: cam.zoom,
+                        boost: ship.boostK, device, training: trainingOn(), held: inputHeld() }; },
   dests: () => D,
   flyTo: key => { const d = DM[key]; if(d) flyTo(d); return !!d; },
   open: id => openSector(id),
@@ -77170,6 +77419,7 @@ FH = {
   warp: (key, off) => { const d = DM[key]; if(!d) return false; if(d.sector) { SEC[d.sector].open = true; SEC[d.sector].k = 1; FHS.open[d.sector] = true; }
                         const sd = off == null ? standOf(d) : off; ship.p = [d.pos[0], d.pos[1] + 1.5, d.pos[2] + sd]; ship.yaw = 0; ship.speed = 0; auto = null; camSnap(); cam.intro = 0; return true; },
   home: () => goHome(),
+  train: () => trainNow(),
   debug: DBG
 };
 try{ buildSetting(); }catch(e){ console.warn('[FH] settings switch:', e); }
